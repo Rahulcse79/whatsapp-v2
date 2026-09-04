@@ -1,9 +1,9 @@
 package com.whatsappv2.data.account.di
 
 import com.whatsappv2.data.account.crypto.AesGcmCredentialCipher
-import com.whatsappv2.data.account.crypto.keystore.AndroidKeystoreSecretKeyProvider
 import com.whatsappv2.data.account.crypto.CredentialCipher
 import com.whatsappv2.data.account.crypto.SecretKeyProvider
+import com.whatsappv2.data.account.crypto.keystore.AndroidKeystoreSecretKeyProvider
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
