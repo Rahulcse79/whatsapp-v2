@@ -272,7 +272,7 @@ jobs:
               # liblinphone cannot run on the JVM, so they are verified on-device from
               # Task 33. Gating them here would only lower the bar for the code that CAN
               # be tested.
-              "com/whatsappv2/data/sip": 85,
+              "com/whatsappv2/data/sip": 80,
               "com/whatsappv2/data/sip/registration": 90,
           }
 

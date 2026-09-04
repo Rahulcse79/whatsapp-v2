@@ -1,10 +1,8 @@
 package com.whatsappv2.data.settings
 
 import androidx.datastore.core.DataStore
-import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.emptyPreferences
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
 import com.whatsappv2.core.common.logging.NoOpLogger
@@ -141,10 +139,11 @@ class DataStoreAppSettingsRepositoryTest {
         corrupt.writeText("this is not a preferences protobuf")
         copies += corrupt
 
+        // Deliberately NO corruptionHandler: DataStore's own handler would swallow this
+        // before the repository ever saw it, and the repository's fallback is the branch
+        // that actually keeps the app off the floor.
         val repository = DataStoreAppSettingsRepository(
-            PreferenceDataStoreFactory.create(
-                corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
-            ) { corrupt },
+            PreferenceDataStoreFactory.create { corrupt },
             NoOpLogger,
         )
 
