@@ -2,12 +2,17 @@ package com.whatsappv2.ui
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.StateRestorationTester
-import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import com.whatsappv2.HiltTestActivity
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
 import com.whatsappv2.di.ROBOLECTRIC_SDK
 import com.whatsappv2.ui.navigation.AppDestination
+import dagger.hilt.android.testing.HiltAndroidRule
+import dagger.hilt.android.testing.HiltAndroidTest
+import dagger.hilt.android.testing.HiltTestApplication
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -23,15 +28,26 @@ import org.robolectric.annotation.Config
  * does that, and it is the check that would catch a destination registered in the bar
  * but missing from the nav graph.
  */
+@HiltAndroidTest
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [ROBOLECTRIC_SDK])
+@Config(application = HiltTestApplication::class, sdk = [ROBOLECTRIC_SDK])
 class AppRootNavigationTest {
 
+    // Hilt first: the graph must be ready before the Activity is created.
+    @get:Rule(order = 0)
+    val hilt = HiltAndroidRule(this)
+
+    // An @AndroidEntryPoint host, because the account destination calls hiltViewModel()
+    // and a plain ComponentActivity cannot satisfy it.
+    //
     // The v2 rule, not the deprecated original: it uses StandardTestDispatcher, which
     // queues work rather than running it immediately, so the assertions below need the
     // explicit waitForIdle() calls that the old rule made unnecessary.
-    @get:Rule
-    val compose = createComposeRule()
+    @get:Rule(order = 1)
+    val compose = createAndroidComposeRule<HiltTestActivity>()
+
+    @Before
+    fun setUp() = hilt.inject()
 
     /**
      * The heading each destination renders, so a tap can be checked against something.
