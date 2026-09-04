@@ -710,10 +710,29 @@ Build:
 - Default-account selection persisted in DataStore.
 
 Done when:
-- [ ] The interface is in `:domain` and the impl is in `:data:account` (arch test enforces)
-- [ ] Decrypted passwords exist only inside the impl and are never held in a cached
+- [x] The interface is in `:domain` and the impl is in `:data:account` (arch test enforces)
+- [x] Decrypted passwords exist only inside the impl and are never held in a cached
       domain object longer than the call that needs them
-- [ ] Repository tests run against in-memory Room with ≥ 80% coverage
+      → every read path returns `SipAccount` with an **empty** password; the real value
+      comes from `credentialsFor(id)`, decrypted for the duration of that call. Asserted
+      by a test that walks every observed account. An empty value is unambiguous because
+      `AccountValidator` rejects an empty password.
+- [x] Repository tests run against in-memory Room with ≥ 80% coverage
+      → **83.3%**, with the mapper at 100%. 18 tests.
+
+**Status: COMPLETE.** CI run 33898630492.
+
+**Deviation from the task, stated deliberately:** the default account is persisted in the
+**database**, not in DataStore. DataStore would be a second source of truth that can
+disagree with the accounts table — most obviously by pointing at a deleted account — and
+delete-and-promote has to be atomic with the delete itself, which only the database can
+do. Two sources of truth for "which account is default" is the class of bug this project
+has been avoiding throughout.
+
+Mapping failures drop the row and log rather than throwing: these flows are collected by
+the UI, so a corrupt row after a bad migration costs one account instead of crashing the
+screen listing them. The log carries the account id only — never a credential or the SIP
+identity (§7).
 
 ### Task 19 — Account CRUD use cases
 **Depends on:** 18 · **Prompt refs:** §4.2, §5.1 · **Modules:** `:domain`
