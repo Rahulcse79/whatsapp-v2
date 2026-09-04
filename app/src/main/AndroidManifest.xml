@@ -23,6 +23,16 @@
         android:name="android.permission.BLUETOOTH_CONNECT"
         android:minSdkVersion="31" />
 
+    <!--
+      Foreground service. Two types, matching what the service is actually doing:
+      specialUse while only holding a registration - which is not a phone call, a data
+      sync, or any other standard type - and phoneCall once a call is in progress.
+      Declaring registration as a phone call would be a false claim about behaviour.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
     <!-- Video calling is optional: the app must install on devices without a camera. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature
@@ -48,6 +58,15 @@
         android:label="whatsapp-v2"
         android:supportsRtl="true"
         android:theme="@style/Theme.WhatsAppV2">
+
+        <service
+            android:name=".service.RegistrationService"
+            android:exported="false"
+            android:foregroundServiceType="phoneCall|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Maintains a SIP registration so incoming calls can be received while the app is in the background." />
+        </service>
 
         <activity
             android:name=".MainActivity"

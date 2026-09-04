@@ -236,6 +236,7 @@ jobs:
               "com/whatsappv2/domain/validation": 95,
               "com/whatsappv2/domain/usecase": 85,
               "com/whatsappv2/domain/registration": 95,
+              "com/whatsappv2/service": 90,
               # Feature packages hold Compose composables alongside their ViewModel and
               # state. Line coverage of declarative UI is a weak signal - a composable can
               # be 100% "covered" by rendering once and asserting nothing - so these are
