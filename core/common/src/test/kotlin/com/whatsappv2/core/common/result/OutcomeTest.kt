@@ -45,7 +45,7 @@ class OutcomeTest {
 
     @Test
     fun `mapError transforms a failure`() {
-        assertEquals(Outcome.Failure(5), err.mapError { it.length })
+        assertEquals(Outcome.Failure(4), err.mapError { it.length }) // "boom".length == 4
     }
 
     @Test
@@ -89,7 +89,7 @@ class OutcomeTest {
 
     @Test
     fun `getOrElse gives the fallback access to the error`() {
-        assertEquals(4, err.getOrElse { it.length - 1 })
+        assertEquals(3, err.getOrElse { it.length - 1 }) // "boom".length - 1 == 3
     }
 
     @Test
