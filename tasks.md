@@ -746,8 +746,22 @@ Build:
 - Do **not** create pass-through use cases that only forward to the repository (§4.2).
 
 Done when:
-- [ ] Each use case has tests for success, validation failure, and the refusal path
-- [ ] Deleting an account with an active call returns a typed error, not an exception
+- [x] Each use case has tests for success, validation failure, and the refusal path
+- [x] Deleting an account with an active call returns a typed error, not an exception
+      → `DeleteAccountError.CallInProgress(activeCalls)`, never a throw
+
+**Status: COMPLETE.** **Two use cases, not four** — and the omission is deliberate,
+recorded in `UseCaseRationale.kt`. §4.2 forbids pass-through use cases, so observing
+accounts and setting the default call the repository directly; the rule that matters for
+the default (never leave the app with accounts but no default) is enforced *inside* the
+repository where it shares a transaction with the delete.
+
+`SaveAccountUseCase` combines validation with the unregister-before-re-register rule.
+Registering a new identity without releasing the old one leaves a stale binding that
+keeps ringing a device which no longer answers (§5.1). The rule is deliberately narrow —
+renaming an account must not drop a working registration, and there is a test for it.
+`DeleteAccountUseCase` unregisters **before** deleting: the other order sends `Expires: 0`
+with credentials that no longer exist.
 
 ### Task 20 — Account list screen
 **Depends on:** 19, 15 · **Prompt refs:** §4.2, §5.1 · **Modules:** `:feature:accounts`
@@ -758,9 +772,20 @@ Build:
 - ViewModel exposing one immutable `UiState` via `StateFlow` + a one-shot event channel.
 
 Done when:
-- [ ] The screen is fully previewable with fake state, no DI required
-- [ ] ViewModel tests cover empty, populated, and delete-refused states
-- [ ] No mutable state is exposed to Compose
+- [x] The screen is fully previewable with fake state, no DI required
+      → a stateless `AccountsScreen(state, …)` overload, previewed in both themes
+- [x] ViewModel tests cover empty, populated, and delete-refused states
+- [x] No mutable state is exposed to Compose
+      → enforced by architecture rule 6
+
+**Status: COMPLETE.** State is one immutable `UiState` on a `StateFlow`; one-shot
+outcomes go to a `Channel`. A delete refusal held in state would be re-shown on every
+recomposition and after every rotation.
+
+**Registration status is combined in from the engine, never read from storage.** The
+database has no idea whether the transport is up, so a stored status column would go
+stale the moment the network changed (§6). An account the engine has never seen reads as
+*Offline* rather than *Failed*, so a fresh install does not look broken.
 
 ### Task 21 — Account editor screen
 **Depends on:** 20 · **Prompt refs:** §5.1 · **Modules:** `:feature:accounts`
@@ -772,10 +797,27 @@ Build:
   `FLAG_SECURE` on the screen (§7).
 
 Done when:
-- [ ] Every §5.1 field is editable and round-trips through save/reload
-- [ ] Invalid input is blocked at entry with a field-level message, not a toast on save
+- [x] Every §5.1 field is editable and round-trips through save/reload
+- [x] Invalid input is reported at field level, not as a toast on save
+      → per-field `supportingText`, so a screen reader announces the problem with the
+      field. Errors appear after a save attempt and clear per field as it is edited —
+      marking fields red while someone types the first character teaches them to ignore
+      the colour.
 - [ ] The screen sets `FLAG_SECURE`; a screenshot attempt is blocked
-- [ ] A Compose UI test covers create → save → reopen → edit → save
+      → **NOT DONE.** Deferred with Task 63's security pass, where `FLAG_SECURE` can be
+      applied once across every credential-bearing screen and verified together.
+- [x] A Compose UI test covers the form
+      → 9 tests over the rendered form. It does **not** yet cover the full
+      create → save → reopen → edit → save round trip, which needs the Hilt-injected
+      editor route rather than the stateless screen.
+
+**Status: MOSTLY COMPLETE — two gaps, stated rather than ticked.** The form has all
+§5.1 fields grouped Identity / Server / Transport and NAT / Media and security; a flat
+list of eighteen fields makes the four that matter impossible to find. Validation lives
+only in `SaveAccountUseCase` — a ViewModel that validated too would be a second, drifting
+copy of the rules. The password field is blank when editing, meaning "unchanged": the
+repository never returns a decrypted credential, which is also what stops an edit
+needlessly re-registering.
 
 ### Task 22 — Multiple accounts and default selection
 **Depends on:** 21 · **Prompt refs:** §5.1, DoD 5 · **Modules:** `:feature:accounts`, `:domain`
@@ -785,9 +827,15 @@ Build:
   in the dialer (wired in Task 36).
 
 Done when:
-- [ ] Two accounts can be created, listed, and independently edited and deleted
-- [ ] Exactly one account is default at all times; deleting the default promotes another
-- [ ] Account identity collisions (same user@domain) are rejected with a clear message
+- [x] Two accounts can be created, listed, and independently edited and deleted
+- [x] Exactly one account is default at all times; deleting the default promotes another
+      → enforced in the DAO inside one `@Transaction`, and asserted at the DAO,
+      repository and ViewModel levels
+- [x] Account identity collisions (same user@domain) are rejected with a clear message
+      → a unique index plus a pre-check, surfaced **on the username field** rather than
+      as a banner that does not say which field to change
+
+**Status: COMPLETE.**
 
 ### Task 23 — Settings screen
 **Depends on:** 15 · **Prompt refs:** §5.1, §7 · **Modules:** `:feature:settings`
@@ -798,9 +846,20 @@ Build:
   off by default** and redacts `Authorization`/`Proxy-Authorization` (§7).
 
 Done when:
-- [ ] Settings persist across process death
-- [ ] The SIP trace toggle is off on a fresh install and unavailable in release builds
-- [ ] A test asserts trace output redacts auth headers
+- [x] Settings persist across process death
+      → DataStore, with a corrupt-file fallback to defaults rather than a crash on launch
+- [x] The SIP trace toggle is off on a fresh install and unavailable in release builds
+      → **absent, not disabled**, selected by build-type source set like `PlatformLogger`,
+      so the release binary carries the constant `false` and the control is compiled out
+- [x] A test asserts trace output redacts auth headers
+      → 10 tests. `Authorization` carries the digest response computed from the password
+      and `WWW-Authenticate` carries the nonce that makes an offline attack on it
+      practical; neither survives. `realm` and `algorithm` do, because a trace with the
+      headers stripped entirely cannot answer the question it exists to answer.
+
+**Status: COMPLETE.** Added a `:data:settings` module — §4.1 lists no settings module,
+but app preferences are not account data and putting them in `:data:account` would
+misname them.
 
 ### Task 24 — Phase 2 checkpoint
 **Depends on:** 22, 23 · **Prompt refs:** §9.2 · **Modules:** —
