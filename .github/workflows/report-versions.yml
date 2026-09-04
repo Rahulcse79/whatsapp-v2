@@ -10,6 +10,10 @@ name: Report dependency versions
 on:
   workflow_dispatch:
     inputs:
+      repository:
+        description: "Extra Maven repository base URL to search (optional)"
+        required: false
+        default: ""
       coordinates:
         description: "Space- or comma-separated group:artifact list"
         required: false
@@ -51,7 +55,14 @@ jobs:
             local coord="$1" group artifact path repo url meta
             group="${coord%%:*}"; artifact="${coord##*:}"
             path="${group//.//}/${artifact}"
-            for repo in "https://repo1.maven.org/maven2" "https://dl.google.com/dl/android/maven2"; do
+            local repos="https://repo1.maven.org/maven2 https://dl.google.com/dl/android/maven2"
+            if [ -n "${{ inputs.repository }}" ]; then
+              # Searched first: a private repository is the reason this input exists, so a
+              # coordinate that lives only there should not report NOT FOUND.
+              repos="${{ inputs.repository }} $repos"
+            fi
+
+            for repo in $repos; do
               url="${repo}/${path}/maven-metadata.xml"
               meta=$(curl -sS --fail --max-time 20 "$url" 2>/dev/null) || continue
               local release stable
@@ -61,8 +72,7 @@ jobs:
                 | grep -oE '<version>[^<]+</version>' | sed 's/<[^>]*>//g' \
                 | grep -viE 'alpha|beta|rc|dev|snapshot|eap|-M[0-9]' | tail -1)
               printf '%-58s stable=%-18s release=%-18s (%s)\n' \
-                "$coord" "${stable:-none}" "${release:-none}" \
-                "$([ "${repo}" = "https://repo1.maven.org/maven2" ] && echo central || echo google)"
+                "$coord" "${stable:-none}" "${release:-none}" "$repo"
               return 0
             done
             printf '%-58s NOT FOUND in Maven Central or Google Maven\n' "$coord"
