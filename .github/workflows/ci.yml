@@ -215,6 +215,7 @@ jobs:
               "com/whatsappv2/domain/model": 95,
               "com/whatsappv2/domain/validation": 95,
               "com/whatsappv2/domain/call": 95,
+              "com/whatsappv2/domain/engine": 95,
               "com/whatsappv2/core/common/secret": 100,
           }
 
