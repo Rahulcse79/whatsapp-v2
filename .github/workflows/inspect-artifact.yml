@@ -1,0 +1,76 @@
+# Dumps the real API of a published artifact with javap.
+#
+# Replaces the AGP-specific inspector with something general. Guessing at a library's API
+# has cost this project several CI round trips - CommonExtension's arity, hiltViewModel's
+# package, and now liblinphone's version accessor. Looking is cheaper than guessing twice.
+name: Inspect artifact API
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: "Maven repository base URL"
+        required: true
+        default: "https://download.linphone.org/maven_repository"
+      coordinate:
+        description: "group:artifact:version"
+        required: true
+        default: "org.linphone:linphone-sdk-android:5.5.18"
+      packaging:
+        description: "jar or aar"
+        required: false
+        default: "aar"
+      classes:
+        description: "Space-separated FQCNs to dump"
+        required: false
+        default: "org.linphone.core.Factory"
+      grep:
+        description: "Only show members matching this (case-insensitive); blank for all"
+        required: false
+        default: "version"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Download and unpack
+        run: |
+          IFS=':' read -r GROUP ARTIFACT VERSION <<< "${{ inputs.coordinate }}"
+          PATH_PART="${GROUP//.//}/$ARTIFACT/$VERSION"
+          URL="${{ inputs.repository }}/$PATH_PART/$ARTIFACT-$VERSION.${{ inputs.packaging }}"
+          echo "fetching $URL"
+          curl -sS --fail -o artifact.bin "$URL"
+          ls -la artifact.bin
+
+          mkdir -p unpacked && cd unpacked
+          unzip -q -o ../artifact.bin
+          # An AAR wraps its bytecode in classes.jar.
+          if [ -f classes.jar ]; then
+            echo "aar: extracting classes.jar"
+            mkdir -p classes && cd classes && unzip -q -o ../classes.jar
+          fi
+          find . -name "*.class" | wc -l
+
+      - name: Dump the requested classes
+        run: |
+          CP=$(find unpacked -name "classes.jar" | head -1)
+          [ -z "$CP" ] && CP="unpacked"
+          echo "classpath: $CP"
+
+          for class in ${{ inputs.classes }}; do
+            echo "::group::$class"
+            if [ -n "${{ inputs.grep }}" ]; then
+              javap -cp "$CP" "$class" 2>&1 | grep -i "${{ inputs.grep }}" || echo "  (no member matching '${{ inputs.grep }}')"
+            else
+              javap -cp "$CP" "$class" 2>&1 | head -120
+            fi
+            echo "::endgroup::"
+          done
