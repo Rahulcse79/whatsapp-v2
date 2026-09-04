@@ -1,0 +1,79 @@
+# Resolves the latest published version of arbitrary Maven coordinates against
+# Maven Central and Google Maven.
+#
+# Why this exists: pinning dependency versions from memory produced badly stale
+# values in Task 2 (Gradle 8.13 vs the real 9.7.1, AGP 8.9.0 vs 9.4.0). The prompt's
+# own rule is "verified facts only" (§13) — so every pin in gradle/libs.versions.toml
+# comes from this report, and this workflow is how it is obtained.
+name: Report dependency versions
+
+on:
+  workflow_dispatch:
+    inputs:
+      coordinates:
+        description: "Space- or comma-separated group:artifact list"
+        required: false
+        default: >-
+          com.google.devtools.ksp:symbol-processing-gradle-plugin
+          io.gitlab.arturbosch.detekt:detekt-gradle-plugin
+          org.jlleitschuh.gradle:ktlint-gradle
+          com.pinterest.ktlint:ktlint-cli
+          com.google.dagger:hilt-android
+          com.google.dagger:hilt-android-gradle-plugin
+          org.jetbrains.kotlinx:kotlinx-coroutines-android
+          androidx.compose:compose-bom
+          androidx.core:core-ktx
+          androidx.activity:activity-compose
+          androidx.lifecycle:lifecycle-runtime-ktx
+          androidx.navigation:navigation-compose
+          androidx.room:room-runtime
+          androidx.datastore:datastore-preferences
+          androidx.paging:paging-runtime-ktx
+          androidx.security:security-crypto
+          androidx.work:work-runtime-ktx
+          androidx.hilt:hilt-navigation-compose
+          app.cash.turbine:turbine
+          com.android.tools:desugar_jdk_libs
+          com.squareup.leakcanary:leakcanary-android
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    name: Resolve latest versions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve
+        shell: bash
+        run: |
+          resolve() {
+            local coord="$1" group artifact path repo url meta
+            group="${coord%%:*}"; artifact="${coord##*:}"
+            path="${group//.//}/${artifact}"
+            for repo in "https://repo1.maven.org/maven2" "https://dl.google.com/dl/android/maven2"; do
+              url="${repo}/${path}/maven-metadata.xml"
+              meta=$(curl -sS --fail --max-time 20 "$url" 2>/dev/null) || continue
+              local release stable
+              release=$(printf '%s' "$meta" | grep -oE '<release>[^<]+</release>' | sed 's/<[^>]*>//g' | tail -1)
+              # Latest version with no alpha/beta/rc/dev/snapshot qualifier.
+              stable=$(printf '%s' "$meta" \
+                | grep -oE '<version>[^<]+</version>' | sed 's/<[^>]*>//g' \
+                | grep -viE 'alpha|beta|rc|dev|snapshot|eap|-M[0-9]' | tail -1)
+              printf '%-58s stable=%-18s release=%-18s (%s)\n' \
+                "$coord" "${stable:-none}" "${release:-none}" \
+                "$([ "${repo}" = "https://repo1.maven.org/maven2" ] && echo central || echo google)"
+              return 0
+            done
+            printf '%-58s NOT FOUND in Maven Central or Google Maven\n' "$coord"
+          }
+
+          echo "::group::Latest published versions"
+          printf '%s' "${{ inputs.coordinates }}" | tr ', ' '\n\n' | grep -v '^$' | while read -r c; do
+            resolve "$c"
+          done
+          echo "::endgroup::"
+
+          echo "::group::Gradle"
+          curl -sS https://services.gradle.org/versions/current | tr ',' '\n' | grep '"version"' || true
+          echo "::endgroup::"
