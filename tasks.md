@@ -454,8 +454,39 @@ Build:
   6. ViewModels expose `StateFlow`, never mutable state.
 
 Done when:
-- [ ] Each rule has a deliberately-violating fixture proving the rule actually fires
-- [ ] The rules run in CI as part of `./gradlew check`
+- [x] Each rule has a deliberately-violating fixture proving the rule actually fires
+      → six fixtures under `src/test/resources` (never compiled, so free to break every
+      rule). `RulesActuallyFireTest` runs the same rule functions against them and
+      requires violations. **This immediately caught rules 1 and 3 not firing at all.**
+- [x] The rules run in the build
+      → `./gradlew :test:arch:test`, wired into CI as its own step, so a violation fails
+      locally as well as in CI
+
+**Status: COMPLETE.** CI run 33868933698 — all 20 gates green.
+
+Each rule is a pure function from a file list to violations, so the same code runs
+twice: against the real project (must find none) and against the fixtures (must find
+some). That second half is the whole point — a rule with a typo in its predicate passes
+on every real project forever, reading like protection while providing none, and
+stopping anyone from looking.
+
+**Konsist was tried first and reverted**, and the reasoning is recorded in the file.
+It failed on its first run, and diagnosing it surfaced two problems rather than one:
+the injected repository-root property never reached the test JVM, and scoping from the
+repo root would have scanned `build/` output *and this module's own fixtures* — which
+break every rule by design, so the suite could never have passed. Fixing that needed
+scope-filtering API that could not be verified without another round trip. The rules
+needed here are "does this file import X" and "does this file contain construct Y";
+reading the file answers both exactly.
+
+The false positives that motivated a parser are handled directly: **imports are matched
+only at column 0**, where every real Kotlin import is (a KDoc line mentioning
+`org.linphone` fired under grep), and comments are stripped before any text rule runs,
+so `Thread(` in prose is inert.
+
+Two tests guard the scope itself — fixtures must be excluded from the project scope,
+and build output must be excluded. Either leaking would make the whole suite
+meaningless, and the second would be invisible.
 
 ### Task 13 — CI pipeline
 **Depends on:** 12 · **Prompt refs:** §9.1, §8 · **Modules:** `.github/workflows` (or equivalent)
