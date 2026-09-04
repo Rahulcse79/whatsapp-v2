@@ -267,6 +267,45 @@ jobs:
           sys.exit(1 if failed else 0)
           PY
 
+      # ---------------------------------------------------------------- APK
+      # Every push produces a downloadable, installable debug APK. Debug, not release:
+      # a release build needs a signing keystore, and keystores are not something CI
+      # should hold or this repo should carry.
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Report APK size
+        run: |
+          APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
+          if [ -z "$APK" ]; then
+            echo "::error::No APK was produced."
+            exit 1
+          fi
+          echo "APK: $APK"
+          echo "Size: $(du -h "$APK" | cut -f1)"
+          {
+            echo "### Debug APK"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| File | \`$(basename "$APK")\` |"
+            echo "| Size | $(du -h "$APK" | cut -f1) |"
+            echo "| Commit | \`${GITHUB_SHA:0:7}\` |"
+            echo ""
+            echo "Download it from the **Artifacts** section at the bottom of this run."
+            echo ""
+            echo "> Installs and launches, but shows a blank screen: the design system"
+            echo "> and navigation arrive in Tasks 14-15."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v5
+        with:
+          name: whatsapp-v2-debug-${{ github.sha }}
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Upload build reports
         if: failure()
         uses: actions/upload-artifact@v5
