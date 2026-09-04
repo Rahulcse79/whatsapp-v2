@@ -37,14 +37,6 @@ class AndroidLibraryConventionPlugin : Plugin<Project> {
                 targetCompatibility = javaTarget
                 isCoreLibraryDesugaringEnabled = true
             }
-
-            // AGP registers src/<name>/java for every source set but only src/main/kotlin.
-            // Variant-specific Kotlin (src/debug, src/release) is therefore invisible
-            // unless registered here. The Kotlin compiler picks up .kt files from the
-            // java source dirs, so this needs no Kotlin-specific DSL.
-            sourceSets.configureEach {
-                java.srcDir("src/$name/kotlin")
-            }
         }
 
         configureAndroidCommon()
