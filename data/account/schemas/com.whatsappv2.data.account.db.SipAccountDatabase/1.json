@@ -1,0 +1,186 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "906670b073d7dab9cf020a330ef42c4a",
+    "entities": [
+      {
+        "tableName": "sip_accounts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `label` TEXT NOT NULL, `username` TEXT NOT NULL, `extension` TEXT, `auth_username` TEXT, `password_ciphertext` TEXT NOT NULL, `display_name` TEXT, `domain` TEXT NOT NULL, `registrar` TEXT, `outbound_proxy` TEXT, `port` INTEGER, `transport` TEXT NOT NULL, `registration_expiry_seconds` INTEGER NOT NULL, `stun_server` TEXT, `turn_server` TEXT, `turn_username` TEXT, `turn_password_ciphertext` TEXT, `ice_enabled` INTEGER NOT NULL, `stun_enabled` INTEGER NOT NULL, `keepalive_interval_seconds` INTEGER NOT NULL, `srtp_policy` TEXT NOT NULL, `audio_codecs` TEXT NOT NULL, `video_codecs` TEXT NOT NULL, `is_default` INTEGER NOT NULL, `created_at_epoch_millis` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "label",
+            "columnName": "label",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "username",
+            "columnName": "username",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "extension",
+            "columnName": "extension",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "authUsername",
+            "columnName": "auth_username",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "passwordCiphertext",
+            "columnName": "password_ciphertext",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "display_name",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "domain",
+            "columnName": "domain",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "registrar",
+            "columnName": "registrar",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "outboundProxy",
+            "columnName": "outbound_proxy",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "port",
+            "columnName": "port",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "transport",
+            "columnName": "transport",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "registrationExpirySeconds",
+            "columnName": "registration_expiry_seconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stunServer",
+            "columnName": "stun_server",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "turnServer",
+            "columnName": "turn_server",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "turnUsername",
+            "columnName": "turn_username",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "turnPasswordCiphertext",
+            "columnName": "turn_password_ciphertext",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "iceEnabled",
+            "columnName": "ice_enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stunEnabled",
+            "columnName": "stun_enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "keepaliveIntervalSeconds",
+            "columnName": "keepalive_interval_seconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "srtpPolicy",
+            "columnName": "srtp_policy",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "audioCodecs",
+            "columnName": "audio_codecs",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "videoCodecs",
+            "columnName": "video_codecs",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isDefault",
+            "columnName": "is_default",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMillis",
+            "columnName": "created_at_epoch_millis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sip_accounts_username_domain",
+            "unique": true,
+            "columnNames": [
+              "username",
+              "domain"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sip_accounts_username_domain` ON `${TABLE_NAME}` (`username`, `domain`)"
+          },
+          {
+            "name": "index_sip_accounts_is_default",
+            "unique": false,
+            "columnNames": [
+              "is_default"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sip_accounts_is_default` ON `${TABLE_NAME}` (`is_default`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '906670b073d7dab9cf020a330ef42c4a')"
+    ]
+  }
+}

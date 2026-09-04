@@ -330,17 +330,22 @@ jobs:
             echo "::error::No Room schema was exported - schema export is not working."
             exit 1
           fi
-          if ! git diff --quiet -- '**/schemas'; then
+          # ':(glob)' magic is required - a plain '**/schemas' pathspec matches nothing
+          # in git, so these checks passed vacuously on their first run.
+          if ! git diff --quiet -- ':(glob)**/schemas/**'; then
             echo "::error::The exported Room schema differs from the committed one."
             echo "Commit the regenerated schema - Room needs it to verify migrations."
-            git diff --stat -- '**/schemas'
+            git diff --stat -- ':(glob)**/schemas/**'
             exit 1
           fi
-          if [ -n "$(git ls-files --others --exclude-standard -- '**/schemas')" ]; then
+          untracked=$(git ls-files --others --exclude-standard -- ':(glob)**/schemas/**')
+          if [ -n "$untracked" ]; then
             echo "::error::An exported Room schema is not tracked by git:"
-            git ls-files --others --exclude-standard -- '**/schemas'
+            echo "$untracked"
             exit 1
           fi
+          echo "tracked schemas:"
+          git ls-files -- ':(glob)**/schemas/**' | sed 's/^/  /'
           echo "OK - the committed schema matches what the build exported."
 
       - name: Publish the exported Room schema
