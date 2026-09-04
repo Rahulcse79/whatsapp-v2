@@ -302,3 +302,84 @@ class DeleteAccountUseCaseTest {
         assertEquals(listOf(account.id), repository.deletedIds)
     }
 }
+
+class UseCaseErrorMappingTest {
+
+    /**
+     * Every repository error maps to something the UI can act on.
+     *
+     * Asserted exhaustively rather than for the two cases that happen to occur: an
+     * unmapped error would surface as a generic failure exactly when a user most needs to
+     * be told what to do.
+     */
+    @Test
+    fun `save maps every repository error`() = runTest {
+        val repository = FakeSipAccountRepository()
+        val engine = FakeSipEngine()
+        val save = SaveAccountUseCase(repository, engine)
+
+        val valid = SipAccountDraft(
+            id = AccountId("acct-1"),
+            label = "Work",
+            username = "alice",
+            password = Secret("pw"),
+            domain = "sip.example.com",
+        )
+
+        val cases = listOf(
+            AccountRepositoryError.CryptoFailure("boom") to "boom",
+            AccountRepositoryError.StorageFailure("disk full") to "disk full",
+            AccountRepositoryError.NotFound to "account disappeared while saving",
+        )
+
+        for ((repositoryError, expectedDetail) in cases) {
+            repository.nextFailure = repositoryError
+            val error = assertIs<SaveAccountError.Failed>(save(valid).errorOrNull())
+            assertEquals(expectedDetail, error.detail, "for $repositoryError")
+        }
+    }
+
+    @Test
+    fun `delete maps every repository error`() = runTest {
+        val repository = FakeSipAccountRepository()
+        val engine = FakeSipEngine()
+        val delete = DeleteAccountUseCase(repository, engine, engine)
+
+        val account = SipAccount(
+            id = AccountId("acct-1"),
+            label = "Work",
+            username = "alice",
+            extension = null,
+            authUsername = null,
+            password = Secret("pw"),
+            displayName = null,
+            domain = "sip.example.com",
+            registrar = null,
+            outboundProxy = null,
+            port = null,
+            transport = Transport.UDP,
+            registrationExpirySeconds = 3_600,
+            stunServer = null,
+            turn = null,
+            natPolicy = NatPolicy.DEFAULT,
+            srtpPolicy = SrtpPolicy.OPTIONAL,
+            codecs = CodecPreferences.DEFAULT,
+            isDefault = true,
+        )
+
+        val cases = listOf(
+            AccountRepositoryError.CryptoFailure("boom"),
+            AccountRepositoryError.CredentialsUnrecoverable,
+            AccountRepositoryError.DuplicateIdentity("alice", "sip.example.com"),
+        )
+
+        for (repositoryError in cases) {
+            repository.given(account)
+            repository.nextFailure = repositoryError
+            assertIs<DeleteAccountError.Failed>(
+                delete(AccountId("acct-1")).errorOrNull(),
+                "for $repositoryError",
+            )
+        }
+    }
+}
