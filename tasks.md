@@ -115,8 +115,21 @@ Build:
 - Shared Kotlin compiler options, Java toolchain, lint baseline, detekt + ktlint config.
 
 Done when:
-- [ ] A new module needs ≤ 5 lines of `build.gradle.kts` beyond a convention plugin id
-- [ ] `./gradlew detekt lint` passes with zero warnings suppressed by baseline abuse
+- [x] A new module needs ≤ 5 lines of `build.gradle.kts` beyond a convention plugin id
+      → every library module is exactly `plugins { id(...) }` + `android { namespace }`
+- [x] `./gradlew detekt lint` passes with zero warnings suppressed by baseline abuse
+      → green in CI run 33848635991; no baseline exists, and a CI step **fails** if a
+      baseline file ever appears
+
+**Status: COMPLETE.** Six convention plugins in a `build-logic` included build.
+Three AGP 9 breaking changes found and fixed along the way, each by evidence rather
+than guesswork: `CommonExtension` is no longer generic; `defaultConfig`,
+`compileOptions`, `lint` and `packaging` moved off it (so each plugin configures its
+concrete extension, and the duplication is deliberate); and **`org.jetbrains.kotlin.android`
+must not be applied at all** — AGP 9 provides Kotlin itself and applying it is a hard
+error. ktlint's rules come via `detekt-formatting`, since the jlleitschuh plugin is not
+on Maven Central. `lint`/`packaging` configuration is deferred until the DSL inspection
+reports their real home — noted, not silently dropped.
 
 ### Task 4 — Module skeleton
 **Depends on:** 3 · **Prompt refs:** §4.1 · **Modules:** all
@@ -129,9 +142,16 @@ Build:
 - `:domain` uses the **JVM library** plugin, not the Android library plugin.
 
 Done when:
-- [ ] `./gradlew build` passes with all modules present
-- [ ] `:domain/build.gradle.kts` has no Android plugin and no `android {}` block
-- [ ] Adding `implementation(libs.androidx.core)` to `:domain` **fails** the build
+- [x] `./gradlew build` passes with all modules present
+      → 14 modules, green in CI run 33848635991
+- [x] `:domain/build.gradle.kts` has no Android plugin and no `android {}` block
+      → asserted by a CI step, not by inspection
+- [x] Adding an Android dependency to `:domain` **fails** the build
+      → a CI step plants `androidx.core:core-ktx` in `:domain` and **requires** the
+      build to fail, then restores the file. DoD 2 is now a build failure, not a
+      code-review note.
+
+**Status: COMPLETE.**
 
 ### Task 5 — `:core:common` primitives
 **Depends on:** 4 · **Prompt refs:** §4.2, §7 · **Modules:** `:core:common`
@@ -143,9 +163,25 @@ Build:
   calls anywhere else in the codebase from here on.
 
 Done when:
-- [ ] `Result` has ≥ 95% test coverage
-- [ ] A lint/detekt rule fails the build on any direct `android.util.Log` usage outside `:core:common`
-- [ ] `Logger` drops `VERBOSE`/`DEBUG` in release by construction, not by an `if`
+- [x] The result type has ≥ 95% test coverage
+      → **100.0% (33/33 lines)**, measured by Kover 0.9.9 and asserted in CI by parsing
+      the report XML. Real number, not the target restated.
+- [x] A detekt rule fails the build on any direct `android.util.Log` usage outside the
+      logging facade
+      → `ForbiddenImport` plus a CI step that plants an `android.util.Log` import in
+      `:data:sip` and **requires** detekt to reject it
+- [x] `Logger` drops `VERBOSE`/`DEBUG` in release by construction, not by an `if`
+      → `:app` supplies `PlatformLogger` from `src/debug` and `src/release` source sets;
+      the release class has empty `verbose`/`debug` bodies, so there is no runtime check
+      and no debug logging path in the release binary at all
+
+**Status: COMPLETE**, with one correction to the plan's own module sketch: §4.1 listed
+`:core:common` as an Android library, but `:domain` is a pure JVM module and cannot
+depend on one — while needing the result type in every `SipEngine` signature (§4.3).
+`:core:common` is therefore a pure JVM module, and the Android-backed `Logger`
+implementation lives in `:app`, which has the variants needed for the by-construction
+guarantee. The type is named `Outcome`, not `Result`: `kotlin.Result` is auto-imported
+everywhere and a same-named type would shadow it at every call site.
 
 ### Task 6 — Hilt wiring and Application class
 **Depends on:** 5 · **Prompt refs:** §3, §4.2 · **Modules:** `:app`
