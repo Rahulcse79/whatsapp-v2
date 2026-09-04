@@ -193,6 +193,8 @@ sealed interface SipError {
      * The operation is not valid in the call's current state — resuming a call that is
      * not held, for instance. Surfaced rather than swallowed, because it means the UI
      * offered an action it should not have.
+     *
+     * Raised locally: no SIP response maps to this.
      */
     data class InvalidState(val detail: String) : SipError
 
