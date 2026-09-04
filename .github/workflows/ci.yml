@@ -210,7 +210,10 @@ jobs:
           import glob, sys, xml.etree.ElementTree as ET
 
           # package path -> minimum line coverage percent
-          THRESHOLDS = {"com/whatsappv2/core/common/result": 95}
+          THRESHOLDS = {
+              "com/whatsappv2/core/common/result": 95,
+              "com/whatsappv2/domain/model": 95,
+          }
 
           reports = glob.glob("**/build/reports/kover/report.xml", recursive=True)
           if not reports:

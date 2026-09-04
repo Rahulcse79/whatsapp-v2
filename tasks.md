@@ -229,9 +229,30 @@ Build:
 - Value classes / sealed types — no `String` typing for identifiers.
 
 Done when:
-- [ ] `SipUri.parse` has table-driven tests covering valid, invalid, IPv6-literal,
+- [x] `SipUri.parse` has table-driven tests covering valid, invalid, IPv6-literal,
       port-bearing, and parameter-bearing inputs
-- [ ] Constructing an invalid `SipUri` is impossible (parse returns `Result`, no public ctor)
+      → 11 accepted shapes and 21 rejection cases, each asserting the **specific**
+      error so a regression cannot pass by failing for the wrong reason
+- [x] Constructing an invalid `SipUri` is impossible (parse returns `Outcome`, no public ctor)
+      → private constructor; `parse` is the only entry point
+
+**Status: COMPLETE.** `domain/model` at **98.6% line coverage** (218/221), now gated
+at 95% in CI. CI run 33854681250.
+
+The tests earned their keep — they caught two real parser bugs:
+- A malformed IPv4 address **parsed successfully as a hostname**, because all-numeric
+  labels match the label regex. `1.2.3.256`, `01.2.3.4` and even `5060` were accepted
+  as DNS names and would have failed much later at resolution time, with an error
+  pointing nowhere near the cause. RFC 1123 forbids an all-numeric top label for
+  exactly this reason.
+- A trailing `;` was accepted, because "no parameter section" and "a `;` followed by
+  nothing" were both represented as an empty string.
+
+Design notes: `SipUri.toString()` is **redacted** and `render()` gives the wire form —
+the user part is a phone number, and an explicit call is much harder to do by accident
+than a string template (§7, DoD 12). A bare `alice@example.com` is rejected rather than
+defaulted, because guessing a scheme is how a `sips` account silently becomes an
+unencrypted `sip` one.
 
 ### Task 8 — `SipAccount` entity and validation rules
 **Depends on:** 7 · **Prompt refs:** §5.1 · **Modules:** `:domain`
