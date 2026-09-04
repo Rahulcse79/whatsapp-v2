@@ -257,6 +257,7 @@ jobs:
               "com/whatsappv2/data/account/db": 85,
               "com/whatsappv2/data/account": 80,
               "com/whatsappv2/data/account/mapper": 80,
+              "com/whatsappv2/data/sip": 90,
           }
 
           reports = glob.glob("**/build/reports/kover/report.xml", recursive=True)
