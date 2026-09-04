@@ -355,9 +355,43 @@ Build:
 - Full KDoc on every member: threading, cancellation, and emission guarantees.
 
 Done when:
-- [ ] The interface exposes only domain types — no SDK types in any signature
-- [ ] Every `SipError` case documents which SIP responses map to it
-- [ ] The interface compiles in `:domain` with zero Android imports
+- [x] The interface exposes only domain types — no SDK types in any signature
+      → verified by grep; the only `org.linphone` / `org.pjsip` text in `:domain` is
+      the KDoc line stating the prohibition. Task 12's architecture test enforces it.
+- [x] Every `SipError` case documents which SIP responses map to it
+      → all **20** cases, verified by a script. The seven raised locally say so
+      explicitly ("Raised locally: no SIP response maps to this") rather than leaving
+      the absence looking like an omission.
+- [x] The interface compiles in `:domain` with zero Android imports
+      → verified by grep and by the CI architecture assertion
+
+**Status: COMPLETE.** `domain/engine` at **97.5%**, gated. CI run 33858129761.
+
+`SipEngine` is composed from **four segregated roles** — `SipRegistrar`,
+`SipCallController`, `SipMediaController`, `SipConferenceController` — rather than one
+flat 20-method type. §4.3 asks for a single entry point and SOLID asks for interface
+segregation; composing gives both. detekt caught `SipCallController` at exactly 11
+functions, and the fix was a further split (device controls are not call lifecycle),
+not a threshold bump.
+
+The KDoc states the contract, because none of it is inferable from signatures:
+- `suspend` functions are main-safe; flows emit on an unspecified dispatcher.
+- **Cancelling a call abandons the result, not the SIP transaction** — a cancelled
+  `placeCall` may still have put an INVITE on the wire, and the call must still
+  surface through `activeCalls`.
+- Errors are values: a dropped registration is an expected outcome of a mobile
+  network, and a caller that can forget a `catch` will.
+- `incomingCalls` is a `Flow`, **not** a `StateFlow`, deliberately: ringing must be
+  handled exactly once, and a replaying stream would re-ring an answered call after
+  any re-collection, such as a configuration change.
+
+`SipError` maps every response in **one** place, so 486 cannot mean "busy" on one
+screen and "unavailable" on another. `Busy` and `Declined` stay distinct (different
+messages); 503 preserves `Retry-After` so the server's backoff is honoured rather than
+replaced (§2.1); `MediaNegotiationFailed` carries `encryptionRequired` so an
+SRTP-mandatory refusal is distinguishable from a codec mismatch (DoD 13).
+`toRegistrationFailure()` completes the mapping Task 7 deferred, and
+`toHangupReason()` means a call log entry and an on-screen error cannot disagree.
 
 ### Task 11 — `FakeSipEngine`
 **Depends on:** 10 · **Prompt refs:** §4.3, §8, DoD 4 · **Modules:** `:domain` (`testFixtures`)
