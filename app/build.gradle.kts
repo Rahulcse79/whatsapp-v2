@@ -11,3 +11,7 @@ android {
         versionName = "0.1.0"
     }
 }
+
+dependencies {
+    implementation(project(":core:common"))
+}

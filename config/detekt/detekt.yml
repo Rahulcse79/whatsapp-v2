@@ -35,6 +35,20 @@ style:
         value: "FIXME:"
       - reason: "Reference a task number, e.g. TODO(Task 12)."
         value: "STOPSHIP:"
+  ForbiddenImport:
+    active: true
+    # :app supplies the Android-backed Logger implementation, so it is the one place
+    # besides the facade itself that may touch the platform logger.
+    excludes: ['**/app/src/debug/**', '**/app/src/release/**']
+    imports:
+      - value: 'android.util.Log'
+        reason: >-
+          Use the Logger facade in :core:common. Release builds must not emit SIP
+          messages, credentials, phone numbers or contact data (§7, DoD 12).
+      - value: 'java.util.logging.**'
+        reason: 'Use the Logger facade in :core:common.'
+      - value: 'kotlin.io.println'
+        reason: 'Use the Logger facade in :core:common.'
   ReturnCount:
     max: 3
     excludeGuardClauses: true

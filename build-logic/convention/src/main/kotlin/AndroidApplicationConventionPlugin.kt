@@ -1,6 +1,7 @@
 import com.android.build.api.dsl.ApplicationExtension
-import com.whatsappv2.buildlogic.configureAndroid
+import com.whatsappv2.buildlogic.configureAndroidCommon
 import com.whatsappv2.buildlogic.intVersion
+import com.whatsappv2.buildlogic.javaVersionOf
 import com.whatsappv2.buildlogic.libs
 import org.gradle.api.Plugin
 import org.gradle.api.Project
@@ -13,9 +14,24 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
         pluginManager.apply("org.jetbrains.kotlin.android")
         pluginManager.apply("whatsappv2.detekt")
 
+        val javaTarget = javaVersionOf(libs.intVersion("jvmToolchain"))
+
         extensions.configure<ApplicationExtension> {
-            configureAndroid(this)
-            defaultConfig.targetSdk = libs.intVersion("targetSdk")
+            compileSdk = libs.intVersion("compileSdk")
+
+            defaultConfig {
+                minSdk = libs.intVersion("minSdk")
+                targetSdk = libs.intVersion("targetSdk")
+            }
+
+            compileOptions {
+                sourceCompatibility = javaTarget
+                targetCompatibility = javaTarget
+                // Lets minSdk 26 use modern java.time and stream APIs.
+                isCoreLibraryDesugaringEnabled = true
+            }
         }
+
+        configureAndroidCommon()
     }
 }

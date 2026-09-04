@@ -1,6 +1,8 @@
 import com.whatsappv2.buildlogic.configureKotlin
+import com.whatsappv2.buildlogic.libs
 import org.gradle.api.Plugin
 import org.gradle.api.Project
+import org.gradle.kotlin.dsl.dependencies
 
 /**
  * Applied by `:domain` only.
@@ -17,5 +19,12 @@ class JvmLibraryConventionPlugin : Plugin<Project> {
         pluginManager.apply("whatsappv2.detekt")
 
         configureKotlin()
+
+        // Declared here, not per module, so a module's build file stays at the
+        // five-line budget (Task 3 done-when #1).
+        dependencies {
+            add("testImplementation", libs.findLibrary("kotlin-test").get())
+            add("testImplementation", libs.findLibrary("kotlinx-coroutines-test").get())
+        }
     }
 }
