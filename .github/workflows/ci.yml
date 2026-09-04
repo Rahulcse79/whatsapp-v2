@@ -321,6 +321,37 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      # Room exports the schema during the build. It must be COMMITTED: Room compares
+      # against the committed copy to verify a migration, so an uncommitted schema change
+      # ships as silent data loss instead of a build failure.
+      - name: Assert the exported Room schema is committed
+        run: |
+          if [ -z "$(find . -path '*/schemas/*.json' -print -quit)" ]; then
+            echo "::error::No Room schema was exported - schema export is not working."
+            exit 1
+          fi
+          if ! git diff --quiet -- '**/schemas'; then
+            echo "::error::The exported Room schema differs from the committed one."
+            echo "Commit the regenerated schema - Room needs it to verify migrations."
+            git diff --stat -- '**/schemas'
+            exit 1
+          fi
+          if [ -n "$(git ls-files --others --exclude-standard -- '**/schemas')" ]; then
+            echo "::error::An exported Room schema is not tracked by git:"
+            git ls-files --others --exclude-standard -- '**/schemas'
+            exit 1
+          fi
+          echo "OK - the committed schema matches what the build exported."
+
+      - name: Publish the exported Room schema
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: room-schemas-${{ github.sha }}
+          path: "**/schemas/**/*.json"
+          if-no-files-found: warn
+          retention-days: 7
+
       # ---------------------------------------------------------------- APK
       # Every push produces a downloadable, installable debug APK. Debug, not release:
       # a release build needs a signing keystore, and keystores are not something CI
