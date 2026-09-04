@@ -198,28 +198,35 @@ class AccountEditorViewModel @Inject constructor(
     )
 }
 
-/** The draft value a field maps to, so an edit can clear only that field's error. */
-internal fun AccountField.valueIn(draft: SipAccountDraft): Any? = when (this) {
-    AccountField.LABEL -> draft.label
-    AccountField.USERNAME -> draft.username
-    AccountField.EXTENSION -> draft.extension
-    AccountField.AUTH_USERNAME -> draft.authUsername
-    AccountField.PASSWORD -> draft.password
-    AccountField.DISPLAY_NAME -> draft.displayName
-    AccountField.DOMAIN -> draft.domain
-    AccountField.REGISTRAR -> draft.registrar
-    AccountField.OUTBOUND_PROXY -> draft.outboundProxy
-    AccountField.PORT -> draft.port
-    AccountField.TRANSPORT -> draft.transport
-    AccountField.REGISTRATION_EXPIRY -> draft.registrationExpirySeconds
-    AccountField.STUN_SERVER -> draft.stunServer
-    AccountField.TURN_SERVER -> draft.turnServer
-    AccountField.TURN_USERNAME -> draft.turnUsername
-    AccountField.TURN_PASSWORD -> draft.turnPassword
-    AccountField.KEEPALIVE_INTERVAL -> draft.keepaliveIntervalSeconds
-    AccountField.AUDIO_CODECS -> draft.audioCodecs
-    AccountField.VIDEO_CODECS -> draft.videoCodecs
-}
+/**
+ * The draft value each field maps to, so an edit can clear only that field's error.
+ *
+ * A map rather than a `when`: nineteen branches is a cyclomatic-complexity finding, and a
+ * lookup table says the same thing more directly — this is data, not control flow.
+ */
+private val FIELD_VALUES: Map<AccountField, (SipAccountDraft) -> Any?> = mapOf(
+    AccountField.LABEL to { it.label },
+    AccountField.USERNAME to { it.username },
+    AccountField.EXTENSION to { it.extension },
+    AccountField.AUTH_USERNAME to { it.authUsername },
+    AccountField.PASSWORD to { it.password },
+    AccountField.DISPLAY_NAME to { it.displayName },
+    AccountField.DOMAIN to { it.domain },
+    AccountField.REGISTRAR to { it.registrar },
+    AccountField.OUTBOUND_PROXY to { it.outboundProxy },
+    AccountField.PORT to { it.port },
+    AccountField.TRANSPORT to { it.transport },
+    AccountField.REGISTRATION_EXPIRY to { it.registrationExpirySeconds },
+    AccountField.STUN_SERVER to { it.stunServer },
+    AccountField.TURN_SERVER to { it.turnServer },
+    AccountField.TURN_USERNAME to { it.turnUsername },
+    AccountField.TURN_PASSWORD to { it.turnPassword },
+    AccountField.KEEPALIVE_INTERVAL to { it.keepaliveIntervalSeconds },
+    AccountField.AUDIO_CODECS to { it.audioCodecs },
+    AccountField.VIDEO_CODECS to { it.videoCodecs },
+)
+
+internal fun AccountField.valueIn(draft: SipAccountDraft): Any? = FIELD_VALUES[this]?.invoke(draft)
 
 /** Codec choices offered by the editor. */
 internal val ALL_AUDIO_CODECS: List<AudioCodec> = AudioCodec.entries

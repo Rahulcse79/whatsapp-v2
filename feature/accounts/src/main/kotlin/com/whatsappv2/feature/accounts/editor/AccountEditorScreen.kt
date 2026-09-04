@@ -80,90 +80,10 @@ fun AccountEditorScreen(
                 .padding(AppTheme.spacing.large),
             verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.medium),
         ) {
-            SectionHeader("Identity")
-            Field("Label", state.draft.label, state.errorFor(AccountField.LABEL)) { value ->
-                onDraftChange { it.copy(label = value) }
-            }
-            Field("Username", state.draft.username, state.errorFor(AccountField.USERNAME)) { value ->
-                onDraftChange { it.copy(username = value) }
-            }
-            Field("Extension", state.draft.extension, state.errorFor(AccountField.EXTENSION)) { value ->
-                onDraftChange { it.copy(extension = value) }
-            }
-            Field("Display name", state.draft.displayName, state.errorFor(AccountField.DISPLAY_NAME)) { value ->
-                onDraftChange { it.copy(displayName = value) }
-            }
-
-            SectionHeader("Server")
-            Field("SIP domain", state.draft.domain, state.errorFor(AccountField.DOMAIN)) { value ->
-                onDraftChange { it.copy(domain = value) }
-            }
-            Field(
-                label = "Authentication username",
-                value = state.draft.authUsername,
-                error = state.errorFor(AccountField.AUTH_USERNAME),
-                supporting = "Defaults to the username",
-            ) { value -> onDraftChange { it.copy(authUsername = value) } }
-            PasswordField(
-                label = if (state.isNewAccount) "Password" else "New password",
-                value = state.draft.password,
-                error = state.errorFor(AccountField.PASSWORD),
-                // An existing account's password is never loaded back, so a blank field
-                // means "unchanged" rather than "empty".
-                supporting = if (state.isNewAccount) null else "Leave blank to keep the current password",
-            ) { value -> onDraftChange { it.copy(password = value) } }
-            Field("Registrar", state.draft.registrar, state.errorFor(AccountField.REGISTRAR),
-                supporting = "Optional. Defaults to the SIP domain") { value ->
-                onDraftChange { it.copy(registrar = value) }
-            }
-            Field("Outbound proxy", state.draft.outboundProxy, state.errorFor(AccountField.OUTBOUND_PROXY)) { value ->
-                onDraftChange { it.copy(outboundProxy = value) }
-            }
-
-            SectionHeader("Transport and NAT")
-            TransportChips(state.draft.transport) { value -> onDraftChange { it.copy(transport = value) } }
-            Field(
-                label = "Port",
-                value = state.draft.port,
-                error = state.errorFor(AccountField.PORT),
-                supporting = "Optional. Defaults to ${state.draft.transport.defaultPort}",
-                keyboardType = KeyboardType.Number,
-            ) { value -> onDraftChange { it.copy(port = value) } }
-            Field(
-                label = "Registration expiry (seconds)",
-                value = state.draft.registrationExpirySeconds,
-                error = state.errorFor(AccountField.REGISTRATION_EXPIRY),
-                keyboardType = KeyboardType.Number,
-            ) { value -> onDraftChange { it.copy(registrationExpirySeconds = value) } }
-            SwitchRow("Enable ICE", state.draft.iceEnabled) { value ->
-                onDraftChange { it.copy(iceEnabled = value) }
-            }
-            SwitchRow("Enable STUN", state.draft.stunEnabled) { value ->
-                onDraftChange { it.copy(stunEnabled = value) }
-            }
-            Field(
-                label = "Keepalive interval (seconds)",
-                value = state.draft.keepaliveIntervalSeconds,
-                error = state.errorFor(AccountField.KEEPALIVE_INTERVAL),
-                keyboardType = KeyboardType.Number,
-            ) { value -> onDraftChange { it.copy(keepaliveIntervalSeconds = value) } }
-            Field("STUN server", state.draft.stunServer, state.errorFor(AccountField.STUN_SERVER)) { value ->
-                onDraftChange { it.copy(stunServer = value) }
-            }
-            Field("TURN server", state.draft.turnServer, state.errorFor(AccountField.TURN_SERVER)) { value ->
-                onDraftChange { it.copy(turnServer = value) }
-            }
-            Field("TURN username", state.draft.turnUsername, state.errorFor(AccountField.TURN_USERNAME)) { value ->
-                onDraftChange { it.copy(turnUsername = value) }
-            }
-            PasswordField("TURN password", state.draft.turnPassword, state.errorFor(AccountField.TURN_PASSWORD)) {
-                value -> onDraftChange { it.copy(turnPassword = value) }
-            }
-
-            SectionHeader("Media and security")
-            SrtpChips(state.draft.srtpPolicy) { value -> onDraftChange { it.copy(srtpPolicy = value) } }
-            AudioCodecChips(state.draft, state.errorFor(AccountField.AUDIO_CODECS), onDraftChange)
-            VideoCodecChips(state.draft, onDraftChange)
+            IdentitySection(state, onDraftChange)
+            ServerSection(state, onDraftChange)
+            TransportSection(state, onDraftChange)
+            MediaSection(state, onDraftChange)
 
             state.warnings.forEach { warning ->
                 Text(
@@ -184,6 +104,133 @@ fun AccountEditorScreen(
             }
         }
     }
+}
+
+/** Who the account is. The four fields every account needs come first. */
+@Composable
+private fun IdentitySection(
+    state: AccountEditorUiState,
+    onDraftChange: ((SipAccountDraft) -> SipAccountDraft) -> Unit,
+) {
+    SectionHeader("Identity")
+    Field("Label", state.draft.label, state.errorFor(AccountField.LABEL)) { value ->
+        onDraftChange { it.copy(label = value) }
+    }
+    Field("Username", state.draft.username, state.errorFor(AccountField.USERNAME)) { value ->
+        onDraftChange { it.copy(username = value) }
+    }
+    Field("Extension", state.draft.extension, state.errorFor(AccountField.EXTENSION)) { value ->
+        onDraftChange { it.copy(extension = value) }
+    }
+    Field(
+        label = "Display name",
+        value = state.draft.displayName,
+        error = state.errorFor(AccountField.DISPLAY_NAME),
+    ) { value -> onDraftChange { it.copy(displayName = value) } }
+}
+
+/** Where it registers, and with what credentials. */
+@Composable
+private fun ServerSection(
+    state: AccountEditorUiState,
+    onDraftChange: ((SipAccountDraft) -> SipAccountDraft) -> Unit,
+) {
+    SectionHeader("Server")
+    Field("SIP domain", state.draft.domain, state.errorFor(AccountField.DOMAIN)) { value ->
+        onDraftChange { it.copy(domain = value) }
+    }
+    Field(
+        label = "Authentication username",
+        value = state.draft.authUsername,
+        error = state.errorFor(AccountField.AUTH_USERNAME),
+        supporting = "Defaults to the username",
+    ) { value -> onDraftChange { it.copy(authUsername = value) } }
+    PasswordField(
+        label = if (state.isNewAccount) "Password" else "New password",
+        value = state.draft.password,
+        error = state.errorFor(AccountField.PASSWORD),
+        // An existing account's password is never loaded back, so a blank field means
+        // "unchanged" rather than "empty".
+        supporting = if (state.isNewAccount) null else "Leave blank to keep the current password",
+    ) { value -> onDraftChange { it.copy(password = value) } }
+    Field(
+        label = "Registrar",
+        value = state.draft.registrar,
+        error = state.errorFor(AccountField.REGISTRAR),
+        supporting = "Optional. Defaults to the SIP domain",
+    ) { value -> onDraftChange { it.copy(registrar = value) } }
+    Field(
+        label = "Outbound proxy",
+        value = state.draft.outboundProxy,
+        error = state.errorFor(AccountField.OUTBOUND_PROXY),
+    ) { value -> onDraftChange { it.copy(outboundProxy = value) } }
+}
+
+/** Transport, ports and NAT traversal. Advanced, so it sits below the essentials. */
+@Composable
+private fun TransportSection(
+    state: AccountEditorUiState,
+    onDraftChange: ((SipAccountDraft) -> SipAccountDraft) -> Unit,
+) {
+    SectionHeader("Transport and NAT")
+    TransportChips(state.draft.transport) { value -> onDraftChange { it.copy(transport = value) } }
+    Field(
+        label = "Port",
+        value = state.draft.port,
+        error = state.errorFor(AccountField.PORT),
+        supporting = "Optional. Defaults to ${state.draft.transport.defaultPort}",
+        keyboardType = KeyboardType.Number,
+    ) { value -> onDraftChange { it.copy(port = value) } }
+    Field(
+        label = "Registration expiry (seconds)",
+        value = state.draft.registrationExpirySeconds,
+        error = state.errorFor(AccountField.REGISTRATION_EXPIRY),
+        keyboardType = KeyboardType.Number,
+    ) { value -> onDraftChange { it.copy(registrationExpirySeconds = value) } }
+    SwitchRow("Enable ICE", state.draft.iceEnabled) { value ->
+        onDraftChange { it.copy(iceEnabled = value) }
+    }
+    SwitchRow("Enable STUN", state.draft.stunEnabled) { value ->
+        onDraftChange { it.copy(stunEnabled = value) }
+    }
+    Field(
+        label = "Keepalive interval (seconds)",
+        value = state.draft.keepaliveIntervalSeconds,
+        error = state.errorFor(AccountField.KEEPALIVE_INTERVAL),
+        keyboardType = KeyboardType.Number,
+    ) { value -> onDraftChange { it.copy(keepaliveIntervalSeconds = value) } }
+    Field(
+        label = "STUN server",
+        value = state.draft.stunServer,
+        error = state.errorFor(AccountField.STUN_SERVER),
+    ) { value -> onDraftChange { it.copy(stunServer = value) } }
+    Field(
+        label = "TURN server",
+        value = state.draft.turnServer,
+        error = state.errorFor(AccountField.TURN_SERVER),
+    ) { value -> onDraftChange { it.copy(turnServer = value) } }
+    Field(
+        label = "TURN username",
+        value = state.draft.turnUsername,
+        error = state.errorFor(AccountField.TURN_USERNAME),
+    ) { value -> onDraftChange { it.copy(turnUsername = value) } }
+    PasswordField(
+        label = "TURN password",
+        value = state.draft.turnPassword,
+        error = state.errorFor(AccountField.TURN_PASSWORD),
+    ) { value -> onDraftChange { it.copy(turnPassword = value) } }
+}
+
+/** Encryption policy and codec preferences. */
+@Composable
+private fun MediaSection(
+    state: AccountEditorUiState,
+    onDraftChange: ((SipAccountDraft) -> SipAccountDraft) -> Unit,
+) {
+    SectionHeader("Media and security")
+    SrtpChips(state.draft.srtpPolicy) { value -> onDraftChange { it.copy(srtpPolicy = value) } }
+    AudioCodecChips(state.draft, state.errorFor(AccountField.AUDIO_CODECS), onDraftChange)
+    VideoCodecChips(state.draft, onDraftChange)
 }
 
 @Composable
