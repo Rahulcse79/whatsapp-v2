@@ -13,7 +13,13 @@ plugins {
     alias(libs.plugins.ksp) apply false
     alias(libs.plugins.hilt) apply false
 
-    // Applied (not just resolved) so `./gradlew detekt` has something to run before
-    // any module exists, and so the root build files are themselves analysed.
+    // `apply false` here is what puts each plugin's jar on the build classpath. The
+    // convention plugins in `build-logic` depend on these as `compileOnly`, so without
+    // this the build fails at RUNTIME with NoClassDefFoundError when a convention
+    // plugin tries to apply one.
+    alias(libs.plugins.detekt) apply false
+
+    // Applied, not merely resolved, so `./gradlew detekt` has something to run and the
+    // root build script is itself analysed.
     alias(libs.plugins.whatsappv2.detekt)
 }
