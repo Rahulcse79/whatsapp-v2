@@ -497,9 +497,46 @@ Build:
 - Coverage report published as a build artifact.
 
 Done when:
-- [ ] CI is green on the current `main`
-- [ ] CI fails if any architecture rule from Task 12 is violated
-- [ ] Coverage numbers for `:domain` and `:data:*` are visible in the CI output
+- [x] CI is green on the current `main`
+      → run 33869651228, two jobs, **24 gates** green
+- [x] CI fails if any architecture rule from Task 12 is violated
+      → **proved**, not assumed: a step plants an Android import in `:domain` and
+      requires `:test:arch:test` to fail, then removes it
+- [x] Coverage numbers for `:domain` and `:data:*` are visible in the CI output
+      → per-package table in the run summary *and* the log, plus XML/HTML published as
+      a `coverage-<sha>` artifact. `:data:*` packages report once they contain code.
+
+**Status: COMPLETE.** CI run 33869651228.
+
+**The arch-gate probe found a serious flaw on its first run: the architecture tests
+were not running at all.** The rules read Kotlin sources from across the repository at
+*runtime*, so Gradle could not see those files as task inputs; with only the module's
+own sources declared — and they rarely change — `:test:arch:test` went UP-TO-DATE or
+was restored from the build cache on essentially every build after the first. Six rules
+that had never failed were also never executing. Now marked non-cacheable and never
+up-to-date. This is exactly why the done-when asks CI to prove the gate *fails*: a gate
+nobody has seen fail is not known to work.
+
+The pipeline now runs:
+
+| | |
+|---|---|
+| Build | `assemble` + unit tests, `warningsAsErrors` on |
+| Static analysis | detekt (with ktlint rules via `detekt-formatting`) + Android lint |
+| Architecture | the six §4.1 rules, plus a probe proving they gate |
+| Vulnerabilities | OSV.dev over the **resolved** release runtime classpath (58 deps) |
+| Coverage | per-package gates, summary table, published XML/HTML artifact |
+| APK | installable debug build, published artifact |
+| Guards | no baselines, no Groovy files, no inline versions, `:domain` purity, logging ban, both variant loggers tracked |
+
+The vulnerability check is written against the OSV HTTP API rather than a scanner
+action, so the query and the failure condition are both visible in the repo — a green
+result means something specific, not "some action exited zero". It fails if nothing
+parses, so it cannot pass vacuously, and `.github/osv-allowlist.txt` exists for
+knowingly accepted risks: an entry there is a decision with a reason and a date.
+
+Dependabot covers Gradle and GitHub Actions, grouped so a Kotlin bump arrives as one
+PR rather than six that each fail for being half a change.
 
 ### Task 14 — `:core:designsystem`
 **Depends on:** 6 · **Prompt refs:** §3 · **Modules:** `:core:designsystem`
