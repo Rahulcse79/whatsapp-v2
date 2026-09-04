@@ -3,13 +3,31 @@
 
     <!--
       Deliberately minimal. Permissions, the foreground service and its types, the
-      Telecom ConnectionService and the launcher activity are declared by the tasks
-      that introduce them (15, 28, 34, 37, 51). android:allowBackup is false from the
-      first commit because this app stores SIP credentials (§7).
+      Telecom ConnectionService and CallStyle notifications are declared by the tasks
+      that introduce them (15, 28, 34, 37, 51).
+
+      android:allowBackup is false from the first commit because this app stores SIP
+      credentials, and backup would copy them off the device (§7, DoD 12).
     -->
     <application
+        android:name=".SipApplication"
         android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:label="whatsapp-v2"
-        android:supportsRtl="true" />
+        android:supportsRtl="true"
+        android:theme="@style/Theme.WhatsAppV2">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="whatsapp-v2">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
 
 </manifest>

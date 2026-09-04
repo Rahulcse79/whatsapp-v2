@@ -21,9 +21,18 @@ class HiltConventionPlugin : Plugin<Project> {
             IllegalStateException("hilt-compiler missing from gradle/libs.versions.toml")
         }
 
+        val hiltTesting = libs.findLibrary("hilt-android-testing").orElseThrow {
+            IllegalStateException("hilt-android-testing missing from gradle/libs.versions.toml")
+        }
+
         dependencies {
             add("implementation", hiltAndroid)
             add("ksp", hiltCompiler)
+
+            // Lets a module assert its own graph resolves, rather than discovering a
+            // missing binding on a device at run time.
+            add("testImplementation", hiltTesting)
+            add("kspTest", hiltCompiler)
         }
     }
 }
