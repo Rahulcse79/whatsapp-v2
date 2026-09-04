@@ -1,4 +1,8 @@
-package com.whatsappv2.data.account.crypto
+package com.whatsappv2.data.account.crypto.keystore
+
+import com.whatsappv2.data.account.crypto.AesGcmCredentialCipher
+import com.whatsappv2.data.account.crypto.CipherError
+import com.whatsappv2.data.account.crypto.SecretKeyProvider
 
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -28,6 +32,13 @@ import javax.inject.Singleton
  * missed calls.
  *
  * `setUnlockedDeviceRequired(true)` is omitted for the same reason.
+ *
+ * ## Why this lives in its own package
+ *
+ * The Android Keystore cannot run on the JVM, so nothing here is reachable by a unit
+ * test. Keeping it beside the AES-GCM logic would drag that package's coverage down and
+ * make its gate meaningless - the same measurement flaw `FakeSipEngine` had. This is
+ * verified on-device from Task 33 instead.
  *
  * The trade-off is recorded in `docs/security.md` rather than buried here: on a rooted
  * or compromised device an attacker who can run code as this app can ask the Keystore to

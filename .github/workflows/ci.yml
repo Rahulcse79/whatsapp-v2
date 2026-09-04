@@ -241,7 +241,8 @@ jobs:
               # Test support, held to a floor rather than the production bar: its
               # uncovered lines are error paths no test needs to exercise.
               "com/whatsappv2/domain/testing": 90,
-              "com/whatsappv2/data/account/crypto": 85,
+              "com/whatsappv2/data/account/crypto": 95,
+              "com/whatsappv2/data/account/db": 85,
           }
 
           reports = glob.glob("**/build/reports/kover/report.xml", recursive=True)
