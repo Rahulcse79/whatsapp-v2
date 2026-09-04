@@ -18,6 +18,11 @@ import javax.crypto.SecretKey
  */
 class InMemorySecretKeyProvider(
     private val keySizeBits: Int = AesGcmCredentialCipher.KEY_SIZE_BITS,
+    /**
+     * The key algorithm. A test can supply one AES-GCM cannot use, which is the only
+     * practical way to exercise the generic `GeneralSecurityException` path.
+     */
+    private val algorithm: String = "AES",
 ) : SecretKeyProvider {
 
     private var key: SecretKey? = null
@@ -29,8 +34,8 @@ class InMemorySecretKeyProvider(
 
     override fun getOrCreateKey(): Outcome<SecretKey, CipherError> {
         failure?.let { return failure(it) }
-        val existing = key ?: KeyGenerator.getInstance("AES")
-            .apply { init(keySizeBits) }
+        val existing = key ?: KeyGenerator.getInstance(algorithm)
+            .apply { if (algorithm == "AES") init(keySizeBits) }
             .generateKey()
             .also { key = it }
         return success(existing)

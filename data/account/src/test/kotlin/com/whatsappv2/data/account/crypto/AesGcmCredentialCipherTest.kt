@@ -164,6 +164,18 @@ class AesGcmCredentialCipherTest {
     }
 
     @Test
+    fun `an unusable key is reported rather than thrown`() {
+        // A key AES-GCM cannot accept produces a platform GeneralSecurityException. It
+        // must arrive as a value: an exception here would be a crash on launch for any
+        // user whose Keystore returned something unexpected.
+        val wrongAlgorithm = AesGcmCredentialCipher(InMemorySecretKeyProvider(algorithm = "DES"))
+
+        val error = wrongAlgorithm.encrypt(Secret("hunter22")).errorOrNull()
+        assertIs<CipherError.Unexpected>(error)
+        assertFalse(error.requiresReEntry, "retyping cannot fix an unusable key")
+    }
+
+    @Test
     fun `resetKey discards the key so the app stops retrying against it`() {
         cipher.resetKey()
         assertEquals(1, keys.deleteCount)
