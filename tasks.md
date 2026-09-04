@@ -191,8 +191,33 @@ Build:
   `DispatcherProvider` and `Logger`.
 
 Done when:
-- [ ] The app installs and launches to an empty screen
-- [ ] A trivial `@Inject` into the single Activity resolves at runtime
+- [x] The app builds and launches to an empty screen
+      → `assembleDebug` green in CI, and `MainActivityTest` launches the real
+      Activity through `ActivityScenario` on Robolectric. **Install on a physical
+      device is not verified in CI** — an emulator job is worth adding at Task 15,
+      when there is actual UI to see.
+- [x] A trivial `@Inject` into the single Activity resolves at runtime
+      → `MainActivityTest` asserts the injected `Logger` is non-null after launch.
+      Hilt injects an `@AndroidEntryPoint` Activity during `onCreate`, so a missing
+      binding is a crash on launch, not a compile error — only launching it proves
+      anything. `HiltGraphTest` separately covers the `SingletonComponent` bindings.
+
+**Status: COMPLETE.** `SipApplication` (`@HiltAndroidApp`), `MainActivity`
+(`@AndroidEntryPoint`), and `CoreModule` binding `DispatcherProvider` and `Logger`.
+The `Logger` binding needs no `BuildConfig.DEBUG` branch — `PlatformLogger` resolves
+per variant from `app/src/{debug,release}/java`.
+
+Four platform facts established while getting this green, each from CI evidence:
+- **`androidx.core` 1.19.0 requires compileSdk 37**, enforced by AAR metadata — so
+  compileSdk/targetSdk moved 36 → 37. Not a preference.
+- **API 37 ships as minor-versioned platforms** (`android-37.0/.1/.2`); there is no
+  plain `android-37` directory, so exact-match platform checks find nothing.
+- **AGP 9 deprecated `java.srcDir`** and registering `src/<variant>/kotlin` through
+  it has no effect. Variant Kotlin lives under `src/<variant>/java`, which AGP
+  registers by default — no build-logic API involved.
+- **`.gitignore` had a bare `release/`**, which matched `app/src/release/` and kept
+  the release logger out of the repo entirely. A CI step now asserts both variant
+  loggers are tracked, since Task 5's by-construction guarantee is void without them.
 
 ### Task 7 — Domain value types
 **Depends on:** 5 · **Prompt refs:** §4.1, §5.1 · **Modules:** `:domain`
