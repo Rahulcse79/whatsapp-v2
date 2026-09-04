@@ -19,6 +19,8 @@ composeBom = "2026.08.00"
 coroutines = "1.11.0"
 kover = "0.9.9"
 androidxActivity = "1.13.0"
+androidxLifecycle = "2.11.0"
+androidxHiltNavigation = "1.4.0"
 androidxNavigation = "2.10.0"
 androidxRoom = "2.8.4"
 androidxCore = "1.19.0"
@@ -87,6 +89,9 @@ androidx-activity-compose = { group = "androidx.activity", name = "activity-comp
 # Versions come from the Compose BOM, which the whatsappv2.android.compose convention
 # plugin applies - which is why these carry no version of their own.
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "androidxNavigation" }
+androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "androidxLifecycle" }
+androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "androidxLifecycle" }
+androidx-hilt-navigation-compose = { group = "androidx.hilt", name = "hilt-navigation-compose", version.ref = "androidxHiltNavigation" }
 androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "androidxRoom" }
 androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "androidxRoom" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "androidxRoom" }
