@@ -27,13 +27,14 @@ robolectric = "4.16.1"
 jvmToolchain = "17"
 
 # --- Android SDK levels (§3) ---
-# minSdk 26 is a hard requirement (§3). compileSdk/targetSdk are asserted against
-# the platforms actually installed on the runner by the CI "Report Android SDK
-# platforms" step, and are first EXERCISED in Task 4, where a module applies the
-# Android plugin. Nothing in Task 2 reads them.
+# minSdk 26 is a hard requirement (§3).
+#
+# compileSdk 37 is not a preference: androidx.core 1.19.0 (the current stable) refuses
+# to be consumed by anything compiled against less, and AAR metadata enforces it. CI
+# installs the platform explicitly, because runner images lag the newest API level.
 minSdk = "26"
-compileSdk = "36"
-targetSdk = "36"
+compileSdk = "37"
+targetSdk = "37"
 
 [libraries]
 # Only entries that are actually used. An unused catalog entry is noise.
