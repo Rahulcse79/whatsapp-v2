@@ -31,14 +31,14 @@ import kotlin.test.assertTrue
  *
  * The point is that it must fail, visibly and consistently. A placeholder that quietly
  * returned success - or reported accounts as registered - would let the screens above it
- * be built against behaviour that does not exist, and the gap would only surface when the
+ * be built against behaviour that does not exist, and the gap would surface only when the
  * real engine arrived and behaved differently.
  */
 class UnavailableSipEngineTest {
 
     private val engine = UnavailableSipEngine()
-
     private val target = requireNotNull(SipUri.parse("sip:bob@example.com").getOrNull())
+    private val callId = CallId("call-1")
 
     private val account = SipAccount(
         id = AccountId("acct-1"),
@@ -61,8 +61,6 @@ class UnavailableSipEngineTest {
         codecs = CodecPreferences.DEFAULT,
         isDefault = true,
     )
-
-    private val callId = CallId("call-1")
 
     @Test
     fun `every registration operation reports the engine is unavailable`() = runTest {
