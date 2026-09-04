@@ -51,8 +51,26 @@ dependency. Neither is decisive at this scope.
 `SipEngine` interface (§4.3) in `:data:sip`, enforced by an architecture test (Task 12,
 DoD 3). Swapping to PJSIP is a rewrite of one module, not of the application.
 
+**Distribution finding (2026-09-04).** liblinphone is **not published to Maven Central or
+Google Maven** — a version query against both returns nothing for
+`org.linphone:linphone-sdk-android`. It is hosted on Belledonne's own Maven repository.
+
+That has two consequences worth deciding on before Task 25:
+
+1. **A third-party Maven repository must be added** to `dependencyResolutionManagement`.
+   The build currently allows only `google()` and `mavenCentral()`, with
+   `FAIL_ON_PROJECT_REPOS` so no module can add its own. Adding a repository widens the
+   supply chain, and the artifacts should be pinned by version and ideally verified by
+   checksum.
+2. **The OSV vulnerability gate will not see it.** OSV indexes the Maven ecosystem;
+   an artifact served from a private repository has no advisories to match. The gate
+   stays useful for everything else, but liblinphone's own security notices have to be
+   tracked by subscribing to Belledonne's releases — a manual process, and it should be
+   named as such rather than assumed covered.
+
 **Verify in Task 25 before writing code against it** (§13 — ground every claim):
-- Pin an exact linphone-sdk version and record the artifact coordinates here.
+- Pin an exact linphone-sdk version and record the artifact coordinates **and the
+  repository URL** here.
 - Confirm the version's push-configuration API surface against its own release notes,
   rather than against this document.
 - Confirm every bundled `.so` is 16 KB page-size aligned; if not, that is a blocker to
