@@ -183,6 +183,22 @@ jobs:
           rm -f "$PROBE"
           echo "OK - android.util.Log is rejected outside the logging facade."
 
+      # Task 5 done-when #3 depends on BOTH variant loggers existing. A stray
+      # "release/" entry in .gitignore once silenced the release one entirely, so the
+      # release build had no logger and the guarantee was quietly absent.
+      - name: Assert both variant loggers are tracked
+        run: |
+          missing=0
+          for v in debug release; do
+            f="app/src/$v/java/com/whatsappv2/logging/PlatformLogger.kt"
+            if ! git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+              echo "::error::$f is not tracked by git - is it caught by .gitignore?"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] && echo "OK - both variant loggers are tracked."
+          exit $missing
+
       - name: Coverage
         run: ./gradlew koverXmlReport --stacktrace
 

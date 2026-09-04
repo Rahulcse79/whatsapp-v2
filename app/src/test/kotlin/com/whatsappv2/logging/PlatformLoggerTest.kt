@@ -1,11 +1,11 @@
 package com.whatsappv2.logging
 
 import com.whatsappv2.core.common.logging.Logger
+import com.whatsappv2.di.ROBOLECTRIC_SDK
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import com.whatsappv2.di.ROBOLECTRIC_SDK
 
 /**
  * The variant-specific logger must satisfy the facade and never throw.
