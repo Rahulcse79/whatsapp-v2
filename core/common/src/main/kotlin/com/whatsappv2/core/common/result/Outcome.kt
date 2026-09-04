@@ -17,10 +17,17 @@ sealed interface Outcome<out T, out E> {
     data class Success<out T>(val value: T) : Outcome<T, Nothing>
 
     data class Failure<out E>(val error: E) : Outcome<Nothing, E>
-
-    val isSuccess: Boolean get() = this is Success
-    val isFailure: Boolean get() = this is Failure
 }
+
+// Every operation below is an extension, so the type itself carries only data.
+// Declaring these inside the interface instead would compile them into a synthetic
+// DefaultImpls that callers only reach through bridge methods.
+
+/** True when this is a [Outcome.Success]. */
+val Outcome<*, *>.isSuccess: Boolean get() = this is Outcome.Success
+
+/** True when this is a [Outcome.Failure]. */
+val Outcome<*, *>.isFailure: Boolean get() = this is Outcome.Failure
 
 /** The value, or `null` when this is a [Outcome.Failure]. */
 fun <T, E> Outcome<T, E>.getOrNull(): T? = when (this) {
