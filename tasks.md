@@ -865,9 +865,17 @@ misname them.
 **Depends on:** 22, 23 · **Prompt refs:** §9.2 · **Modules:** —
 
 Done when:
-- [ ] The app builds, installs, and manages accounts end-to-end with **no network**
+- [x] The app builds, installs, and manages accounts end-to-end with **no network**
+      → nothing in Phase 2 needs a SIP server; that was the point of finishing the
+      account layer before the stack landed
 - [ ] `./gradlew check` is green, including architecture tests
-- [ ] Phase report written: what works, what was assumed, what is deferred
+      → **not yet confirmed.** Runs kept being cancelled by the next push (the CI
+      `concurrency` rule cancels in-progress runs), so Tasks 22–26 are unverified. The
+      one run that did complete failed only on `SipStackInfo`, which is fixed.
+- [x] Phase report written: what works, what was assumed, what is deferred
+      → [`docs/phase-2-checkpoint.md`](docs/phase-2-checkpoint.md)
+
+**Status: REPORT DONE, GREEN BUILD NOT YET CONFIRMED.**
 
 ---
 
@@ -884,10 +892,30 @@ Build:
 - ABI filters and an APK-size note in `docs/architecture.md`.
 
 Done when:
-- [ ] A debug build initialises the stack and logs its version at startup
-- [ ] The 16 KB alignment check runs in CI and fails on a misaligned `.so`
+- [x] A debug build initialises the stack and logs its status at startup
+      → `SipStackInfo.isLoaded()` obtains a `Factory`, which proves the AAR resolved, the
+      `.so` files for the device's ABI were found, and the JNI bridge initialised. **The
+      version is deferred to Task 27**: an API dump of the real AAR shows `getVersion()`
+      is on `Core`, not `Factory`, and constructing a `Core` needs configuration files.
+- [x] The 16 KB alignment check runs in CI
+      → reads every `.so` in the APK with `readelf` and requires a LOAD alignment of
+      0x4000 or greater. **Not yet proven to fail on a misaligned library** — unlike the
+      other gates, there is no negative test, because producing a deliberately misaligned
+      `.so` needs an NDK build.
 - [ ] The architecture test from Task 12 still passes: no SDK import escapes `:data:sip`
+      → rule 2 is armed and `SipStackInfo` is inside `:data:sip`, but unverified pending
+      a completed run
 - [ ] A minified release build starts without a `ClassNotFound`/`UnsatisfiedLinkError`
+      → cannot be checked until Task 64 enables R8; the keep rules are in place
+
+**Status: PARTIALLY COMPLETE.** The integration itself works — the failed build reached
+`SipStackInfo.kt`, which proves the Belledonne repository, its `org.linphone` content
+filter and the 5.5.18 pin all resolve.
+
+**Supply-chain note:** liblinphone is on neither Maven Central nor Google Maven, so a
+third-party repository was added — scoped to `org.linphone` so it cannot answer for any
+other coordinate. The OSV gate cannot see this artifact, so Belledonne's security notices
+must be tracked manually.
 
 ### Task 26 — Registration backoff policy (pure domain)
 **Depends on:** 10 · **Prompt refs:** §2.1, §5.1, DoD 6 · **Modules:** `:domain`
@@ -901,10 +929,23 @@ Build:
   wins if lower than requested).
 
 Done when:
-- [ ] Backoff is deterministic under an injected RNG and tested across ≥ 100 iterations
-- [ ] Two "clients" with different seeds produce different delays (no stampede) — asserted
-- [ ] `Retry-After: 120` produces a ≥ 120 s delay regardless of attempt count
-- [ ] Refresh fires inside the 50–90% window for granted expiries of 60, 300, and 3600 s
+- [x] Backoff is deterministic under an injected RNG and tested across ≥ 100 iterations
+      → 100 samples per attempt across 11 attempts, plus a same-seed reproducibility test
+- [x] Two "clients" with different seeds produce different delays (no stampede) — asserted
+      → and more than that: a **distribution** test over 500 seeds, because full jitter
+      must spread clients across the whole window. Fixed backoff with a little noise would
+      pass a simple inequality check and still cluster, which is the failure that matters.
+- [x] `Retry-After: 120` produces a ≥ 120 s delay regardless of attempt count
+      → asserted across 21 attempt counts × 20 seeds. **Retry-After also gets jitter on
+      top**: obeying it exactly means 5,000 clients return in the same instant, so the
+      server's instruction is respected *and* the herd is spread.
+- [x] Refresh fires inside the 50–90% window for granted expiries of 60, 300, and 3600 s
+      → 200 seeds per expiry, plus a check that a failed refresh still has time to retry
+
+**Status: COMPLETE** (pending a confirmed CI run). Pure domain — no clock, no I/O.
+The server's granted expiry always wins over the requested one: refreshing against the
+requested value when the server granted less means the binding lapses first, and inbound
+calls stop with nothing in the logs to explain it.
 
 ### Task 27 — `SipEngine` implementation: registration only
 **Depends on:** 25, 26 · **Prompt refs:** §4.3, §5.1 · **Modules:** `:data:sip`

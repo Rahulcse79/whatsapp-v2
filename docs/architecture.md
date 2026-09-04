@@ -68,6 +68,15 @@ That has two consequences worth deciding on before Task 25:
    tracked by subscribing to Belledonne's releases — a manual process, and it should be
    named as such rather than assumed covered.
 
+**API facts, established by dumping the real 5.5.18 AAR** (not from memory):
+
+- `org.linphone.core.Factory.instance()` is the entry point, and obtaining it is
+  sufficient proof that the AAR resolved, the `.so` files for the device's ABI were
+  found, and the JNI bridge initialised.
+- **`Factory` has no version member.** `getVersion()` lives on `org.linphone.core.Core`,
+  which requires configuration files to construct — so the stack version can only be
+  logged once a `Core` exists, in Task 27.
+
 **Verify in Task 25 before writing code against it** (§13 — ground every claim):
 - Pin an exact linphone-sdk version and record the artifact coordinates **and the
   repository URL** here.
