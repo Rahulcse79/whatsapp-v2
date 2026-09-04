@@ -220,7 +220,7 @@ jobs:
               "com/whatsappv2/core/common/time": 95,
               # Test support, held to a floor rather than the production bar: its
               # uncovered lines are error paths no test needs to exercise.
-              "com/whatsappv2/domain/testing": 80,
+              "com/whatsappv2/domain/testing": 90,
           }
 
           reports = glob.glob("**/build/reports/kover/report.xml", recursive=True)

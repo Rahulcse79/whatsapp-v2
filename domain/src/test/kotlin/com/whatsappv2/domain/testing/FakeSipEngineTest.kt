@@ -6,6 +6,9 @@ import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.HoldParty
+import com.whatsappv2.domain.engine.ConferenceParticipant
+import com.whatsappv2.domain.engine.ParticipantId
+import com.whatsappv2.domain.engine.PushToken
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
@@ -362,5 +365,148 @@ class FakeSipEngineTest {
         }.state
 
     private fun <T> failureOf(outcome: Outcome<T, SipError>): SipError =
+        assertIs<Outcome.Failure<SipError>>(outcome).error
+}
+
+/** Covers the parts of the fake the main scenarios do not reach. */
+class FakeSipEngineSurfaceTest {
+
+    private val engine = FakeSipEngine()
+    private val accountId = AccountId("acct-1")
+    private val room = requireNotNull(SipUri.parse("sip:3000@conf.example.com").getOrNull())
+    private val bob = requireNotNull(SipUri.parse("sip:bob@example.com").getOrNull())
+
+    private val account = SipAccount(
+        id = accountId,
+        label = "Work",
+        username = "alice",
+        extension = null,
+        authUsername = null,
+        password = Secret("hunter22"),
+        displayName = null,
+        domain = "sip.example.com",
+        registrar = null,
+        outboundProxy = null,
+        port = null,
+        transport = Transport.UDP,
+        registrationExpirySeconds = 600,
+        stunServer = null,
+        turn = null,
+        natPolicy = NatPolicy.DEFAULT,
+        srtpPolicy = SrtpPolicy.OPTIONAL,
+        codecs = CodecPreferences.DEFAULT,
+        isDefault = true,
+    )
+
+    @Test
+    fun `the push token is published and can be cleared`() = runTest {
+        val token = PushToken(provider = "fcm", param = "sender", prid = "device-token")
+        engine.setPushToken(token)
+        assertEquals(token, engine.publishedPushToken)
+
+        engine.setPushToken(null)
+        assertNull(engine.publishedPushToken)
+    }
+
+    @Test
+    fun `refreshing an unknown account is reported rather than silently ignored`() = runTest {
+        assertEquals(SipError.UnknownAccount, failure(engine.refreshRegistration(accountId)))
+    }
+
+    @Test
+    fun `refreshing a known account restores the granted expiry`() = runTest {
+        engine.givenRegistered(account)
+        engine.simulateRegistrationExpiry(accountId)
+        engine.refreshRegistration(accountId)
+        assertEquals(RegistrationState.Registered(600), engine.registrationState.value[accountId])
+    }
+
+    @Test
+    fun `joining a conference produces a session with no roster until the bridge sends one`() = runTest {
+        engine.givenRegistered(account)
+        val callId = requireNotNull(engine.joinConference(accountId, room, MediaProfile.AUDIO).getOrNull())
+
+        val session = engine.conferences.value.single()
+        assertEquals(callId, session.callId)
+        assertTrue(!session.rosterAvailable, "an MCU that publishes no roster must be distinguishable")
+        assertTrue(engine.activeCalls.value.single().isConference)
+
+        engine.simulateConferenceRoster(
+            callId,
+            listOf(
+                ConferenceParticipant(ParticipantId("me"), uri = null, displayName = "Me", isSelf = true),
+                ConferenceParticipant(ParticipantId("bob"), uri = bob, displayName = "Bob"),
+            ),
+        )
+        val withRoster = engine.conferences.value.single()
+        assertTrue(withRoster.rosterAvailable)
+        assertEquals(listOf("Bob"), withRoster.others.map { it.displayName })
+    }
+
+    @Test
+    fun `leaving a conference removes its session`() = runTest {
+        engine.givenRegistered(account)
+        val callId = requireNotNull(engine.joinConference(accountId, room, MediaProfile.AUDIO).getOrNull())
+        engine.hangup(callId, HangupReason.LOCAL_HANGUP)
+        assertTrue(engine.conferences.value.isEmpty())
+    }
+
+    @Test
+    fun `enabling video updates the negotiated media, not just a flag`() = runTest {
+        engine.givenRegistered(account)
+        val incoming = engine.simulateIncomingCall(accountId, bob)
+        engine.answer(incoming.callId, MediaProfile.AUDIO)
+
+        engine.setVideoEnabled(incoming.callId, enabled = true)
+        val call = engine.activeCalls.value.single()
+        assertTrue(call.media.hasVideo)
+        assertTrue(requireNotNull(call.state.controlsOrNull).isVideoEnabled)
+
+        assertIs<Outcome.Success<Unit>>(engine.switchCamera(incoming.callId))
+    }
+
+    @Test
+    fun `rejecting a ringing call ends it with the reason the caller will see`() = runTest {
+        engine.givenRegistered(account)
+        val incoming = engine.simulateIncomingCall(accountId, bob)
+        engine.reject(incoming.callId, HangupReason.LOCAL_REJECTED)
+
+        assertTrue(engine.activeCalls.value.isEmpty())
+        assertEquals(CallState.Terminated(HangupReason.LOCAL_REJECTED), engine.terminatedCalls.single().state)
+    }
+
+    @Test
+    fun `an incoming call can be marked as arriving via push`() = runTest {
+        val incoming = engine.simulateIncomingCall(accountId, bob, viaPush = true)
+        assertTrue(incoming.viaPush)
+    }
+
+    @Test
+    fun `recorded invocations and ended calls can be cleared between phases`() = runTest {
+        engine.givenRegistered(account)
+        val incoming = engine.simulateIncomingCall(accountId, bob)
+        engine.hangup(incoming.callId, HangupReason.LOCAL_HANGUP)
+        assertTrue(engine.invocations.isNotEmpty())
+        assertTrue(engine.terminatedCalls.isNotEmpty())
+
+        engine.clearInvocations().clearTerminated()
+        assertTrue(engine.invocations.isEmpty())
+        assertTrue(engine.terminatedCalls.isEmpty())
+    }
+
+    @Test
+    fun `a remote hold and resume round-trips`() = runTest {
+        engine.givenRegistered(account)
+        val incoming = engine.simulateIncomingCall(accountId, bob)
+        engine.answer(incoming.callId, MediaProfile.AUDIO)
+
+        engine.simulateRemoteHold(incoming.callId)
+        assertEquals(CallState.Held(HoldParty.REMOTE), engine.activeCalls.value.single().state)
+
+        engine.simulateRemoteResume(incoming.callId)
+        assertIs<CallState.Connected>(engine.activeCalls.value.single().state)
+    }
+
+    private fun <T> failure(outcome: Outcome<T, SipError>): SipError =
         assertIs<Outcome.Failure<SipError>>(outcome).error
 }
