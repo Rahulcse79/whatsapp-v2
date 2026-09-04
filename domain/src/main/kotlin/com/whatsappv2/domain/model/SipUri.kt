@@ -80,20 +80,9 @@ class SipUri private constructor(
 
         private const val MIN_PORT = 1
         private const val MAX_PORT = 65_535
-        private const val MAX_LABEL_LENGTH = 63
-        private const val MAX_HOSTNAME_LENGTH = 253
-        private const val IPV4_OCTETS = 4
-        private const val MAX_OCTET = 255
-        private const val MAX_IPV6_GROUPS = 8
-        private const val MAX_IPV6_GROUP_DIGITS = 4
-        private const val MAX_OCTET_DIGITS = 3
-
-        private val IPV6_COMPRESSION = Regex("::")
 
         /** RFC 3261 user characters, minus `;` which would collide with parameters. */
         private const val USER_EXTRA_CHARS = "-_.!~*'()&=+$,?/%"
-
-        private val HOSTNAME_LABEL = Regex("[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?")
 
         /**
          * Parses [input] into a [SipUri].
@@ -209,56 +198,10 @@ class SipUri private constructor(
         private fun isValidUser(user: String): Boolean =
             user.isNotEmpty() && user.all { it.isLetterOrDigit() || it in USER_EXTRA_CHARS }
 
-        private fun isValidHostname(host: String): Boolean {
-            if (host.isEmpty() || host.length > MAX_HOSTNAME_LENGTH) return false
+        private fun isValidHostname(host: String): Boolean = HostSyntax.isValidHostname(host)
 
-            // A single trailing dot denotes the DNS root and is legal.
-            val name = host.removeSuffix(".")
-            if (name.isEmpty()) return false
+        private fun isValidIpV4(host: String): Boolean = HostSyntax.isValidIpV4(host)
 
-            val labels = name.split('.')
-            val labelsAreValid = labels.all { label ->
-                label.length in 1..MAX_LABEL_LENGTH && HOSTNAME_LABEL.matches(label)
-            }
-
-            // RFC 1123: the top label must not be all digits. Without this a typo'd
-            // address such as 1.2.3.256 fails IPv4 validation and then silently
-            // succeeds as a DNS name, failing much later at resolution time.
-            return labelsAreValid && !labels.last().all(Char::isDigit)
-        }
-
-        private fun isValidIpV4(host: String): Boolean {
-            val octets = host.split('.')
-            if (octets.size != IPV4_OCTETS) return false
-
-            return octets.all { octet ->
-                // "01" is rejected: leading zeros invite octal misreadings.
-                octet.isNotEmpty() &&
-                    octet.length <= MAX_OCTET_DIGITS &&
-                    octet.all(Char::isDigit) &&
-                    (octet.length == 1 || !octet.startsWith('0')) &&
-                    octet.toInt() <= MAX_OCTET
-            }
-        }
-
-        private fun isValidIpV6(address: String): Boolean {
-            if (address.isEmpty()) return false
-
-            val compressions = IPV6_COMPRESSION.findAll(address).count()
-            val groups = address.split(":").filter(String::isNotEmpty)
-
-            // "::" stands in for one or more zero groups, so only an uncompressed
-            // address must carry the full eight.
-            val structureIsValid = when {
-                compressions > 1 -> false
-                compressions == 0 -> groups.size == MAX_IPV6_GROUPS
-                else -> groups.size <= MAX_IPV6_GROUPS
-            }
-            return structureIsValid && groups.all(::isIpV6Group)
-        }
-
-        private fun isIpV6Group(group: String): Boolean =
-            group.length <= MAX_IPV6_GROUP_DIGITS &&
-                group.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+        private fun isValidIpV6(address: String): Boolean = HostSyntax.isValidIpV6(address)
     }
 }
