@@ -107,7 +107,7 @@ class SipUriTest {
             Case("sip:alice@", SipUriError.MissingHost),
             Case("sip:alice@example.com:0", SipUriError.InvalidPort("0")),
             Case("sip:alice@example.com:65536", SipUriError.InvalidPort("65536")),
-            Case("sip:alice@example.com:abc", SipUriError.InvalidHost("example.com")),
+            Case("sip:alice@example.com:abc", SipUriError.InvalidPort("abc")),
             Case("sip:alice@-bad.com", SipUriError.InvalidHost("-bad.com")),
             Case("sip:alice@bad-.com", SipUriError.InvalidHost("bad-.com")),
             Case("sip:alice@ex ample.com", SipUriError.InvalidHost("ex ample.com")),
@@ -126,12 +126,19 @@ class SipUriTest {
     }
 
     @Test
-    fun `rejects IPv4 octets that are out of range or zero-padded`() {
-        // 256 is not a valid octet, so this falls through to hostname rules and fails
-        // there too - either way it must not parse as an address.
-        assertTrue(SipUri.parse("sip:a@1.2.3.256") is Outcome.Failure)
-        assertTrue(SipUri.parse("sip:a@01.2.3.4") is Outcome.Failure)
-        assertTrue(SipUri.parse("sip:a@1.2.3") is Outcome.Failure)
+    fun `rejects addresses that are not valid IPv4 and cannot be names either`() {
+        // Each fails IPv4 validation, and RFC 1123 forbids an all-numeric top label,
+        // so none may fall through and succeed as a hostname.
+        assertTrue(SipUri.parse("sip:a@1.2.3.256") is Outcome.Failure, "octet out of range")
+        assertTrue(SipUri.parse("sip:a@01.2.3.4") is Outcome.Failure, "zero-padded octet")
+        assertTrue(SipUri.parse("sip:a@1.2.3") is Outcome.Failure, "too few octets")
+        assertTrue(SipUri.parse("sip:a@5060") is Outcome.Failure, "bare number is not a host")
+    }
+
+    @Test
+    fun `a numeric label is fine as long as it is not the top one`() {
+        assertEquals(SipHost.Hostname("1pbx.example.com"), parsed("sip:a@1pbx.example.com").host)
+        assertEquals(SipHost.Hostname("10.example.com"), parsed("sip:a@10.example.com").host)
     }
 
     // ---------------------------------------------------------------- rendering

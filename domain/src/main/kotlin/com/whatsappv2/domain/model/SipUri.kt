@@ -121,7 +121,9 @@ class SipUri private constructor(
         private fun parseAfterScheme(scheme: SipScheme, remainder: String): Outcome<SipUri, SipUriError> {
             val paramSeparator = remainder.indexOf(';')
             val authority = if (paramSeparator < 0) remainder else remainder.substring(0, paramSeparator)
-            val paramPart = if (paramSeparator < 0) "" else remainder.substring(paramSeparator + 1)
+            // null means "no ';' at all", which is different from a ';' followed by
+            // nothing - the latter is malformed and must not be silently accepted.
+            val paramPart = if (paramSeparator < 0) null else remainder.substring(paramSeparator + 1)
 
             // Split on the LAST '@': RFC 3261 allows '@' inside the user part.
             val atIndex = authority.lastIndexOf('@')
@@ -187,8 +189,8 @@ class SipUri private constructor(
             }
         }
 
-        private fun parseParameters(paramPart: String): Outcome<Map<String, String>, SipUriError> {
-            if (paramPart.isEmpty()) return success(emptyMap())
+        private fun parseParameters(paramPart: String?): Outcome<Map<String, String>, SipUriError> {
+            if (paramPart == null) return success(emptyMap())
 
             val parameters = LinkedHashMap<String, String>()
             for (token in paramPart.split(';')) {
@@ -214,9 +216,15 @@ class SipUri private constructor(
             val name = host.removeSuffix(".")
             if (name.isEmpty()) return false
 
-            return name.split('.').all { label ->
+            val labels = name.split('.')
+            val labelsAreValid = labels.all { label ->
                 label.length in 1..MAX_LABEL_LENGTH && HOSTNAME_LABEL.matches(label)
             }
+
+            // RFC 1123: the top label must not be all digits. Without this a typo'd
+            // address such as 1.2.3.256 fails IPv4 validation and then silently
+            // succeeds as a DNS name, failing much later at resolution time.
+            return labelsAreValid && !labels.last().all(Char::isDigit)
         }
 
         private fun isValidIpV4(host: String): Boolean {
