@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import com.whatsappv2.R
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.engine.SipRegistrar
@@ -134,7 +135,7 @@ class RegistrationService : Service() {
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(summary.title)
             .setContentText(summary.text)
-            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            .setSmallIcon(R.drawable.ic_notification_call)
             .setOngoing(true)
             // Silent by default: a registration notification that makes a sound every
             // time the network changes is one the user turns off, taking the call
