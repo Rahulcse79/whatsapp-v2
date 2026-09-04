@@ -99,6 +99,21 @@ jobs:
 
       # Task 3 done-when #2: "zero warnings suppressed by baseline abuse".
       # A baseline file is how suppressed findings quietly become permanent.
+      # Task 13 done-when #2: CI must FAIL if an architecture rule is violated. Planting
+      # a violation and requiring the failure is the only way to know the gate is live -
+      # the same discipline as the :domain and android.util.Log negative tests.
+      - name: Assert the architecture rules gate the build
+        run: |
+          PROBE=domain/src/main/kotlin/com/whatsappv2/domain/ArchProbe.kt
+          printf 'package com.whatsappv2.domain\n\nimport android.content.Context\n\nclass ArchProbe(val c: Context)\n' > "$PROBE"
+          if ./gradlew :test:arch:test -q >/dev/null 2>&1; then
+            rm -f "$PROBE"
+            echo "::error::The architecture rules did NOT fail on an Android import in :domain."
+            exit 1
+          fi
+          rm -f "$PROBE"
+          echo "OK - an architecture violation fails the build."
+
       - name: Assert no detekt or lint baseline files
         run: |
           found=$(find . -type f \
@@ -205,14 +220,14 @@ jobs:
           exit $missing
 
       - name: Coverage
-        run: ./gradlew koverXmlReport --stacktrace
+        run: ./gradlew koverXmlReport koverHtmlReport --stacktrace
 
       # Task 5 done-when #1: the Outcome type must be >= 95% line-covered.
       # Task 68 will extend this to >= 80% across :domain and :data:*.
       - name: Assert coverage thresholds
         run: |
           python3 - <<'PY'
-          import glob, sys, xml.etree.ElementTree as ET
+          import glob, os, sys, xml.etree.ElementTree as ET
 
           # package path -> minimum line coverage percent
           THRESHOLDS = {
@@ -245,6 +260,7 @@ jobs:
                           totals[name] = (m + missed, cv + covered)
 
           failed = False
+          rows = []
           for name, (missed, covered) in sorted(totals.items()):
               total = missed + covered
               pct = 100.0 * covered / total if total else 100.0
@@ -256,6 +272,19 @@ jobs:
                       print(f"::error::{name} line coverage {pct:.1f}% < {required}%")
                       failed = True
               print(f"{pct:6.1f}%  {covered:5d}/{total:-5d}  {name}{flag}")
+              rows.append((name, pct, covered, total, required))
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a") as fh:
+                  fh.write("### Coverage\n\n")
+                  fh.write("| Package | Line coverage | Covered / total | Gate |\n")
+                  fh.write("|---|---:|---:|---:|\n")
+                  for name, pct, covered, total, required in rows:
+                      gate = f"{required}%" if required is not None else "-"
+                      mark = "" if required is None or pct >= required else " :x:"
+                      fh.write(f"| `{name}` | {pct:.1f}%{mark} | {covered}/{total} | {gate} |\n")
+                  fh.write("\nFull HTML reports are in the **coverage** artifact.\n\n")
 
           for name in THRESHOLDS:
               if name not in totals:
@@ -275,6 +304,17 @@ jobs:
                               print(f"  {sf.get('name')}: lines {', '.join(missed)}")
           sys.exit(1 if failed else 0)
           PY
+
+      # Coverage is a deliverable, not just a gate: Task 68 has to report real measured
+      # numbers, and a report that only exists inside a log line cannot be reviewed.
+      - name: Publish coverage reports
+        uses: actions/upload-artifact@v5
+        with:
+          name: coverage-${{ github.sha }}
+          path: |
+            **/build/reports/kover/**
+          if-no-files-found: error
+          retention-days: 30
 
       # ---------------------------------------------------------------- APK
       # Every push produces a downloadable, installable debug APK. Debug, not release:
@@ -324,3 +364,117 @@ jobs:
             **/build/reports/**
             **/build/outputs/logs/**
           retention-days: 7
+
+  # ------------------------------------------------------------------ security
+  # §7: "run a vulnerability check in CI". Resolves the REAL dependency tree - not
+  # just the direct entries in the version catalog - and queries OSV.dev, which
+  # aggregates GitHub Advisories and the CVE feeds.
+  #
+  # Written against the OSV HTTP API rather than a scanner action: the query and the
+  # failure condition are both visible here, so a green result means something
+  # specific rather than "some action exited zero".
+  vulnerabilities:
+    name: Dependency vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Ensure the Android platform this build compiles against is present
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          COMPILE_SDK=$(grep -E '^compileSdk' gradle/libs.versions.toml | grep -oE '[0-9]+')
+          if compgen -G "$SDK/platforms/android-$COMPILE_SDK" > /dev/null ||
+             compgen -G "$SDK/platforms/android-$COMPILE_SDK.*" > /dev/null; then
+            echo "OK - a platform for API $COMPILE_SDK is already installed."
+            exit 0
+          fi
+          yes 2>/dev/null | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-$COMPILE_SDK"
+
+      - name: Resolve the runtime dependency tree
+        run: ./gradlew :app:dependencies --configuration releaseRuntimeClasspath > deps.txt
+
+      - name: Query OSV.dev
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys, urllib.request
+
+          # Gradle prints "group:name:version", sometimes with a conflict resolution
+          # "-> version". The resolved version is what actually ships, so it wins.
+          COORD = re.compile(
+              r"([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):"
+              r"([A-Za-z0-9_.\-+]+)(?:\s*->\s*([A-Za-z0-9_.\-+]+))?"
+          )
+
+          packages = {}
+          for line in open("deps.txt"):
+              if "project :" in line:
+                  continue
+              m = COORD.search(line)
+              if m:
+                  group, name, declared, resolved = m.groups()
+                  packages[(f"{group}:{name}", resolved or declared)] = True
+
+          coords = sorted(packages)
+          print(f"Resolved {len(coords)} unique dependencies")
+          if not coords:
+              print("::error::No dependencies parsed - the scan would pass vacuously.")
+              sys.exit(1)
+
+          allow = set()
+          path = ".github/osv-allowlist.txt"
+          if os.path.exists(path):
+              for line in open(path):
+                  entry = line.split("#")[0].strip()
+                  if entry:
+                      allow.add(entry)
+
+          findings = []
+          CHUNK = 500
+          for i in range(0, len(coords), CHUNK):
+              batch = coords[i:i + CHUNK]
+              body = json.dumps({
+                  "queries": [
+                      {"package": {"name": n, "ecosystem": "Maven"}, "version": v}
+                      for n, v in batch
+                  ]
+              }).encode()
+              req = urllib.request.Request(
+                  "https://api.osv.dev/v1/querybatch",
+                  data=body,
+                  headers={"Content-Type": "application/json"},
+              )
+              with urllib.request.urlopen(req, timeout=60) as resp:
+                  results = json.load(resp).get("results", [])
+              for (name, version), result in zip(batch, results):
+                  for vuln in result.get("vulns", []) or []:
+                      if vuln["id"] not in allow:
+                          findings.append((name, version, vuln["id"]))
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if findings:
+              print(f"::error::{len(findings)} known vulnerability(ies) in dependencies")
+              for name, version, vid in findings:
+                  print(f"  {name}:{version}  {vid}  https://osv.dev/vulnerability/{vid}")
+              if summary:
+                  with open(summary, "a") as fh:
+                      fh.write("### Vulnerable dependencies\n\n")
+                      fh.write("| Dependency | Version | Advisory |\n|---|---|---|\n")
+                      for name, version, vid in findings:
+                          fh.write(f"| `{name}` | {version} | [{vid}](https://osv.dev/vulnerability/{vid}) |\n")
+              sys.exit(1)
+
+          print(f"OK - no known vulnerabilities across {len(coords)} dependencies.")
+          if summary:
+              with open(summary, "a") as fh:
+                  fh.write(f"### Dependency vulnerabilities\n\nNone across {len(coords)} resolved dependencies.\n\n")
+          PY

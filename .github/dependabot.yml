@@ -1,0 +1,23 @@
+# Keeps dependencies current. Complements the vulnerability gate in ci.yml: Dependabot
+# proposes upgrades, the gate refuses to ship a known-vulnerable one (§7).
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR per related set, so a Kotlin bump does not arrive as six PRs that
+      # each fail because they are only half of the change.
+      kotlin:
+        patterns: ["org.jetbrains.kotlin*", "com.google.devtools.ksp*"]
+      androidx:
+        patterns: ["androidx.*"]
+      testing:
+        patterns: ["*junit*", "*robolectric*", "*turbine*", "*mockk*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

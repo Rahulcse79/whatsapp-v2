@@ -1,0 +1,5 @@
+# Vulnerabilities knowingly accepted, one OSV id per line, each with a reason and a
+# review date. An empty allowlist is the goal; an entry here is a decision someone
+# made, not a default.
+#
+# Format:  OSV-ID  # reason (reviewed YYYY-MM-DD)
