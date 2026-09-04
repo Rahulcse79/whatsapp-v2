@@ -21,6 +21,7 @@ class AndroidLibraryConventionPlugin : Plugin<Project> {
         // applying that plugin is a hard error ("no longer required for Kotlin support
         // since AGP 9.0"). See https://kotl.in/gradle/agp-built-in-kotlin
         pluginManager.apply("whatsappv2.detekt")
+        pluginManager.apply("org.jetbrains.kotlinx.kover")
 
         val javaTarget = javaVersionOf(libs.intVersion("jvmToolchain"))
 

@@ -17,6 +17,7 @@ class JvmLibraryConventionPlugin : Plugin<Project> {
         pluginManager.apply("org.jetbrains.kotlin.jvm")
         pluginManager.apply("java-library")
         pluginManager.apply("whatsappv2.detekt")
+        pluginManager.apply("org.jetbrains.kotlinx.kover")
 
         configureKotlin()
 

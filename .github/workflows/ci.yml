@@ -147,6 +147,72 @@ jobs:
           cp "$RUNNER_TEMP/domain.bak" domain/build.gradle.kts
           echo "OK - :domain rejects Android dependencies at build time."
 
+      # Task 5 done-when #2 — the ban on android.util.Log must be ENFORCED, not just
+      # configured. Plant a violation in a module that is not exempt and require detekt
+      # to fail. Uses a here-string via printf: a heredoc terminator at column 0 would
+      # break the surrounding YAML block scalar.
+      - name: Assert android.util.Log is rejected outside the logging facade
+        run: |
+          PROBE=data/sip/src/main/kotlin/com/whatsappv2/data/sip/LogProbe.kt
+          mkdir -p "$(dirname "$PROBE")"
+          printf 'package com.whatsappv2.data.sip\n\nimport android.util.Log\n\nobject LogProbe {\n    fun leak() {\n        Log.d("probe", "should be rejected")\n    }\n}\n' > "$PROBE"
+          if ./gradlew :data:sip:detekt -q >/dev/null 2>&1; then
+            rm -f "$PROBE"
+            echo "::error::detekt accepted android.util.Log outside the facade - the ban is NOT enforced (Task 5, DoD 12)."
+            exit 1
+          fi
+          rm -f "$PROBE"
+          echo "OK - android.util.Log is rejected outside the logging facade."
+
+      - name: Coverage
+        run: ./gradlew koverXmlReport --stacktrace
+
+      # Task 5 done-when #1: the Outcome type must be >= 95% line-covered.
+      # Task 68 will extend this to >= 80% across :domain and :data:*.
+      - name: Assert coverage thresholds
+        run: |
+          python3 - <<'PY'
+          import glob, sys, xml.etree.ElementTree as ET
+
+          # package path -> minimum line coverage percent
+          THRESHOLDS = {"com/whatsappv2/core/common/result": 95}
+
+          reports = glob.glob("**/build/reports/kover/report.xml", recursive=True)
+          if not reports:
+              print("::error::No Kover XML report found - the coverage step produced nothing.")
+              sys.exit(1)
+          print("reports:", reports)
+
+          totals = {}
+          for path in reports:
+              for pkg in ET.parse(path).getroot().iter("package"):
+                  name = pkg.get("name", "")
+                  for c in pkg.findall("counter"):
+                      if c.get("type") == "LINE":
+                          missed, covered = int(c.get("missed", 0)), int(c.get("covered", 0))
+                          m, cv = totals.get(name, (0, 0))
+                          totals[name] = (m + missed, cv + covered)
+
+          failed = False
+          for name, (missed, covered) in sorted(totals.items()):
+              total = missed + covered
+              pct = 100.0 * covered / total if total else 100.0
+              required = THRESHOLDS.get(name)
+              flag = ""
+              if required is not None:
+                  flag = f"  (required >= {required}%)"
+                  if pct < required:
+                      print(f"::error::{name} line coverage {pct:.1f}% < {required}%")
+                      failed = True
+              print(f"{pct:6.1f}%  {covered:5d}/{total:-5d}  {name}{flag}")
+
+          for name in THRESHOLDS:
+              if name not in totals:
+                  print(f"::error::No coverage data for {name} - is the package name right?")
+                  failed = True
+          sys.exit(1 if failed else 0)
+          PY
+
       - name: Upload build reports
         if: failure()
         uses: actions/upload-artifact@v5

@@ -21,6 +21,7 @@ plugins {
     // this the build fails at RUNTIME with NoClassDefFoundError when a convention
     // plugin tries to apply one.
     alias(libs.plugins.detekt) apply false
+    alias(libs.plugins.kover) apply false
 
     // Applied, not merely resolved, so `./gradlew detekt` has something to run and the
     // root build script is itself analysed.

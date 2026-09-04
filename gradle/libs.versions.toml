@@ -17,6 +17,7 @@ hilt = "2.60.1"
 desugar = "2.1.5"
 composeBom = "2026.08.00"
 coroutines = "1.11.0"
+kover = "0.9.9"
 
 jvmToolchain = "17"
 
@@ -63,6 +64,7 @@ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
+kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 
 # --- Convention plugins provided by the `build-logic` included build (Task 3) ---
