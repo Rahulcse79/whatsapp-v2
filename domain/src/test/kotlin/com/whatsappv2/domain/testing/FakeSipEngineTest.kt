@@ -1,4 +1,6 @@
-package com.whatsappv2.domain.engine
+package com.whatsappv2.domain.testing
+
+import com.whatsappv2.domain.engine.SipError
 
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.getOrNull
