@@ -1,4 +1,8 @@
 pluginManagement {
+    // Convention plugins (Task 3). An included build, so they are compiled and
+    // applied without publishing anything to a repository.
+    includeBuild("build-logic")
+
     repositories {
         google {
             content {

@@ -49,7 +49,29 @@ jobs:
         run: ls -1 "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/platforms" 2>/dev/null | sort -V || echo "no platforms dir"
 
       - name: Build
-        run: ./gradlew build --stacktrace
+        # warningsAsErrors is CI-only: locally a deprecation warning should not stop
+        # work, but in CI warnings must not be allowed to accumulate.
+        run: ./gradlew build --stacktrace -PwarningsAsErrors=true
+
+      - name: Static analysis
+        # `lint` is added to this command in Task 4. It is an Android-only task and
+        # no Android module exists yet, so asking for it now would fail on a missing
+        # task rather than on a real defect.
+        run: ./gradlew detekt --stacktrace
+
+      # Task 3 done-when #2: "zero warnings suppressed by baseline abuse".
+      # A baseline file is how suppressed findings quietly become permanent.
+      - name: Assert no detekt or lint baseline files
+        run: |
+          found=$(find . -type f \
+                    \( -name "detekt-baseline*.xml" -o -name "lint-baseline.xml" -o -name "baseline.xml" \) \
+                    -not -path "./.git/*" || true)
+          if [ -n "$found" ]; then
+            echo "::error::Baseline files found — fix the findings instead of baselining them:"
+            echo "$found"
+            exit 1
+          fi
+          echo "OK — no baselines."
 
       # Task 2 done-when #2: no Groovy build files anywhere.
       - name: Assert no Groovy build files
@@ -85,5 +107,7 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: build-reports
-          path: "**/build/reports/**"
+          path: |
+            **/build/reports/**
+            **/build/outputs/logs/**
           retention-days: 7

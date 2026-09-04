@@ -1,9 +1,9 @@
 # Single source of truth for every dependency version (Task 2, done-when #3).
 # No version literal may appear in any build.gradle.kts.
 #
-# Versions are pinned conservatively and verified by CI resolution, not asserted
-# from memory. The bootstrap workflow prints the latest available AGP / Kotlin /
-# Gradle so bumps are made from evidence.
+# Every version here comes from the "Report dependency versions" workflow, which
+# queries Maven Central and Google Maven. None is written from memory — doing that
+# in Task 2 produced pins that were several major versions stale.
 
 [versions]
 # --- Build toolchain (pinned from the bootstrap workflow's version report,
@@ -11,6 +11,11 @@
 #     available at the time of pinning) ---
 agp = "9.4.0"
 kotlin = "2.4.10"
+ksp = "2.3.11"
+detekt = "1.23.8"
+hilt = "2.60.1"
+desugar = "2.1.5"
+composeBom = "2026.08.00"
 
 jvmToolchain = "17"
 
@@ -24,15 +29,38 @@ compileSdk = "36"
 targetSdk = "36"
 
 [libraries]
-# Populated from Task 3 onward. Deliberately empty: Task 2's module list is empty,
-# so there is nothing to depend on yet, and a catalog full of unused entries is noise.
+# Only entries that are actually used. An unused catalog entry is noise.
 
-# Used by the convention plugins in Task 3 to apply AGP/Kotlin programmatically.
+# --- Consumed by the build-logic convention plugins (Task 3) ---
 android-gradlePlugin = { group = "com.android.tools.build", name = "gradle", version.ref = "agp" }
 kotlin-gradlePlugin = { group = "org.jetbrains.kotlin", name = "kotlin-gradle-plugin", version.ref = "kotlin" }
+ksp-gradlePlugin = { group = "com.google.devtools.ksp", name = "symbol-processing-gradle-plugin", version.ref = "ksp" }
+detekt-gradlePlugin = { group = "io.gitlab.arturbosch.detekt", name = "detekt-gradle-plugin", version.ref = "detekt" }
+
+# ktlint rules reach the build through detekt-formatting rather than a second
+# plugin: the jlleitschuh ktlint-gradle plugin is not published to Maven Central.
+detekt-formatting = { group = "io.gitlab.arturbosch.detekt", name = "detekt-formatting", version.ref = "detekt" }
+
+# --- Runtime ---
+android-desugarJdkLibs = { group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugar" }
+hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
+hilt-compiler = { group = "com.google.dagger", name = "hilt-android-compiler", version.ref = "hilt" }
+compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
+hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
+
+# --- Convention plugins provided by the `build-logic` included build (Task 3) ---
+whatsappv2-android-application = { id = "whatsappv2.android.application" }
+whatsappv2-android-library = { id = "whatsappv2.android.library" }
+whatsappv2-android-compose = { id = "whatsappv2.android.compose" }
+whatsappv2-jvm-library = { id = "whatsappv2.jvm.library" }
+whatsappv2-hilt = { id = "whatsappv2.hilt" }
+whatsappv2-detekt = { id = "whatsappv2.detekt" }

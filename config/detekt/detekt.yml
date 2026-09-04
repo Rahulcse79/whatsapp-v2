@@ -1,0 +1,66 @@
+# Overrides on top of detekt's defaults (buildUponDefaultConfig = true).
+# Only rules we deliberately disagree with are listed — everything else stays at
+# detekt's default so a detekt upgrade brings new rules in rather than silently
+# skipping them.
+
+build:
+  maxIssues: 0
+
+complexity:
+  LongParameterList:
+    # Compose functions and SipAccount legitimately take many parameters (§5.1 has
+    # 18 account fields). Constructor injection is not a smell here.
+    functionThreshold: 8
+    constructorThreshold: 20
+    ignoreDefaultParameters: true
+  TooManyFunctions:
+    thresholdInFiles: 20
+    thresholdInClasses: 20
+    ignorePrivate: true
+    ignoreOverridden: true
+
+style:
+  MagicNumber:
+    ignorePropertyDeclaration: true
+    ignoreCompanionObjectPropertyDeclaration: true
+    ignoreAnnotation: true
+    ignoreNamedArgument: true
+  MaxLineLength:
+    maxLineLength: 120
+  ForbiddenComment:
+    # A TODO must carry a ticket reference, not sit as an anonymous reminder.
+    # Prototype markers are exactly what §1 forbids shipping.
+    comments:
+      - reason: "Reference a task number, e.g. TODO(Task 12)."
+        value: "FIXME:"
+      - reason: "Reference a task number, e.g. TODO(Task 12)."
+        value: "STOPSHIP:"
+  ReturnCount:
+    max: 3
+    excludeGuardClauses: true
+
+naming:
+  FunctionNaming:
+    # @Composable functions are PascalCase by convention.
+    ignoreAnnotated: ["Composable"]
+
+exceptions:
+  TooGenericExceptionCaught:
+    active: true
+  SwallowedException:
+    active: true
+
+formatting:
+  # Supplied by detekt-formatting (ktlint rules).
+  active: true
+  android: true
+  MaximumLineLength:
+    maxLineLength: 120
+  ArgumentListWrapping:
+    active: true
+  TrailingCommaOnCallSite:
+    active: true
+    useTrailingCommaOnCallSite: true
+  TrailingCommaOnDeclarationSite:
+    active: true
+    useTrailingCommaOnDeclarationSite: true
