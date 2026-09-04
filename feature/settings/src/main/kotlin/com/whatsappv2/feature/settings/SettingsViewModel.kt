@@ -35,11 +35,11 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
 
     val uiState: StateFlow<SettingsUiState> = repository.observeSettings()
-        .map { SettingsUiState(it, traceAvailability.isAvailable) }
+        .map { SettingsUiState(it, traceAvailability.isAvailable()) }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(SUBSCRIPTION_TIMEOUT_MILLIS),
-            initialValue = SettingsUiState(traceToggleAvailable = traceAvailability.isAvailable),
+            initialValue = SettingsUiState(traceToggleAvailable = traceAvailability.isAvailable()),
         )
 
     fun setDtmfMode(mode: DtmfMode) = viewModelScope.launch { repository.setDtmfMode(mode) }
@@ -65,5 +65,7 @@ class SettingsViewModel @Inject constructor(
  * both answers. The real value comes from a build-type source set, not a runtime check.
  */
 fun interface TraceAvailability {
-    val isAvailable: Boolean
+    // A function, not a property: a `fun interface` must have exactly one abstract
+    // FUNCTION, and abstract properties are not allowed in one at all.
+    fun isAvailable(): Boolean
 }
