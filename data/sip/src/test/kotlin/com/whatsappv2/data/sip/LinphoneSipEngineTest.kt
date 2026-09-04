@@ -204,7 +204,12 @@ class LinphoneSipEngineTest {
             assertTrue(awaitItem().isEmpty())
 
             engine.register(account)
-            assertEquals(RegistrationState.Registering, awaitItem()[account.id])
+            advanceUntilIdle()
+            // expectMostRecentItem, not awaitItem: StateFlow conflates, so asserting a
+            // specific intermediate emission is a race rather than a property. That the
+            // state PASSES THROUGH Registering is covered by its own test, which reads the
+            // value synchronously before the stack answers.
+            assertEquals(RegistrationState.Registering, expectMostRecentItem()[account.id])
 
             gateway.emit(account.id.value, StackRegistrationState.OK)
             advanceUntilIdle()
