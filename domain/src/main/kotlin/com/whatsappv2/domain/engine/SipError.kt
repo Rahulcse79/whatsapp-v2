@@ -154,22 +154,39 @@ sealed interface SipError {
      * Signalling could not be delivered: socket closed, TLS handshake failed, or the
      * certificate was rejected.
      *
-     * Never carries a response code — nothing came back to carry one.
+     * Raised locally: nothing came back from the wire, so [responseCode] is always
+     * `null`.
      */
     data class TransportFailure(val detail: TransportFailureKind) : SipError
 
-    /** No usable network at all. Distinct from a server that is not answering. */
+    /**
+     * No usable network at all. Distinct from a server that is not answering.
+     *
+     * Raised locally: no SIP response maps to this.
+     */
     data object NetworkUnavailable : SipError
 
     // ---------------------------------------------------------------- local
 
-    /** The operation named an account the engine does not know. A programming error. */
+    /**
+     * The operation named an account the engine does not know. A programming error.
+     *
+     * Raised locally: no SIP response maps to this.
+     */
     data object UnknownAccount : SipError
 
-    /** The operation named a call that has already ended or never existed. */
+    /**
+     * The operation named a call that has already ended or never existed.
+     *
+     * Raised locally: no SIP response maps to this.
+     */
     data object UnknownCall : SipError
 
-    /** The account must be registered first. */
+    /**
+     * The account must be registered first.
+     *
+     * Raised locally: no SIP response maps to this.
+     */
     data object NotRegistered : SipError
 
     /**
@@ -179,12 +196,19 @@ sealed interface SipError {
      */
     data class InvalidState(val detail: String) : SipError
 
-    /** The engine has not been started, or has been shut down. */
+    /**
+     * The engine has not been started, or has been shut down.
+     *
+     * Raised locally: no SIP response maps to this.
+     */
     data object EngineUnavailable : SipError
 
     /**
      * The stack reported something with no domain meaning. Carries whatever it said so
      * a bug report is actionable; never shown to the user verbatim.
+     *
+     * Maps: any response code outside the 4xx/5xx/6xx classes, and stack-level errors
+     * with no response at all — in which case [responseCode] is `null`.
      */
     data class Unexpected(val detail: String, override val responseCode: Int? = null) : SipError
 
