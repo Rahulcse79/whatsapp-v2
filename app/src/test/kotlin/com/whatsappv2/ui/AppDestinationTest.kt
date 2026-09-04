@@ -1,7 +1,7 @@
 package com.whatsappv2.ui
 
 import com.whatsappv2.ui.navigation.AppDestination
-import kotlin.test.Test
+import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
