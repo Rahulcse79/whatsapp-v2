@@ -38,6 +38,11 @@ object ArchitectureRules {
             IMPORT.findAll(text).map { it.groupValues[1] }.toList()
         }
 
+        /** True when this file is Compose UI, and therefore subject to the style rules. */
+        val usesCompose: Boolean by lazy {
+            imports.any { it.startsWith("androidx.compose") }
+        }
+
         /** [text] with comments removed, so text rules cannot fire on prose. */
         val code: String by lazy {
             text.replace(BLOCK_COMMENT, "").replace(LINE_COMMENT, "")
@@ -228,23 +233,21 @@ object ArchitectureRules {
      * Applied to UI source only — `:domain` has no styling to hardcode, and its
      * constants are not dimensions.
      */
-    fun stylingStaysInTheDesignSystem(files: List<SourceFile>): List<Violation> = buildList {
-        for (file in files) {
-            if (file.isUnder("designsystem")) continue
-            if (!file.code.contains("androidx.compose") && !file.imports.any { it.startsWith("androidx.compose") }) {
-                continue
+    fun stylingStaysInTheDesignSystem(files: List<SourceFile>): List<Violation> =
+        files.filterNot { it.isUnder("designsystem") }
+            .filter { it.usesCompose }
+            .flatMap { file ->
+                COLOR_LITERAL.findAll(file.code).map {
+                    Violation(file.relativePath, "hardcodes a colour (${it.value}); use MaterialTheme.colorScheme")
+                } + TEXT_STYLE.findAll(file.code).map {
+                    Violation(file.relativePath, "constructs a TextStyle; use MaterialTheme.typography")
+                } + DIMENSION_LITERAL.findAll(file.code).map {
+                    Violation(
+                        file.relativePath,
+                        "hardcodes a dimension (${it.value.trim()}); use AppTheme.spacing",
+                    )
+                }
             }
-            COLOR_LITERAL.findAll(file.code).forEach {
-                add(Violation(file.relativePath, "hardcodes a colour (${it.value}); use MaterialTheme.colorScheme"))
-            }
-            TEXT_STYLE.findAll(file.code).forEach {
-                add(Violation(file.relativePath, "constructs a TextStyle; use MaterialTheme.typography"))
-            }
-            DIMENSION_LITERAL.findAll(file.code).forEach {
-                add(Violation(file.relativePath, "hardcodes a dimension (${it.value.trim()}); use AppTheme.spacing"))
-            }
-        }
-    }
 
     // ================================================================ patterns
 
