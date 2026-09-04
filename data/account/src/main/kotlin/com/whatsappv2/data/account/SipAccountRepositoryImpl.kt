@@ -4,7 +4,6 @@ import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.failure
 import com.whatsappv2.core.common.result.success
-import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.core.common.time.Clock
 import com.whatsappv2.data.account.crypto.CipherError
 import com.whatsappv2.data.account.crypto.CredentialCipher
@@ -61,21 +60,41 @@ class SipAccountRepositoryImpl @Inject constructor(
             return failure(AccountRepositoryError.DuplicateIdentity(account.username, account.domain))
         }
 
-        val password = cipher.encrypt(account.password)
-        if (password is Outcome.Failure) return failure(password.error.toRepositoryError())
+        return when (val encrypted = encryptCredentials(account)) {
+            is Outcome.Failure -> encrypted
+            is Outcome.Success -> persist(account, encrypted.value)
+        }
+    }
 
-        val turnPassword = account.turn?.password?.takeIf { !it.isEmpty }?.let { secret ->
-            when (val encrypted = cipher.encrypt(secret)) {
+    /** The account's secrets, ciphered. Extracted so [save] stays a single decision. */
+    private fun encryptCredentials(
+        account: SipAccount,
+    ): Outcome<EncryptedCredentials, AccountRepositoryError> {
+        val password = when (val encrypted = cipher.encrypt(account.password)) {
+            is Outcome.Failure -> return failure(encrypted.error.toRepositoryError())
+            is Outcome.Success -> encrypted.value
+        }
+
+        val turnSecret = account.turn?.password?.takeIf { it.length > 0 }
+        val turnPassword = turnSecret?.let {
+            when (val encrypted = cipher.encrypt(it)) {
                 is Outcome.Failure -> return failure(encrypted.error.toRepositoryError())
                 is Outcome.Success -> encrypted.value
             }
         }
 
+        return success(EncryptedCredentials(password, turnPassword))
+    }
+
+    private suspend fun persist(
+        account: SipAccount,
+        credentials: EncryptedCredentials,
+    ): Outcome<Unit, AccountRepositoryError> {
         val existing = dao.findById(account.id.value)
         val entity = AccountMapper.toEntity(
             account = account,
-            passwordCiphertext = (password as Outcome.Success).value,
-            turnPasswordCiphertext = turnPassword,
+            passwordCiphertext = credentials.password,
+            turnPasswordCiphertext = credentials.turnPassword,
             // Creation time is preserved on update so the list order does not jump when
             // an account is edited.
             createdAtEpochMillis = existing?.createdAtEpochMillis ?: clock.nowEpochMillis(),
@@ -88,6 +107,8 @@ class SipAccountRepositoryImpl @Inject constructor(
             if (entity.isDefault || dao.count() == 1) dao.setDefault(entity.id)
         }
     }
+
+    private data class EncryptedCredentials(val password: String, val turnPassword: String?)
 
     override suspend fun delete(id: AccountId): Outcome<Unit, AccountRepositoryError> {
         dao.findById(id.value) ?: return failure(AccountRepositoryError.NotFound)
