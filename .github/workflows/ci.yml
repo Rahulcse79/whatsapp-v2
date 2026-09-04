@@ -12,7 +12,11 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Deliberately NOT cancelling in-progress runs. Cancelling is the usual choice - only
+  # the newest commit matters - but when pushes arrive faster than a build completes, it
+  # means no run ever finishes and no commit is ever verified. Letting them run costs
+  # minutes and buys an actual result per commit.
+  cancel-in-progress: false
 
 permissions:
   contents: read

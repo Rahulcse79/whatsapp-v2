@@ -62,7 +62,7 @@ internal class RealLinphoneCoreGateway @Inject constructor(
             core: Core,
             account: Account,
             state: RegistrationState,
-            message: String?,
+            message: String,
         ) {
             val key = accountsByKey.entries.firstOrNull { it.value == account }?.key ?: return
             events.tryEmit(

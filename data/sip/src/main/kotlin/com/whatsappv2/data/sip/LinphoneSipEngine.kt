@@ -45,7 +45,7 @@ import javax.inject.Singleton
  * than the life of a registration.
  */
 @Singleton
-class LinphoneSipEngine @Inject constructor(
+internal class LinphoneSipEngine @Inject constructor(
     private val gateway: LinphoneCoreGateway,
     private val accounts: SipAccountRepository,
     private val scope: CoroutineScope,
