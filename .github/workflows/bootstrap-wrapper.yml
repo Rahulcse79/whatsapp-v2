@@ -53,7 +53,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: ${{ inputs.gradle-version }}
 

@@ -34,7 +34,7 @@ jobs:
       # Checks the wrapper jar against Gradle's published checksums — the jar is a
       # binary committed to the repo, so its provenance is verified, not trusted.
       - name: Validate wrapper checksum
-        uses: gradle/actions/wrapper-validation@v4
+        uses: gradle/actions/wrapper-validation@v6
 
       # A workflow with invalid YAML never runs, so it cannot validate itself — but it
       # can validate its siblings. This caught a heredoc terminator at column 0 that
@@ -60,7 +60,7 @@ jobs:
           java-version: "21"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       # API 37 ships as MINOR-versioned platforms (android-37.0, android-37.1,
       # android-37.2) - there is no plain "android-37" directory, so an exact-match
@@ -386,7 +386,7 @@ jobs:
           java-version: "21"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Ensure the Android platform this build compiles against is present
         run: |
