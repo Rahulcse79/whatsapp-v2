@@ -14,7 +14,7 @@ on:
       gradle-version:
         description: "Gradle version to generate the wrapper for"
         required: true
-        default: "8.13"
+        default: "9.7.1"
 
 permissions:
   contents: write
@@ -24,13 +24,13 @@ jobs:
     name: Generate and commit the Gradle wrapper
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Report latest available toolchain versions
         run: |
@@ -43,6 +43,13 @@ jobs:
           echo "--- Kotlin Gradle plugin (Maven Central) ---"
           curl -sS https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-gradle-plugin/maven-metadata.xml \
             | grep -oE '<version>[0-9]+\.[0-9]+\.[0-9]+</version>' | tail -12 || true
+          echo "--- KSP (Maven Central) — needed from Task 3 (Hilt) ---"
+          curl -sS https://repo1.maven.org/maven2/com/google/devtools/ksp/symbol-processing-gradle-plugin/maven-metadata.xml \
+            | grep -oE '<version>[^<]+</version>' | tail -8 || true
+          echo "::endgroup::"
+
+          echo "::group::Android SDK platforms installed on this runner (evidence for compileSdk)"
+          ls -1 "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/platforms" 2>/dev/null | sort -V || echo "no platforms dir"
           echo "::endgroup::"
 
       - name: Set up Gradle
@@ -55,7 +62,10 @@ jobs:
 
       - name: Commit wrapper
         run: |
-          if git diff --quiet -- gradlew gradlew.bat gradle/wrapper; then
+          # Use `git status --porcelain`, NOT `git diff`: a freshly generated wrapper is
+          # UNTRACKED, and `git diff` ignores untracked files, so it reports a clean tree
+          # and the commit gets skipped. This bit us on the first run.
+          if [ -z "$(git status --porcelain -- gradlew gradlew.bat gradle/wrapper)" ]; then
             echo "Wrapper already up to date — nothing to commit."
             exit 0
           fi
@@ -66,3 +76,5 @@ jobs:
           git add gradlew gradlew.bat gradle/wrapper
           git commit -m "build: add Gradle ${{ inputs.gradle-version }} wrapper (Task 2)"
           git push
+          echo "Committed wrapper:"
+          git show --stat --oneline HEAD | head -10

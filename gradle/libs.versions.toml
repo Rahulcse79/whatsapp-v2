@@ -6,18 +6,22 @@
 # Gradle so bumps are made from evidence.
 
 [versions]
-# --- Build toolchain ---
-agp = "8.9.0"
-kotlin = "2.1.10"
-ksp = "2.1.10-1.0.31"
+# --- Build toolchain (pinned from the bootstrap workflow's version report,
+#     not from memory: Gradle 9.7.1 / AGP 9.4.0 / Kotlin 2.4.10 were the latest
+#     available at the time of pinning) ---
+agp = "9.4.0"
+kotlin = "2.4.10"
+
 jvmToolchain = "17"
 
 # --- Android SDK levels (§3) ---
-# minSdk 26 is a hard requirement. compileSdk/targetSdk are verified in Task 4,
-# where the first module actually applies the Android plugin.
+# minSdk 26 is a hard requirement (§3). compileSdk/targetSdk are asserted against
+# the platforms actually installed on the runner by the CI "Report Android SDK
+# platforms" step, and are first EXERCISED in Task 4, where a module applies the
+# Android plugin. Nothing in Task 2 reads them.
 minSdk = "26"
-compileSdk = "35"
-targetSdk = "35"
+compileSdk = "36"
+targetSdk = "36"
 
 [libraries]
 # Populated from Task 3 onward. Deliberately empty: Task 2's module list is empty,
@@ -32,4 +36,3 @@ android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
-ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
