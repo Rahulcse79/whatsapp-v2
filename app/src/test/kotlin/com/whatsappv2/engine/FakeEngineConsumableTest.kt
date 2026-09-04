@@ -1,11 +1,11 @@
 package com.whatsappv2.engine
 
 import com.whatsappv2.core.common.result.getOrNull
-import com.whatsappv2.domain.testing.FakeSipEngine
 import com.whatsappv2.domain.engine.SipEngine
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.SipUri
+import com.whatsappv2.domain.testing.FakeSipEngine
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import kotlin.test.assertEquals

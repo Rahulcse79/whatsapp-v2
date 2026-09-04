@@ -1,13 +1,12 @@
 package com.whatsappv2.domain.testing
 
-import com.whatsappv2.domain.engine.SipError
-
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.HoldParty
+import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.CodecPreferences
