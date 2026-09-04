@@ -84,13 +84,21 @@ fun SettingsScreen(
 
             ChoiceGroup(
                 title = "Default media encryption",
-                description = "Applies to new accounts. Mandatory means a call fails " +
-                    "rather than connecting without encryption.",
+                description = "Applies to new accounts. Existing accounts keep their own.",
                 options = SrtpPolicy.entries,
                 selected = state.settings.defaultSrtpPolicy,
                 labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
                 onSelect = onSrtpPolicyChange,
             )
+            if (state.settings.defaultSrtpPolicy == SrtpPolicy.MANDATORY) {
+                // The consequence is a failed call, not a warning banner, so it is stated
+                // in the same words the account editor uses (DoD 13).
+                Text(
+                    text = "Calls will fail rather than connect without encryption.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             ChoiceGroup(
                 title = "Audio route",
