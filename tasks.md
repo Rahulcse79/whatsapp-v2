@@ -591,9 +591,36 @@ Build:
   `CAMERA`, `POST_NOTIFICATIONS`, `BLUETOOTH_CONNECT`, `READ_CONTACTS`, `MANAGE_OWN_CALLS`.
 
 Done when:
-- [ ] All top-level destinations are reachable and survive rotation
-- [ ] Each permission has a rationale string and a defined denied-state behaviour
-- [ ] Permanently-denied permissions route the user to app settings with an explanation
+- [x] All top-level destinations are reachable and survive rotation
+      → `AppRootNavigationTest` renders the real shell, clicks every tab and asserts the
+      screen changed, then uses `StateRestorationTester` to prove the selection survives
+      a recreation. Route uniqueness is unit-tested separately, but that only proves the
+      routes differ — not that tapping one shows its screen.
+- [x] Each permission has a rationale string and a defined denied-state behaviour
+      → `AppPermission` carries `rationale`, `denialBehaviour` (BLOCKS_FEATURE or
+      DEGRADES_GRACEFULLY) and `deniedExplanation` for all six, unit-tested
+- [x] Permanently-denied permissions route the user to app settings with an explanation
+      → `PermissionCoordinator.appSettingsIntent()`, shown through the rationale sheet
+      with the denial explanation rather than the original rationale
+
+**Status: COMPLETE.** CI run 33889773989. **Phase 1 (Foundations) is finished.**
+
+Details worth keeping:
+- **Permanent denial needs a persisted "have we asked" record.**
+  `shouldShowRequestPermissionRationale` returns false *both* before the first request
+  and after a permanent denial; only that record separates them. An in-memory flag would
+  make every cold start look like a fresh install, and the settings route would never
+  appear.
+- `MANAGE_OWN_CALLS` is modelled as **install-time, not runtime** — it is `normal`
+  protection level. Requesting it at run time returns granted immediately, which looks
+  like a working flow while verifying nothing.
+- Rationale strings live beside the denial behaviour in `AppPermission`, so the reason a
+  permission is asked for and the consequence of refusing it cannot drift apart.
+- The selected tab is derived from the nav back stack, not held in a separate variable.
+  Two sources of truth is how a rotation ends up showing one screen with a different tab
+  highlighted — and the restoration test is what pins that down.
+- Screen headings deliberately differ from their tab labels; a title that repeats its tab
+  is redundant to read (and made the test matcher ambiguous, which is how it surfaced).
 
 ---
 
