@@ -1,5 +1,6 @@
 package com.whatsappv2.domain.model
 
+import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -92,9 +93,8 @@ class SipAccountTest {
 
     @Test
     fun `an explicit registrar overrides the domain`() {
-        val registrar = HostPort.parse("registrar.example.com:5070")
-        val account = account(registrar = (registrar as com.whatsappv2.core.common.result.Outcome.Success).value)
-        assertEquals("registrar.example.com:5070", account.effectiveRegistrar)
+        val registrar = checkNotNull(HostPort.parse("registrar.example.com:5070").getOrNull())
+        assertEquals("registrar.example.com:5070", account(registrar = registrar).effectiveRegistrar)
     }
 
     @Test

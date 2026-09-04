@@ -3,6 +3,7 @@ package com.whatsappv2.domain.validation
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.errorOrNull
 import com.whatsappv2.core.common.result.getOrNull
+import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.AudioCodec
 import com.whatsappv2.domain.model.NatPolicy
@@ -10,7 +11,6 @@ import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.model.VideoCodec
-import com.whatsappv2.core.common.secret.Secret
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -188,7 +188,8 @@ class AccountValidatorTest {
     fun `keepalive interval must be within bounds`() {
         assertTrue(reject(valid { copy(keepaliveIntervalSeconds = "1") }).isNotEmpty())
         assertTrue(reject(valid { copy(keepaliveIntervalSeconds = "6000") }).isNotEmpty())
-        assertEquals(45, accept(valid { copy(keepaliveIntervalSeconds = "45") }).account.natPolicy.keepaliveIntervalSeconds)
+        val account = accept(valid { copy(keepaliveIntervalSeconds = "45") }).account
+        assertEquals(45, account.natPolicy.keepaliveIntervalSeconds)
     }
 
     // ------------------------------------------------------------------ hosts
