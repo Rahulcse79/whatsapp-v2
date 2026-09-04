@@ -2,7 +2,7 @@ package com.whatsappv2.ui
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.StateRestorationTester
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
@@ -27,6 +27,9 @@ import org.robolectric.annotation.Config
 @Config(sdk = [ROBOLECTRIC_SDK])
 class AppRootNavigationTest {
 
+    // The v2 rule, not the deprecated original: it uses StandardTestDispatcher, which
+    // queues work rather than running it immediately, so the assertions below need the
+    // explicit waitForIdle() calls that the old rule made unnecessary.
     @get:Rule
     val compose = createComposeRule()
 
@@ -50,6 +53,7 @@ class AppRootNavigationTest {
 
         for (destination in AppDestination.entries) {
             compose.onNodeWithText(destination.label).performClick()
+            compose.waitForIdle()
             compose.onNodeWithText(checkNotNull(headingFor[destination])).assertIsDisplayed()
         }
     }
@@ -63,9 +67,11 @@ class AppRootNavigationTest {
         restoration.setContent { WhatsAppV2Theme { AppRoot() } }
 
         compose.onNodeWithText(AppDestination.ACCOUNTS.label).performClick()
+        compose.waitForIdle()
         compose.onNodeWithText("SIP accounts").assertIsDisplayed()
 
         restoration.emulateSavedInstanceStateRestore()
+        compose.waitForIdle()
 
         compose.onNodeWithText("SIP accounts").assertIsDisplayed()
     }
