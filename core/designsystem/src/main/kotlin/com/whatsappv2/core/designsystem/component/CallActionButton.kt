@@ -8,9 +8,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material3.Icon
@@ -22,7 +22,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
@@ -32,18 +31,6 @@ import androidx.compose.ui.text.style.TextAlign
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemeAndFontPreviews
 import com.whatsappv2.core.designsystem.theme.AppTheme
-
-/** What a call button does, which decides how it must look. */
-enum class CallActionStyle {
-    /** A toggle such as mute or speaker. Tinted when active. */
-    TOGGLE,
-
-    /** Answering a call. Always green, never re-tinted by dynamic colour. */
-    ANSWER,
-
-    /** Ending or rejecting a call. Always red, and larger. */
-    HANG_UP,
-}
 
 /**
  * A round in-call control.

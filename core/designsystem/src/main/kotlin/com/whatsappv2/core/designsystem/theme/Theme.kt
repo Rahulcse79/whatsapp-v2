@@ -59,14 +59,22 @@ fun WhatsAppV2Theme(
 object AppTheme {
 
     val spacing: Spacing
-        @Composable @ReadOnlyComposable get() = LocalSpacing.current
+        @Composable
+        @ReadOnlyComposable
+        get() = LocalSpacing.current
 
     val radius: Radius
-        @Composable @ReadOnlyComposable get() = LocalRadius.current
+        @Composable
+        @ReadOnlyComposable
+        get() = LocalRadius.current
 
     val sizing: Sizing
-        @Composable @ReadOnlyComposable get() = LocalSizing.current
+        @Composable
+        @ReadOnlyComposable
+        get() = LocalSizing.current
 
     val callColors: CallColors
-        @Composable @ReadOnlyComposable get() = LocalCallColors.current
+        @Composable
+        @ReadOnlyComposable
+        get() = LocalCallColors.current
 }
