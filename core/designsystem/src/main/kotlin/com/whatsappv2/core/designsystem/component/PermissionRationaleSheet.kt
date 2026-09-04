@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -32,6 +33,7 @@ import com.whatsappv2.core.designsystem.theme.AppTheme
  * Android has recorded a permanent denial the system dialog will never appear again and
  * a button that silently does nothing is worse than no button.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PermissionRationaleSheet(
     icon: ImageVector,
@@ -75,6 +77,7 @@ fun PermissionRationaleSheet(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @ThemePreviews
 @Composable
 private fun PermissionRationaleSheetPreview() = PreviewSurface {
@@ -88,6 +91,7 @@ private fun PermissionRationaleSheetPreview() = PreviewSurface {
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @ThemePreviews
 @Composable
 private fun PermissionPermanentlyDeniedPreview() = PreviewSurface {
