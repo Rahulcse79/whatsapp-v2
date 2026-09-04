@@ -7,7 +7,10 @@
 plugins {
     alias(libs.plugins.android.application) apply false
     alias(libs.plugins.android.library) apply false
-    alias(libs.plugins.kotlin.android) apply false
+    // kotlin.android is deliberately absent: AGP 9 provides Kotlin for Android modules
+    // itself, and applying the standalone plugin is an error. kotlin.jvm below still
+    // puts the Kotlin Gradle plugin jar on the classpath, which the convention plugins
+    // need for the KotlinCompile task type.
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.kotlin.compose) apply false
     alias(libs.plugins.ksp) apply false

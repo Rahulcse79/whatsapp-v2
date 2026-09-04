@@ -17,7 +17,9 @@ import org.gradle.kotlin.dsl.configure
 class AndroidLibraryConventionPlugin : Plugin<Project> {
     override fun apply(target: Project) = with(target) {
         pluginManager.apply("com.android.library")
-        pluginManager.apply("org.jetbrains.kotlin.android")
+        // NOT org.jetbrains.kotlin.android: AGP 9.0 has built-in Kotlin support and
+        // applying that plugin is a hard error ("no longer required for Kotlin support
+        // since AGP 9.0"). See https://kotl.in/gradle/agp-built-in-kotlin
         pluginManager.apply("whatsappv2.detekt")
 
         val javaTarget = javaVersionOf(libs.intVersion("jvmToolchain"))
