@@ -46,19 +46,28 @@ class DataStoreAppSettingsRepositoryTest {
     private val store: DataStore<Preferences> = PreferenceDataStoreFactory.create { file }
 
     /**
-     * A second repository over the SAME file.
+     * A repository reading a COPY of the file the first one wrote.
      *
-     * This is what stands in for process death: it shares no in-memory state with the
-     * first, only what actually reached disk.
+     * This is what stands in for process death, and the copy is not incidental: DataStore
+     * refuses two live instances over one file in a single process, so re-opening the
+     * original is impossible. Reading a byte-for-byte copy proves the same thing and
+     * proves it more directly - the settings are in the file, not in memory.
      */
-    private fun reopened(): DataStoreAppSettingsRepository =
-        DataStoreAppSettingsRepository(PreferenceDataStoreFactory.create { file }, NoOpLogger)
+    private fun reopenedFromDisk(): DataStoreAppSettingsRepository {
+        val copy = File(context.cacheDir, "settings-copy-${System.nanoTime()}.preferences_pb")
+        file.copyTo(copy, overwrite = true)
+        copies += copy
+        return DataStoreAppSettingsRepository(PreferenceDataStoreFactory.create { copy }, NoOpLogger)
+    }
+
+    private val copies = mutableListOf<File>()
 
     private fun repository() = DataStoreAppSettingsRepository(store, NoOpLogger)
 
     @After
     fun tearDown() {
         file.delete()
+        copies.forEach { it.delete() }
     }
 
     @Test
@@ -84,7 +93,7 @@ class DataStoreAppSettingsRepositoryTest {
             setSipTraceEnabled(true)
         }
 
-        val reloaded = reopened().currentSettings()
+        val reloaded = reopenedFromDisk().currentSettings()
 
         assertEquals(DtmfMode.SIP_INFO, reloaded.dtmfMode)
         assertEquals(SrtpPolicy.MANDATORY, reloaded.defaultSrtpPolicy)
