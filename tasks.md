@@ -548,9 +548,37 @@ Build:
   sheet, avatar, `CallActionButton`.
 
 Done when:
-- [ ] Every component has a `@Preview` in both light and dark
-- [ ] The app draws edge-to-edge with no hardcoded system-bar insets
-- [ ] No colour, dimension, or text style is hardcoded outside this module
+- [x] Every component has a `@Preview` in both light and dark
+      → **enforced by architecture rule 7**, not asserted. `@ThemePreviews` renders both
+      at once, so a single annotation cannot be half-applied the way two separate
+      `@Preview`s can. Call buttons additionally preview at 200% font scale.
+- [x] The app draws edge-to-edge with no hardcoded system-bar insets
+      → `enableEdgeToEdge()` before `setContent`; insets consumed by `Scaffold`. A fixed
+      status-bar height is wrong on every device with a cutout, and wrong again when a
+      keyboard appears.
+- [x] No colour, dimension, or text style is hardcoded outside this module
+      → **enforced by architecture rule 8** (no `Color(0x…)`, no `TextStyle(`, no
+      `.dp`/`.sp` literal outside `:core:designsystem`), with a violating fixture
+
+**Status: COMPLETE.** CI run 33871738424. **The debug APK is no longer blank** — it
+renders a themed screen with a top bar and an empty state.
+
+Design decisions worth keeping:
+- **Dynamic colour is supported but off by default.** A wallpaper-derived scheme can
+  produce an "end call" button that is not recognisably red. `CallColors` comes from the
+  fixed palette even when dynamic colour is on, for exactly that reason.
+- **`EmptyState` and `ErrorState` are separate types.** "You have no call history" and
+  "we could not load your call history" look alike and mean opposite things; conflating
+  them teaches people to ignore both. `ErrorState`'s retry is optional, because offering
+  "Try again" for a wrong password invites an action that cannot succeed.
+- `CallActionButton` announces toggle state through `stateDescription`, so a screen
+  reader says "muted" rather than leaving the user to infer it from a tint.
+- Typography keeps the **system font family**, so the user's accessibility font settings
+  are respected — not something a calling app should override.
+
+`warningsAsErrors` earned its keep twice here: it caught an unacknowledged experimental
+`ModalBottomSheet` API, and a deprecated `Icons.Filled.VolumeUp` whose auto-mirrored
+replacement is the correct one anyway, since the manifest declares `supportsRtl="true"`.
 
 ### Task 15 — App shell, navigation, permission scaffolding
 **Depends on:** 14 · **Prompt refs:** §3, §4.2 · **Modules:** `:app`, `:feature:*`
