@@ -373,6 +373,54 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # §3: every bundled .so must be 16 KB page-size aligned. Recent Android refuses to
+      # load one that is not, and the failure appears as a crash on a specific device
+      # rather than as anything the build said. Checked here so it is a build failure.
+      - name: Assert native libraries are 16 KB page-size aligned
+        run: |
+          APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
+          if [ -z "$APK" ]; then
+            echo "::error::No APK to inspect."
+            exit 1
+          fi
+
+          WORK="$RUNNER_TEMP/apk-so"
+          rm -rf "$WORK" && mkdir -p "$WORK"
+          unzip -q -o "$APK" 'lib/*' -d "$WORK" || true
+
+          mapfile -t LIBS < <(find "$WORK" -name "*.so" 2>/dev/null)
+          if [ "${#LIBS[@]}" -eq 0 ]; then
+            echo "No native libraries in the APK - nothing to align."
+            exit 0
+          fi
+          echo "Found ${#LIBS[@]} native library(ies)"
+
+          READELF=$(ls "$ANDROID_HOME"/ndk/*/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf 2>/dev/null | head -1)
+          if [ -z "$READELF" ]; then
+            READELF=$(command -v llvm-readelf || command -v readelf)
+          fi
+          if [ -z "$READELF" ]; then
+            echo "::error::No readelf available to verify alignment."
+            exit 1
+          fi
+
+          BAD=0
+          for lib in "${LIBS[@]}"; do
+            # A 16 KB-compatible library has LOAD segments aligned to 0x4000 or more.
+            ALIGN=$("$READELF" -lW "$lib" 2>/dev/null | awk '/LOAD/ {print $NF}' | sort -u | head -1)
+            case "$ALIGN" in
+              0x4000|0x10000|0x40000) STATUS="ok" ;;
+              *) STATUS="MISALIGNED"; BAD=1 ;;
+            esac
+            echo "  $STATUS  $ALIGN  $(basename "$(dirname "$lib")")/$(basename "$lib")"
+          done
+
+          if [ "$BAD" -ne 0 ]; then
+            echo "::error::A native library is not 16 KB page-size aligned (§3)."
+            exit 1
+          fi
+          echo "OK - every native library is 16 KB page-size aligned."
+
       # ---------------------------------------------------------------- APK
       # Every push produces a downloadable, installable debug APK. Debug, not release:
       # a release build needs a signing keystore, and keystores are not something CI

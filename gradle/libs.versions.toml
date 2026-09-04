@@ -17,6 +17,10 @@ hilt = "2.60.1"
 desugar = "2.1.5"
 composeBom = "2026.08.00"
 coroutines = "1.11.0"
+# From the version report against Belledonne's repository. Note their maven-metadata
+# <release> tag says 5.4.125 while 5.5.18 is the newest non-prerelease listed; 5.5.18 is
+# pinned and CI resolution is what confirms it.
+linphone = "5.5.18"
 kover = "0.9.9"
 androidxActivity = "1.13.0"
 androidxLifecycle = "2.11.0"
@@ -81,6 +85,7 @@ androidx-test-core-ktx = { group = "androidx.test", name = "core-ktx", version.r
 androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
 
 android-desugarJdkLibs = { group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugar" }
+linphone-sdk = { group = "org.linphone", name = "linphone-sdk-android", version.ref = "linphone" }
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
 hilt-compiler = { group = "com.google.dagger", name = "hilt-android-compiler", version.ref = "hilt" }
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
