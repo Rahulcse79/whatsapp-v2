@@ -10,9 +10,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -143,7 +143,7 @@ private fun CallActionButtonRowPreview() = PreviewSurface {
             label = "Mute",
         )
         CallActionButton(
-            icon = Icons.Filled.VolumeUp,
+            icon = Icons.AutoMirrored.Filled.VolumeUp,
             contentDescription = "Turn on speakerphone",
             activeStateDescription = "Off",
             onClick = {},
