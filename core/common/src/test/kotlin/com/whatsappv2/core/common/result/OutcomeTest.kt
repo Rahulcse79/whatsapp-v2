@@ -35,7 +35,10 @@ class OutcomeTest {
     @Test
     fun `map leaves a failure untouched and does not run the transform`() {
         var ran = false
-        val result = err.map { ran = true; it * 2 }
+        val result = err.map {
+            ran = true
+            it * 2
+        }
         assertEquals(Outcome.Failure("boom"), result)
         assertFalse(ran, "transform must not run on a failure")
     }
@@ -58,7 +61,10 @@ class OutcomeTest {
     @Test
     fun `flatMap short-circuits on the first failure`() {
         var ran = false
-        val result = err.flatMap { ran = true; Outcome.Success(it.toString()) }
+        val result = err.flatMap {
+            ran = true
+            Outcome.Success(it.toString())
+        }
         assertEquals(Outcome.Failure("boom"), result)
         assertFalse(ran, "flatMap must short-circuit on a failure")
     }
