@@ -1,6 +1,5 @@
 package com.whatsappv2.arch
 
-import com.lemonappdev.konsist.api.container.KoScope
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -15,14 +14,12 @@ import kotlin.test.assertTrue
  * The fixtures live under `src/test/resources`, so they are never compiled and are free
  * to break every rule. The rules are pointed at them explicitly.
  *
- * These tests also validate that the Konsist API is being used correctly: if a query
- * were wrong, it would find nothing here and the test would fail immediately, rather
- * than silently passing against the real project.
+ * They also validate the rule predicates themselves: a wrong pattern finds nothing here
+ * and fails immediately, rather than silently passing against real code forever.
  */
 class RulesActuallyFireTest {
 
-    private val fixtures: KoScope =
-        ArchitectureRules.scopeFrom("test/arch/src/test/resources/violations")
+    private val fixtures = ArchitectureRules.fixtureFiles()
 
     private fun assertFires(rule: String, violations: List<ArchitectureRules.Violation>) {
         assertTrue(
@@ -34,7 +31,7 @@ class RulesActuallyFireTest {
     @Test
     fun `the fixtures are actually being read`() {
         // If the path were wrong every test below would fail, but this says why.
-        assertTrue(fixtures.files.count() >= EXPECTED_FIXTURES, "found ${fixtures.files.count()} fixture files")
+        assertTrue(fixtures.size >= EXPECTED_FIXTURES, "found ${fixtures.size} fixture files")
     }
 
     @Test

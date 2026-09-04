@@ -92,6 +92,11 @@ jobs:
       - name: Static analysis
         run: ./gradlew detekt lint --stacktrace
 
+      # Task 12: the layer rules run in the build, so a violation fails locally too -
+      # an architecture that is only documented is one that gets violated in week three.
+      - name: Architecture rules
+        run: ./gradlew :test:arch:test --stacktrace
+
       # Task 3 done-when #2: "zero warnings suppressed by baseline abuse".
       # A baseline file is how suppressed findings quietly become permanent.
       - name: Assert no detekt or lint baseline files

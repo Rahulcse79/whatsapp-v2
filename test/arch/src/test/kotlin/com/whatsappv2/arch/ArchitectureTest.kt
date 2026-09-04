@@ -1,6 +1,5 @@
 package com.whatsappv2.arch
 
-import com.lemonappdev.konsist.api.container.KoScope
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -12,7 +11,7 @@ import kotlin.test.assertTrue
  */
 class ArchitectureTest {
 
-    private val scope: KoScope = ArchitectureRules.projectScope()
+    private val files = ArchitectureRules.projectFiles()
 
     private fun assertNoViolations(rule: String, violations: List<ArchitectureRules.Violation>) {
         assertTrue(
@@ -26,39 +25,54 @@ class ArchitectureTest {
 
     @Test
     fun `rule 1 - domain has no Android imports`() {
-        assertNoViolations("Rule 1", ArchitectureRules.domainHasNoAndroidImports(scope))
+        assertNoViolations("Rule 1", ArchitectureRules.domainHasNoAndroidImports(files))
     }
 
     @Test
     fun `rule 2 - the SIP SDK stays inside data sip`() {
-        assertNoViolations("Rule 2", ArchitectureRules.sipSdkStaysInDataSip(scope))
+        assertNoViolations("Rule 2", ArchitectureRules.sipSdkStaysInDataSip(files))
     }
 
     @Test
     fun `rule 3 - features do not depend on data modules`() {
-        assertNoViolations("Rule 3", ArchitectureRules.featuresDoNotDependOnData(scope))
+        assertNoViolations("Rule 3", ArchitectureRules.featuresDoNotDependOnData(files))
     }
 
     @Test
     fun `rule 4 - repository interfaces live in domain and implementations in data`() {
-        assertNoViolations("Rule 4", ArchitectureRules.repositoriesAreDeclaredInDomain(scope))
+        assertNoViolations("Rule 4", ArchitectureRules.repositoriesAreDeclaredInDomain(files))
     }
 
     @Test
     fun `rule 5 - no LiveData, RxJava, AsyncTask or raw Thread`() {
-        assertNoViolations("Rule 5", ArchitectureRules.forbiddenConcurrencyApis(scope))
+        assertNoViolations("Rule 5", ArchitectureRules.forbiddenConcurrencyApis(files))
     }
 
     @Test
     fun `rule 6 - ViewModels expose immutable state`() {
-        assertNoViolations("Rule 6", ArchitectureRules.viewModelsExposeImmutableState(scope))
+        assertNoViolations("Rule 6", ArchitectureRules.viewModelsExposeImmutableState(files))
     }
 
     @Test
     fun `the scope is not empty, so a passing rule means something`() {
-        // Without this, a misconfigured root path would make every rule above pass
-        // vacuously - the failure mode that makes architecture tests worthless.
-        assertTrue(scope.files.count() > MINIMUM_EXPECTED_FILES, "only ${scope.files.count()} files in scope")
+        // Without this, a misconfigured root would make every rule above pass vacuously
+        // - the failure mode that makes architecture tests worthless.
+        assertTrue(files.size > MINIMUM_EXPECTED_FILES, "only ${files.size} files in scope")
+    }
+
+    @Test
+    fun `the violation fixtures are excluded from the project scope`() {
+        // They break every rule on purpose. If they were in scope, the suite above
+        // could never pass, and "fixing" it would mean weakening the rules.
+        assertTrue(
+            files.none { it.relativePath.startsWith(ArchitectureRules.FIXTURES) },
+            "fixture files leaked into the project scope",
+        )
+    }
+
+    @Test
+    fun `build output is excluded from the scope`() {
+        assertTrue(files.none { "/build/" in it.relativePath }, "build output leaked into the scope")
     }
 
     private companion object {
