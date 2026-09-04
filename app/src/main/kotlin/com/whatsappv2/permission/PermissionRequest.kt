@@ -1,6 +1,5 @@
 package com.whatsappv2.permission
 
-import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
@@ -10,21 +9,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.platform.LocalContext
-import androidx.core.content.ContextCompat
 import com.whatsappv2.core.designsystem.component.PermissionRationaleSheet
-
-/** What a caller can do with a permission, and where it currently stands. */
-class PermissionRequestState internal constructor(
-    val permission: AppPermission,
-    val status: PermissionStatus,
-    private val onRequest: () -> Unit,
-) {
-    /**
-     * Starts the flow: shows the rationale first if the permission has never been asked
-     * for, opens app settings if it is permanently denied, and otherwise asks directly.
-     */
-    fun request() = onRequest()
-}
 
 /**
  * Drives one permission: rationale, system dialog, and the settings route.
