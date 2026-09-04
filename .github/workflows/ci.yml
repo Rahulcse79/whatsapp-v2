@@ -22,7 +22,7 @@ jobs:
     name: Build and check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Verify the Gradle wrapper is present
         run: |
@@ -377,7 +377,7 @@ jobs:
     name: Dependency vulnerabilities
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up JDK 21
         uses: actions/setup-java@v5
