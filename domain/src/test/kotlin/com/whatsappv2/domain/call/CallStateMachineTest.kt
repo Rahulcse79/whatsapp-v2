@@ -242,6 +242,14 @@ class CallStateMachineTest {
     }
 
     @Test
+    fun `resuming from a side that is not holding is rejected`() {
+        // Found by the exhaustive sweep: these were accepted as silent no-ops, which
+        // is indistinguishable at the call site from a resume that actually worked.
+        assertRejected(CallState.Held(HoldParty.REMOTE), CallEvent.LocalResume)
+        assertRejected(CallState.Held(HoldParty.LOCAL), CallEvent.RemoteResume)
+    }
+
+    @Test
     fun `hold party arithmetic is total`() {
         assertEquals(HoldParty.BOTH, HoldParty.LOCAL.withRemote())
         assertEquals(HoldParty.BOTH, HoldParty.REMOTE.withLocal())

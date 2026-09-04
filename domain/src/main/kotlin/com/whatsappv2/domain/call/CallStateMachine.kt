@@ -94,19 +94,27 @@ object CallStateMachine {
         is CallEvent.LocalHold -> holdOrReject(state, state.by.withLocal(), event)
         is CallEvent.RemoteHold -> holdOrReject(state, state.by.withRemote(), event)
 
-        // Resuming only reaches Connected when nobody is left holding.
-        is CallEvent.LocalResume -> when (state.by.withoutLocal()) {
-            null -> moved(CallState.Resuming(state.controls))
+        // Resuming only reaches Connected when nobody is left holding. Resuming from
+        // a side that is not holding is rejected, not silently ignored.
+        is CallEvent.LocalResume -> when {
+            state.by == HoldParty.REMOTE -> reject(state, event)
+            state.by.withoutLocal() == null -> moved(CallState.Resuming(state.controls))
             else -> moved(CallState.Held(HoldParty.REMOTE, state.controls))
         }
-        is CallEvent.RemoteResume -> when (val remaining = state.by.withoutRemote()) {
-            null -> moved(CallState.Connected(state.controls))
-            else -> moved(CallState.Held(remaining, state.controls))
+        is CallEvent.RemoteResume -> when {
+            state.by == HoldParty.LOCAL -> reject(state, event)
+            state.by.withoutRemote() == null -> moved(CallState.Connected(state.controls))
+            else -> moved(CallState.Held(HoldParty.LOCAL, state.controls))
         }
         else -> reject(state, event)
     }
 
-    /** Holding from a side that already holds is a no-op, not a transition. */
+    /**
+     * Holding from a side that already holds is a no-op, not a transition.
+     *
+     * Accepting it would report success for an action that changed nothing, which is
+     * indistinguishable at the call site from a hold that actually took effect.
+     */
     private fun holdOrReject(
         state: CallState.Held,
         next: HoldParty,
