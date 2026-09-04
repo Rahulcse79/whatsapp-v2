@@ -264,9 +264,37 @@ Build:
   expiry bounds, STUN/TURN URL shape, non-empty codec list.
 
 Done when:
-- [ ] Every field in the §5.1 table exists on the entity
-- [ ] `AccountValidator` is tested per rule, including the auth-username fallback
-- [ ] `SipAccount.toString()` cannot leak the password (test asserts this)
+- [x] Every field in the §5.1 table exists on the entity
+      → with one deliberate exception: **registration status is not on the entity**.
+      §5.1 marks it derived and read-only, and it is — it belongs to the engine,
+      changes many times a second during a retry storm, and is not persisted. Storing
+      it would invite a stale database copy that disagrees with reality, which is
+      exactly the "shows Registered while the transport is down" failure §6 forbids.
+      `SipAccountStatus` pairs the two for the UI instead.
+- [x] `AccountValidator` is tested per rule, including the auth-username fallback
+      → **100% coverage** on `domain/validation` (181/181), 30 tests. The fallback is
+      covered three ways: omitted, blank, and explicitly set.
+- [x] `SipAccount.toString()` cannot leak the password (test asserts this)
+      → asserted for both `toString()` and string interpolation, and made
+      **structural** rather than a convention: `Secret` masks itself, so a data-class
+      `toString()` could not leak it even if the override were removed.
+
+**Status: COMPLETE.** CI run 33856058327 — `domain/model` 98.9%, `domain/validation`
+100%, `core/common/secret` 100%, all now gated.
+
+Design notes:
+- `SipAccountDraft` is stringly-typed (what the user typed); the validator produces a
+  strongly-typed `SipAccount`. Validation happens exactly once, at the boundary —
+  the same shape as `SipUri`.
+- The validator collects **all** violations rather than stopping at the first. A form
+  that reveals one problem per submission is how a user submits five times.
+- Violations are typed, not message strings: the UI owns wording and translation, and
+  a test can assert precisely which rule fired.
+- Transport/port coherence is a **warning**, not an error. TLS on 5060 is almost
+  always a mistake but is not impossible, and refusing a configuration the registrar
+  accepts would be worse than a nudge.
+- `HostSyntax` was extracted so `SipUri` and `HostPort` share one definition of a
+  valid host — two implementations would drift, and the less-used one would be wrong.
 
 ### Task 9 — Call finite state machine
 **Depends on:** 7 · **Prompt refs:** §4.4, DoD 4 · **Modules:** `:domain`
