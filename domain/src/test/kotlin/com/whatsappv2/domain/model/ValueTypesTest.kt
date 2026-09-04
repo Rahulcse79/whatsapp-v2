@@ -76,10 +76,13 @@ class MediaProfileTest {
 
     @Test
     fun `equality is by value`() {
-        assertEquals(MediaProfile.AUDIO, MediaProfile.of(audio = true, video = false))
-        assertEquals(MediaProfile.AUDIO.hashCode(), MediaProfile.AUDIO_VIDEO.let { MediaProfile.AUDIO }.hashCode())
+        val audioOnly = MediaProfile.of(audio = true, video = false)
+        assertEquals(MediaProfile.AUDIO, audioOnly)
+        assertEquals(MediaProfile.AUDIO.hashCode(), audioOnly.hashCode())
         assertTrue(MediaProfile.AUDIO != MediaProfile.AUDIO_VIDEO)
-        assertFalse(MediaProfile.AUDIO.equals(null))
+
+        val nothing: Any? = null
+        assertFalse(MediaProfile.AUDIO == nothing)
     }
 
     @Test

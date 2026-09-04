@@ -85,6 +85,10 @@ class SipUri private constructor(
         private const val IPV4_OCTETS = 4
         private const val MAX_OCTET = 255
         private const val MAX_IPV6_GROUPS = 8
+        private const val MAX_IPV6_GROUP_DIGITS = 4
+        private const val MAX_OCTET_DIGITS = 3
+
+        private val IPV6_COMPRESSION = Regex("::")
 
         /** RFC 3261 user characters, minus `;` which would collide with parameters. */
         private const val USER_EXTRA_CHARS = "-_.!~*'()&=+$,?/%"
@@ -100,16 +104,18 @@ class SipUri private constructor(
          */
         fun parse(input: String): Outcome<SipUri, SipUriError> {
             val trimmed = input.trim()
-            if (trimmed.isEmpty()) return failure(SipUriError.Empty)
+            return if (trimmed.isEmpty()) failure(SipUriError.Empty) else parseScheme(trimmed)
+        }
 
-            val schemeSeparator = trimmed.indexOf(':')
-            if (schemeSeparator <= 0) return failure(SipUriError.MissingScheme)
+        private fun parseScheme(trimmed: String): Outcome<SipUri, SipUriError> {
+            val separator = trimmed.indexOf(':')
+            if (separator <= 0) return failure(SipUriError.MissingScheme)
 
-            val schemeToken = trimmed.substring(0, schemeSeparator)
-            val scheme = SipScheme.fromToken(schemeToken)
-                ?: return failure(SipUriError.UnsupportedScheme(schemeToken))
+            val token = trimmed.substring(0, separator)
+            val scheme = SipScheme.fromToken(token)
+                ?: return failure(SipUriError.UnsupportedScheme(token))
 
-            return parseAfterScheme(scheme, trimmed.substring(schemeSeparator + 1))
+            return parseAfterScheme(scheme, trimmed.substring(separator + 1))
         }
 
         private fun parseAfterScheme(scheme: SipScheme, remainder: String): Outcome<SipUri, SipUriError> {
@@ -220,7 +226,7 @@ class SipUri private constructor(
             return octets.all { octet ->
                 // "01" is rejected: leading zeros invite octal misreadings.
                 octet.isNotEmpty() &&
-                    octet.length <= 3 &&
+                    octet.length <= MAX_OCTET_DIGITS &&
                     octet.all(Char::isDigit) &&
                     (octet.length == 1 || !octet.startsWith('0')) &&
                     octet.toInt() <= MAX_OCTET
@@ -229,18 +235,22 @@ class SipUri private constructor(
 
         private fun isValidIpV6(address: String): Boolean {
             if (address.isEmpty()) return false
-            if (address.count { it == ':' } < 2 && !address.contains("::")) return false
 
-            val compressions = Regex("::").findAll(address).count()
-            if (compressions > 1) return false
-
+            val compressions = IPV6_COMPRESSION.findAll(address).count()
             val groups = address.split(":").filter(String::isNotEmpty)
-            if (groups.size > MAX_IPV6_GROUPS) return false
-            if (compressions == 0 && groups.size != MAX_IPV6_GROUPS) return false
 
-            return groups.all { group ->
-                group.length <= 4 && group.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+            // "::" stands in for one or more zero groups, so only an uncompressed
+            // address must carry the full eight.
+            val structureIsValid = when {
+                compressions > 1 -> false
+                compressions == 0 -> groups.size == MAX_IPV6_GROUPS
+                else -> groups.size <= MAX_IPV6_GROUPS
             }
+            return structureIsValid && groups.all(::isIpV6Group)
         }
+
+        private fun isIpV6Group(group: String): Boolean =
+            group.length <= MAX_IPV6_GROUP_DIGITS &&
+                group.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
     }
 }
