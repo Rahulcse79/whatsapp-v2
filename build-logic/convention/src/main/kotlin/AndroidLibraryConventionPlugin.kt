@@ -37,6 +37,13 @@ class AndroidLibraryConventionPlugin : Plugin<Project> {
                 targetCompatibility = javaTarget
                 isCoreLibraryDesugaringEnabled = true
             }
+
+            testOptions {
+                // Robolectric builds a real Activity from the merged manifest and
+                // resources. Without this, any Compose test in a library module fails
+                // inside RoboMonitoringInstrumentation with no useful message.
+                unitTests.isIncludeAndroidResources = true
+            }
         }
 
         configureAndroidCommon()
