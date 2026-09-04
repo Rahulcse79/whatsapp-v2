@@ -72,7 +72,7 @@ internal class RealLinphoneCoreGateway @Inject constructor(
                     // The SIP response code, when the failure came from a server. Null
                     // means the request never got an answer, which the mapper treats as a
                     // transport problem rather than a rejection.
-                    statusCode = account.errorInfo?.protocolCode?.takeIf { it > 0 },
+                    statusCode = account.errorInfo.protocolCode.takeIf { it > 0 },
                     message = message,
                 ),
             )
@@ -100,8 +100,18 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         }
         val factory = Factory.instance()
 
-        // Credentials are held by the core's auth store, keyed by realm and username, and
-        // are looked up when a challenge arrives rather than being attached to the params.
+        // Both addresses are parsed before anything is registered: a malformed one after
+        // the auth info was stored would leave a credential in the core for an account
+        // that never exists.
+        val identity = factory.createAddress("sip:${account.username}@${account.domain}")
+        val server = factory.createAddress(account.registrarUri)
+        if (identity == null || server == null) {
+            logger.error(TAG, "Account ${account.key} has an unusable address")
+            return
+        }
+
+        // Credentials live in the core's auth store, keyed by realm and username, and are
+        // looked up when a challenge arrives rather than attached to the params.
         core.addAuthInfo(
             factory.createAuthInfo(
                 account.authUsername,
@@ -114,13 +124,15 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         )
 
         val params = core.createAccountParams().apply {
-            identityAddress = factory.createAddress("sip:${account.username}@${account.domain}")
-            setServerAddr(account.registrarUri)
+            identityAddress = identity
+            // setServerAddress, not the deprecated setServerAddr(String): the typed form
+            // parses once here rather than re-parsing inside the stack.
+            serverAddress = server
             isRegisterEnabled = account.registerEnabled
             expires = account.expirySeconds
-            account.proxyUri?.let { proxy ->
-                factory.createAddress(proxy)?.let { setRoutesAddresses(arrayOf(it)) }
-            }
+            account.proxyUri
+                ?.let(factory::createAddress)
+                ?.let { setRoutesAddresses(arrayOf(it)) }
         }
 
         val existing = accountsByKey[account.key]
