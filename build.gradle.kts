@@ -15,6 +15,7 @@ plugins {
     alias(libs.plugins.kotlin.compose) apply false
     alias(libs.plugins.ksp) apply false
     alias(libs.plugins.hilt) apply false
+    alias(libs.plugins.androidx.room) apply false
 
     // `apply false` here is what puts each plugin's jar on the build classpath. The
     // convention plugins in `build-logic` depend on these as `compileOnly`, so without

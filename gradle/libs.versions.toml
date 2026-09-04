@@ -106,6 +106,7 @@ ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
 kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
+androidx-room = { id = "androidx.room", version.ref = "androidxRoom" }
 
 # --- Convention plugins provided by the `build-logic` included build (Task 3) ---
 whatsappv2-android-application = { id = "whatsappv2.android.application" }
