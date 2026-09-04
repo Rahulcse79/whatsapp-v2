@@ -43,6 +43,7 @@ include(":core:common")
 include(":core:designsystem")
 
 include(":data:account")
+include(":data:settings")
 include(":data:sip")
 include(":data:calllog")
 include(":data:contacts")

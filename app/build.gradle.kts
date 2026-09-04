@@ -29,6 +29,7 @@ dependencies {
     // The composition root wires the data modules in: their Hilt modules must be on the
     // graph, and :app is the only module permitted to know about every layer.
     implementation(project(":data:account"))
+    implementation(project(":data:settings"))
     implementation(project(":data:sip"))
     implementation(project(":feature:accounts"))
     implementation(project(":feature:calls"))
