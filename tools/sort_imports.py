@@ -26,10 +26,15 @@ def sort_file(path: Path) -> bool:
 
     first, last = indexes[0], indexes[-1]
     imports = sorted({line for line in lines[first : last + 1] if line.startswith("import ")})
-    head = [i for i in imports if not i[len("import ") :].startswith(TRAILING_PREFIXES)]
-    tail = [i for i in imports if i[len("import ") :].startswith(TRAILING_PREFIXES)]
 
-    updated = lines[:first] + head + tail + lines[last + 1 :]
+    # ktlint orders: everything else, then java/javax/kotlin, then ALIASED imports last.
+    # The alias clause is easy to miss - it is what this tool got wrong on its first run.
+    aliased = [i for i in imports if " as " in i]
+    rest = [i for i in imports if " as " not in i]
+    head = [i for i in rest if not i[len("import ") :].startswith(TRAILING_PREFIXES)]
+    tail = [i for i in rest if i[len("import ") :].startswith(TRAILING_PREFIXES)]
+
+    updated = lines[:first] + head + tail + aliased + lines[last + 1 :]
     if updated == lines:
         return False
 

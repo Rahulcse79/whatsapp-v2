@@ -1,7 +1,6 @@
 package com.whatsappv2.di
 
 import com.whatsappv2.core.common.dispatcher.DispatcherProvider
-import com.whatsappv2.core.common.logging.Logger as AppLogger
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import dagger.hilt.android.testing.HiltTestApplication
@@ -14,6 +13,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import javax.inject.Inject
 import kotlin.test.assertSame
+import com.whatsappv2.core.common.logging.Logger as AppLogger
 
 /**
  * Proves the Hilt graph actually resolves, on the JVM.
