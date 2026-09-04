@@ -46,8 +46,12 @@ import javax.inject.Inject
  */
 class AesGcmCredentialCipher @Inject constructor(
     private val keyProvider: SecretKeyProvider,
-    private val random: SecureRandom = SecureRandom(),
 ) : CredentialCipher {
+
+    // Not injected: there is one correct source of randomness for an IV, and making it
+    // configurable would invite a test to substitute a predictable one - which is the
+    // single mistake that breaks GCM outright.
+    private val random = SecureRandom()
 
     override fun encrypt(secret: Secret): Outcome<String, CipherError> =
         when (val key = keyProvider.getOrCreateKey()) {

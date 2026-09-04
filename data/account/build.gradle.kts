@@ -1,5 +1,6 @@
 plugins {
     id("whatsappv2.android.library")
+    id("whatsappv2.hilt")
 }
 
 android {
