@@ -1,0 +1,72 @@
+# Prints the real AGP DSL surface with javap.
+#
+# Why: AGP 9 restructured com.android.build.api.dsl. Writing convention plugins
+# against a remembered AGP 8 shape produced a cascade of unresolved references
+# (CommonExtension lost its type parameters AND its defaultConfig/compileOptions/
+# lint/packaging members). Guessing twice is worse than looking once.
+name: Inspect AGP DSL
+
+on:
+  workflow_dispatch:
+    inputs:
+      agp-version:
+        description: "AGP version to inspect"
+        required: true
+        default: "9.4.0"
+      classes:
+        description: "Space-separated FQCNs to dump"
+        required: false
+        default: >-
+          com.android.build.api.dsl.CommonExtension
+          com.android.build.api.dsl.ApplicationExtension
+          com.android.build.api.dsl.LibraryExtension
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Download AGP DSL jars
+        run: |
+          V="${{ inputs.agp-version }}"
+          BASE="https://dl.google.com/dl/android/maven2/com/android/tools/build"
+          mkdir -p jars
+          for a in gradle-api gradle; do
+            url="$BASE/$a/$V/$a-$V.jar"
+            echo "fetching $url"
+            curl -sS --fail -o "jars/$a.jar" "$url" || echo "  (not available: $a)"
+          done
+          ls -la jars
+
+      - name: Dump DSL interfaces
+        run: |
+          CP=$(ls jars/*.jar | tr '\n' ':')
+          for c in ${{ inputs.classes }}; do
+            echo "::group::$c"
+            javap -cp "$CP" "$c" 2>&1 | head -80 || echo "NOT FOUND: $c"
+            echo "::endgroup::"
+          done
+
+      - name: Find which interfaces declare the members we need
+        run: |
+          CP=$(ls jars/*.jar | tr '\n' ':')
+          # List every DSL interface, then report which ones declare each member.
+          unzip -l jars/gradle-api.jar 2>/dev/null | grep -oE 'com/android/build/api/dsl/[A-Za-z0-9$]+\.class' \
+            | sed 's#/#.#g; s#\.class##' | sort -u > all-dsl.txt
+          echo "total DSL types: $(wc -l < all-dsl.txt)"
+          for member in defaultConfig compileOptions lint packaging compileSdk buildFeatures namespace; do
+            echo "::group::declares '$member'"
+            while read -r c; do
+              if javap -cp "$CP" "$c" 2>/dev/null | grep -qE "[ (]${member}\("; then
+                echo "  $c"
+              fi
+            done < all-dsl.txt
+            echo "::endgroup::"
+          done
