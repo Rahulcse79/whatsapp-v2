@@ -9,8 +9,11 @@ import org.gradle.api.Project
  * Typed against [CommonExtension] from `com.android.build.api.dsl` — the supported
  * public DSL — rather than the legacy `com.android.build.gradle` classes, which are
  * the part of AGP most likely to move between major versions.
+ *
+ * Note [CommonExtension] takes NO type arguments in AGP 9; it was generic over six
+ * parameters in AGP 8. Adding them back is a compile error, not a deprecation.
  */
-internal fun Project.configureAndroid(extension: CommonExtension<*, *, *, *, *, *>) {
+internal fun Project.configureAndroid(extension: CommonExtension) {
     val javaTarget = javaVersionOf(libs.intVersion("jvmToolchain"))
 
     extension.apply {
