@@ -267,6 +267,7 @@ jobs:
               # The placeholder engine is temporary (replaced in Task 27) and a few of
               # its lines - property initialisers, a no-op shutdown - are not reachable
               # from a test. Its behaviour is what matters and is fully asserted.
+              "com/whatsappv2/data/settings": 85,
               "com/whatsappv2/data/sip": 80,
               "com/whatsappv2/data/sip/registration": 85,
           }
