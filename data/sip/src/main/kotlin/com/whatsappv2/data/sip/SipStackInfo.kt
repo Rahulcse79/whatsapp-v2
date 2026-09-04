@@ -23,21 +23,26 @@ class SipStackInfo @Inject constructor(
 ) {
 
     /**
-     * The stack version, or null if the native libraries could not be loaded.
+     * True when the native stack loaded.
      *
-     * Returns null rather than throwing: a missing or mis-built `.so` should surface as a
-     * clear log line and a degraded app, not a crash on launch before anything is on
-     * screen.
+     * Obtaining a [Factory] is the whole check: it is the SDK's entry point, and reaching
+     * it means the AAR resolved, the `.so` files for this device's ABI were found, and the
+     * JNI bridge initialised. Each of those fails in a way that is confusing to diagnose
+     * later, which is why they are confirmed once at startup.
+     *
+     * Returns false rather than throwing: a missing or mis-built `.so` should surface as a
+     * clear log line and a degraded app, not a crash before anything is on screen.
      */
-    fun version(): String? = runCatching { Factory.instance().version }
+    fun isLoaded(): Boolean = runCatching { Factory.instance() }
         .onFailure { logger.error(TAG, "SIP stack failed to load: ${it.javaClass.simpleName}") }
-        .getOrNull()
+        .isSuccess
 
-    /** Logs the stack version once, at startup. */
-    fun logVersion() {
-        when (val version = version()) {
-            null -> logger.error(TAG, "SIP stack unavailable")
-            else -> logger.info(TAG, "SIP stack $version")
+    /** Logs whether the stack is available, once, at startup. */
+    fun logStatus() {
+        if (isLoaded()) {
+            logger.info(TAG, "SIP stack loaded")
+        } else {
+            logger.error(TAG, "SIP stack unavailable")
         }
     }
 
