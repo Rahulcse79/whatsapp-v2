@@ -1,7 +1,11 @@
-package com.whatsappv2.data.sip.registration
+package com.whatsappv2.data.sip.registration.stack
 
 import android.content.Context
 import com.whatsappv2.core.common.logging.Logger
+import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
+import com.whatsappv2.data.sip.registration.StackAccount
+import com.whatsappv2.data.sip.registration.StackRegistrationEvent
+import com.whatsappv2.data.sip.registration.StackRegistrationState
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
@@ -20,6 +24,10 @@ import javax.inject.Singleton
  * The real SIP stack, behind the gateway seam.
  *
  * **This is the only class in the project that touches liblinphone's registration API.**
+ *
+ * It sits in its own package for the same reason `AndroidKeystoreSecretKeyProvider` does:
+ * it cannot run on the JVM, so keeping it beside the testable mapper would drag that
+ * package's coverage gate down until the gate measured nothing.
  * Everything above it works in this module's own types, which is what keeps DoD 3
  * ("no SDK import outside `:data:sip`") true and what lets the engine be tested on the
  * JVM at all.

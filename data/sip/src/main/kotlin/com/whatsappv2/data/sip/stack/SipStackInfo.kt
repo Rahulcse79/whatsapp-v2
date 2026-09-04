@@ -1,4 +1,4 @@
-package com.whatsappv2.data.sip
+package com.whatsappv2.data.sip.stack
 
 import com.whatsappv2.core.common.logging.Logger
 import org.linphone.core.Factory

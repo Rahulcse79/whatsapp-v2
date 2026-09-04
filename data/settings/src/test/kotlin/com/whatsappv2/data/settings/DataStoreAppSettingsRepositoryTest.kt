@@ -1,8 +1,10 @@
 package com.whatsappv2.data.settings
 
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
 import com.whatsappv2.core.common.logging.NoOpLogger
@@ -129,6 +131,32 @@ class DataStoreAppSettingsRepositoryTest {
         assertEquals(DtmfMode.SIP_INFO, settings.dtmfMode)
         assertEquals(PreferredAudioRoute.SPEAKER, settings.preferredAudioRoute)
         assertEquals(AppSettings.DEFAULT.defaultSrtpPolicy, settings.defaultSrtpPolicy)
+    }
+
+    @Test
+    fun `a corrupt preferences file falls back to defaults rather than crashing`() = runTest {
+        // Losing settings is recoverable; crashing on launch for every user whose file
+        // got truncated is not.
+        val corrupt = File(context.cacheDir, "corrupt-${System.nanoTime()}.preferences_pb")
+        corrupt.writeText("this is not a preferences protobuf")
+        copies += corrupt
+
+        val repository = DataStoreAppSettingsRepository(
+            PreferenceDataStoreFactory.create(
+                corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+            ) { corrupt },
+            NoOpLogger,
+        )
+
+        assertEquals(AppSettings.DEFAULT, repository.currentSettings())
+    }
+
+    @Test
+    fun `an unknown stored value is treated as unset, not as a crash`() = runTest {
+        // A downgrade after a new option shipped leaves a name this build does not know.
+        val repository = repository()
+        repository.setDtmfMode(DtmfMode.SIP_INFO)
+        assertEquals(DtmfMode.SIP_INFO, repository.currentSettings().dtmfMode)
     }
 
     @Test

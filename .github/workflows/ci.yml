@@ -268,8 +268,12 @@ jobs:
               # its lines - property initialisers, a no-op shutdown - are not reachable
               # from a test. Its behaviour is what matters and is fully asserted.
               "com/whatsappv2/data/settings": 85,
-              "com/whatsappv2/data/sip": 80,
-              "com/whatsappv2/data/sip/registration": 85,
+              # The SDK-touching classes live in .../stack packages and are ungated:
+              # liblinphone cannot run on the JVM, so they are verified on-device from
+              # Task 33. Gating them here would only lower the bar for the code that CAN
+              # be tested.
+              "com/whatsappv2/data/sip": 85,
+              "com/whatsappv2/data/sip/registration": 90,
           }
 
           reports = glob.glob("**/build/reports/kover/report.xml", recursive=True)
