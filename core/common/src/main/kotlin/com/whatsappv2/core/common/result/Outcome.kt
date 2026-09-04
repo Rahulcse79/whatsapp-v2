@@ -75,9 +75,6 @@ inline fun <T, E> Outcome<T, E>.onFailure(action: (E) -> Unit): Outcome<T, E> = 
     if (this is Outcome.Failure) action(error)
 }
 
-/** Shorthand for a success carrying no meaningful value. */
-val Unit.asOutcome: Outcome<Unit, Nothing> get() = Outcome.Success(Unit)
-
 /** Wraps [value] in a [Outcome.Success]. */
 fun <T> success(value: T): Outcome<T, Nothing> = Outcome.Success(value)
 

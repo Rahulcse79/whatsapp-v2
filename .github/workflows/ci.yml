@@ -210,6 +210,18 @@ jobs:
               if name not in totals:
                   print(f"::error::No coverage data for {name} - is the package name right?")
                   failed = True
+
+          if failed:
+              print("\n--- uncovered lines in threshold packages ---")
+              for path in reports:
+                  for pkg in ET.parse(path).getroot().iter("package"):
+                      if pkg.get("name", "") not in THRESHOLDS:
+                          continue
+                      for sf in pkg.findall("sourcefile"):
+                          missed = [ln.get("nr") for ln in sf.findall("line")
+                                    if int(ln.get("mi", 0)) > 0]
+                          if missed:
+                              print(f"  {sf.get('name')}: lines {', '.join(missed)}")
           sys.exit(1 if failed else 0)
           PY
 
