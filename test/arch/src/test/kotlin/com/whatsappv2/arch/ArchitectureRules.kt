@@ -43,8 +43,18 @@ object ArchitectureRules {
             text.replace(BLOCK_COMMENT, "").replace(LINE_COMMENT, "")
         }
 
-        fun isUnder(vararg segments: String): Boolean =
-            segments.any { relativePath == it || relativePath.startsWith("$it/") }
+        /**
+         * True when [relativePath] passes through any of [segments] as a path segment.
+         *
+         * Matches anywhere in the path, not just at the start, and that is deliberate:
+         * the violation fixtures must live OUTSIDE the real module directories so they
+         * are never compiled, yet must LOOK like they are inside them so path-based
+         * rules fire on them. A prefix match satisfies only the first requirement, and
+         * rules 1 and 3 silently failed to fire until this was fixed.
+         */
+        fun isUnder(vararg segments: String): Boolean = segments.any {
+            relativePath == it || relativePath.startsWith("$it/") || "/$it/" in relativePath
+        }
     }
 
     private val IMPORT = Regex("""^import\s+([\w.]+)""", RegexOption.MULTILINE)
