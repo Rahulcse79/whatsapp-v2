@@ -62,21 +62,26 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      # Runner images lag the newest API level, and androidx.core's AAR metadata hard-
-      # fails when compileSdk is older than it requires. Install explicitly rather than
-      # relying on AGP's auto-download, so a missing platform is an obvious error.
-      - name: Install the Android platform this build compiles against
+      # API 37 ships as MINOR-versioned platforms (android-37.0, android-37.1,
+      # android-37.2) - there is no plain "android-37" directory, so an exact-match
+      # check finds nothing even when the platform is installed.
+      - name: Ensure the Android platform this build compiles against is present
         run: |
           SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           COMPILE_SDK=$(grep -E '^compileSdk' gradle/libs.versions.toml | grep -oE '[0-9]+')
           echo "compileSdk from the version catalog: $COMPILE_SDK"
-          echo "already installed:"
-          ls -1 "$SDK/platforms" 2>/dev/null | sort -V || echo "  (none)"
-          if [ ! -d "$SDK/platforms/android-$COMPILE_SDK" ]; then
-            echo "installing platforms;android-$COMPILE_SDK"
-            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
-            "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-$COMPILE_SDK"
+          echo "installed platforms:"
+          ls -1 "$SDK/platforms" 2>/dev/null | sort -V | sed 's/^/  /' || echo "  (none)"
+
+          if compgen -G "$SDK/platforms/android-$COMPILE_SDK" > /dev/null ||
+             compgen -G "$SDK/platforms/android-$COMPILE_SDK.*" > /dev/null; then
+            echo "OK - a platform for API $COMPILE_SDK is already installed."
+            exit 0
           fi
+
+          echo "installing platforms;android-$COMPILE_SDK"
+          yes 2>/dev/null | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-$COMPILE_SDK"
           ls -1 "$SDK/platforms" | sort -V
 
       - name: Build
