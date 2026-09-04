@@ -47,10 +47,11 @@ import kotlinx.coroutines.flow.StateFlow
  * unregistering an unregistered account, or hanging up an ended call, succeeds quietly.
  *
  * The role interfaces below exist for interface segregation: a ViewModel that only
- * places calls should not have `register` in scope. [SipEngine] composes them so there
- * is still one thing to inject and one thing to fake.
+ * places calls should not have `register` in scope, and one that only toggles the
+ * speaker should not have `transfer`. [SipEngine] composes them, so there is still one
+ * thing to inject and one thing to fake.
  */
-interface SipEngine : SipRegistrar, SipCallController, SipConferenceController {
+interface SipEngine : SipRegistrar, SipCallController, SipMediaController, SipConferenceController {
 
     /**
      * Releases every resource: transports, sockets, media, and the native stack.
@@ -209,32 +210,6 @@ interface SipCallController {
     suspend fun setHold(callId: CallId, held: Boolean): Outcome<Unit, SipError>
 
     /**
-     * Mutes or unmutes the microphone.
-     *
-     * Local only: no signalling, and the peer cannot tell. Distinct from
-     * [setHold], which stops media in an SDP-visible way.
-     */
-    suspend fun setMuted(callId: CallId, muted: Boolean): Outcome<Unit, SipError>
-
-    /**
-     * Selects the audio output.
-     *
-     * The engine may refuse a route that is not currently available — a
-     * [AudioRoute.BLUETOOTH] request with no headset connected fails rather than
-     * silently playing on the earpiece.
-     */
-    suspend fun setAudioRoute(callId: CallId, route: AudioRoute): Outcome<Unit, SipError>
-
-    /**
-     * Starts or stops sending video, by re-INVITE. Enabling on an audio-only call is an
-     * escalation the peer may decline (Task 54).
-     */
-    suspend fun setVideoEnabled(callId: CallId, enabled: Boolean): Outcome<Unit, SipError>
-
-    /** Switches between front and rear cameras without renegotiating. */
-    suspend fun switchCamera(callId: CallId): Outcome<Unit, SipError>
-
-    /**
      * Sends one DTMF digit.
      *
      * The transport (RFC 4733 telephone-event, or SIP INFO) comes from account
@@ -258,6 +233,43 @@ interface SipCallController {
         type: TransferType,
         consultationCallId: CallId? = null,
     ): Outcome<Unit, SipError>
+}
+
+/**
+ * Microphone, speaker and camera control for an established call (§5.2, DoD 8).
+ *
+ * Separate from [SipCallController] because these are device concerns, not call
+ * lifecycle: they never change which state the call is in, and the in-call UI needs
+ * them without needing the power to transfer or hang up. See
+ * [com.whatsappv2.domain.call.CallControls], which models the same distinction.
+ */
+interface SipMediaController {
+
+    /**
+     * Mutes or unmutes the microphone.
+     *
+     * Local only: no signalling, and the peer cannot tell. Distinct from
+     * [SipCallController.setHold], which stops media in an SDP-visible way.
+     */
+    suspend fun setMuted(callId: CallId, muted: Boolean): Outcome<Unit, SipError>
+
+    /**
+     * Selects the audio output.
+     *
+     * The engine may refuse a route that is not currently available — an
+     * [AudioRoute.BLUETOOTH] request with no headset connected fails rather than
+     * silently playing on the earpiece.
+     */
+    suspend fun setAudioRoute(callId: CallId, route: AudioRoute): Outcome<Unit, SipError>
+
+    /**
+     * Starts or stops sending video, by re-INVITE. Enabling on an audio-only call is an
+     * escalation the peer may decline (Task 54).
+     */
+    suspend fun setVideoEnabled(callId: CallId, enabled: Boolean): Outcome<Unit, SipError>
+
+    /** Switches between front and rear cameras without renegotiating. */
+    suspend fun switchCamera(callId: CallId): Outcome<Unit, SipError>
 }
 
 /** Multi-party calling (§2.2, ADR-003). */
