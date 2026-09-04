@@ -54,10 +54,7 @@ jobs:
         run: ./gradlew build --stacktrace -PwarningsAsErrors=true
 
       - name: Static analysis
-        # `lint` is added to this command in Task 4. It is an Android-only task and
-        # no Android module exists yet, so asking for it now would fail on a missing
-        # task rather than on a real defect.
-        run: ./gradlew detekt --stacktrace
+        run: ./gradlew detekt lint --stacktrace
 
       # Task 3 done-when #2: "zero warnings suppressed by baseline abuse".
       # A baseline file is how suppressed findings quietly become permanent.
@@ -101,6 +98,35 @@ jobs:
             exit 1
           fi
           echo "OK — all versions come from the version catalog."
+
+      # Task 4 done-when #2 — cheap structural check, run before the expensive one.
+      - name: Assert :domain applies no Android plugin
+        run: |
+          if grep -qE 'whatsappv2\.android|com\.android\.|^\s*android\s*\{' domain/build.gradle.kts; then
+            echo "::error:::domain must stay a pure JVM module (§4.1, DoD 2)."
+            cat domain/build.gradle.kts
+            exit 1
+          fi
+          echo "OK — :domain applies no Android plugin."
+
+      # Task 4 done-when #3 — the boundary must be enforced by the BUILD, not by
+      # convention. A JVM library cannot consume an AAR, so this must fail.
+      - name: Assert :domain rejects an Android dependency
+        run: |
+          cp domain/build.gradle.kts "$RUNNER_TEMP/domain.bak"
+          cat >> domain/build.gradle.kts <<'PROBE'
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.19.0")
+          }
+PROBE
+          if ./gradlew :domain:build -q >/dev/null 2>&1; then
+            cp "$RUNNER_TEMP/domain.bak" domain/build.gradle.kts
+            echo "::error:::domain accepted an Android dependency — the layer boundary is NOT enforced."
+            exit 1
+          fi
+          cp "$RUNNER_TEMP/domain.bak" domain/build.gradle.kts
+          echo "OK — :domain rejects Android dependencies at build time."
 
       - name: Upload build reports
         if: failure()

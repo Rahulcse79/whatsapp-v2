@@ -34,5 +34,21 @@ dependencyResolutionManagement {
 
 rootProject.name = "whatsapp-v2"
 
-// Modules are added in Task 4. The list is intentionally empty: Task 2 delivers a
-// buildable skeleton only, which is also why this build needs no Android SDK.
+include(":app")
+
+// Pure Kotlin/JVM. Applies no Android plugin, by design — see §4.1 and DoD 2.
+include(":domain")
+
+include(":core:common")
+include(":core:designsystem")
+
+include(":data:account")
+include(":data:sip")
+include(":data:calllog")
+include(":data:contacts")
+
+include(":feature:dialer")
+include(":feature:calls")
+include(":feature:accounts")
+include(":feature:history")
+include(":feature:settings")

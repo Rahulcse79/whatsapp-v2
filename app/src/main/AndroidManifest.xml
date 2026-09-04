@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Deliberately minimal. Permissions, the foreground service and its types, the
+      Telecom ConnectionService and the launcher activity are declared by the tasks
+      that introduce them (15, 28, 34, 37, 51). android:allowBackup is false from the
+      first commit because this app stores SIP credentials (§7).
+    -->
+    <application
+        android:allowBackup="false"
+        android:label="whatsapp-v2"
+        android:supportsRtl="true" />
+
+</manifest>

@@ -13,8 +13,6 @@ class AndroidLibraryConventionPlugin : Plugin<Project> {
 
         extensions.configure<LibraryExtension> {
             configureAndroid(this)
-            // Library modules ship no resources of their own by default.
-            defaultConfig.consumerProguardFiles("consumer-rules.pro")
         }
     }
 }
