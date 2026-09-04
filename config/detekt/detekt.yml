@@ -18,6 +18,11 @@ complexity:
     thresholdInClasses: 20
     ignorePrivate: true
     ignoreOverridden: true
+    # A Room DAO is a generated-implementation boundary, not a class doing too much: its
+    # methods are queries against one table. Splitting one would also break @Transaction
+    # methods, which must call sibling queries on the same interface to stay atomic.
+    ignoreAnnotated:
+      - "Dao"
 
 style:
   MagicNumber:

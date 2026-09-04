@@ -20,7 +20,11 @@ object DatabaseModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): SipAccountDatabase =
         Room.databaseBuilder(context, SipAccountDatabase::class.java, SipAccountDatabase.NAME)
-            .addMigrations(*SipAccountDatabase.MIGRATIONS)
+            .apply {
+                // Added one at a time rather than spread: the spread operator copies the
+                // whole array, and iterating reads no worse.
+                SipAccountDatabase.MIGRATIONS.forEach(::addMigrations)
+            }
             // No fallbackToDestructiveMigration: it would silently delete every account
             // and credential on a schema change, on exactly the users who upgrade first.
             // A missing migration must fail loudly instead.
