@@ -636,10 +636,35 @@ Build:
 - Handle key invalidation (device credential changed) with a defined recovery path.
 
 Done when:
-- [ ] Encrypt → decrypt round-trip test passes, including empty and 256-char passwords
-- [ ] Ciphertext differs across two encryptions of the same plaintext (unique IV)
-- [ ] Key invalidation is handled with a user-facing "re-enter your password" path,
+- [x] Encrypt → decrypt round-trip test passes, including empty and 256-char passwords
+      → plus non-ASCII, since SIP passwords are arbitrary text
+- [x] Ciphertext differs across two encryptions of the same plaintext (unique IV)
+      → asserted directly, and across **200 encryptions** with no repeated IV. IV reuse
+      under one key breaks GCM catastrophically, so one comparison is not enough.
+- [x] Key invalidation is handled with a user-facing "re-enter your password" path,
       not a crash
+      → `CipherError.requiresReEntry` separates "ask the user to retype" from "retyping
+      cannot help" — telling someone to retype after a Keystore *provider* failure would
+      be a lie. All five cases are classified, with a test that fails if a new one is
+      added unclassified.
+
+**Status: COMPLETE.** Decisions recorded in [`docs/security.md`](docs/security.md).
+
+- **AES-256-GCM with an Android Keystore key**, not Jetpack Security:
+  `EncryptedSharedPreferences`/`EncryptedFile` are deprecated, and neither fits — a SIP
+  password belongs in the same Room row as the account it protects, so the two are
+  written, migrated and deleted atomically. A separate encrypted file would let them
+  drift apart, including leaving a password behind when an account is deleted.
+- **GCM, not CBC**: authenticated, so a tampered blob fails loudly instead of returning
+  plausible rubbish that would then be sent as a SIP password.
+- **Deliberate trade-off:** the key does *not* require user authentication. Binding
+  decryption to a recent unlock sounds strictly safer and is wrong here — the app must
+  decrypt to re-register in the background, and the moment that matters most is while
+  the device is locked and a call is arriving.
+- `SecretKeyProvider` is a seam because the Keystore cannot run on the JVM; the Keystore
+  implementation lives in its own package so it cannot drag the cipher's coverage gate
+  down. Coverage 85.4%, gated at 85 with the limit stated — the residue is interface
+  declarations and one platform-error branch that could not be triggered on the JVM.
 
 ### Task 17 — Room schema for accounts
 **Depends on:** 8, 16 · **Prompt refs:** §5.1, §3 · **Modules:** `:data:account`
@@ -650,9 +675,31 @@ Build:
 - A documented migration policy (no destructive migrations in release).
 
 Done when:
-- [ ] The exported schema JSON is committed
-- [ ] A DAO test against in-memory Room covers insert/update/delete/query
-- [ ] A raw SQLite dump of the DB shows no plaintext password (asserted by a test)
+- [x] The exported schema JSON is committed
+      → `data/account/schemas/…/1.json`, 25 columns and both indices. A CI gate now
+      fails if the export differs from the committed copy or is untracked — **that gate
+      first passed vacuously**, because a plain `**/schemas` pathspec matches nothing in
+      git without `:(glob)` magic.
+- [x] A DAO test against in-memory Room covers insert/update/delete/query
+      → 18 tests, including Flow emission on every change and ordering by creation
+- [x] A raw SQLite dump of the DB shows no plaintext password (asserted by a test)
+      → dumps every column of every row and asserts the password is absent — and asserts
+      the dump is non-empty first, so it cannot pass by reading nothing
+
+**Status: COMPLETE.** Coverage 86.5%, gated at 85.
+
+- Registration status is deliberately **not** a column: it is derived, changes constantly
+  during a retry storm, and a stale copy on disk is exactly the "shows Registered while
+  the transport is down" failure §6 forbids.
+- A unique index on `(username, domain)` stops two accounts fighting over one registrar
+  binding. `setDefault` and `deleteAndPromoteDefault` are `@Transaction`, because doing
+  either in two calls leaves a window with no default account — and an app with accounts
+  but no default cannot place a call.
+- **Migration policy: no destructive migration in release, ever.**
+  `fallbackToDestructiveMigration` would silently delete every account and credential on
+  a schema change, on exactly the users who upgrade first, with no error to point at.
+- Schema export needed the **Room Gradle plugin**; the raw `room.schemaLocation` KSP
+  argument fails on Room 2.8 with a JSON decoding error during export.
 
 ### Task 18 — Account repository
 **Depends on:** 17 · **Prompt refs:** §4.2, §5.1 · **Modules:** `:domain`, `:data:account`
