@@ -148,7 +148,7 @@ class AesGcmCredentialCipherTest {
         keys.failure = CipherError.KeyInvalidated
 
         val error = cipher.encrypt(Secret("hunter22")).errorOrNull()
-        assertEquals(CipherError.KeyInvalidated, error)
+        assertIs<CipherError.KeyInvalidated>(error)
         assertTrue(error.requiresReEntry)
     }
 
