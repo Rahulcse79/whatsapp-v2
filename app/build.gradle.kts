@@ -26,8 +26,14 @@ dependencies {
     implementation(project(":domain"))
     implementation(libs.androidx.core.ktx)
     implementation(project(":core:designsystem"))
+    implementation(project(":feature:accounts"))
+    implementation(project(":feature:calls"))
+    implementation(project(":feature:dialer"))
+    implementation(project(":feature:history"))
+    implementation(project(":feature:settings"))
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.navigation.compose)
     implementation(libs.kotlinx.coroutines.android)
 
     // Proves the fake is consumable from an Android module (Task 11 done-when #2) and

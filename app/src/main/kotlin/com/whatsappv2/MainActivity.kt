@@ -4,8 +4,11 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.CompositionLocalProvider
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
+import com.whatsappv2.permission.LocalPermissionCoordinator
+import com.whatsappv2.permission.PermissionCoordinator
 import com.whatsappv2.ui.AppRoot
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -27,6 +30,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var logger: Logger
 
+    @Inject
+    lateinit var permissionCoordinator: PermissionCoordinator
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -34,7 +40,14 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             WhatsAppV2Theme {
-                AppRoot()
+                // Provided here rather than passed down: a permission request happens
+                // deep inside a screen, and threading the coordinator through every
+                // composable in between would couple them all to it.
+                CompositionLocalProvider(
+                    LocalPermissionCoordinator provides permissionCoordinator,
+                ) {
+                    AppRoot()
+                }
             }
         }
     }

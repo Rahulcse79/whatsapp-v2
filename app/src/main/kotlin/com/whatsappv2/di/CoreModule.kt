@@ -2,11 +2,15 @@ package com.whatsappv2.di
 
 import com.whatsappv2.core.common.dispatcher.DefaultDispatcherProvider
 import com.whatsappv2.core.common.dispatcher.DispatcherProvider
+import android.content.Context
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.logging.PlatformLogger
+import com.whatsappv2.permission.PermissionRequestTracker
+import com.whatsappv2.permission.SharedPreferencesPermissionTracker
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
@@ -29,4 +33,10 @@ object CoreModule {
     @Provides
     @Singleton
     fun provideLogger(): Logger = PlatformLogger()
+
+    @Provides
+    @Singleton
+    fun providePermissionRequestTracker(
+        @ApplicationContext context: Context,
+    ): PermissionRequestTracker = SharedPreferencesPermissionTracker(context)
 }
