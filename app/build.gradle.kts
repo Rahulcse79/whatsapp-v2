@@ -1,5 +1,6 @@
 plugins {
     id("whatsappv2.android.application")
+    id("whatsappv2.android.compose")
     id("whatsappv2.hilt")
 }
 
@@ -24,7 +25,9 @@ dependencies {
     implementation(project(":core:common"))
     implementation(project(":domain"))
     implementation(libs.androidx.core.ktx)
+    implementation(project(":core:designsystem"))
     implementation(libs.androidx.activity.ktx)
+    implementation(libs.androidx.activity.compose)
     implementation(libs.kotlinx.coroutines.android)
 
     // Proves the fake is consumable from an Android module (Task 11 done-when #2) and

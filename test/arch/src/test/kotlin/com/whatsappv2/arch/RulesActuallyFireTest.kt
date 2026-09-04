@@ -83,7 +83,23 @@ class RulesActuallyFireTest {
         assertTrue(violations.any { "public var" in it.detail }, "public var not detected")
     }
 
+    @Test
+    fun `rule 7 fires on a design-system component with no preview`() {
+        val violations = ArchitectureRules.designSystemComponentsArePreviewed(fixtures)
+        assertFires("Rule 7", violations)
+        assertTrue(violations.any { "ThemePreviews" in it.detail })
+    }
+
+    @Test
+    fun `rule 8 fires on a hardcoded colour, text style and dimension`() {
+        val violations = ArchitectureRules.stylingStaysInTheDesignSystem(fixtures)
+        assertFires("Rule 8", violations)
+        assertTrue(violations.any { "colour" in it.detail }, "hardcoded colour not detected")
+        assertTrue(violations.any { "TextStyle" in it.detail }, "constructed TextStyle not detected")
+        assertTrue(violations.any { "dimension" in it.detail }, "hardcoded dimension not detected")
+    }
+
     private companion object {
-        const val EXPECTED_FIXTURES = 6
+        const val EXPECTED_FIXTURES = 8
     }
 }

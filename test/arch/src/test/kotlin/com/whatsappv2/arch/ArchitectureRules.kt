@@ -202,6 +202,50 @@ object ArchitectureRules {
         }
     }
 
+    /**
+     * **Rule 7 — every design-system component is previewed in light and dark (Task 14).**
+     *
+     * A component with no preview is one nobody has seen in dark mode, and dark-mode
+     * contrast bugs are invisible until someone with dark mode on reports them. The
+     * `@ThemePreviews` annotation renders both at once, so a single annotation cannot be
+     * half-applied the way two separate `@Preview`s can.
+     */
+    fun designSystemComponentsArePreviewed(files: List<SourceFile>): List<Violation> =
+        files.filter { it.isUnder("designsystem") && "/component/" in it.relativePath }
+            .filter { PUBLIC_COMPOSABLE.containsMatchIn(it.code) }
+            .filterNot { PREVIEW_ANNOTATION.containsMatchIn(it.code) }
+            .map { Violation(it.relativePath, "declares a public @Composable with no @ThemePreviews") }
+
+    /**
+     * **Rule 8 — no hardcoded colour, dimension or text style outside the design
+     * system (Task 14).**
+     *
+     * Strict on purpose. Once one screen uses `12.dp` and its neighbour uses `14.dp`,
+     * nobody can tell whether the difference was intended, and every later change
+     * becomes a judgement call. `AppTheme.spacing` and `MaterialTheme.colorScheme` cost
+     * nothing to use and keep the app coherent.
+     *
+     * Applied to UI source only — `:domain` has no styling to hardcode, and its
+     * constants are not dimensions.
+     */
+    fun stylingStaysInTheDesignSystem(files: List<SourceFile>): List<Violation> = buildList {
+        for (file in files) {
+            if (file.isUnder("designsystem")) continue
+            if (!file.code.contains("androidx.compose") && !file.imports.any { it.startsWith("androidx.compose") }) {
+                continue
+            }
+            COLOR_LITERAL.findAll(file.code).forEach {
+                add(Violation(file.relativePath, "hardcodes a colour (${it.value}); use MaterialTheme.colorScheme"))
+            }
+            TEXT_STYLE.findAll(file.code).forEach {
+                add(Violation(file.relativePath, "constructs a TextStyle; use MaterialTheme.typography"))
+            }
+            DIMENSION_LITERAL.findAll(file.code).forEach {
+                add(Violation(file.relativePath, "hardcodes a dimension (${it.value.trim()}); use AppTheme.spacing"))
+            }
+        }
+    }
+
     // ================================================================ patterns
 
     const val FIXTURES = "test/arch/src/test/resources/violations"
@@ -226,4 +270,10 @@ object ArchitectureRules {
         RegexOption.MULTILINE,
     )
     private val PUBLIC_VAR = Regex("""^\s{4}(?!private|internal|protected)var\s+\w+\s*[:=]""", RegexOption.MULTILINE)
+
+    private val PUBLIC_COMPOSABLE = Regex("""@Composable\s*\n\s*fun\s+\w+""")
+    private val PREVIEW_ANNOTATION = Regex("""@Theme(?:AndFont)?Previews""")
+    private val COLOR_LITERAL = Regex("""Color\(\s*0x[0-9A-Fa-f]{6,8}""")
+    private val TEXT_STYLE = Regex("""\bTextStyle\s*\(""")
+    private val DIMENSION_LITERAL = Regex("""(?<![\w.])\d+(?:\.\d+)?\.(?:dp|sp)\b""")
 }

@@ -54,6 +54,16 @@ class ArchitectureTest {
     }
 
     @Test
+    fun `rule 7 - every design-system component is previewed in light and dark`() {
+        assertNoViolations("Rule 7", ArchitectureRules.designSystemComponentsArePreviewed(files))
+    }
+
+    @Test
+    fun `rule 8 - no hardcoded colour, dimension or text style outside the design system`() {
+        assertNoViolations("Rule 8", ArchitectureRules.stylingStaysInTheDesignSystem(files))
+    }
+
+    @Test
     fun `the scope is not empty, so a passing rule means something`() {
         // Without this, a misconfigured root would make every rule above pass vacuously
         // - the failure mode that makes architecture tests worthless.
