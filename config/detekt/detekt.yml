@@ -49,6 +49,15 @@ style:
         reason: 'Use the Logger facade in :core:common.'
       - value: 'kotlin.io.println'
         reason: 'Use the Logger facade in :core:common.'
+  UnusedPrivateMember:
+    # Preview functions are entry points for the IDE and for Compose tooling, not dead
+    # code. They are private precisely so nothing else calls them, which is exactly what
+    # this rule would otherwise punish.
+    ignoreAnnotated:
+      - 'Preview'
+      - 'ThemePreviews'
+      - 'ThemeAndFontPreviews'
+      - 'Composable'
   ReturnCount:
     max: 3
     excludeGuardClauses: true
