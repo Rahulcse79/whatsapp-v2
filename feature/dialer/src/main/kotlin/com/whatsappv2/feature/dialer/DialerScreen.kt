@@ -9,7 +9,7 @@ import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
 
 /**
- * Dialer.
+ * Dial a number.
  *
  * A placeholder destination: it exists so navigation, rotation and the bottom bar can be
  * verified now, before any of the real behaviour lands. It renders the shared
@@ -19,7 +19,7 @@ import com.whatsappv2.core.designsystem.preview.ThemePreviews
 @Composable
 fun DialerScreen(modifier: Modifier = Modifier) {
     EmptyState(
-        title = "Dialer",
+        title = "Dial a number",
         description = "Placing calls arrives in Task 36, once registration works.",
         icon = Icons.Filled.Dialpad,
         modifier = modifier,

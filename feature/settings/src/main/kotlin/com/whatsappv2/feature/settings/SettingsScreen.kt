@@ -9,7 +9,7 @@ import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
 
 /**
- * Settings.
+ * App settings.
  *
  * A placeholder destination: it exists so navigation, rotation and the bottom bar can be
  * verified now, before any of the real behaviour lands. It renders the shared
@@ -19,7 +19,7 @@ import com.whatsappv2.core.designsystem.preview.ThemePreviews
 @Composable
 fun SettingsScreen(modifier: Modifier = Modifier) {
     EmptyState(
-        title = "Settings",
+        title = "App settings",
         description = "App preferences arrive in Task 23.",
         icon = Icons.Filled.Settings,
         modifier = modifier,

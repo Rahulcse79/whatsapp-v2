@@ -33,18 +33,24 @@ class AppRootNavigationTest {
     @get:Rule
     val compose = createComposeRule()
 
-    /** The heading each destination renders, so a tap can be checked against something. */
+    /**
+     * The heading each destination renders, so a tap can be checked against something.
+     *
+     * Every heading differs from its tab label on purpose: a screen titled the same as
+     * its tab is redundant to read, and it makes the text matcher ambiguous between the
+     * bar and the content - which is how the first version of this test failed.
+     */
     private val headingFor = mapOf(
-        AppDestination.DIALER to "Dialer",
+        AppDestination.DIALER to "Dial a number",
         AppDestination.HISTORY to "Call history",
         AppDestination.ACCOUNTS to "SIP accounts",
-        AppDestination.SETTINGS to "Settings",
+        AppDestination.SETTINGS to "App settings",
     )
 
     @Test
     fun `the app opens on the dialer`() {
         compose.setContent { WhatsAppV2Theme { AppRoot() } }
-        compose.onNodeWithText("Dialer").assertIsDisplayed()
+        compose.onNodeWithText("Dial a number").assertIsDisplayed()
     }
 
     @Test
