@@ -20,6 +20,7 @@ room {
 dependencies {
     implementation(project(":core:common"))
     implementation(project(":domain"))
+    implementation(libs.kotlinx.coroutines.core)
 
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
@@ -30,4 +31,5 @@ dependencies {
     testImplementation(libs.androidx.test.core.ktx)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
+    testImplementation(testFixtures(project(":core:common")))
 }

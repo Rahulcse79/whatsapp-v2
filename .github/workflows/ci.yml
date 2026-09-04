@@ -246,6 +246,8 @@ jobs:
               # path - round trip, IV uniqueness, tampering, key loss - is covered.
               "com/whatsappv2/data/account/crypto": 85,
               "com/whatsappv2/data/account/db": 85,
+              "com/whatsappv2/data/account": 80,
+              "com/whatsappv2/data/account/mapper": 80,
           }
 
           reports = glob.glob("**/build/reports/kover/report.xml", recursive=True)
