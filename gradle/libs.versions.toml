@@ -56,6 +56,12 @@ kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 
 # --- Test ---
 kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
+
+# The JUnit BINDING for kotlin-test. The Kotlin JVM plugin picks this automatically for
+# JVM modules, but AGP does not, so `kotlin.test.Test` - a typealias this artifact
+# supplies - is unresolved in Android modules without it. Its version tracks Kotlin, so
+# there is no separate pin to keep in step.
+kotlin-test-junit = { group = "org.jetbrains.kotlin", name = "kotlin-test-junit", version.ref = "kotlin" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 hilt-android-testing = { group = "com.google.dagger", name = "hilt-android-testing", version.ref = "hilt" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }

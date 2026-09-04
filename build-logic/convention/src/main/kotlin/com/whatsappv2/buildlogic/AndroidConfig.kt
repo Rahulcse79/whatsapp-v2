@@ -22,6 +22,7 @@ internal fun Project.configureAndroidCommon() {
     )
 
     dependencies.add("testImplementation", libs.findLibrary("kotlin-test").get())
+    dependencies.add("testImplementation", libs.findLibrary("kotlin-test-junit").get())
     dependencies.add("testImplementation", libs.findLibrary("kotlinx-coroutines-test").get())
 
     configureKotlin()
