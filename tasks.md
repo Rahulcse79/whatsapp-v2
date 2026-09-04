@@ -306,10 +306,41 @@ Build:
 - Mute / speaker / camera-on / recording are **attributes of `Connected`**, not states.
 
 Done when:
-- [ ] Every legal transition has a test; an exhaustive test asserts all other
+- [x] Every legal transition has a test; an exhaustive test asserts all other
       (state, event) pairs are rejected
-- [ ] No boolean flags model call phase anywhere in `:domain`
-- [ ] The FSM compiles in `:domain` with zero Android imports
+      → a table of all legal pairs, then a sweep over **12 states × 19 events**
+      asserting every pair absent from the table is rejected. Adding a transition to
+      the machine without adding it to the table fails the build. The sweep also
+      asserts it checked >100 pairs, so a bug that emptied the universe cannot make
+      it vacuously pass. 117 tests, `domain/call` at 95.7%, gated.
+- [x] No boolean flags model call phase anywhere in `:domain`
+      → verified by grep. `CallControls` booleans are *toggles* (mute, video,
+      recording), which §4.4 permits — it forbids booleans modelling **phase**.
+- [x] The FSM compiles in `:domain` with zero Android imports
+      → verified by grep and by the CI architecture assertion
+
+**Status: COMPLETE.** CI run 33856905127.
+
+**The exhaustive sweep paid for itself immediately.** It caught two transitions the
+machine *accepted* while producing no change: `Held(LOCAL) + RemoteResume` and
+`Held(REMOTE) + LocalResume` — resuming from a side that was not holding. Reporting
+success for an action that changed nothing is indistinguishable at the call site from
+a resume that worked, and would have surfaced much later as "resume did nothing" with
+no error anywhere. The test was written before the bug was known.
+
+Design notes:
+- `HoldParty` distinguishes LOCAL / REMOTE / BOTH. Collapsing hold into one boolean is
+  how "resume did nothing" bugs happen: with both sides holding, a local resume must
+  **not** report the call live, because the far end still holds and no media flows.
+- Mute, audio route, video and recording are orthogonal attributes in `CallControls`,
+  not states — folding them in would multiply the state count by sixteen for nothing.
+  They are carried through hold, resume and a failed transfer, because losing mute on
+  resume is a real and very visible bug.
+- Control events are **rejected** before media exists: muting a ringing call is a UI
+  bug, and accepting it silently would hide that the microphone was never muted.
+- A failed transfer returns to `Connected` rather than stranding the call (§5.2).
+- `TransitionResult` is sealed so a caller cannot mistake "rejected" for "no change" —
+  very different things when a button was just pressed.
 
 ### Task 10 — `SipEngine` interface and error taxonomy
 **Depends on:** 8, 9 · **Prompt refs:** §4.3, DoD 3 · **Modules:** `:domain`
