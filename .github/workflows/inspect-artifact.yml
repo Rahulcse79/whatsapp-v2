@@ -68,7 +68,7 @@ jobs:
           for class in ${{ inputs.classes }}; do
             echo "::group::$class"
             if [ -n "${{ inputs.grep }}" ]; then
-              javap -cp "$CP" "$class" 2>&1 | grep -i "${{ inputs.grep }}" || echo "  (no member matching '${{ inputs.grep }}')"
+              javap -cp "$CP" "$class" 2>&1 | grep -iE "${{ inputs.grep }}" || echo "  (no member matching '${{ inputs.grep }}')"
             else
               javap -cp "$CP" "$class" 2>&1 | head -120
             fi

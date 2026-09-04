@@ -37,5 +37,7 @@ dependencies {
     // scopes to org.linphone so it cannot answer for anything else.
     implementation(libs.linphone.sdk)
 
+    testImplementation(testFixtures(project(":domain")))
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.turbine)
 }
