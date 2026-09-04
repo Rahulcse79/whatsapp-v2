@@ -405,9 +405,41 @@ Build:
 - Deterministic virtual time (`TestScope`), no real delays.
 
 Done when:
-- [ ] A test can script a full incoming-call-answered-then-remote-hangup sequence in < 20 lines
-- [ ] It is published via `testFixtures` and consumable from `:feature:*` and `:app`
-- [ ] No `Thread.sleep` and no wall-clock dependency anywhere in it
+- [x] A test can script a full incoming-call-answered-then-remote-hangup sequence in < 20 lines
+      → **13 lines**, including the assertions and an exact 42-second duration check
+- [x] It is published via `testFixtures` and consumable from `:feature:*` and `:app`
+      → `FakeEngineConsumableTest` lives in `:app` specifically to prove the fixture
+      resolves across the JVM/Android boundary. Without it the fake could compile
+      fine in `:domain` and be unusable exactly where DoD 4 needs it.
+- [x] No `Thread.sleep` and no wall-clock dependency anywhere in it
+      → verified against code with comments stripped. Time comes from an injected
+      `MutableClock` that moves only when a test moves it.
+
+**Status: COMPLETE.** `domain/testing` at **100%** (233/233), gated at 90. CI run
+33867674253.
+
+Design notes:
+- **Two ways to drive it, matching the two directions things happen.** `failNext` /
+  `alwaysFail` script what the app's own operations *return*; `simulate*` triggers what
+  the *network does to the app* — incoming call, remote answer/hangup, 486, 408, remote
+  hold, transfer result, network loss and recovery, registration expiry, roster arrival.
+- **Call transitions run through the real `CallStateMachine`.** A fake with hand-rolled
+  transition logic would accept sequences production rejects, and tests built on it
+  would be worse than no tests at all.
+- A failed `register` leaves an observable `Failed` state, not just an error return —
+  the account list renders from `registrationState`, so a failure with no state is
+  invisible (Task 31).
+- Ended calls leave `activeCalls` (what the name promises) but are retained in
+  `terminatedCalls`, so a test can assert how a call finished — exactly what the call
+  log records (Task 47). `invocations` records order, which Task 29 needs to assert
+  unregister-happens-before-register.
+- `FakeSipEngine` lives in `com.whatsappv2.domain.testing`, not alongside production
+  code: sharing a package meant testFixtures was measured against the production
+  coverage gate, which dropped `domain/engine` from 97.5% to 86.7% and made the gate
+  meaningless.
+
+Also adds `Clock`/`SystemClock` to `:core:common` and `MutableClock` to its
+testFixtures — the injected clock every later timing test will need.
 
 ### Task 12 — Architecture tests
 **Depends on:** 4, 10 · **Prompt refs:** §4.1, §8, DoD 2, DoD 3 · **Modules:** `:app` or a `:test:arch` module
