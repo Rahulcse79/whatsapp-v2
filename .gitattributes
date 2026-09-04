@@ -1,2 +1,15 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+* text=auto eol=lf
+
+*.bat           text eol=crlf
+gradlew         text eol=lf
+*.jar           binary
+*.png           binary
+*.jpg           binary
+*.so            binary
+*.aar           binary
+*.keystore      binary
+*.jks           binary
+
+gradle/wrapper/gradle-wrapper.jar binary linguist-vendored
+gradlew                           linguist-vendored
+gradlew.bat                       linguist-vendored

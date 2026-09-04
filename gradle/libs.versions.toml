@@ -1,0 +1,35 @@
+# Single source of truth for every dependency version (Task 2, done-when #3).
+# No version literal may appear in any build.gradle.kts.
+#
+# Versions are pinned conservatively and verified by CI resolution, not asserted
+# from memory. The bootstrap workflow prints the latest available AGP / Kotlin /
+# Gradle so bumps are made from evidence.
+
+[versions]
+# --- Build toolchain ---
+agp = "8.9.0"
+kotlin = "2.1.10"
+ksp = "2.1.10-1.0.31"
+jvmToolchain = "17"
+
+# --- Android SDK levels (§3) ---
+# minSdk 26 is a hard requirement. compileSdk/targetSdk are verified in Task 4,
+# where the first module actually applies the Android plugin.
+minSdk = "26"
+compileSdk = "35"
+targetSdk = "35"
+
+[libraries]
+# Populated from Task 3 onward. Deliberately empty: Task 2's module list is empty,
+# so there is nothing to depend on yet, and a catalog full of unused entries is noise.
+
+# Used by the convention plugins in Task 3 to apply AGP/Kotlin programmatically.
+android-gradlePlugin = { group = "com.android.tools.build", name = "gradle", version.ref = "agp" }
+kotlin-gradlePlugin = { group = "org.jetbrains.kotlin", name = "kotlin-gradle-plugin", version.ref = "kotlin" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

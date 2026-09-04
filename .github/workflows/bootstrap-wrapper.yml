@@ -1,0 +1,68 @@
+# One-time bootstrap: generates the Gradle wrapper on a runner and commits it back.
+#
+# Why this exists: the wrapper ships a binary `gradle-wrapper.jar` that cannot be
+# authored by hand, and there is no Gradle installed on the developer machine by
+# design (builds run in CI, not on a laptop). This workflow closes that gap once.
+#
+# It also prints the latest AVAILABLE AGP / Kotlin / Gradle versions so the pins in
+# gradle/libs.versions.toml are bumped from evidence rather than from memory.
+name: Bootstrap Gradle wrapper
+
+on:
+  workflow_dispatch:
+    inputs:
+      gradle-version:
+        description: "Gradle version to generate the wrapper for"
+        required: true
+        default: "8.13"
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    name: Generate and commit the Gradle wrapper
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Report latest available toolchain versions
+        run: |
+          echo "::group::Latest available versions (pin from these, not from memory)"
+          echo "--- Gradle ---"
+          curl -sS https://services.gradle.org/versions/current | tr ',' '\n' | grep -E '"version"' || true
+          echo "--- Android Gradle Plugin (Google Maven) ---"
+          curl -sS https://dl.google.com/dl/android/maven2/com/android/tools/build/gradle/maven-metadata.xml \
+            | grep -oE '<version>[0-9]+\.[0-9]+\.[0-9]+</version>' | tail -12 || true
+          echo "--- Kotlin Gradle plugin (Maven Central) ---"
+          curl -sS https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-gradle-plugin/maven-metadata.xml \
+            | grep -oE '<version>[0-9]+\.[0-9]+\.[0-9]+</version>' | tail -12 || true
+          echo "::endgroup::"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ inputs.gradle-version }}
+
+      - name: Generate wrapper
+        run: gradle wrapper --gradle-version "${{ inputs.gradle-version }}" --distribution-type bin
+
+      - name: Commit wrapper
+        run: |
+          if git diff --quiet -- gradlew gradlew.bat gradle/wrapper; then
+            echo "Wrapper already up to date — nothing to commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          chmod +x gradlew
+          git update-index --chmod=+x gradlew || true
+          git add gradlew gradlew.bat gradle/wrapper
+          git commit -m "build: add Gradle ${{ inputs.gradle-version }} wrapper (Task 2)"
+          git push
