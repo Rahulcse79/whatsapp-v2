@@ -54,7 +54,13 @@ jobs:
       # Task 2 done-when #2: no Groovy build files anywhere.
       - name: Assert no Groovy build files
         run: |
-          found=$(find . -name "*.gradle" -not -path "./.git/*" || true)
+          # -type f matters: the Gradle cache DIRECTORY is literally named `.gradle`,
+          # and the glob `*.gradle` matches it (the `*` matches an empty string).
+          # Without -type f this assertion fails on every build that has run once.
+          found=$(find . -type f -name "*.gradle" \
+                    -not -path "./.git/*" \
+                    -not -path "*/.gradle/*" \
+                    -not -path "*/build/*" || true)
           if [ -n "$found" ]; then
             echo "::error::Groovy build files found (Kotlin DSL only):"
             echo "$found"
