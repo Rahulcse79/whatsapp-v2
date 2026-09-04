@@ -1,5 +1,8 @@
 package com.whatsappv2.data.settings
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
 import com.whatsappv2.core.common.logging.NoOpLogger
@@ -31,11 +34,31 @@ class DataStoreAppSettingsRepositoryTest {
 
     private val context = ApplicationProvider.getApplicationContext<android.content.Context>()
 
-    private fun repository() = DataStoreAppSettingsRepository(context, NoOpLogger)
+    /**
+     * A store per test class run, in a fresh file.
+     *
+     * Robolectric reuses the application between test cases, so a store tied to a fixed
+     * location would carry one test's writes into the next - which is exactly how the
+     * first version of this suite failed.
+     */
+    private val file = File(context.cacheDir, "settings-${System.nanoTime()}.preferences_pb")
+
+    private val store: DataStore<Preferences> = PreferenceDataStoreFactory.create { file }
+
+    /**
+     * A second repository over the SAME file.
+     *
+     * This is what stands in for process death: it shares no in-memory state with the
+     * first, only what actually reached disk.
+     */
+    private fun reopened(): DataStoreAppSettingsRepository =
+        DataStoreAppSettingsRepository(PreferenceDataStoreFactory.create { file }, NoOpLogger)
+
+    private fun repository() = DataStoreAppSettingsRepository(store, NoOpLogger)
 
     @After
     fun tearDown() {
-        File(context.filesDir, "datastore").deleteRecursively()
+        file.delete()
     }
 
     @Test
@@ -61,7 +84,7 @@ class DataStoreAppSettingsRepositoryTest {
             setSipTraceEnabled(true)
         }
 
-        val reloaded = repository().currentSettings()
+        val reloaded = reopened().currentSettings()
 
         assertEquals(DtmfMode.SIP_INFO, reloaded.dtmfMode)
         assertEquals(SrtpPolicy.MANDATORY, reloaded.defaultSrtpPolicy)

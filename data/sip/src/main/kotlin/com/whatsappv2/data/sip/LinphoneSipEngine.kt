@@ -15,6 +15,7 @@ import com.whatsappv2.domain.model.RegistrationState
 import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.repository.SipAccountRepository
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -61,6 +62,15 @@ internal class LinphoneSipEngine @Inject constructor(
     private var started = false
 
     /**
+     * The event collection job.
+     *
+     * Held so [stop] can end it. Without this the collector outlives the stack it is
+     * listening to, keeping the engine and everything it references alive for the life of
+     * the scope - and in a test, keeping `runTest` waiting forever.
+     */
+    private var collectJob: Job? = null
+
+    /**
      * Begins consuming stack events.
      *
      * Separate from construction so nothing starts a native stack as a side effect of
@@ -71,7 +81,7 @@ internal class LinphoneSipEngine @Inject constructor(
         started = true
 
         gateway.start()
-        scope.launch {
+        collectJob = scope.launch {
             gateway.registrationEvents.collect { event ->
                 val id = AccountId(event.accountKey)
                 val expiry = requestedExpiry[event.accountKey] ?: DEFAULT_EXPIRY_SECONDS
@@ -141,6 +151,8 @@ internal class LinphoneSipEngine @Inject constructor(
     fun stop() {
         if (!started) return
         started = false
+        collectJob?.cancel()
+        collectJob = null
         gateway.stop()
         requestedExpiry.clear()
         states.value = emptyMap()
