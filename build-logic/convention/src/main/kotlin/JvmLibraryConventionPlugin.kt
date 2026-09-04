@@ -16,6 +16,9 @@ class JvmLibraryConventionPlugin : Plugin<Project> {
     override fun apply(target: Project) = with(target) {
         pluginManager.apply("org.jetbrains.kotlin.jvm")
         pluginManager.apply("java-library")
+        // Lets a module publish test doubles (FakeSipEngine, MutableClock) for other
+        // modules to consume, instead of each one re-implementing them.
+        pluginManager.apply("java-test-fixtures")
         pluginManager.apply("whatsappv2.detekt")
         pluginManager.apply("org.jetbrains.kotlinx.kover")
 

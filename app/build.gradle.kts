@@ -22,10 +22,14 @@ android {
 
 dependencies {
     implementation(project(":core:common"))
+    implementation(project(":domain"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.ktx)
     implementation(libs.kotlinx.coroutines.android)
 
+    // Proves the fake is consumable from an Android module (Task 11 done-when #2) and
+    // is what lets the whole app run with no SIP server (DoD 4).
+    testImplementation(testFixtures(project(":domain")))
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core.ktx)
     testImplementation(libs.androidx.test.ext.junit)
