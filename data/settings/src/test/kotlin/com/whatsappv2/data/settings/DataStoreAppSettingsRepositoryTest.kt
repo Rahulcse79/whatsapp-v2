@@ -3,6 +3,8 @@ package com.whatsappv2.data.settings
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
 import com.whatsappv2.core.common.logging.NoOpLogger
@@ -151,11 +153,20 @@ class DataStoreAppSettingsRepositoryTest {
     }
 
     @Test
-    fun `an unknown stored value is treated as unset, not as a crash`() = runTest {
-        // A downgrade after a new option shipped leaves a name this build does not know.
-        val repository = repository()
-        repository.setDtmfMode(DtmfMode.SIP_INFO)
-        assertEquals(DtmfMode.SIP_INFO, repository.currentSettings().dtmfMode)
+    fun `an unknown stored value falls back to the default rather than crashing`() = runTest {
+        // A downgrade after a new option shipped leaves an enum name this build does not
+        // know. The previous version of this test stored a VALID value and proved nothing.
+        store.edit { preferences ->
+            preferences[stringPreferencesKey("dtmf_mode")] = "SOME_FUTURE_MODE"
+            preferences[stringPreferencesKey("default_srtp_policy")] = "QUANTUM"
+            preferences[stringPreferencesKey("preferred_audio_route")] = "TELEPATHY"
+        }
+
+        val settings = repository().currentSettings()
+
+        assertEquals(AppSettings.DEFAULT.dtmfMode, settings.dtmfMode)
+        assertEquals(AppSettings.DEFAULT.defaultSrtpPolicy, settings.defaultSrtpPolicy)
+        assertEquals(AppSettings.DEFAULT.preferredAudioRoute, settings.preferredAudioRoute)
     }
 
     @Test
