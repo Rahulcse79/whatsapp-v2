@@ -2,11 +2,13 @@ package com.whatsappv2.ui.navigation
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import com.whatsappv2.call.CallActivity
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.feature.accounts.AccountDetailRoute
 import com.whatsappv2.feature.accounts.AccountEditorRoute
@@ -27,12 +29,21 @@ fun AppNavHost(
     navController: NavHostController,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+
     NavHost(
         navController = navController,
         startDestination = AppDestination.START.route,
         modifier = modifier,
     ) {
-        composable(AppDestination.DIALER.route) { DialerScreen() }
+        composable(AppDestination.DIALER.route) {
+            DialerScreen(
+                // The call screen is an activity, not a destination in this graph: it is
+                // also what a full-screen intent opens on a locked device, and one call
+                // screen reached two ways would be two screens (Task 39).
+                onCallPlaced = { callId -> context.startActivity(CallActivity.intentFor(context, callId)) },
+            )
+        }
         composable(AppDestination.HISTORY.route) { HistoryScreen() }
         composable(AppDestination.ACCOUNTS.route) {
             AccountsRoute(
