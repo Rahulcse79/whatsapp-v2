@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      ConnectivityNetworkMonitor calls registerDefaultNetworkCallback, getActiveNetwork
+      and getNetworkCapabilities. All three are guarded by this permission.
+
+      Declared here and not only in :app because the requirement belongs to the module
+      that has it. Manifest merging carries it into any consuming app, and lint analyses
+      each module against its OWN merged manifest - :app declaring the permission does
+      not make these call sites legal in :data:sip, which is exactly what run
+      33951547581 reported.
+
+      A normal permission, not a dangerous one: granted at install and never requested
+      at runtime, which is why it has no AppPermission entry beside the others.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+</manifest>
