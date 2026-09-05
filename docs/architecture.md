@@ -270,12 +270,46 @@ Tracked, not guessed (§13). Each names an owner and a deadline.
 |---|---|---|---|
 | Q1 | Distribution model — closed-source, internal, or open? Drives ADR-002. | Business | Before Task 64 |
 | Q2 | If closed-source: is the Belledonne commercial licence budgeted? | Business | Before release |
-| Q3 | FreeSWITCH hostname, SIP domain, transport, and TLS CA for the test target | Infra | Task 32 |
-| Q4 | Test extensions to reserve for automation, and a dedicated conference room | Infra | Task 32 |
+| ~~Q3~~ | ~~FreeSWITCH hostname, SIP domain, transport, and TLS CA~~ — **answered, see §3.1** | Infra | ~~Task 32~~ |
+| ~~Q4~~ | ~~Test extensions to reserve for automation, and a conference room~~ — **answered, see §3.1** | Infra | ~~Task 32~~ |
 | Q5 | Does the deployed FreeSWITCH retain `pn-*` params in sofia registrations? | Infra | Task 38 |
 | Q6 | Who builds and operates the ESL push gateway? It is outside this repo. | Eng lead | Before Task 38 |
 | Q7 | Does the conference profile publish a participant roster? | Infra | Task 60 |
 | Q8 | Is call recording actually required, and in which jurisdictions? Drives the consent model in §2.6. | Legal / Product | Before Task 58 |
+| Q9 | Enable SIP TLS on the test target: run `gentls_cert`, set `internal_ssl_enable=true`. Until then Task 33 covers UDP and TCP only. | Infra | Task 33 |
+
+### 3.1 Q3 and Q4 — the test target, answered
+
+Read from the deployed instance's own configuration rather than agreed in the abstract,
+so every value here is checkable: `/usr/local/freeswitch/etc/freeswitch` on the
+development machine, FreeSWITCH **1.10.11-release**.
+
+| | Value | Where it comes from |
+|---|---|---|
+| SIP domain / host | the machine's LAN address | `vars.xml` → `domain` |
+| SIP port | **5060**, UDP and TCP | `vars.xml` → `internal_sip_port` |
+| TLS port | 5061, **but TLS is off** | `vars.xml` → `internal_ssl_enable=false` |
+| Extensions | **1000–1019**, password inherited from `default_password` | `directory/default/10*.xml` |
+| Reserved for automation | **1018 and 1019** | this document; see below |
+| Conference room | **3000**, the stock `mod_conference` dial-in extension | `dialplan/default` |
+
+**No value that identifies or authenticates is written down here.** The host is a LAN
+address that changes with the network, and the password is a credential. Both are injected
+at build time from Gradle properties or CI secrets and neither is committed — Task 32's
+fourth done-when, enforced by a CI step that greps for them. `docs/testing.md` says how to
+supply them.
+
+**Two extensions are reserved for automation and are not to be used by hand.** ADR-005
+accepted a shared, non-hermetic server; the mitigation is that automation owns 1018 and
+1019 exclusively, so a manual test signed in on a handset cannot make an automated run
+fail and leave no trace of why. 1000–1017 are for manual use.
+
+**TLS is not currently available, and Task 33 cannot claim it.** The internal profile has
+`internal_ssl_enable=false` and `tls/` holds only the DTLS-SRTP and WSS certificates —
+there is no SIP TLS certificate. UDP and TCP registration can be tested today; the TLS leg
+of Task 33's first done-when needs `gentls_cert` run against the server and the profile
+flipped, which is a change to the deployment and is **Infra's to make, not this repo's**.
+Recorded as Q9 rather than quietly dropped.
 
 ## 4. HLD
 
