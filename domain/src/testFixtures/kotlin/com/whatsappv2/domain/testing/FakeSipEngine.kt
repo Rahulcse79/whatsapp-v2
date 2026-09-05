@@ -132,6 +132,15 @@ class FakeSipEngine(
      */
     val terminatedCalls: List<CallSnapshot> get() = ended.toList()
 
+    /**
+     * The accounts the engine is still holding, and therefore still registering for.
+     *
+     * Emptied per account by [unregister], as the real engine drops the account and the
+     * credentials the stack kept for it. That makes "after logout nothing holds this
+     * account any more" (Task 29) something a test can assert rather than assume.
+     */
+    val registeredAccounts: List<SipAccount> get() = knownAccounts.values.toList()
+
     /** The push token most recently published, or `null` if none (ADR-004). */
     var publishedPushToken: PushToken? = null
         private set

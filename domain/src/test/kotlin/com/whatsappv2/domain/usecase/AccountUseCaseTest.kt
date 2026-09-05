@@ -28,7 +28,7 @@ class SaveAccountUseCaseTest {
 
     private val repository = FakeSipAccountRepository()
     private val engine = FakeSipEngine()
-    private val save = SaveAccountUseCase(repository, engine)
+    private val save = SaveAccountUseCase(repository, engine, LoginUseCase(repository, engine))
 
     private fun draft(
         id: String = "acct-1",
@@ -76,12 +76,45 @@ class SaveAccountUseCaseTest {
     // ---------------------------------------------------------------- success
 
     @Test
-    fun `a valid draft is validated and stored`() = runTest {
+    fun `a valid draft is validated, stored and registered`() = runTest {
+        // Login is save + register (Task 29): a new account that saved without
+        // registering would sit in the list looking configured and take no calls.
         val result = save(draft()).getOrNull() ?: fail("expected the save to succeed")
 
         assertEquals("alice", result.account.username)
         assertEquals(listOf(AccountId("acct-1")), repository.savedIds)
         assertTrue(result.warnings.isEmpty())
+        assertEquals(RegistrationAttempt.Succeeded, result.registration)
+        assertEquals(
+            listOf(FakeSipEngine.Operation.REGISTER),
+            engine.invocations.map { it.operation },
+        )
+    }
+
+    @Test
+    fun `the plaintext password does not travel to the engine`() = runTest {
+        // The engine is given the STORED account, which carries an empty password, and
+        // fetches the real credentials itself for the length of the REGISTER. Handing it
+        // the draft would put the typed plaintext through a call that has no use for it.
+        save(draft(password = "hunter22"))
+
+        val registered = engine.registeredAccounts.single()
+        assertEquals(0, registered.password.length, "the engine was handed a plaintext password")
+    }
+
+    @Test
+    fun `a registration failure does not fail the save`() = runTest {
+        // The account exists and the user's typing is not thrown away. What failed is
+        // something they retry - or fix a password and retry.
+        engine.failNext(FakeSipEngine.Operation.REGISTER, SipError.AuthenticationFailed(401))
+
+        val result = save(draft()).getOrNull() ?: fail("a registration failure must not fail the save")
+
+        assertEquals(listOf(AccountId("acct-1")), repository.savedIds)
+        assertEquals(
+            RegistrationAttempt.Rejected(SipError.AuthenticationFailed(401)),
+            result.registration,
+        )
     }
 
     @Test
@@ -121,9 +154,12 @@ class SaveAccountUseCaseTest {
     // ---------------------------------------------------------------- re-registration
 
     @Test
-    fun `changing the SIP identity unregisters the old binding first`() = runTest {
-        // Registering the new identity without releasing the old one leaves a stale
-        // binding that keeps ringing a device which no longer answers (§5.1).
+    fun `editing a registered account unregisters then registers, in that order`() = runTest {
+        // Task 29's done-when, asserted as an ordered sequence. Registering the new
+        // identity without releasing the old one leaves a stale binding that keeps
+        // ringing a device which no longer answers (§5.1) - and stopping after the
+        // unregister is the same bug from the other side: the user pressed Save, not Log
+        // out, and would be left unreachable.
         val existing = storedAccount(username = "alice")
         repository.given(existing)
         engine.givenRegistered(existing)
@@ -132,10 +168,29 @@ class SaveAccountUseCaseTest {
         val result = save(draft(username = "alice2")).getOrNull() ?: fail("save failed")
 
         assertTrue(result.unregisteredFirst)
+        assertEquals(RegistrationAttempt.Succeeded, result.registration)
         assertEquals(
-            listOf(FakeSipEngine.Operation.UNREGISTER),
+            listOf(FakeSipEngine.Operation.UNREGISTER, FakeSipEngine.Operation.REGISTER),
             engine.invocations.map { it.operation },
         )
+        // The new identity is the one now registered, not the released one.
+        assertEquals("alice2", engine.registeredAccounts.single().username)
+    }
+
+    @Test
+    fun `an interrupted re-registration is reported rather than left silent`() = runTest {
+        // The unregister succeeded and the re-register did not, so the account really is
+        // unreachable. Saying so is the point: a silent partial re-registration is the
+        // failure §5.1 names.
+        val existing = storedAccount(username = "alice")
+        repository.given(existing)
+        engine.givenRegistered(existing)
+        engine.failNext(FakeSipEngine.Operation.REGISTER, SipError.Timeout)
+
+        val result = save(draft(username = "alice2")).getOrNull() ?: fail("save failed")
+
+        assertTrue(result.unregisteredFirst)
+        assertEquals(RegistrationAttempt.Rejected(SipError.Timeout), result.registration)
     }
 
     @Test
@@ -146,6 +201,7 @@ class SaveAccountUseCaseTest {
 
         val result = save(draft(transport = Transport.TLS)).getOrNull() ?: fail("save failed")
         assertTrue(result.unregisteredFirst)
+        assertEquals(RegistrationAttempt.Succeeded, result.registration)
     }
 
     @Test
@@ -174,14 +230,17 @@ class SaveAccountUseCaseTest {
     }
 
     @Test
-    fun `an unregistered account is not unregistered again`() = runTest {
+    fun `editing a logged-out account neither unregisters nor logs it back in`() = runTest {
+        // Correcting a typo on an account the user logged out of is not a request to log
+        // in. Registering here would undo a decision they made deliberately.
         repository.given(storedAccount())
         engine.clearInvocations()
 
         val result = save(draft(username = "alice2")).getOrNull() ?: fail("save failed")
 
         assertTrue(!result.unregisteredFirst)
-        assertTrue(engine.invocations.none { it.operation == FakeSipEngine.Operation.UNREGISTER })
+        assertEquals(RegistrationAttempt.NotAttempted, result.registration)
+        assertTrue(engine.invocations.isEmpty(), "a logged-out account must be left logged out")
     }
 
     // ---------------------------------------------------------------- failures
@@ -316,7 +375,7 @@ class UseCaseErrorMappingTest {
     fun `save maps every repository error`() = runTest {
         val repository = FakeSipAccountRepository()
         val engine = FakeSipEngine()
-        val save = SaveAccountUseCase(repository, engine)
+        val save = SaveAccountUseCase(repository, engine, LoginUseCase(repository, engine))
 
         val valid = SipAccountDraft(
             id = AccountId("acct-1"),

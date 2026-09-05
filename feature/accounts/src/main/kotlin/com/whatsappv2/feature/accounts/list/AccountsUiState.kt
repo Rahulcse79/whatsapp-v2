@@ -18,7 +18,16 @@ data class AccountRow(
     val identity: String,
     val isDefault: Boolean,
     val status: AccountStatus,
-)
+) {
+    /**
+     * True when the engine is holding this account, whether or not it is working.
+     *
+     * Derived rather than stored: it is a reading of [status], and a second field could
+     * disagree with it. A failing registration counts as logged in — the account is being
+     * attempted, and "log out" is exactly the way to stop that.
+     */
+    val isLoggedIn: Boolean get() = status != AccountStatus.OFFLINE
+}
 
 /**
  * Registration status, reduced to what the list shows.
@@ -89,4 +98,25 @@ sealed interface AccountsEvent {
     data class DeleteFailed(val detail: String) : AccountsEvent
 
     data class Deleted(val label: String) : AccountsEvent
+
+    /** REGISTER was accepted; the account can now take calls. */
+    data class LoggedIn(val label: String) : AccountsEvent
+
+    /**
+     * Logging in failed.
+     *
+     * Carries a [RegistrationFailure] rather than a message: it is the same vocabulary
+     * the row's status uses, so a snackbar and the row beneath it cannot describe one
+     * failure two different ways.
+     */
+    data class LoginFailed(val label: String, val reason: RegistrationFailure) : AccountsEvent
+
+    /** The account was unregistered and is still configured. */
+    data class LoggedOut(val label: String) : AccountsEvent
+
+    /** Logging out was refused because a call is using the registration. */
+    data class LogoutRefusedCallInProgress(val activeCalls: Int) : AccountsEvent
+
+    /** The account is no longer there — a stale row after a delete elsewhere. */
+    data class AccountGone(val label: String) : AccountsEvent
 }

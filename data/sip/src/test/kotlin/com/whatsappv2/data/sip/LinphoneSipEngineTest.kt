@@ -6,6 +6,7 @@ import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.errorOrNull
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.data.sip.registration.FakeLinphoneCoreGateway
+import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.RegistrationStateMapper
 import com.whatsappv2.data.sip.registration.StackRegistrationEvent
 import com.whatsappv2.data.sip.registration.StackRegistrationState
@@ -18,12 +19,16 @@ import com.whatsappv2.domain.model.RegistrationState
 import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
+import com.whatsappv2.domain.repository.SipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import java.util.IdentityHashMap
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -146,6 +151,14 @@ class LinphoneSipEngineTest {
         // The password reached the gateway, which needs it, and came from the repository
         // rather than from anything the engine holds.
         assertEquals("hunter22", gateway.addedAccounts.single().password)
+
+        // And the engine kept none of it. Structural rather than behavioural on purpose:
+        // by the time a cached credential shows up in behaviour it has already been in
+        // memory for the life of the process, which is what Task 18 forbids.
+        assertTrue(
+            "hunter22" !in reachableStrings(engine),
+            "the engine is holding on to a decrypted password",
+        )
         engine.stop()
     }
 
@@ -171,9 +184,72 @@ class LinphoneSipEngineTest {
         engine.start()
         engine.register(account)
 
-        engine.unregister(account.id)
+        val unregistering = launch { engine.unregister(account.id) }
+        runCurrent()
+        gateway.emit(account.id.value, StackRegistrationState.CLEARED)
+        unregistering.join()
 
         assertEquals(listOf(account.id.value), gateway.removedKeys)
+        engine.stop()
+    }
+
+    @Test
+    fun `unregistering waits for the registrar to acknowledge`() = runTest {
+        // The SipRegistrar contract, and Task 29 depends on it: logout stops the
+        // foreground service next, and returning before the `Expires: 0` is answered
+        // would let that stop cut the request off. A registrar that never hears it keeps
+        // ringing this device until the binding lapses.
+        val engine = engine(this)
+        engine.start()
+        engine.register(account)
+        gateway.emit(account.id.value, StackRegistrationState.OK)
+        runCurrent()
+
+        val unregistering = launch { engine.unregister(account.id) }
+        runCurrent()
+        assertTrue(unregistering.isActive, "unregister returned before the registrar answered")
+
+        gateway.emit(account.id.value, StackRegistrationState.CLEARED)
+        unregistering.join()
+
+        assertEquals(RegistrationState.Unregistered, engine.registrationState.value[account.id])
+        engine.stop()
+    }
+
+    @Test
+    fun `unregistering completes even when the registrar never answers`() = runTest {
+        // Bounded, because the alternative is a logout that hangs on an unreachable
+        // server. The account is reported unregistered regardless: leaving a stale
+        // Registered behind would keep the foreground service alive with nothing to hold
+        // open (§6) and show a registration that no longer exists.
+        val engine = engine(this)
+        engine.start()
+        engine.register(account)
+        gateway.emit(account.id.value, StackRegistrationState.OK)
+        advanceUntilIdle()
+
+        assertIs<Outcome.Success<Unit>>(engine.unregister(account.id))
+
+        assertEquals(RegistrationState.Unregistered, engine.registrationState.value[account.id])
+        engine.stop()
+    }
+
+    @Test
+    fun `logging out leaves the stack holding no credentials`() = runTest {
+        // Task 29's third done-when, where a decrypted password actually lives: the
+        // stack's auth store. Asserts what is still held, not what was once handed over -
+        // an append-only record could never answer the question.
+        val engine = engine(this)
+        engine.start()
+        engine.register(account)
+        assertEquals("hunter22", gateway.heldAccounts.getValue(account.id.value).password)
+
+        engine.unregister(account.id)
+
+        assertTrue(
+            gateway.heldAccounts.isEmpty(),
+            "the stack is still holding a logged-out account's password",
+        )
         engine.stop()
     }
 
@@ -305,5 +381,49 @@ class RegistrationStateMapperTest {
             retryScheduled = true,
         )
         assertTrue(assertIs<RegistrationState.Failed>(retrying).retryScheduled)
+    }
+}
+
+/**
+ * Every string reachable from an object's own bookkeeping.
+ *
+ * Deliberately does **not** follow [LinphoneCoreGateway] or [SipAccountRepository]. Those
+ * two are supposed to hold a credential — the stack while an account is registered, the
+ * store always and encrypted — and each is asserted separately. What this measures is
+ * everything else, which is where a cached password would hide.
+ *
+ * A guard rather than a proof: it walks this project's own classes, so a credential
+ * squirrelled away inside a framework type would slip past it. It catches the thing that
+ * actually happens — a field added to the engine to "avoid decrypting on every refresh".
+ */
+private fun reachableStrings(root: Any): Set<String> = StringWalk().apply { visit(root) }.found
+
+private class StringWalk {
+    private val seen = IdentityHashMap<Any, Boolean>()
+    val found: MutableSet<String> = mutableSetOf()
+
+    fun visit(value: Any?) {
+        if (value == null || seen.put(value, true) != null) return
+        when {
+            value is String -> found += value
+            value is Map<*, *> -> {
+                value.keys.forEach(::visit)
+                value.values.forEach(::visit)
+            }
+            value is Iterable<*> -> value.forEach(::visit)
+            value is LinphoneCoreGateway || value is SipAccountRepository -> Unit
+            value.javaClass.name.startsWith(PROJECT_PACKAGE) -> visitFields(value)
+        }
+    }
+
+    private fun visitFields(value: Any) {
+        value.javaClass.declaredFields.forEach { field ->
+            field.isAccessible = true
+            visit(field.get(value))
+        }
+    }
+
+    private companion object {
+        const val PROJECT_PACKAGE = "com.whatsappv2"
     }
 }

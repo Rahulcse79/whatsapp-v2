@@ -44,12 +44,23 @@ class AccountsScreenTest {
         status = AccountStatus.FAILED_NEEDS_ATTENTION,
     )
 
+    private val loggedOut = AccountRow(
+        id = AccountId("3"),
+        label = "Old",
+        identity = "carol@old.example.com",
+        isDefault = false,
+        status = AccountStatus.OFFLINE,
+    )
+
+    @Suppress("LongParameterList")
     private fun setContent(
         state: AccountsUiState,
         onAdd: () -> Unit = {},
         onEdit: (AccountId) -> Unit = {},
         onSetDefault: (AccountId) -> Unit = {},
         onDelete: (AccountId, String) -> Unit = { _, _ -> },
+        onLogIn: (AccountId, String) -> Unit = { _, _ -> },
+        onLogOut: (AccountId, String) -> Unit = { _, _ -> },
     ) {
         compose.setContent {
             WhatsAppV2Theme {
@@ -59,6 +70,8 @@ class AccountsScreenTest {
                     onEditAccount = onEdit,
                     onSetDefault = onSetDefault,
                     onDelete = onDelete,
+                    onLogIn = onLogIn,
+                    onLogOut = onLogOut,
                 )
             }
         }
@@ -163,5 +176,75 @@ class AccountsScreenTest {
         compose.waitForIdle()
 
         assertEquals(null, deleted)
+    }
+
+    // ------------------------------------------------------------------ login / logout
+
+    @Test
+    fun `a logged-out account offers login, a registered one offers logout`() {
+        // The same control, and it must say which of the two it is: an account that is
+        // offline because a password expired is one tap from being reachable again, and a
+        // button labelled "log out" would be the opposite of what it does.
+        setContent(AccountsUiState.Content(listOf(work, loggedOut)))
+
+        compose.onNodeWithContentDescription("Log out of Work").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Log in to Old").assertIsDisplayed()
+    }
+
+    @Test
+    fun `logging in needs no confirmation`() {
+        // It takes nothing away, and a dialog in front of a one-tap recovery is friction
+        // with no purpose.
+        var loggedIn: String? = null
+        setContent(
+            AccountsUiState.Content(listOf(loggedOut)),
+            onLogIn = { _, label -> loggedIn = label },
+        )
+
+        compose.onNodeWithContentDescription("Log in to Old").performClick()
+        compose.waitForIdle()
+
+        assertEquals("Old", loggedIn)
+    }
+
+    @Test
+    fun `logging out asks first and says the account survives`() {
+        // This is the action people confuse with delete, so the dialog states the
+        // difference: calls stop, the account and its stored password stay.
+        var loggedOutLabel: String? = null
+        setContent(
+            AccountsUiState.Content(listOf(work)),
+            onLogOut = { _, label -> loggedOutLabel = label },
+        )
+
+        compose.onNodeWithContentDescription("Log out of Work").performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithText("Log out of Work?").assertIsDisplayed()
+        compose.onNodeWithText(
+            "Calls to alice@sip.example.com will stop arriving. The account stays on this " +
+                "device and you can log back in without entering your password again.",
+        ).assertIsDisplayed()
+        assertEquals(null, loggedOutLabel, "nothing may happen before the user confirms")
+
+        compose.onNodeWithText("Log out").performClick()
+        compose.waitForIdle()
+        assertEquals("Work", loggedOutLabel)
+    }
+
+    @Test
+    fun `cancelling the logout dialog keeps the registration`() {
+        var loggedOutLabel: String? = null
+        setContent(
+            AccountsUiState.Content(listOf(work)),
+            onLogOut = { _, label -> loggedOutLabel = label },
+        )
+
+        compose.onNodeWithContentDescription("Log out of Work").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Cancel").performClick()
+        compose.waitForIdle()
+
+        assertEquals(null, loggedOutLabel)
     }
 }

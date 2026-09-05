@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Login
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
@@ -61,6 +63,8 @@ fun AccountsScreen(
         onEditAccount = onEditAccount,
         onSetDefault = viewModel::setDefault,
         onDelete = viewModel::deleteAccount,
+        onLogIn = viewModel::logIn,
+        onLogOut = viewModel::logOut,
         modifier = modifier,
     )
 }
@@ -73,15 +77,19 @@ fun AccountsScreen(
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+@Suppress("LongParameterList")
 fun AccountsScreen(
     state: AccountsUiState,
     onAddAccount: () -> Unit,
     onEditAccount: (AccountId) -> Unit,
     onSetDefault: (AccountId) -> Unit,
     onDelete: (AccountId, String) -> Unit,
+    onLogIn: (AccountId, String) -> Unit,
+    onLogOut: (AccountId, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var pendingDeletion by remember { mutableStateOf<AccountRow?>(null) }
+    var pendingLogout by remember { mutableStateOf<AccountRow?>(null) }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -117,11 +125,37 @@ fun AccountsScreen(
                         onClick = { onEditAccount(account.id) },
                         onSetDefault = { onSetDefault(account.id) },
                         onDelete = { pendingDeletion = account },
+                        onToggleSession = {
+                            if (account.isLoggedIn) {
+                                pendingLogout = account
+                            } else {
+                                // Logging in needs no confirmation: it takes nothing away
+                                // and the button already says what it does.
+                                onLogIn(account.id, account.label)
+                            }
+                        },
                     )
                     HorizontalDivider()
                 }
             }
         }
+    }
+
+    pendingLogout?.let { account ->
+        ConfirmDialog(
+            title = "Log out of ${account.label}?",
+            // Says what survives as well as what stops, because this is the action people
+            // confuse with delete: the account stays, so logging back in needs no password.
+            message = "Calls to ${account.identity} will stop arriving. " +
+                "The account stays on this device and you can log back in without " +
+                "entering your password again.",
+            confirmLabel = "Log out",
+            onConfirm = {
+                onLogOut(account.id, account.label)
+                pendingLogout = null
+            },
+            onDismiss = { pendingLogout = null },
+        )
     }
 
     pendingDeletion?.let { account ->
@@ -147,6 +181,7 @@ private fun AccountListItem(
     onClick: () -> Unit,
     onSetDefault: () -> Unit,
     onDelete: () -> Unit,
+    onToggleSession: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -192,6 +227,23 @@ private fun AccountListItem(
                     MaterialTheme.colorScheme.primary
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+
+        IconButton(onClick = onToggleSession) {
+            Icon(
+                imageVector = if (account.isLoggedIn) {
+                    Icons.AutoMirrored.Filled.Logout
+                } else {
+                    Icons.AutoMirrored.Filled.Login
+                },
+                // Names the account, not just the action: a screen reader moving down a
+                // list of identical "Log out" buttons cannot say which one it is on.
+                contentDescription = if (account.isLoggedIn) {
+                    "Log out of ${account.label}"
+                } else {
+                    "Log in to ${account.label}"
                 },
             )
         }
@@ -254,6 +306,8 @@ private fun AccountsScreenContentPreview() = PreviewSurface {
         onEditAccount = {},
         onSetDefault = {},
         onDelete = { _, _ -> },
+        onLogIn = { _, _ -> },
+        onLogOut = { _, _ -> },
     )
 }
 
@@ -266,5 +320,7 @@ private fun AccountsScreenEmptyPreview() = PreviewSurface {
         onEditAccount = {},
         onSetDefault = {},
         onDelete = { _, _ -> },
+        onLogIn = { _, _ -> },
+        onLogOut = { _, _ -> },
     )
 }

@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import org.linphone.core.Account
+import org.linphone.core.AuthInfo
 import org.linphone.core.Core
 import org.linphone.core.CoreListenerStub
 import org.linphone.core.Factory
@@ -64,6 +65,15 @@ internal class RealLinphoneCoreGateway @Inject constructor(
 
     /** Our account key to the stack's account, so a re-register can replace in place. */
     private val accountsByKey = mutableMapOf<String, Account>()
+
+    /**
+     * Our account key to the credential the core is holding for it.
+     *
+     * Tracked purely so it can be taken back out. The core's auth store has no notion of
+     * our account keys, and `removeAccount` alone leaves the password sitting in it for
+     * the life of the process - which is exactly what Task 29 forbids after a logout.
+     */
+    private val authInfoByKey = mutableMapOf<String, AuthInfo>()
 
     private val listener = object : CoreListenerStub() {
         override fun onAccountRegistrationStateChanged(
@@ -118,18 +128,25 @@ internal class RealLinphoneCoreGateway @Inject constructor(
             return
         }
 
+        // The previous credential goes first. The core looks auth entries up by realm and
+        // username, so a password change that left the old entry in place would let the
+        // stale password answer a challenge the new one should - and would keep it in
+        // memory besides.
+        authInfoByKey.remove(account.key)?.let(core::removeAuthInfo)
+
         // Credentials live in the core's auth store, keyed by realm and username, and are
-        // looked up when a challenge arrives rather than attached to the params.
-        core.addAuthInfo(
-            factory.createAuthInfo(
-                account.authUsername,
-                null,
-                account.password,
-                null,
-                null,
-                account.domain,
-            ),
+        // looked up when a challenge arrives rather than attached to the params. Held by
+        // key so `removeAccount` can take this exact entry back out again.
+        val authInfo = factory.createAuthInfo(
+            account.authUsername,
+            null,
+            account.password,
+            null,
+            null,
+            account.domain,
         )
+        core.addAuthInfo(authInfo)
+        authInfoByKey[account.key] = authInfo
 
         val params = core.createAccountParams().apply {
             identityAddress = identity
@@ -164,6 +181,11 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         // it to ring a device that is no longer listening until the binding expires.
         account.params = account.params.clone().apply { isRegisterEnabled = false }
         core.removeAccount(account)
+
+        // The credential goes with it. Keeping it would mean a logged-out account's
+        // password stayed decrypted in the core's auth store until the process died
+        // (Task 29). Removed after the account, so the `Expires: 0` can still be signed.
+        authInfoByKey.remove(accountKey)?.let(core::removeAuthInfo)
     }
 
     override fun refreshAccount(accountKey: String) {
@@ -175,8 +197,12 @@ internal class RealLinphoneCoreGateway @Inject constructor(
     override fun stop() {
         core?.let { running ->
             running.removeListener(listener)
+            // Every credential this gateway handed over, taken back before the core is
+            // released - the same rule as `removeAccount`, applied to a shutdown.
+            authInfoByKey.values.forEach(running::removeAuthInfo)
             running.stop()
         }
+        authInfoByKey.clear()
         accountsByKey.clear()
         core = null
         logger.info(TAG, "SIP core stopped")
