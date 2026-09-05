@@ -13,6 +13,14 @@ complexity:
     functionThreshold: 8
     constructorThreshold: 20
     ignoreDefaultParameters: true
+  CyclomaticComplexMethod:
+    # A method whose whole body is one `when` over a closed set is a lookup table, not
+    # branching logic. SipError has 21 cases and Task 44 gives each exactly one sentence;
+    # the exhaustive `when` is what makes the compiler refuse a new case until somebody
+    # has written its sentence, and splitting the table to satisfy an arithmetic
+    # threshold would scatter it and cost that guarantee. Anything that is more than one
+    # `when` is still counted, which is where the rule earns its keep.
+    ignoreSingleWhenExpression: true
   TooManyFunctions:
     thresholdInFiles: 20
     thresholdInClasses: 20
