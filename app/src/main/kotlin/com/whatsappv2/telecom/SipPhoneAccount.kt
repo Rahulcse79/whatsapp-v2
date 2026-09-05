@@ -2,6 +2,7 @@ package com.whatsappv2.telecom
 
 import android.content.ComponentName
 import android.content.Context
+import android.net.Uri
 import android.telecom.PhoneAccount
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
@@ -40,11 +41,19 @@ class SipPhoneAccount @Inject constructor(
     /**
      * Registers the account, or logs why it could not be.
      *
+     * `CAPABILITY_SELF_MANAGED` is deprecated and is still the only way to register a
+     * self-managed account through `android.telecom`. Its successor is
+     * `androidx.core:core-telecom`'s `CallsManager`, which is a different integration
+     * rather than a renamed constant — adopting it is its own task, and §3 asks for a
+     * self-managed `ConnectionService`, which is this. Hence the suppression, and hence it
+     * sits on this function alone rather than on the file.
+     *
      * Failure is not fatal and must not be. `MANAGE_OWN_CALLS` can be absent on a build
      * that has not asked for it yet, and some devices ship without a Telecom
      * implementation at all; neither is a reason to refuse to start. What follows is that
      * calls cannot be placed, which the engine already reports honestly.
      */
+    @Suppress("DEPRECATION")
     fun register() {
         val telecom = context.getSystemService(TelecomManager::class.java)
         if (telecom == null) {
@@ -56,7 +65,7 @@ class SipPhoneAccount @Inject constructor(
             .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
             .addSupportedUriScheme(PhoneAccount.SCHEME_SIP)
             // Telecom rejects a self-managed account that cannot say where its calls go.
-            .setAddress(android.net.Uri.fromParts(PhoneAccount.SCHEME_SIP, ACCOUNT_ID, null))
+            .setAddress(Uri.fromParts(PhoneAccount.SCHEME_SIP, ACCOUNT_ID, null))
             .build()
 
         // Both are real and neither should take the process down: SecurityException when

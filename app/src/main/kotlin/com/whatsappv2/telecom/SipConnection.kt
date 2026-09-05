@@ -80,6 +80,22 @@ internal class SipConnection(
         setActive()
     }
 
+    /**
+     * Deprecated in the platform, and still the one that fires here.
+     *
+     * `CallEndpoint` and `onCallEndpointChanged` replace this, and they arrived in API 34.
+     * `minSdk` is 26, so on most of the range this app supports the replacement does not
+     * exist and this callback is the only notification of a route change there is.
+     * Overriding it is therefore correct, not legacy — and it stays correct until minSdk
+     * moves, or until the app adopts `androidx.core:core-telecom`, which back-ports the
+     * newer model.
+     *
+     * Marked rather than suppressed so the obligation travels with the code: a reader sees
+     * the deprecation and its reason at the call site instead of finding a bare
+     * `@Suppress` and having to work out what it was hiding.
+     */
+    @Deprecated("Platform replaced this with onCallEndpointChanged in API 34; minSdk is 26")
+    @Suppress("OVERRIDE_DEPRECATION")
     override fun onCallAudioStateChanged(state: CallAudioState?) {
         val route = TelecomPolicy.audioRouteOf(state?.route ?: return)
         listener.onAudioRouteChanged(callId, route)
