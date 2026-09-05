@@ -64,13 +64,17 @@ import kotlin.test.assertTrue
  *
  * The cases themselves are split by subject below. One class held all of them and had
  * grown past the point where anything could be found in it.
+ *
+ * The members are `internal` rather than `protected` because the engine and its fakes are
+ * `internal` to this module, and a `protected` member of a public class may not expose
+ * one. The subclasses are in this module, so `internal` reaches them just as well.
  */
 open class LinphoneSipEngineFixture {
 
-    protected val gateway = FakeLinphoneCoreGateway()
-    protected val repository = FakeSipAccountRepository()
+    internal val gateway = FakeLinphoneCoreGateway()
+    internal val repository = FakeSipAccountRepository()
 
-    protected val account = SipAccount(
+    internal val account = SipAccount(
         id = AccountId("acct-1"),
         label = "Work",
         username = "alice",
@@ -92,18 +96,18 @@ open class LinphoneSipEngineFixture {
         isDefault = true,
     )
 
-    protected val networkMonitor = FakeNetworkMonitor()
+    internal val networkMonitor = FakeNetworkMonitor()
 
     /** Fixed, so a call's start and connect timestamps are equalities rather than ranges. */
-    protected val clock = MutableClock().set(NOW)
+    internal val clock = MutableClock().set(NOW)
 
     /** Telecom, faked. Permits everything unless a test says otherwise. */
-    protected val platform = FakePlatformCallRegistry()
+    internal val platform = FakePlatformCallRegistry()
 
     /** App settings, which is where the DTMF transport comes from (Task 43). */
-    protected val settings = FakeAppSettingsRepository()
+    internal val settings = FakeAppSettingsRepository()
 
-    protected fun engine(scope: TestScope) =
+    internal fun engine(scope: TestScope) =
         // The same fake twice: one object implements both halves of the seam, exactly as
         // the real gateway does, because one `Core` owns registration and calls alike.
         LinphoneSipEngine(
@@ -119,7 +123,7 @@ open class LinphoneSipEngineFixture {
         ).also { repository.given(account) }
 
     /** Registered and ready to place a call. */
-    protected suspend fun TestScope.registeredEngine(): LinphoneSipEngine {
+    internal suspend fun TestScope.registeredEngine(): LinphoneSipEngine {
         val engine = engine(this)
         engine.start()
         engine.register(account)
@@ -129,7 +133,7 @@ open class LinphoneSipEngineFixture {
     }
 
     /** A call that has been placed and answered, ready for hold, mute or a DTMF digit. */
-    protected suspend fun TestScope.connectedCall(): LinphoneSipEngine {
+    internal suspend fun TestScope.connectedCall(): LinphoneSipEngine {
         val engine = registeredEngine()
         val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
         runCurrent()
@@ -139,7 +143,7 @@ open class LinphoneSipEngineFixture {
     }
 
     /** A connected call this end has put on hold, with the stack's acceptance in. */
-    protected suspend fun TestScope.heldCall(): LinphoneSipEngine {
+    internal suspend fun TestScope.heldCall(): LinphoneSipEngine {
         val engine = connectedCall()
         val callId = engine.activeCalls.value.single().callId
         engine.setHold(callId, held = true)
@@ -148,7 +152,7 @@ open class LinphoneSipEngineFixture {
         return engine
     }
 
-    protected companion object {
+    internal companion object {
         /** Fixed instant, so a call's timestamps are equalities rather than ranges. */
         const val NOW = 1_700_000_000_000L
 
