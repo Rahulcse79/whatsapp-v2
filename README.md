@@ -10,6 +10,7 @@ SIP registration, Telecom integration, and conferencing against FreeSWITCH.
 | [`android-sip-app-prompt.md`](android-sip-app-prompt.md) | The requirements specification |
 | [`tasks.md`](tasks.md) | 68-task implementation plan, in dependency order |
 | [`docs/architecture.md`](docs/architecture.md) | Decision record (ADR-001…005); HLD lands in Task 67 |
+| [`docs/calling.md`](docs/calling.md) | How a call happens: the Telecom seam, notifications, audio and push |
 
 ## Build policy — CI, not laptops
 
