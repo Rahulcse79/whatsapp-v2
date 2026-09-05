@@ -170,11 +170,17 @@ class PlaceCallUseCaseTest {
         // "Could not place call" is true of every failure and useful for none.
         val work = account()
         repository.save(work)
-        engine.alwaysFail(FakeSipEngine.Operation.PLACE_CALL, SipError.NotRegistered)
+        // Registered first: the engine refuses an account it does not hold before a
+        // scripted failure is ever reached, and that refusal is not the one under test.
+        engine.givenRegistered(work)
+        // Busy is a reason only the engine can give. NotRegistered is also the engine's
+        // own answer to an unregistered account, so asserting on it would let this pass
+        // without the cause having travelled at all.
+        engine.alwaysFail(FakeSipEngine.Operation.PLACE_CALL, SipError.Busy(BUSY_HERE))
 
         val error = useCase()("1001").errorOrNull()
 
-        assertEquals(PlaceCallError.Rejected(SipError.NotRegistered), error)
+        assertEquals(PlaceCallError.Rejected(SipError.Busy(BUSY_HERE)), error)
     }
 
     @Test
@@ -191,4 +197,9 @@ class PlaceCallUseCaseTest {
     /** The address the engine was actually asked to dial. */
     private fun targetOf(callId: String?): String? =
         engine.activeCalls.value.firstOrNull { it.callId.value == callId }?.remote?.render()
+
+    private companion object {
+        /** 486, named so the assertion reads as intent rather than arithmetic. */
+        const val BUSY_HERE = 486
+    }
 }
