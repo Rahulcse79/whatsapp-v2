@@ -2,19 +2,26 @@ package com.whatsappv2.data.sip.network
 
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.core.common.result.Outcome
+import com.whatsappv2.core.common.time.Clock
+import com.whatsappv2.core.common.time.SystemClock
 import com.whatsappv2.domain.engine.SipRegistrar
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.RegistrationState
 import com.whatsappv2.domain.registration.NetworkStatus
 import com.whatsappv2.domain.registration.RecoveryAction
 import com.whatsappv2.domain.registration.RegistrationRecoveryPolicy
+import com.whatsappv2.domain.registration.RegistrationRetrySchedule
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.random.Random
 import kotlin.time.Duration
@@ -78,7 +85,15 @@ internal class RegistrationRecoveryCoordinator(
      * never actually incremented.
      */
     private val random: Random = Random.Default,
-) {
+    /**
+     * Turns a delay into the wall-clock moment the UI counts down to.
+     *
+     * Defaulted rather than required: every existing test constructs this class without
+     * one and none of them asserts a time, so making it mandatory would churn nine tests
+     * to no purpose. The test that DOES assert a time passes a `MutableClock`.
+     */
+    private val clock: Clock = SystemClock,
+) : RegistrationRetrySchedule {
 
     /** Consecutive failures per account. Reset only by a successful registration. */
     private val attempts = mutableMapOf<AccountId, Int>()
@@ -87,6 +102,21 @@ internal class RegistrationRecoveryCoordinator(
     private val boundNetwork = mutableMapOf<AccountId, Long>()
 
     private val pendingRetries = mutableMapOf<AccountId, Job>()
+
+    /**
+     * When each pending retry is due, for the screen that shows it (Task 31).
+     *
+     * A separate flow rather than a field on `RegistrationState`: the engine publishes
+     * that, and the engine does not schedule retries — this class does. See
+     * [RegistrationRetrySchedule].
+     *
+     * Kept in step with [pendingRetries] on every path that changes it, including the
+     * cancellations. A countdown that keeps running after its retry was called off is
+     * worse than no countdown: it says the app is about to do something it has decided
+     * not to do.
+     */
+    private val retryTimes = MutableStateFlow<Map<AccountId, Long>>(emptyMap())
+    override val nextRetryAt: StateFlow<Map<AccountId, Long>> = retryTimes.asStateFlow()
 
     /** Null until the first status arrives, so starting up is not reported as a change. */
     private var lastNetwork: NetworkStatus? = null
@@ -201,6 +231,7 @@ internal class RegistrationRecoveryCoordinator(
         val attempt = (attempts[id] ?: 0) + 1
         attempts[id] = attempt
         logger.info(TAG, "Registrar unreachable for $id: retry $attempt in ${after.inWholeSeconds}s")
+        retryTimes.update { it + (id to clock.nowEpochMillis() + after.inWholeMilliseconds) }
 
         pendingRetries[id] = scope.launch {
             delay(after)
@@ -217,6 +248,7 @@ internal class RegistrationRecoveryCoordinator(
         // Dropped before the attempt, not after: the retry this coroutine *is* must not
         // count as one already pending when the next one is scheduled below.
         pendingRetries.remove(id)
+        retryTimes.update { it - id }
         logger.info(TAG, "Re-registering $id ($reason)")
 
         when (val result = registrar.refreshRegistration(id)) {
@@ -234,11 +266,13 @@ internal class RegistrationRecoveryCoordinator(
 
     private fun cancelRetry(id: AccountId) {
         pendingRetries.remove(id)?.cancel()
+        retryTimes.update { it - id }
     }
 
     private fun cancelAllRetries() {
         pendingRetries.values.forEach(Job::cancel)
         pendingRetries.clear()
+        retryTimes.value = emptyMap()
     }
 
     private fun NetworkStatus.describe(): String = when (this) {

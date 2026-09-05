@@ -8,6 +8,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
 import com.whatsappv2.domain.model.AccountId
+import com.whatsappv2.feature.accounts.AccountDetailRoute
 import com.whatsappv2.feature.accounts.AccountEditorRoute
 import com.whatsappv2.feature.accounts.AccountsRoute
 import com.whatsappv2.feature.dialer.DialerScreen
@@ -36,7 +37,7 @@ fun AppNavHost(
         composable(AppDestination.ACCOUNTS.route) {
             AccountsRoute(
                 onAddAccount = { navController.navigate(ACCOUNT_EDITOR_NEW) },
-                onEditAccount = { id -> navController.navigate("$ACCOUNT_EDITOR_BASE/${id.value}") },
+                onOpenAccount = { id -> navController.navigate("$ACCOUNT_DETAIL_BASE/${id.value}") },
             )
         }
 
@@ -60,10 +61,28 @@ fun AppNavHost(
                 onBack = { navController.popBackStack() },
             )
         }
+        // Registration detail (Task 31): what the account's state actually is, why it is
+        // that, and the one action - register now - that can change it from here.
+        composable(
+            route = "$ACCOUNT_DETAIL_BASE/{$ACCOUNT_ID_ARG}",
+            arguments = listOf(navArgument(ACCOUNT_ID_ARG) { type = NavType.StringType }),
+        ) { entry ->
+            val id = entry.arguments?.getString(ACCOUNT_ID_ARG)?.let(::AccountId)
+            if (id == null) {
+                navController.popBackStack()
+            } else {
+                AccountDetailRoute(
+                    accountId = id,
+                    onEditAccount = { navController.navigate("$ACCOUNT_EDITOR_BASE/${it.value}") },
+                    onBack = { navController.popBackStack() },
+                )
+            }
+        }
         composable(AppDestination.SETTINGS.route) { SettingsScreen() }
     }
 }
 
+private const val ACCOUNT_DETAIL_BASE = "account-detail"
 private const val ACCOUNT_EDITOR_BASE = "account-editor"
 private const val ACCOUNT_EDITOR_NEW = "account-editor/new"
 private const val ACCOUNT_ID_ARG = "accountId"

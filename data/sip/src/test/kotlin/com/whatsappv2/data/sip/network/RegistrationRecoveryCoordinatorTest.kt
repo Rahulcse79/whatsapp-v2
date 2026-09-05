@@ -1,6 +1,8 @@
 package com.whatsappv2.data.sip.network
 
 import com.whatsappv2.core.common.secret.Secret
+import com.whatsappv2.core.common.time.Clock
+import com.whatsappv2.core.common.time.MutableClock
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CodecPreferences
@@ -72,7 +74,10 @@ class RegistrationRecoveryCoordinatorTest {
         isDefault = true,
     )
 
-    private fun coordinator(scope: CoroutineScope) = RegistrationRecoveryCoordinator(
+    private fun coordinator(
+        scope: CoroutineScope,
+        clock: Clock = MutableClock(),
+    ) = RegistrationRecoveryCoordinator(
         networkMonitor = monitor,
         registrar = engine,
         rebinder = { reachable -> rebinds += reachable },
@@ -80,6 +85,7 @@ class RegistrationRecoveryCoordinatorTest {
         logger = logger,
         policy = RegistrationRecoveryPolicy(RegistrationBackoff(baseDelay = BASE_DELAY)),
         random = WidestSample,
+        clock = clock,
     )
 
     /** Registered on Wi-Fi, watched, and past the first debounce. */
@@ -319,6 +325,65 @@ class RegistrationRecoveryCoordinatorTest {
         assertEquals(listOf(account.id.value), refreshes)
     }
 
+    // ---------------------------------------------------------------- retry schedule
+
+    @Test
+    fun `a scheduled retry is published as the moment it is due`() = runTest {
+        // Task 31 shows this as a countdown. It has to come from here rather than be
+        // recomputed by the screen: the delay is sampled from a random window, so a UI
+        // that worked it out again would draw a countdown to a moment nothing happens.
+        val clock = MutableClock().set(NOW)
+        engine.givenRegistered(account)
+        monitor.onWifi()
+        val recovery = coordinator(backgroundScope, clock)
+        recovery.start()
+        settle()
+        givenRegistrarUnreachable()
+
+        runCurrent()
+
+        assertEquals(
+            mapOf(account.id to NOW + BASE_DELAY.inWholeMilliseconds),
+            recovery.nextRetryAt.value,
+            "retry 1 is 60s away, so the due time is 60s after now",
+        )
+    }
+
+    @Test
+    fun `losing the network clears the published retry as well as cancelling it`() = runTest {
+        // The cancellation was already asserted above. This is the half that reaches the
+        // user: a countdown still ticking towards an attempt the app has called off is
+        // worse than showing nothing, because it states an intention that no longer
+        // exists.
+        val recovery = arrangeRegisteredOnWifi()
+        givenRegistrarUnreachable()
+        runCurrent()
+        assertTrue(recovery.nextRetryAt.value.isNotEmpty(), "arrange: a retry is published")
+
+        monitor.lost()
+        settle()
+
+        assertEquals(emptyMap(), recovery.nextRetryAt.value)
+    }
+
+    @Test
+    fun `the retry stops being published once it has fired`() = runTest {
+        // Otherwise the screen keeps a stale due-time on display through the attempt and
+        // past it, counting down into the negative.
+        val recovery = arrangeRegisteredOnWifi()
+        givenRegistrarUnreachable()
+        runCurrent()
+
+        settle(BASE_DELAY + SETTLE)
+
+        assertTrue(refreshes.isNotEmpty(), "arrange: the retry actually fired")
+        assertEquals(
+            null,
+            recovery.nextRetryAt.value[account.id],
+            "the attempt that was due has happened; the next one publishes its own time",
+        )
+    }
+
     private companion object {
         /** Comfortably past the coordinator's one-second debounce window. */
         val SETTLE: Duration = 3.seconds
@@ -333,6 +398,9 @@ class RegistrationRecoveryCoordinatorTest {
 
         /** Shorter than the debounce window, so the status never settles. */
         val FLAP_INTERVAL: Duration = 200.milliseconds
+
+        /** An arbitrary fixed instant, so a due time is an equality rather than a range. */
+        const val NOW = 1_700_000_000_000L
 
         const val FLAPS = 8
     }

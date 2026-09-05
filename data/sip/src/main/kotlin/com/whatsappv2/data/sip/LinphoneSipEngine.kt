@@ -19,6 +19,7 @@ import com.whatsappv2.domain.engine.SipMediaController
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.RegistrationState
 import com.whatsappv2.domain.model.SipAccount
+import com.whatsappv2.domain.registration.RegistrationRetrySchedule
 import com.whatsappv2.domain.repository.SipAccountRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -81,6 +82,7 @@ internal class LinphoneSipEngine @Inject constructor(
      */
     unimplemented: UnavailableSipEngine = UnavailableSipEngine(),
 ) : SipEngine,
+    RegistrationRetrySchedule,
     SipCallController by unimplemented,
     SipMediaController by unimplemented,
     SipConferenceController by unimplemented {
@@ -103,6 +105,15 @@ internal class LinphoneSipEngine @Inject constructor(
 
     private val states = MutableStateFlow<Map<AccountId, RegistrationState>>(emptyMap())
     override val registrationState: StateFlow<Map<AccountId, RegistrationState>> = states.asStateFlow()
+
+    /**
+     * Forwarded from [recovery], which is the thing that actually schedules retries.
+     *
+     * The engine implements the interface only so there is one object for the graph to
+     * bind; it holds no schedule of its own and deliberately reports `retryScheduled =
+     * false` on every state it publishes.
+     */
+    override val nextRetryAt: StateFlow<Map<AccountId, Long>> get() = recovery.nextRetryAt
 
     /** Requested expiry per account, so a state event can report the right figure. */
     private val requestedExpiry = mutableMapOf<String, Int>()

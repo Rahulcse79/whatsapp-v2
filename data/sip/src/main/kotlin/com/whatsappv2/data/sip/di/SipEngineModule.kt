@@ -6,6 +6,7 @@ import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.engine.SipEngine
 import com.whatsappv2.domain.engine.SipMediaController
 import com.whatsappv2.domain.engine.SipRegistrar
+import com.whatsappv2.domain.registration.RegistrationRetrySchedule
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -48,4 +49,12 @@ internal abstract class SipEngineModule {
 
     @Binds
     abstract fun bindConferenceController(engine: SipEngine): SipConferenceController
+
+    /**
+     * Bound from the concrete engine, not from [SipEngine], because the schedule is not
+     * part of that contract — the engine reports what happened, the recovery coordinator
+     * decides what happens next. Same singleton either way.
+     */
+    @Binds
+    abstract fun bindRetrySchedule(engine: LinphoneSipEngine): RegistrationRetrySchedule
 }
