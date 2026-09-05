@@ -1,5 +1,6 @@
 package com.whatsappv2.domain.usecase
 
+import com.whatsappv2.core.common.result.errorOrNull
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.engine.SipError
