@@ -138,6 +138,10 @@ class CallViewModelTest {
 
         viewModel.uiState.test {
             skipItems(1)
+            // The screen has to have the call before it can lose it: Finished is "absent
+            // after it was present", and a hangup in the same turn as the subscription
+            // takes the call away before the screen was ever shown it.
+            awaitDisplay { it.phase == CallPhase.CONNECTED }
             engine.simulateRemoteHangup(callId)
 
             awaitFinished()
