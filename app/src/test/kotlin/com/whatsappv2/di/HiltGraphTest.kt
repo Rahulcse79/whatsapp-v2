@@ -80,6 +80,10 @@ class HiltGraphTest {
     fun `the call and media controllers are the same engine`() {
         // Role interfaces for interface segregation, one singleton behind them: two
         // engines would mean a call placed on one and muted on the other.
-        assertSame(calls, media)
+        //
+        // The type argument is explicit because the two references have no common
+        // supertype but `Any`, and identity is exactly what is being asserted — that both
+        // roles resolve to one object, whatever its type.
+        assertSame<Any>(calls, media)
     }
 }
