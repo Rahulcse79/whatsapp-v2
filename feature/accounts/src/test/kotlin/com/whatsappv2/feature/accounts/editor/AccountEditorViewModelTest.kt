@@ -12,6 +12,8 @@ import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.repository.AccountRepositoryError
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
+import com.whatsappv2.domain.usecase.LoginUseCase
+import com.whatsappv2.domain.usecase.RegistrationAttempt
 import com.whatsappv2.domain.usecase.SaveAccountUseCase
 import com.whatsappv2.domain.validation.AccountField
 import kotlinx.coroutines.Dispatchers
@@ -45,7 +47,7 @@ class AccountEditorViewModelTest {
 
     private fun viewModel() = AccountEditorViewModel(
         repository = repository,
-        saveAccount = SaveAccountUseCase(repository, engine),
+        saveAccount = SaveAccountUseCase(repository, engine, LoginUseCase(repository, engine)),
     )
 
     private fun account(id: String = "acct-1") = SipAccount(
@@ -157,6 +159,10 @@ class AccountEditorViewModelTest {
             advanceUntilIdle()
             val saved = assertIs<AccountEditorEvent.Saved>(awaitItem())
             assertEquals("Work", saved.label)
+            // Saving a new account logs it in: that is what "login" means here, and an
+            // account that saved without registering would sit in the list looking
+            // configured and take no calls (Task 29).
+            assertEquals(RegistrationAttempt.Succeeded, saved.registration)
             cancelAndIgnoreRemainingEvents()
         }
     }

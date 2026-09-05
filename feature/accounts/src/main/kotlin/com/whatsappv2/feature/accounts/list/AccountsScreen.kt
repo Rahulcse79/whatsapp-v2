@@ -77,7 +77,6 @@ fun AccountsScreen(
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-@Suppress("LongParameterList")
 fun AccountsScreen(
     state: AccountsUiState,
     onAddAccount: () -> Unit,

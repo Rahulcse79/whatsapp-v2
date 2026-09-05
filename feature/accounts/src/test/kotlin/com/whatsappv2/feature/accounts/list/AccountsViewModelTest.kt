@@ -3,6 +3,7 @@ package com.whatsappv2.feature.accounts.list
 import app.cash.turbine.test
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
+import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CodecPreferences
 import com.whatsappv2.domain.model.NatPolicy
@@ -15,6 +16,8 @@ import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
 import com.whatsappv2.domain.usecase.DeleteAccountUseCase
+import com.whatsappv2.domain.usecase.LoginUseCase
+import com.whatsappv2.domain.usecase.LogoutUseCase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -44,6 +47,8 @@ class AccountsViewModelTest {
     private fun viewModel() = AccountsViewModel(
         repository = repository,
         deleteAccount = DeleteAccountUseCase(repository, engine, engine),
+        login = LoginUseCase(repository, engine),
+        logout = LogoutUseCase(repository, engine, engine),
         registrar = engine,
     )
 
@@ -206,6 +211,112 @@ class AccountsViewModelTest {
             val content = assertIs<AccountsUiState.Content>(awaitItem())
             assertEquals(3, content.accounts.size)
             assertEquals(1, content.accounts.count { it.isDefault }, "exactly one default at all times")
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    // ------------------------------------------------------------------ login / logout
+
+    @Test
+    fun `logging out releases the registration and keeps the account`() = runTest(dispatcher) {
+        // Task 29: logout is not delete. The row stays, so the account is still listed and
+        // can be logged back in without the password being typed again.
+        val stored = account()
+        repository.given(stored)
+        engine.givenRegistered(stored)
+        val viewModel = viewModel()
+
+        viewModel.events.test {
+            viewModel.logOut(stored.id, "Work")
+            assertEquals(AccountsEvent.LoggedOut("Work"), awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+
+        assertTrue(repository.deletedIds.isEmpty(), "logging out must not delete the account")
+        assertEquals(RegistrationState.Unregistered, engine.registrationState.value[stored.id])
+    }
+
+    @Test
+    fun `logging out is refused while a call is in progress`() = runTest(dispatcher) {
+        // Silently doing nothing would be worse than refusing: the user pressed a button
+        // and is owed a reason.
+        val stored = account()
+        repository.given(stored)
+        engine.givenRegistered(stored)
+        engine.simulateIncomingCall(stored.id, bob)
+        val viewModel = viewModel()
+
+        viewModel.events.test {
+            viewModel.logOut(stored.id, "Work")
+            assertEquals(AccountsEvent.LogoutRefusedCallInProgress(activeCalls = 1), awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `logging back in needs no password`() = runTest(dispatcher) {
+        val stored = account()
+        repository.given(stored)
+        val viewModel = viewModel()
+
+        viewModel.events.test {
+            viewModel.logIn(stored.id, "Work")
+            assertEquals(AccountsEvent.LoggedIn("Work"), awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+
+        assertEquals(RegistrationState.Registered(3_600), engine.registrationState.value[stored.id])
+    }
+
+    @Test
+    fun `a rejected login names the reason in the same words the row uses`() = runTest(dispatcher) {
+        // A snackbar saying "error" beside a row saying "check your details" describes one
+        // failure two ways. Both come from RegistrationFailure so they cannot diverge.
+        val stored = account()
+        repository.given(stored)
+        engine.failNext(FakeSipEngine.Operation.REGISTER, SipError.AuthenticationFailed(401))
+        val viewModel = viewModel()
+
+        viewModel.events.test {
+            viewModel.logIn(stored.id, "Work")
+            assertEquals(
+                AccountsEvent.LoginFailed("Work", RegistrationFailure.AUTHENTICATION_FAILED),
+                awaitItem(),
+            )
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `acting on an account that has been deleted elsewhere says so`() = runTest(dispatcher) {
+        val viewModel = viewModel()
+
+        viewModel.events.test {
+            viewModel.logIn(AccountId("gone"), "Ghost")
+            assertEquals(AccountsEvent.AccountGone("Ghost"), awaitItem())
+
+            viewModel.logOut(AccountId("gone"), "Ghost")
+            assertEquals(AccountsEvent.AccountGone("Ghost"), awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `a row knows whether it is logged in`() = runTest(dispatcher) {
+        // The one control does two opposite things, so the row has to be able to say which.
+        val stored = account()
+        repository.given(stored)
+        engine.givenRegistered(stored)
+        val viewModel = viewModel()
+
+        viewModel.uiState.test {
+            skipItems(1)
+            val registered = assertIs<AccountsUiState.Content>(awaitItem())
+            assertTrue(registered.accounts.single().isLoggedIn)
+
+            viewModel.logOut(stored.id, "Work")
+            val loggedOut = assertIs<AccountsUiState.Content>(awaitItem())
+            assertTrue(!loggedOut.accounts.single().isLoggedIn)
             cancelAndIgnoreRemainingEvents()
         }
     }

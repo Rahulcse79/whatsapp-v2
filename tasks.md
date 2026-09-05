@@ -1032,9 +1032,66 @@ Build:
 
 Done when:
 - [ ] Logout leaves the account row present and the registration gone
+      → `LogoutUseCase` unregisters and stops there; it never calls `delete`. Asserted in
+      `LogoutUseCaseTest`: the row is still readable afterwards, `deletedIds` is empty and
+      the state is `Unregistered`. A companion test logs the same account back in with no
+      password, which is the reason the row is kept at all.
 - [ ] Editing a registered account produces unregister-then-register, asserted by an
       ordered test against `FakeSipEngine`
+      → `engine.invocations` is asserted to be exactly `[UNREGISTER, REGISTER]`, and the
+      account left registered is the **new** identity. The second half is as much the
+      point as the first: unregistering and then not re-registering is the same bug seen
+      from the other side — the user pressed Save, not Log out.
 - [ ] After logout, no decrypted password remains reachable from any live object
+      → asserted per layer, because "reachable" means something different in each. The
+      engine holds no account after `unregister` (`FakeSipEngine.registeredAccounts`); the
+      stack holds no credentials (`FakeLinphoneCoreGateway.heldAccounts`, which empties on
+      `removeAccount` exactly as the real core's auth store now does); and the engine's own
+      graph is walked reflectively for the plaintext, so a credential cached "to avoid
+      decrypting on every refresh" fails the build.
+
+**Verification pending CI.** The boxes stay unticked until a green run compiles and runs
+these tests; the evidence above describes what was written, not what has been observed to
+pass.
+
+**Status: implemented.** Three behaviours, and the third is the one that needed real work.
+
+**Login = save + register.** `SaveAccountUseCase` now finishes the job: a new account is
+registered as part of saving, because that is what "login" means here — there is no
+separate credential prompt, the editor already collected exactly the fields a REGISTER
+needs. An edit to an account that was **not** registered is deliberately left logged out:
+correcting a typo is not a request to log back in.
+
+**`LoginUseCase` takes an id, not an account.** The stored copy carries an empty password
+and the engine decrypts the real one for the length of the REGISTER, so no decrypted
+credential travels through a use case that has no need of one (Task 18). Passing an
+account would work and would be worse.
+
+**`unregister` now waits for the registrar.** `SipRegistrar.unregister` always promised to
+return only once the request was acknowledged — precisely so logout can stop the service
+next — and the Task 27 implementation returned as soon as the request reached the stack.
+The wait is bounded at five seconds and gives up rather than failing: locally the binding
+and the credentials are gone either way, and reporting failure would leave the UI claiming
+an account is still logged in when it is not. The state is forced to `Unregistered`
+regardless, or a registrar that never answers would keep the foreground service alive with
+nothing to hold open (§6).
+
+**The credential wipe was a real gap.** `RealLinphoneCoreGateway` put the password in the
+core's auth store and `removeAccount` never took it back out, so a logged-out account's
+password stayed decrypted in memory for the life of the process. Auth info is now tracked
+per account key and removed with the account — and on a password change, before the new
+one is stored, since the core matches entries by realm and username.
+
+**Stopping the service is `ServiceRunPolicy`'s job, not the use case's.** `:domain` has no
+Android in it, and a logout that stopped the service directly would kill it while another
+account was still registered. `RegistrationServiceTest` asserts that sequence: two
+accounts, one logs out and the service keeps running, the second logs out and it stops.
+
+**Noted, not fixed:** liblinphone is created with a config path (`linphone.rc` in
+`filesDir`), and the stack persists auth info to that file. That is credentials at rest
+outside the Keystore, which undercuts Task 16 — but it is an at-rest question rather than
+the in-memory one this task asks about, and the fix (an in-memory core config) touches the
+one class that cannot be verified before Task 33. Filed rather than changed blind.
 
 ### Task 30 — Network-change resilience
 **Depends on:** 28 · **Prompt refs:** §6, DoD 6 · **Modules:** `:data:sip`, `:app`

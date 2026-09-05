@@ -11,6 +11,7 @@ import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.model.VideoCodec
 import com.whatsappv2.domain.repository.SipAccountRepository
+import com.whatsappv2.domain.usecase.RegistrationAttempt
 import com.whatsappv2.domain.usecase.SaveAccountError
 import com.whatsappv2.domain.usecase.SaveAccountUseCase
 import com.whatsappv2.domain.validation.AccountField
@@ -48,7 +49,21 @@ data class AccountEditorUiState(
 
 /** One-shot outcomes of the editor. */
 sealed interface AccountEditorEvent {
-    data class Saved(val label: String, val unregisteredFirst: Boolean) : AccountEditorEvent
+
+    /**
+     * The account was stored.
+     *
+     * [registration] says what happened to the account's session, because "saved" alone
+     * is not the whole story: an edit to a registered account releases the old binding
+     * and takes out a new one, and if that second half failed the user is now unreachable
+     * and needs to be told. §5.1 calls a silent partial re-registration a bug.
+     */
+    data class Saved(
+        val label: String,
+        val unregisteredFirst: Boolean,
+        val registration: RegistrationAttempt,
+    ) : AccountEditorEvent
+
     data class SaveFailed(val detail: String) : AccountEditorEvent
 
     /** The stored password could not be read; the user must type it again. */
@@ -131,6 +146,7 @@ class AccountEditorViewModel @Inject constructor(
                         AccountEditorEvent.Saved(
                             label = result.value.account.label,
                             unregisteredFirst = result.value.unregisteredFirst,
+                            registration = result.value.registration,
                         ),
                     )
                 }

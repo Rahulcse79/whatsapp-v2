@@ -77,6 +77,27 @@ class ServiceRunPolicyTest {
     }
 
     @Test
+    fun `logging out of the last account stops the service`() {
+        // Task 29 asks logout to stop the service, and this is where that happens: the
+        // use case does not reach for Android, it unregisters, and the policy the service
+        // already watches sees nothing left to hold open. Doing it the other way round -
+        // a logout that stopped the service directly - would kill it while a second
+        // account was still registered, which the third case here rules out.
+        val two = registrations(registered, registered)
+        assertIs<ServiceDecision.Run>(ServiceRunPolicy.decide(two, 0))
+
+        val afterFirstLogout = two + (AccountId("acct-0") to RegistrationState.Unregistered)
+        assertIs<ServiceDecision.Run>(
+            ServiceRunPolicy.decide(afterFirstLogout, 0),
+            "one account logging out must not stop the service for the other",
+        )
+
+        val afterBoth = afterFirstLogout + (AccountId("acct-1") to RegistrationState.Unregistered)
+        assertEquals(ServiceDecision.Stop, ServiceRunPolicy.decide(afterBoth, 0))
+        assertFalse(ServiceRunPolicy.justifiesWakeLock(afterBoth, 0))
+    }
+
+    @Test
     fun `one registered account among failures still runs`() {
         val decision = assertIs<ServiceDecision.Run>(
             ServiceRunPolicy.decide(registrations(failedFinal, registered, failedRetrying), 0),

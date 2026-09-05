@@ -52,7 +52,6 @@ class AccountsScreenTest {
         status = AccountStatus.OFFLINE,
     )
 
-    @Suppress("LongParameterList")
     private fun setContent(
         state: AccountsUiState,
         onAdd: () -> Unit = {},
