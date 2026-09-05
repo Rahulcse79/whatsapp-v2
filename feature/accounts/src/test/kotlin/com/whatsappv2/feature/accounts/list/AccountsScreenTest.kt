@@ -113,7 +113,16 @@ class AccountsScreenTest {
         var edited: AccountId? = null
         setContent(AccountsUiState.Content(listOf(work)), onEdit = { edited = it })
 
-        compose.onNodeWithText("Work").performClick()
+        // The label itself, from the unmerged tree, rather than whatever node happens to
+        // carry the text. `Modifier.clickable` merges its descendants, so the merged tree
+        // answers "Work" with the whole ROW - and performClick presses a node's centre.
+        //
+        // On the 320dp default Robolectric screen that centre is x=160, and Task 29 put a
+        // third trailing button there: the summary column used to end at 208dp and now
+        // ends at exactly 160dp. So the press landed on the default-account star, which
+        // for an account that IS the default is disabled, and reached nothing. Pressing
+        // the label is what this test means by "tapping an account" anyway.
+        compose.onNodeWithText("Work", useUnmergedTree = true).performClick()
         compose.waitForIdle()
 
         assertEquals(AccountId("1"), edited)
