@@ -82,6 +82,7 @@ class DialerViewModelTest {
         val viewModel = ready(viewModel())
 
         viewModel.onInputChanged("sip:carol@other.example.com")
+        runCurrent()
         viewModel.onCall()
         runCurrent()
 
@@ -97,6 +98,7 @@ class DialerViewModelTest {
 
         viewModel.onAccountSelected(home.id)
         viewModel.onInputChanged("1001")
+        runCurrent()
         viewModel.onCall()
         runCurrent()
 
@@ -116,6 +118,7 @@ class DialerViewModelTest {
         assertEquals(home.id, viewModel.uiState.value.selectedAccount?.id)
 
         viewModel.onInputChanged("1001")
+        runCurrent()
         viewModel.onCall()
         runCurrent()
 
@@ -134,6 +137,7 @@ class DialerViewModelTest {
         val viewModel = ready(viewModel())
 
         viewModel.onInputChanged("1001")
+        runCurrent()
         viewModel.onCall()
         runCurrent()
 
@@ -146,6 +150,7 @@ class DialerViewModelTest {
 
         viewModel.events.test {
             viewModel.onInputChanged("1001")
+            runCurrent()
             viewModel.onCall()
             runCurrent()
 
@@ -165,6 +170,7 @@ class DialerViewModelTest {
 
         viewModel.events.test {
             viewModel.onInputChanged("1001")
+            runCurrent()
             viewModel.onCall()
             runCurrent()
 
@@ -184,6 +190,7 @@ class DialerViewModelTest {
 
         viewModel.events.test {
             viewModel.onInputChanged("1001")
+            runCurrent()
             viewModel.onCall()
             runCurrent()
 
@@ -200,6 +207,7 @@ class DialerViewModelTest {
 
         viewModel.events.test {
             viewModel.onInputChanged("sip:@@@")
+            runCurrent()
             viewModel.onCall()
             runCurrent()
 
@@ -215,6 +223,7 @@ class DialerViewModelTest {
         val viewModel = ready(viewModel())
 
         viewModel.onInputChanged("1001")
+        runCurrent()
         viewModel.onCall()
         runCurrent()
 
@@ -229,6 +238,7 @@ class DialerViewModelTest {
             val viewModel = ready(viewModel())
 
             viewModel.onInputChanged("1001")
+            runCurrent()
             viewModel.onCall()
             runCurrent()
 
