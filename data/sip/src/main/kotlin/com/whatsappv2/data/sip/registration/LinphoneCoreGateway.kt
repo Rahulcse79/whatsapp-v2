@@ -49,7 +49,6 @@ internal interface LinphoneCoreGateway : TransportRebinder {
     /** Re-sends REGISTER for an account already known to the stack. */
     fun refreshAccount(accountKey: String)
 
-
     /** Releases the stack, every transport it holds, and every stored credential. */
     fun stop()
 }

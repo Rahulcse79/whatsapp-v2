@@ -20,7 +20,6 @@ class RegistrationRecoveryPolicyTest {
 
     private val policy = RegistrationRecoveryPolicy()
 
-
     private val wifi = NetworkStatus.Available(networkId = 1L, transport = NetworkTransport.WIFI)
     private val cellular = NetworkStatus.Available(networkId = 2L, transport = NetworkTransport.CELLULAR)
 

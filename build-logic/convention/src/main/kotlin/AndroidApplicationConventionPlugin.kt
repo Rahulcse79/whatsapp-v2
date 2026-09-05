@@ -15,6 +15,12 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
         // applying that plugin is a hard error ("no longer required for Kotlin support
         // since AGP 9.0"). See https://kotl.in/gradle/agp-built-in-kotlin
         pluginManager.apply("whatsappv2.detekt")
+        // As in the library convention. Without it :app produces no Kover report, so the
+        // coverage gate measured every module EXCEPT the one holding the service, the
+        // navigation and the permission model - and reported nothing rather than zero,
+        // which is why it went unnoticed until the gate first ran against Task 28's
+        // com/whatsappv2/service threshold.
+        pluginManager.apply("org.jetbrains.kotlinx.kover")
 
         val javaTarget = javaVersionOf(libs.intVersion("jvmToolchain"))
 
