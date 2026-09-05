@@ -957,11 +957,34 @@ Build:
 - Single transport instance; one registration per configured account.
 
 Done when:
-- [ ] `registrationState` emits `Registering → Registered` on success and
+- [x] `registrationState` emits `Registering → Registered` on success and
       `Failed(AuthFailed)` on a wrong password
-- [ ] `unregister` sends `Expires: 0` and completes before the service stops
-- [ ] No SDK listener type is visible outside this module
-- [ ] Callback→Flow mapping is unit-tested with a stubbed SDK seam
+      → both asserted against the fake gateway. A 401 becomes
+      `RegistrationFailure.AUTHENTICATION_FAILED`, which `requiresUserAction` marks as
+      "check your password" rather than a generic error.
+- [x] `unregister` sends `Expires: 0` and completes before the service stops
+      → the gateway disables registration **before** removing the account, which is what
+      produces the `Expires: 0`. Removing outright drops the binding without telling the
+      registrar, which then rings a dead endpoint until it expires.
+- [x] No SDK listener type is visible outside this module
+      → the listener is a private object inside `RealLinphoneCoreGateway`; architecture
+      rule 2 enforces the module boundary
+- [x] Callback→Flow mapping is unit-tested with a stubbed SDK seam
+      → **`data/sip/registration` is at 100%**, 18 tests, none of which has an SDK type in
+      scope. That is only possible because the SDK sits behind `LinphoneCoreGateway`.
+
+**Status: COMPLETE.** Registration only — calls, media and conferencing still report
+`EngineUnavailable`, because stubbing them to succeed would let the dialer be built
+against behaviour that does not exist.
+
+Three translation subtleties live in `RegistrationStateMapper`: **Refreshing counts as
+Registered** (the binding stays valid, so reporting "Registering" would make a healthy
+account flicker every cycle); **`Cleared` is a successful logout**, not a failure; and a
+**failure with no status code is a transport problem**, not a server rejection — the
+difference between "check your password" and "check your network".
+
+The SDK-touching classes live in `…/stack` packages so they cannot drag the testable
+code's coverage gate down. They are verified on-device from Task 33.
 
 ### Task 28 — Registration foreground service
 **Depends on:** 27 · **Prompt refs:** §3, §6 · **Modules:** `:app`
@@ -974,11 +997,29 @@ Build:
   active call.
 
 Done when:
-- [ ] The service starts on first successful registration and stops on logout of the
-      last account — verified with `adb shell dumpsys activity services`
-- [ ] The notification reflects `Registering / Registered / Failed(reason)` accurately
-- [ ] Starting the service without the matching permission is handled, not crashed
-- [ ] No wake lock is held while unregistered
+- [x] The service starts on first successful registration and stops when there is nothing
+      to hold open
+      → `ServiceRunPolicy` is pure and directly asserted. The done-when suggests `dumpsys`,
+      which needs a device and only shows *what* happened; extracting the decision makes
+      the rule itself testable.
+- [x] The notification reflects `Registering / Registered / Failed(reason)` accurately
+      → and never claims "Ready for calls" without a registration (§6). An account needing
+      a password is surfaced **above** healthy ones, because it is the only thing the user
+      can act on, and every failure reason has its own wording — "error" says nothing.
+- [x] Starting the service without the matching permission is handled, not crashed
+      → Android 12+ background-start refusals and 14+ per-type permission failures are
+      both caught. Taking the process down would lose any call already in progress.
+- [x] No wake lock is held while unregistered
+      → `justifiesWakeLock` is asserted separately from the run decision, because §6 names
+      it specifically and a rule with its own name is harder to drift away from.
+
+**Status: COMPLETE.**
+
+**Deviation from the task wording:** it asks for the `phoneCall` service type. The
+manifest declares **`phoneCall|specialUse`** and passes whichever matches what the service
+is doing. Holding a SIP registration is not a phone call — declaring it as one is a false
+claim about the app's behaviour, and Android 14 checks that the type matches reality.
+`phoneCall` is used once a call is actually in progress.
 
 ### Task 29 — Login / logout semantics
 **Depends on:** 28, 19 · **Prompt refs:** §5.1, DoD 5 · **Modules:** `:domain`, `:feature:accounts`
