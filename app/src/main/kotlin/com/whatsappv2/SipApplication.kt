@@ -3,6 +3,7 @@ package com.whatsappv2
 import android.app.Application
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.data.sip.SipEngineLifecycle
+import com.whatsappv2.telecom.SipPhoneAccount
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
@@ -37,10 +38,17 @@ class SipApplication : Application() {
     @Inject
     lateinit var sipEngine: SipEngineLifecycle
 
+    @Inject
+    lateinit var phoneAccount: SipPhoneAccount
+
     override fun onCreate() {
         super.onCreate()
         logger.info(TAG, "Application started")
         sipEngine.start()
+        // Registered at start, not before the first call: Telecom will not accept a
+        // connection for an account it has never heard of, and the first call is exactly
+        // when there is no time to find that out.
+        phoneAccount.register()
     }
 
     private companion object {

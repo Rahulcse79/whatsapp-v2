@@ -68,6 +68,20 @@
                 android:value="Maintains a SIP registration so incoming calls can be received while the app is in the background." />
         </service>
 
+        <!--
+          Telecom's entry point (Task 34, §3). The permission is what tells the platform
+          only Telecom may bind this, and Telecom refuses a ConnectionService that does
+          not declare it - the service is simply never called and calls never appear.
+        -->
+        <service
+            android:name=".telecom.SipConnectionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
