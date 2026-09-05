@@ -42,7 +42,7 @@ class ProximityLock @Inject constructor(
             return
         }
 
-        val acquired = power.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, TAG)
+        val acquired = power.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, WAKE_LOCK_TAG)
         runCatching { acquired.acquire(MAX_HOLD_MILLIS) }
             .onSuccess { lock = acquired }
             .onFailure { logger.warn(TAG, "Could not acquire the proximity lock: ${it.javaClass.simpleName}") }
@@ -58,6 +58,14 @@ class ProximityLock @Inject constructor(
 
     private companion object {
         const val TAG = "ProximityLock"
+
+        /**
+         * The tag `PowerManager` sees, which is not the logging tag.
+         *
+         * The platform wants `owner:purpose`, so the app's name prefixes it: a battery
+         * report that says only "ProximityLock" names nothing anyone can trace to an app.
+         */
+        const val WAKE_LOCK_TAG = "whatsappv2:proximity"
 
         /**
          * A hard ceiling on the lock, in milliseconds.
