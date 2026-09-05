@@ -127,6 +127,11 @@ open class LinphoneSipEngineFixture {
         val engine = engine(this)
         engine.start()
         engine.register(account)
+        // The collector subscribes on its first turn, and the gateway replays nothing —
+        // an event emitted before it is listening is dropped, exactly as the real stack
+        // drops one nobody is there for. Without this the account never leaves
+        // Registering and every call is refused as NotRegistered.
+        runCurrent()
         gateway.emit(account.id.value, StackRegistrationState.OK)
         runCurrent()
         return engine
