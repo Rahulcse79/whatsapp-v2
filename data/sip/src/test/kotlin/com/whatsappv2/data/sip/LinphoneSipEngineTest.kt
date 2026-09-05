@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalCoroutinesApi::class)
+
 package com.whatsappv2.data.sip
 
 import app.cash.turbine.test
@@ -54,19 +56,21 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * The callback-to-Flow mapping, exercised on the JVM.
+ * The fake stack, the account, and the states the engine tests start from.
  *
- * Task 27's done-when asks for exactly this, and it is only possible because the SDK sits
- * behind [com.whatsappv2.data.sip.registration.LinphoneCoreGateway]: liblinphone cannot
- * run here, so without that seam none of this could be tested before a device.
+ * Task 27's done-when is only reachable because the SDK sits behind
+ * [com.whatsappv2.data.sip.registration.LinphoneCoreGateway]: liblinphone cannot run
+ * here, so without that seam none of this could be tested before a device.
+ *
+ * The cases themselves are split by subject below. One class held all of them and had
+ * grown past the point where anything could be found in it.
  */
-@OptIn(ExperimentalCoroutinesApi::class)
-class LinphoneSipEngineTest {
+open class LinphoneSipEngineFixture {
 
-    private val gateway = FakeLinphoneCoreGateway()
-    private val repository = FakeSipAccountRepository()
+    protected val gateway = FakeLinphoneCoreGateway()
+    protected val repository = FakeSipAccountRepository()
 
-    private val account = SipAccount(
+    protected val account = SipAccount(
         id = AccountId("acct-1"),
         label = "Work",
         username = "alice",
@@ -88,18 +92,18 @@ class LinphoneSipEngineTest {
         isDefault = true,
     )
 
-    private val networkMonitor = FakeNetworkMonitor()
+    protected val networkMonitor = FakeNetworkMonitor()
 
     /** Fixed, so a call's start and connect timestamps are equalities rather than ranges. */
-    private val clock = MutableClock().set(NOW)
+    protected val clock = MutableClock().set(NOW)
 
     /** Telecom, faked. Permits everything unless a test says otherwise. */
-    private val platform = FakePlatformCallRegistry()
+    protected val platform = FakePlatformCallRegistry()
 
     /** App settings, which is where the DTMF transport comes from (Task 43). */
-    private val settings = FakeAppSettingsRepository()
+    protected val settings = FakeAppSettingsRepository()
 
-    private fun engine(scope: TestScope) =
+    protected fun engine(scope: TestScope) =
         // The same fake twice: one object implements both halves of the seam, exactly as
         // the real gateway does, because one `Core` owns registration and calls alike.
         LinphoneSipEngine(
@@ -115,7 +119,7 @@ class LinphoneSipEngineTest {
         ).also { repository.given(account) }
 
     /** Registered and ready to place a call. */
-    private suspend fun TestScope.registeredEngine(): LinphoneSipEngine {
+    protected suspend fun TestScope.registeredEngine(): LinphoneSipEngine {
         val engine = engine(this)
         engine.start()
         engine.register(account)
@@ -125,7 +129,7 @@ class LinphoneSipEngineTest {
     }
 
     /** A call that has been placed and answered, ready for hold, mute or a DTMF digit. */
-    private suspend fun TestScope.connectedCall(): LinphoneSipEngine {
+    protected suspend fun TestScope.connectedCall(): LinphoneSipEngine {
         val engine = registeredEngine()
         val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
         runCurrent()
@@ -135,7 +139,7 @@ class LinphoneSipEngineTest {
     }
 
     /** A connected call this end has put on hold, with the stack's acceptance in. */
-    private suspend fun TestScope.heldCall(): LinphoneSipEngine {
+    protected suspend fun TestScope.heldCall(): LinphoneSipEngine {
         val engine = connectedCall()
         val callId = engine.activeCalls.value.single().callId
         engine.setHold(callId, held = true)
@@ -143,6 +147,20 @@ class LinphoneSipEngineTest {
         runCurrent()
         return engine
     }
+
+    protected companion object {
+        /** Fixed instant, so a call's timestamps are equalities rather than ranges. */
+        const val NOW = 1_700_000_000_000L
+
+        val TARGET: SipUri = SipUri.parse("sip:bob@sip.example.com").getOrNull()!!
+
+        /** 486 Busy Here, named so the assertions read as intent rather than arithmetic. */
+        const val BUSY_HERE = 486
+    }
+}
+
+/** Placing a call, and what the far end does to it (Tasks 35 and 37). */
+class LinphoneSipEngineCallTest : LinphoneSipEngineFixture() {
 
     // ---------------------------------------------------------------- calls (Task 35)
 
@@ -418,6 +436,10 @@ class LinphoneSipEngineTest {
             assertTrue(engine.activeCalls.value.isEmpty())
             engine.stop()
         }
+}
+
+/** Audio routing, hold, mute and DTMF (Tasks 40 to 43). */
+class LinphoneSipEngineMediaTest : LinphoneSipEngineFixture() {
 
     // ---------------------------------------------------------------- media (Task 40)
 
@@ -713,6 +735,15 @@ class LinphoneSipEngineTest {
         assertEquals(SipError.UnknownCall, result.errorOrNull())
         engine.stop()
     }
+}
+
+/**
+ * The callback-to-Flow mapping itself: registration, push and the engine's lifecycle.
+ *
+ * Task 27's done-when asks for exactly this — what the stack reports arriving as a Flow
+ * the app can collect, asserted with no device in the room.
+ */
+class LinphoneSipEngineTest : LinphoneSipEngineFixture() {
 
     // ---------------------------------------------------------------- push (Task 38)
 
@@ -981,16 +1012,6 @@ class LinphoneSipEngineTest {
 
         assertTrue(engine.registrationState.value.isEmpty())
         assertEquals(1, gateway.stopCount)
-    }
-
-    private companion object {
-        /** Fixed instant, so a call's timestamps are equalities rather than ranges. */
-        const val NOW = 1_700_000_000_000L
-
-        val TARGET: SipUri = SipUri.parse("sip:bob@sip.example.com").getOrNull()!!
-
-        /** 486 Busy Here, named so the assertions read as intent rather than arithmetic. */
-        const val BUSY_HERE = 486
     }
 }
 
