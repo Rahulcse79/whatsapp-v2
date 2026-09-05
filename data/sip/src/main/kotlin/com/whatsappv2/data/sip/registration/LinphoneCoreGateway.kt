@@ -49,6 +49,16 @@ internal interface LinphoneCoreGateway : TransportRebinder {
     /** Re-sends REGISTER for an account already known to the stack. */
     fun refreshAccount(accountKey: String)
 
+    /**
+     * Publishes RFC 8599 push parameters, or clears them with `null` (ADR-004, Task 38).
+     *
+     * They travel on the `Contact` header of every subsequent REGISTER, which is the
+     * whole mechanism: the server learns where to send a wake-up without a side channel,
+     * and a server that ignores them is no worse off than before. Applying them
+     * re-registers, because a parameter the registrar has not seen does nothing.
+     */
+    fun setPushParameters(parameters: StackPushParameters?)
+
     /** Releases the stack, every transport it holds, and every stored credential. */
     fun stop()
 }
@@ -59,6 +69,25 @@ internal interface LinphoneCoreGateway : TransportRebinder {
  * Flattened on purpose: the gateway should not have to understand `SipAccount`, and a
  * change to the domain entity should not ripple into the SDK boundary.
  */
+/**
+ * RFC 8599 `Contact` parameters, as the stack needs them.
+ *
+ * A separate type from the domain's `PushToken` for the usual reason this module keeps
+ * its own: the domain type is a contract with the whole app, and this one exists to be
+ * handed to an SDK. Carrying no credential is not incidental — the payload the server
+ * sends back says only "wake up and re-register" (ADR-004, DoD 12).
+ */
+internal data class StackPushParameters(
+    /** `pn-provider`, e.g. `fcm`. */
+    val provider: String,
+
+    /** `pn-param` — the FCM sender or project identifier. */
+    val param: String,
+
+    /** `pn-prid` — the device registration token. */
+    val prid: String,
+)
+
 internal data class StackAccount(
     val key: String,
     val username: String,

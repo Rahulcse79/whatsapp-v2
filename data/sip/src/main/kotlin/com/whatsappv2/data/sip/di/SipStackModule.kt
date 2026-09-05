@@ -1,6 +1,7 @@
 package com.whatsappv2.data.sip.di
 
 import com.whatsappv2.core.common.dispatcher.DispatcherProvider
+import com.whatsappv2.data.sip.call.LinphoneCallGateway
 import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.stack.RealLinphoneCoreGateway
 import dagger.Binds
@@ -32,6 +33,17 @@ internal abstract class SipStackModule {
     @Binds
     @Singleton
     abstract fun bindGateway(gateway: RealLinphoneCoreGateway): LinphoneCoreGateway
+
+    /**
+     * The same object, bound again under its call role.
+     *
+     * Two interfaces rather than one because the code that places calls and the code that
+     * registers accounts are different code — but one `Core` owns both, so one singleton
+     * implements both.
+     */
+    @Binds
+    @Singleton
+    abstract fun bindCallGateway(gateway: RealLinphoneCoreGateway): LinphoneCallGateway
 }
 
 /**

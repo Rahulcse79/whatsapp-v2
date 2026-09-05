@@ -4,23 +4,36 @@ import app.cash.turbine.test
 import com.whatsappv2.core.common.logging.NoOpLogger
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.errorOrNull
+import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
+import com.whatsappv2.core.common.time.MutableClock
+import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.network.FakeNetworkMonitor
 import com.whatsappv2.data.sip.registration.FakeLinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.RegistrationStateMapper
+import com.whatsappv2.data.sip.registration.StackPushParameters
 import com.whatsappv2.data.sip.registration.StackRegistrationEvent
 import com.whatsappv2.data.sip.registration.StackRegistrationState
+import com.whatsappv2.domain.call.AudioRoute
+import com.whatsappv2.domain.call.CallState
+import com.whatsappv2.domain.engine.CallDirection
+import com.whatsappv2.domain.engine.PushToken
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
+import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.CodecPreferences
+import com.whatsappv2.domain.model.HangupReason
+import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.NatPolicy
 import com.whatsappv2.domain.model.RegistrationFailure
 import com.whatsappv2.domain.model.RegistrationState
 import com.whatsappv2.domain.model.SipAccount
+import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.repository.SipAccountRepository
+import com.whatsappv2.domain.testing.FakePlatformCallRegistry
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -33,6 +46,7 @@ import java.util.IdentityHashMap
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -72,9 +86,399 @@ class LinphoneSipEngineTest {
 
     private val networkMonitor = FakeNetworkMonitor()
 
+    /** Fixed, so a call's start and connect timestamps are equalities rather than ranges. */
+    private val clock = MutableClock().set(NOW)
+
+    /** Telecom, faked. Permits everything unless a test says otherwise. */
+    private val platform = FakePlatformCallRegistry()
+
     private fun engine(scope: TestScope) =
-        LinphoneSipEngine(gateway, repository, networkMonitor, scope, NoOpLogger)
-            .also { repository.given(account) }
+        // The same fake twice: one object implements both halves of the seam, exactly as
+        // the real gateway does, because one `Core` owns registration and calls alike.
+        LinphoneSipEngine(
+            gateway,
+            gateway,
+            repository,
+            networkMonitor,
+            scope,
+            NoOpLogger,
+            clock,
+            platform,
+        ).also { repository.given(account) }
+
+    /** Registered and ready to place a call. */
+    private suspend fun TestScope.registeredEngine(): LinphoneSipEngine {
+        val engine = engine(this)
+        engine.start()
+        engine.register(account)
+        gateway.emit(account.id.value, StackRegistrationState.OK)
+        runCurrent()
+        return engine
+    }
+
+    // ---------------------------------------------------------------- calls (Task 35)
+
+    @Test
+    fun `placing a call requires a registration, because an INVITE has nowhere else to go`() =
+        runTest {
+            // Failing here rather than letting the stack time out is the difference
+            // between an immediate accurate message and thirty seconds of nothing.
+            val engine = engine(this)
+            engine.start()
+
+            val result = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO)
+
+            assertEquals(SipError.NotRegistered, result.errorOrNull())
+            assertTrue(gateway.placedCalls.isEmpty(), "no INVITE may leave without a binding")
+            engine.stop()
+        }
+
+    @Test
+    fun `a placed call appears before the INVITE, not after it`() = runTest {
+        // Two reasons, and they are the same reason: a collector that attaches late must
+        // still see the call, and Telecom needs a Connection to exist before the INVITE so
+        // the platform can refuse it during a cellular call (Task 34, §3).
+        val engine = registeredEngine()
+
+        val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()
+        runCurrent()
+
+        assertNotNull(callId)
+        val snapshot = engine.activeCalls.value.single()
+        assertEquals(CallState.Outgoing.Calling, snapshot.state)
+        assertEquals(NOW, snapshot.startedAtEpochMillis)
+        assertEquals(null, snapshot.connectedAtEpochMillis, "nothing has been answered yet")
+        assertEquals(
+            FakeLinphoneCoreGateway.PlacedCall(
+                callKey = callId.value,
+                accountKey = account.id.value,
+                destination = TARGET.render(),
+                videoEnabled = false,
+            ),
+            gateway.placedCalls.single(),
+        )
+        engine.stop()
+    }
+
+    @Test
+    fun `ringing then answering walks the call through the state machine`() = runTest {
+        val engine = registeredEngine()
+        val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+
+        gateway.emitCall(callId.value, StackCallState.OUTGOING_RINGING)
+        runCurrent()
+        assertEquals(CallState.Outgoing.Ringing, engine.activeCalls.value.single().state)
+
+        gateway.emitCall(callId.value, StackCallState.CONNECTED)
+        runCurrent()
+
+        val connected = engine.activeCalls.value.single()
+        assertIs<CallState.Connected>(connected.state)
+        assertEquals(NOW, connected.connectedAtEpochMillis, "the duration starts at the answer")
+        engine.stop()
+    }
+
+    @Test
+    fun `early media is its own state, not ringing`() = runTest {
+        // A 183 with SDP means audio is already arriving. Calling it "ringing" leaves the
+        // app playing a local ringback over an announcement the network is sending.
+        val engine = registeredEngine()
+        val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+
+        gateway.emitCall(callId.value, StackCallState.OUTGOING_EARLY_MEDIA)
+        runCurrent()
+
+        assertEquals(CallState.Outgoing.EarlyMedia, engine.activeCalls.value.single().state)
+        engine.stop()
+    }
+
+    @Test
+    fun `a call that ends stops being reported`() = runTest {
+        val engine = registeredEngine()
+        val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+
+        gateway.emitCall(callId.value, StackCallState.ENDED)
+        runCurrent()
+
+        assertTrue(engine.activeCalls.value.isEmpty())
+        engine.stop()
+    }
+
+    @Test
+    fun `hanging up terminates the call and drops it immediately`() = runTest {
+        // Immediately, not when the BYE is acknowledged: the user pressed hang up, and a
+        // row that lingers reads as a button that did nothing.
+        val engine = registeredEngine()
+        val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+
+        engine.hangup(callId, HangupReason.LOCAL_HANGUP)
+
+        assertEquals(listOf(callId.value), gateway.terminatedCalls)
+        assertTrue(engine.activeCalls.value.isEmpty())
+        engine.stop()
+    }
+
+    @Test
+    fun `hanging up a call that is already gone succeeds quietly`() = runTest {
+        // The SipEngine contract requires idempotence: the caller cannot act on being
+        // told otherwise, and the outcome they wanted is already true.
+        val engine = registeredEngine()
+
+        val result = engine.hangup(CallId("never-existed"), HangupReason.LOCAL_HANGUP)
+
+        assertTrue(result is Outcome.Success)
+        assertTrue(gateway.terminatedCalls.isEmpty(), "nothing to terminate")
+        engine.stop()
+    }
+
+    @Test
+    fun `Telecom is asked before the INVITE, not after it`() = runTest {
+        // Task 35's ordering requirement, and the only place it is observable: once both
+        // calls have returned, nothing about the outside world says which went first.
+        val engine = registeredEngine()
+        platform.onRegisterOutgoing = {
+            assertTrue(gateway.placedCalls.isEmpty(), "the connection must exist before the INVITE")
+        }
+
+        engine.placeCall(account.id, TARGET, MediaProfile.AUDIO)
+        runCurrent()
+
+        assertEquals(1, platform.registeredOutgoing.size)
+        assertEquals(1, gateway.placedCalls.size)
+        engine.stop()
+    }
+
+    @Test
+    fun `a call Telecom refuses is not placed and does not linger on screen`() = runTest {
+        // A native call is in progress. §3 says honour it: no INVITE, and no row left
+        // behind for a call that will never exist.
+        val engine = registeredEngine()
+        platform.permitOutgoing = false
+
+        val result = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO)
+        runCurrent()
+
+        assertEquals(SipError.CallNotPermitted, result.errorOrNull())
+        assertTrue(gateway.placedCalls.isEmpty(), "nothing may reach the wire")
+        assertTrue(engine.activeCalls.value.isEmpty())
+        engine.stop()
+    }
+
+    @Test
+    fun `Telecom is told when a call ends for a reason it did not cause`() = runTest {
+        // Without this the platform holds audio focus for a call that is over.
+        val engine = registeredEngine()
+        val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+
+        gateway.emitCall(callId.value, StackCallState.ERROR, statusCode = BUSY_HERE)
+        runCurrent()
+
+        assertEquals(listOf(callId to HangupReason.BUSY), platform.ended)
+        engine.stop()
+    }
+
+    // ---------------------------------------------------------------- incoming (Task 37)
+
+    @Test
+    fun `an inbound INVITE becomes a ringing call and an event`() = runTest {
+        val engine = registeredEngine()
+
+        engine.incomingCalls.test {
+            gateway.emitCall(
+                callKey = "in-1",
+                state = StackCallState.INCOMING_RECEIVED,
+                remoteUri = "sip:carol@sip.example.com",
+                displayName = "Carol",
+            )
+            runCurrent()
+
+            val call = awaitItem()
+            assertEquals(CallId("in-1"), call.callId)
+            assertEquals("Carol", call.fromDisplayName)
+            assertEquals(MediaProfile.AUDIO, call.offeredMedia)
+            assertEquals(NOW, call.receivedAtEpochMillis)
+
+            val snapshot = engine.activeCalls.value.single()
+            assertEquals(CallDirection.INCOMING, snapshot.direction)
+            assertIs<CallState.Incoming>(snapshot.state)
+            cancelAndIgnoreRemainingEvents()
+        }
+        engine.stop()
+    }
+
+    @Test
+    fun `a video offer is reported as one, so the UI can offer a video answer`() = runTest {
+        val engine = registeredEngine()
+
+        engine.incomingCalls.test {
+            gateway.emitCall("in-1", StackCallState.INCOMING_RECEIVED, videoOffered = true)
+            runCurrent()
+
+            assertEquals(MediaProfile.AUDIO_VIDEO, awaitItem().offeredMedia)
+            cancelAndIgnoreRemainingEvents()
+        }
+        engine.stop()
+    }
+
+    @Test
+    fun `an inbound call Telecom refuses is answered busy and never rings`() = runTest {
+        // The user is on a cellular call. Forcing our own full-screen UI over it is the
+        // design §3 rejects, so the call is declined with 486 and nothing is shown.
+        val engine = registeredEngine()
+        platform.permitIncoming = false
+
+        gateway.emitCall("in-1", StackCallState.INCOMING_RECEIVED)
+        runCurrent()
+
+        assertEquals(listOf("in-1" to true), gateway.rejectedCalls)
+        assertTrue(engine.activeCalls.value.isEmpty(), "a refused call must not be shown")
+        engine.stop()
+    }
+
+    @Test
+    fun `answering an inbound call moves it through LocalAnswered, not RemoteAnswered`() = runTest {
+        // The same stack state means different things by direction: CallState.Incoming
+        // accepts only LocalAnswered, so a direction-blind mapping would reject the
+        // transition and leave an answered call showing as ringing.
+        val engine = registeredEngine()
+        gateway.emitCall("in-1", StackCallState.INCOMING_RECEIVED)
+        runCurrent()
+
+        engine.answer(CallId("in-1"), MediaProfile.AUDIO)
+        assertEquals(listOf("in-1" to false), gateway.answeredCalls)
+
+        gateway.emitCall("in-1", StackCallState.CONNECTED)
+        runCurrent()
+
+        val snapshot = engine.activeCalls.value.single()
+        assertIs<CallState.Connected>(snapshot.state)
+        assertEquals(NOW, snapshot.connectedAtEpochMillis)
+        assertEquals(listOf(CallId("in-1")), platform.connected)
+        engine.stop()
+    }
+
+    @Test
+    fun `answering a call that is not ringing is refused rather than sent`() = runTest {
+        val engine = registeredEngine()
+        val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+
+        val result = engine.answer(callId, MediaProfile.AUDIO)
+
+        assertIs<SipError.InvalidState>(result.errorOrNull())
+        assertTrue(gateway.answeredCalls.isEmpty())
+        engine.stop()
+    }
+
+    @Test
+    fun `busy sends 486 and declining sends 603, because the caller hears the difference`() =
+        runTest {
+            val engine = registeredEngine()
+            gateway.emitCall("in-1", StackCallState.INCOMING_RECEIVED)
+            gateway.emitCall("in-2", StackCallState.INCOMING_RECEIVED)
+            runCurrent()
+
+            engine.reject(CallId("in-1"), HangupReason.BUSY)
+            engine.reject(CallId("in-2"), HangupReason.LOCAL_REJECTED)
+
+            assertEquals(listOf("in-1" to true, "in-2" to false), gateway.rejectedCalls)
+            assertTrue(engine.activeCalls.value.isEmpty())
+            engine.stop()
+        }
+
+    // ---------------------------------------------------------------- media (Task 40)
+
+    @Test
+    fun `muting a connected call reaches the stack and the state`() = runTest {
+        val engine = registeredEngine()
+        val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+        gateway.emitCall(callId.value, StackCallState.CONNECTED)
+        runCurrent()
+
+        assertTrue(engine.setMuted(callId, muted = true) is Outcome.Success)
+
+        assertEquals(true, gateway.mutedCalls[callId.value])
+        assertEquals(true, engine.activeCalls.value.single().state.controlsOrNull?.isMuted)
+        engine.stop()
+    }
+
+    @Test
+    fun `muting a call that is still ringing is refused, not silently accepted`() = runTest {
+        // Accepting it would report success for an action that never muted a microphone.
+        val engine = registeredEngine()
+        val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+
+        val result = engine.setMuted(callId, muted = true)
+
+        assertIs<SipError.InvalidState>(result.errorOrNull())
+        assertTrue(gateway.mutedCalls.isEmpty(), "the stack must not be told")
+        engine.stop()
+    }
+
+    @Test
+    fun `a route the platform cannot provide fails rather than playing somewhere else`() =
+        runTest {
+            // §5.2: a Bluetooth request with no headset connected must fail, not fall back
+            // to the earpiece while the UI shows Bluetooth.
+            val engine = registeredEngine()
+            val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+            runCurrent()
+            gateway.emitCall(callId.value, StackCallState.CONNECTED)
+            runCurrent()
+            platform.availableRoutes = setOf(AudioRoute.EARPIECE, AudioRoute.SPEAKER)
+
+            val refused = engine.setAudioRoute(callId, AudioRoute.BLUETOOTH)
+            assertIs<SipError.InvalidState>(refused.errorOrNull())
+            assertEquals(
+                AudioRoute.EARPIECE,
+                engine.activeCalls.value.single().state.controlsOrNull?.audioRoute,
+            )
+
+            assertTrue(engine.setAudioRoute(callId, AudioRoute.SPEAKER) is Outcome.Success)
+            assertEquals(
+                AudioRoute.SPEAKER,
+                engine.activeCalls.value.single().state.controlsOrNull?.audioRoute,
+            )
+            engine.stop()
+        }
+
+    // ---------------------------------------------------------------- push (Task 38)
+
+    @Test
+    fun `push parameters reach the stack and clear again on logout`() = runTest {
+        // ADR-004: sent unconditionally, because they cost nothing when ignored and are
+        // the only way the token reaches the server without a side channel of its own.
+        val engine = registeredEngine()
+
+        engine.setPushToken(PushToken(provider = "fcm", param = "sender-1", prid = "token-abc"))
+        assertEquals(
+            StackPushParameters("fcm", "sender-1", "token-abc"),
+            gateway.pushParameters,
+        )
+
+        engine.setPushToken(null)
+        assertEquals(null, gateway.pushParameters)
+        engine.stop()
+    }
+
+    @Test
+    fun `an event for an unknown call is ignored rather than inventing one`() = runTest {
+        // The only way this happens today is an inbound INVITE, which Task 37 implements.
+        val engine = registeredEngine()
+
+        gateway.emitCall("not-ours", StackCallState.OUTGOING_RINGING)
+        runCurrent()
+
+        assertTrue(engine.activeCalls.value.isEmpty())
+        engine.stop()
+    }
 
     // ---------------------------------------------------------------- lifecycle
 
@@ -312,6 +716,16 @@ class LinphoneSipEngineTest {
 
         assertTrue(engine.registrationState.value.isEmpty())
         assertEquals(1, gateway.stopCount)
+    }
+
+    private companion object {
+        /** Fixed instant, so a call's timestamps are equalities rather than ranges. */
+        const val NOW = 1_700_000_000_000L
+
+        val TARGET: SipUri = SipUri.parse("sip:bob@sip.example.com").getOrNull()!!
+
+        /** 486 Busy Here, named so the assertions read as intent rather than arithmetic. */
+        const val BUSY_HERE = 486
     }
 }
 

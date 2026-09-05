@@ -2,8 +2,12 @@ package com.whatsappv2.data.sip.registration.stack
 
 import android.content.Context
 import com.whatsappv2.core.common.logging.Logger
+import com.whatsappv2.data.sip.call.LinphoneCallGateway
+import com.whatsappv2.data.sip.call.StackCallEvent
+import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.StackAccount
+import com.whatsappv2.data.sip.registration.StackPushParameters
 import com.whatsappv2.data.sip.registration.StackRegistrationEvent
 import com.whatsappv2.data.sip.registration.StackRegistrationState
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -13,11 +17,14 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import org.linphone.core.Account
 import org.linphone.core.AuthInfo
+import org.linphone.core.Call
 import org.linphone.core.Core
 import org.linphone.core.CoreListenerStub
 import org.linphone.core.Factory
+import org.linphone.core.Reason
 import org.linphone.core.RegistrationState
 import java.io.File
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -50,7 +57,7 @@ import javax.inject.Singleton
 internal class RealLinphoneCoreGateway @Inject constructor(
     @ApplicationContext private val context: Context,
     private val logger: Logger,
-) : LinphoneCoreGateway {
+) : LinphoneCoreGateway, LinphoneCallGateway {
 
     private val events = MutableSharedFlow<StackRegistrationEvent>(
         replay = 0,
@@ -60,6 +67,16 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     override val registrationEvents: Flow<StackRegistrationEvent> = events.asSharedFlow()
+
+    private val callEventFlow = MutableSharedFlow<StackCallEvent>(
+        replay = 0,
+        extraBufferCapacity = EVENT_BUFFER,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    override val callEvents: Flow<StackCallEvent> = callEventFlow.asSharedFlow()
+
+    /** Our call key to the stack's call, so terminate can find the right one. */
+    private val callsByKey = mutableMapOf<String, Call>()
 
     private var core: Core? = null
 
@@ -95,6 +112,145 @@ internal class RealLinphoneCoreGateway @Inject constructor(
                 ),
             )
         }
+
+        override fun onCallStateChanged(
+            core: Core,
+            call: Call,
+            state: Call.State,
+            message: String,
+        ) {
+            // Released first, and before the mapping: it is the stack's signal that it
+            // will not touch this call again, and it maps to no app state — so a version
+            // that checked it after the mapping's early return never ran, and leaked one
+            // entry per call for the life of the process.
+            if (state == Call.State.Released) {
+                callsByKey.entries.firstOrNull { it.value == call }?.let { callsByKey -= it.key }
+                return
+            }
+
+            val mapped = state.toStackCallState() ?: return
+            // An inbound INVITE is the one call this gateway has never seen before, so it
+            // is the one place a key is minted rather than looked up. Everything above
+            // this line addresses calls by the app's id and never by the stack's object.
+            val key = callsByKey.entries.firstOrNull { it.value == call }?.key
+                ?: if (mapped == StackCallState.INCOMING_RECEIVED) {
+                    UUID.randomUUID().toString().also { callsByKey[it] = call }
+                } else {
+                    return
+                }
+
+            callEventFlow.tryEmit(
+                StackCallEvent(
+                    callKey = key,
+                    // Which of our accounts placed it. Empty when the core did not
+                    // attribute the call to one, which the engine treats as unknown.
+                    accountKey = accountsByKey.entries
+                        .firstOrNull { it.value == call.account }
+                        ?.key
+                        .orEmpty(),
+                    remoteUri = call.remoteAddress.asStringUriOnly(),
+                    remoteDisplayName = call.remoteAddress.displayName,
+                    state = mapped,
+                    statusCode = call.errorInfo.protocolCode.takeIf { it > 0 },
+                    message = message,
+                    // What the peer offered, read from the remote parameters rather than
+                    // from ours: ours say what we would accept, not what was asked for.
+                    videoOffered = mapped == StackCallState.INCOMING_RECEIVED &&
+                        call.remoteParams?.isVideoEnabled == true,
+                ),
+            )
+        }
+    }
+
+    override fun placeCall(
+        callKey: String,
+        accountKey: String,
+        destination: String,
+        videoEnabled: Boolean,
+    ) {
+        val activeCore = core ?: run {
+            logger.error(TAG, "placeCall before the core was started")
+            return
+        }
+        val address = Factory.instance().createAddress(destination) ?: run {
+            logger.error(TAG, "Unparseable destination for call $callKey")
+            return
+        }
+
+        val params = activeCore.createCallParams(null) ?: run {
+            logger.error(TAG, "The core refused to create call params")
+            return
+        }
+        params.isVideoEnabled = videoEnabled
+        // Bind the call to the requested identity rather than whichever account the core
+        // considers default - a per-call account override (Task 36) is meaningless
+        // otherwise.
+        accountsByKey[accountKey]?.let { params.account = it }
+
+        activeCore.inviteAddressWithParams(address, params)
+            ?.let { callsByKey[callKey] = it }
+            ?: logger.error(TAG, "The core refused the INVITE for $callKey")
+    }
+
+    override fun answerCall(callKey: String, videoEnabled: Boolean) {
+        val call = callsByKey[callKey] ?: run {
+            logger.warn(TAG, "Answer for a call the stack no longer has: $callKey")
+            return
+        }
+        val activeCore = core ?: return
+
+        // acceptWithParams, not accept(): a plain accept answers with whatever the core's
+        // defaults say, which on a video-capable build can add a video stream the caller
+        // never offered and the user never asked for.
+        val params = activeCore.createCallParams(call) ?: run {
+            logger.error(TAG, "The core refused to create answer params for $callKey")
+            return
+        }
+        params.isVideoEnabled = videoEnabled
+        call.acceptWithParams(params)
+    }
+
+    override fun rejectCall(callKey: String, busy: Boolean) {
+        // Busy Here versus Decline. The caller hears the difference, so the choice is the
+        // caller's and never a default picked here.
+        callsByKey[callKey]?.decline(if (busy) Reason.Busy else Reason.Declined)
+    }
+
+    override fun setMicrophoneMuted(callKey: String, muted: Boolean) {
+        // Per call, not on the core: a core-wide mute would silence a second call the
+        // user never muted (Task 56).
+        callsByKey[callKey]?.microphoneMuted = muted
+    }
+
+    override fun terminateCall(callKey: String) {
+        // Idempotent: a call the stack has already released is one the caller wanted gone.
+        callsByKey[callKey]?.terminate()
+    }
+
+    /**
+     * liblinphone's call states, reduced to the ones this app branches on.
+     *
+     * Null for the states that carry no decision - `Released`, the `Updating` family, the
+     * pausing intermediates. Emitting them would make every consumer re-check that they do
+     * not matter.
+     */
+    private fun Call.State.toStackCallState(): StackCallState? = when (this) {
+        // PushIncomingReceived is the same INVITE seen one step earlier - the core knows a
+        // call is coming because a push woke it, before the INVITE itself has arrived
+        // (Task 38). Both mean "a call is arriving", and the app has one answer to that.
+        Call.State.IncomingReceived, Call.State.PushIncomingReceived ->
+            StackCallState.INCOMING_RECEIVED
+
+        Call.State.OutgoingInit -> StackCallState.OUTGOING_INIT
+        Call.State.OutgoingProgress -> StackCallState.OUTGOING_PROGRESS
+        Call.State.OutgoingRinging -> StackCallState.OUTGOING_RINGING
+        Call.State.OutgoingEarlyMedia -> StackCallState.OUTGOING_EARLY_MEDIA
+        Call.State.Connected -> StackCallState.CONNECTED
+        Call.State.StreamsRunning -> StackCallState.STREAMS_RUNNING
+        Call.State.Paused, Call.State.PausedByRemote -> StackCallState.PAUSED
+        Call.State.End -> StackCallState.ENDED
+        Call.State.Error -> StackCallState.ERROR
+        else -> null
     }
 
     override fun start() {
@@ -188,6 +344,42 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         authInfoByKey.remove(accountKey)?.let(core::removeAuthInfo)
     }
 
+    /**
+     * Publishes RFC 8599 parameters on the `Contact` header (ADR-004, Task 38).
+     *
+     * Set on the core rather than assembled by hand: liblinphone owns the `Contact` header
+     * and writes `pn-provider`, `pn-param` and `pn-prid` into it for every account that
+     * allows push. Hand-writing them into `contactParameters` would fight the stack for
+     * the same header.
+     *
+     * Each account is then re-registered, because a parameter the registrar has not seen
+     * has no effect — the binding it must update is the one already on file.
+     */
+    override fun setPushParameters(parameters: StackPushParameters?) {
+        val core = this.core ?: run {
+            logger.warn(TAG, "Push parameters set before the core was started")
+            return
+        }
+
+        core.isPushNotificationEnabled = parameters != null
+        if (parameters != null) {
+            core.pushNotificationConfig.apply {
+                provider = parameters.provider
+                param = parameters.param
+                prid = parameters.prid
+            }
+        }
+
+        // The flag is per account and defaults off, so an account added before the token
+        // arrived would never carry the parameters without this.
+        accountsByKey.values.forEach { account ->
+            account.params = account.params.clone().apply {
+                pushNotificationAllowed = parameters != null
+            }
+        }
+        core.refreshRegisters()
+    }
+
     override fun refreshAccount(accountKey: String) {
         // liblinphone refreshes all registrations together; there is no per-account call.
         // Harmless: a refresh of an already-valid binding is a no-op at the registrar.
@@ -210,6 +402,9 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         }
         authInfoByKey.clear()
         accountsByKey.clear()
+        // The calls go with the core that owned them. Keeping the references would leave
+        // this gateway able to terminate calls belonging to a stack that no longer exists.
+        callsByKey.clear()
         core = null
         logger.info(TAG, "SIP core stopped")
     }
