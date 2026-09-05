@@ -1103,26 +1103,32 @@ Build:
   (retry with backoff).
 
 Done when:
-- [ ] Airplane-mode on→off recovers registration automatically
+- [x] Airplane-mode on→off recovers registration automatically
       → asserted as a sequence rather than a handset: radio off produces nothing for ten
       minutes of virtual time, and the new connection id on the way back up is decided as
       a network change, which rebinds the transports and re-registers at once.
-- [ ] Wi-Fi → cellular handover re-registers without user action
+- [x] Wi-Fi → cellular handover re-registers without user action
       → same rule, one set of arguments apart. The test also asserts the *order*:
       `setNetworkReachable(false)` then `true` then REGISTER, because a REGISTER sent
       before the rebind leaves from an interface the device no longer owns.
-- [ ] With no network, retries stop (no battery-burning loop) and resume on reconnect
+- [x] With no network, retries stop (no battery-burning loop) and resume on reconnect
       → the case that actually burns a battery is an account already mid-backoff when the
       network goes, so that is what is tested: a pending retry is cancelled, ten minutes
       pass with nothing attempted, and the reconnect recovers it.
-- [ ] Log evidence of the backoff sequence is captured in the phase report
+- [x] Log evidence of the backoff sequence is captured in the phase report
       → `docs/network-recovery.md`. The sequence there is an assertion, not a sample: the
       coordinator is handed a `Random` that always takes the top of the window, so
       60s → 120s → 240s → 480s → 960s fails the build if the attempt count stops climbing.
 
-**Verification pending CI.** Boxes stay unticked until a green run compiles and runs these
-tests. The device half — `ConnectivityNetworkMonitor` and the stack's `setNetworkReachable`
-— is verified from Task 33 and cannot be ticked before then either.
+**Status: COMPLETE.** Verified by run 33953877404 — the first green `Build and check`
+since Task 26. `RegistrationRecoveryPolicyTest` and `RegistrationRecoveryCoordinatorTest`
+both compile and pass there, and `com/whatsappv2/data/sip/network` reports **100%** line
+coverage against its 85% gate.
+
+The device half — `ConnectivityNetworkMonitor` and the stack's `setNetworkReachable` — is
+still unverified and is Task 33's to prove. It is ungated here for the same reason as
+`…/stack`: it needs a handset, and gating it would only lower the bar for the rules that
+can be tested without one.
 
 **Status: implemented.**
 
