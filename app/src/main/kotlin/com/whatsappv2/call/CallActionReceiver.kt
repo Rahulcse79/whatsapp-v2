@@ -42,10 +42,12 @@ class CallActionReceiver : BroadcastReceiver() {
     lateinit var scope: CoroutineScope
 
     override fun onReceive(context: Context, intent: Intent) {
-        // Hilt injects from the generated base class's onReceive, so the fields above are
-        // not set until this call has run. Skipping it is a NullPointerException on the
-        // first button press and nothing before it.
-        super.onReceive(context, intent)
+        // No super.onReceive here, and injection still happens. Hilt's Gradle plugin
+        // rewrites this class to extend its generated base and inserts the call to that
+        // base's onReceive — which is what injects the fields above — at the top of this
+        // method (`AndroidEntryPointClassVisitor.OnReceiveAdapter`). Written by hand it
+        // does not even compile: the superclass Kotlin sees is `BroadcastReceiver`, whose
+        // `onReceive` is abstract, and the rewrite happens after Kotlin has finished.
 
         val callId = intent.getStringExtra(EXTRA_CALL_ID)?.let(::CallId) ?: run {
             logger.error(TAG, "Call action with no call id: ${intent.action}")
