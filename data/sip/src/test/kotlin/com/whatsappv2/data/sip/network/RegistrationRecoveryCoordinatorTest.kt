@@ -367,20 +367,33 @@ class RegistrationRecoveryCoordinatorTest {
     }
 
     @Test
-    fun `the retry stops being published once it has fired`() = runTest {
-        // Otherwise the screen keeps a stale due-time on display through the attempt and
-        // past it, counting down into the negative.
-        val recovery = arrangeRegisteredOnWifi()
+    fun `a fired retry is replaced by the next one, not left on display`() = runTest {
+        // The stale-countdown bug: a screen that keeps showing a due time the app has
+        // already acted on counts down into the negative and then sits there.
+        //
+        // "Cleared" is the wrong assertion, and asserting it is how this test was wrong
+        // the first time. The attempt fires, fails the same way, and schedules the next
+        // one in the same turn - so what is observable, and what actually matters, is that
+        // the published time MOVED rather than lingering at the value that has passed.
+        val clock = MutableClock().set(NOW)
+        engine.givenRegistered(account)
+        monitor.onWifi()
+        val recovery = coordinator(backgroundScope, clock)
+        recovery.start()
+        settle()
         givenRegistrarUnreachable()
         runCurrent()
+
+        val firstDue = recovery.nextRetryAt.value.getValue(account.id)
+        assertEquals(NOW + BASE_DELAY.inWholeMilliseconds, firstDue, "arrange: retry 1 is 60s out")
 
         settle(BASE_DELAY + SETTLE)
 
         assertTrue(refreshes.isNotEmpty(), "arrange: the retry actually fired")
         assertEquals(
-            null,
-            recovery.nextRetryAt.value[account.id],
-            "the attempt that was due has happened; the next one publishes its own time",
+            NOW + BASE_DELAY.inWholeMilliseconds * 2,
+            recovery.nextRetryAt.value.getValue(account.id),
+            "retry 2 waits twice as long, and its time replaces retry 1's",
         )
     }
 
