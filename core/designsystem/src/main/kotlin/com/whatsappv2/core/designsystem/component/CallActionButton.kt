@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -76,7 +77,11 @@ fun CallActionButton(
     }
 
     Column(
-        modifier = modifier,
+        // The caller's modifier carries the test tag, so this node is the control as far
+        // as anything outside is concerned. It has to say whether the control is usable:
+        // `enabled` reaches only the IconButton inside, and a caller asking this node
+        // would be told a disabled button is fine to press.
+        modifier = modifier.semantics { if (!enabled) disabled() },
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         IconButton(
