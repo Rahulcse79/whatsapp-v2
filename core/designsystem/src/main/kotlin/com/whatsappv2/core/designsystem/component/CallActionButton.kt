@@ -77,11 +77,7 @@ fun CallActionButton(
     }
 
     Column(
-        // The caller's modifier carries the test tag, so this node is the control as far
-        // as anything outside is concerned. It has to say whether the control is usable:
-        // `enabled` reaches only the IconButton inside, and a caller asking this node
-        // would be told a disabled button is fine to press.
-        modifier = modifier.semantics { if (!enabled) disabled() },
+        modifier = modifier.enabledState(enabled),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         IconButton(
@@ -116,6 +112,17 @@ fun CallActionButton(
         }
     }
 }
+
+/**
+ * Publishes the control's enabled state on the node the caller tagged.
+ *
+ * The caller's modifier lands on the outer column, so that node is the control as far as
+ * anything outside is concerned, while `enabled` reaches only the button inside it.
+ * Without this, anything asking the published node is told a disabled button is fine to
+ * press.
+ */
+private fun Modifier.enabledState(enabled: Boolean): Modifier =
+    semantics { if (!enabled) disabled() }
 
 private const val DISABLED_ALPHA = 0.38f
 
