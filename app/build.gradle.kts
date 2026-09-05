@@ -12,6 +12,15 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            // The SIP stack ships prebuilt native libraries. This has to be declared in
+            // the application module: abiFilters in a library only governs that library's
+            // own native build, not which .so the APK ends up carrying. Only the ABIs
+            // Android still requires are packaged - 32-bit x86 has been dead on real
+            // devices for years and only adds to the APK. CI asserts the packaged set.
+            abiFilters += setOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
     }
 
     testOptions {

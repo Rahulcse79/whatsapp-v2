@@ -5,6 +5,7 @@ import com.whatsappv2.core.common.logging.NoOpLogger
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.errorOrNull
 import com.whatsappv2.core.common.secret.Secret
+import com.whatsappv2.data.sip.network.FakeNetworkMonitor
 import com.whatsappv2.data.sip.registration.FakeLinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.RegistrationStateMapper
@@ -69,8 +70,11 @@ class LinphoneSipEngineTest {
         isDefault = true,
     )
 
+    private val networkMonitor = FakeNetworkMonitor()
+
     private fun engine(scope: TestScope) =
-        LinphoneSipEngine(gateway, repository, scope, NoOpLogger).also { repository.given(account) }
+        LinphoneSipEngine(gateway, repository, networkMonitor, scope, NoOpLogger)
+            .also { repository.given(account) }
 
     // ---------------------------------------------------------------- lifecycle
 

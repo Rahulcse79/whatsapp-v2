@@ -34,6 +34,14 @@ internal class FakeLinphoneCoreGateway : LinphoneCoreGateway {
     val removedKeys: MutableList<String> = mutableListOf()
     val refreshedKeys: MutableList<String> = mutableListOf()
 
+    /**
+     * Every reachability signal, in order.
+     *
+     * Order is the assertion worth making: a rebind is `false` then `true`, and sending
+     * only `true` leaves the stack on the sockets it already had.
+     */
+    val reachabilitySignals: MutableList<Boolean> = mutableListOf()
+
     private val held = mutableMapOf<String, StackAccount>()
 
     /**
@@ -66,6 +74,10 @@ internal class FakeLinphoneCoreGateway : LinphoneCoreGateway {
 
     override fun refreshAccount(accountKey: String) {
         refreshedKeys += accountKey
+    }
+
+    override fun setNetworkReachable(reachable: Boolean) {
+        reachabilitySignals += reachable
     }
 
     override fun stop() {

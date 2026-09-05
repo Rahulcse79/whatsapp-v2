@@ -1,5 +1,6 @@
 package com.whatsappv2.data.sip.registration
 
+import com.whatsappv2.data.sip.network.TransportRebinder
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -14,7 +15,7 @@ import kotlinx.coroutines.flow.Flow
  * The interface is deliberately small. Anything that can be decided without the stack -
  * backoff, refresh timing, error classification - belongs above it, where it is testable.
  */
-internal interface LinphoneCoreGateway {
+internal interface LinphoneCoreGateway : TransportRebinder {
 
     /** Registration state changes, as the stack reports them. */
     val registrationEvents: Flow<StackRegistrationEvent>
@@ -47,6 +48,7 @@ internal interface LinphoneCoreGateway {
 
     /** Re-sends REGISTER for an account already known to the stack. */
     fun refreshAccount(accountKey: String)
+
 
     /** Releases the stack, every transport it holds, and every stored credential. */
     fun stop()

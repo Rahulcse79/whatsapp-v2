@@ -12,12 +12,9 @@ android {
         // by name, and the failure is a NoSuchMethodError on first use.
         consumerProguardFiles("consumer-rules.pro")
 
-        ndk {
-            // The SIP stack ships native libraries. Only the ABIs Android still requires
-            // are packaged: 32-bit x86 has been dead on real devices for years and only
-            // adds to the APK.
-            abiFilters += setOf("arm64-v8a", "armeabi-v7a", "x86_64")
-        }
+        // The ABI filter for the SIP stack's native libraries lives in :app, not here:
+        // abiFilters in a library module governs only that module's own native build and
+        // does nothing about which .so a consuming APK packages.
     }
 
     packaging {
