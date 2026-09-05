@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.time.Clock
 import com.whatsappv2.domain.call.AudioRoute
+import com.whatsappv2.domain.call.userMessage
 import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.SipMediaController
@@ -177,23 +178,9 @@ class CallViewModel @Inject constructor(
         viewModelScope.launch {
             val result = block()
             if (result is Outcome.Failure) {
-                eventChannel.send(CallEvent.ActionFailed(action, result.error.describe()))
+                eventChannel.send(CallEvent.ActionFailed(action, result.error.userMessage()))
             }
         }
-    }
-
-    /**
-     * The one-line reason an action failed.
-     *
-     * Deliberately short and non-technical: this appears in a snackbar over a live call,
-     * where a response code helps nobody. The full error is already in the log.
-     */
-    private fun SipError.describe(): String = when (this) {
-        is SipError.EngineUnavailable -> "That is not available yet"
-        is SipError.InvalidState -> "Not possible right now"
-        is SipError.UnknownCall -> "The call has already ended"
-        is SipError.NetworkUnavailable, is SipError.TransportFailure -> "No connection"
-        else -> "That did not work"
     }
 
     private companion object {

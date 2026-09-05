@@ -3,6 +3,7 @@ package com.whatsappv2.feature.dialer
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.whatsappv2.core.common.result.Outcome
+import com.whatsappv2.domain.call.userMessage
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.SipRegistrar
 import com.whatsappv2.domain.model.AccountId
@@ -181,23 +182,12 @@ class DialerViewModel @Inject constructor(
     /**
      * The engine's refusal, in a sentence.
      *
-     * Each case says what to do about it, because "call failed" is true of all of them and
-     * useful for none: a busy line is worth redialling, a wrong address is not, and a call
-     * refused while the phone is on a cellular call is not a fault at all.
+     * The sentences are the domain's, not this screen's (Task 44). They used to be a
+     * `when` here with a general branch under it, which meant an error this dialler had
+     * not thought of read "The call could not be placed" while the in-call screen called
+     * the same error something else again.
      */
-    private fun SipError.toEvent(): DialerEvent = when (this) {
-        is SipError.NotRegistered -> DialerEvent.Refused("That account is not registered yet")
-        is SipError.CallNotPermitted -> DialerEvent.Refused("Your phone is on another call")
-        is SipError.Busy -> DialerEvent.Refused("That line is busy")
-        is SipError.NotFound -> DialerEvent.Refused("That address does not exist")
-        is SipError.Timeout -> DialerEvent.Refused("Nobody answered")
-        is SipError.Declined -> DialerEvent.Refused("The call was declined")
-        is SipError.TemporarilyUnavailable -> DialerEvent.Refused("They are unavailable right now")
-        is SipError.NetworkUnavailable, is SipError.TransportFailure ->
-            DialerEvent.Refused("No connection")
-        is SipError.EngineUnavailable -> DialerEvent.Refused("Calling is not available right now")
-        else -> DialerEvent.Refused("The call could not be placed")
-    }
+    private fun SipError.toEvent(): DialerEvent = DialerEvent.Refused(userMessage())
 
     private companion object {
         const val SUBSCRIPTION_TIMEOUT_MILLIS = 5_000L
