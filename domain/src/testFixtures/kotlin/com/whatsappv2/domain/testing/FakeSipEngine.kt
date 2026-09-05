@@ -358,7 +358,6 @@ class FakeSipEngine(
         registrations.value = emptyMap()
     }
 
-
     // ------------------------------------------------------------------ simulation
     //
     // Everything below is something the NETWORK does to the app, as opposed to
