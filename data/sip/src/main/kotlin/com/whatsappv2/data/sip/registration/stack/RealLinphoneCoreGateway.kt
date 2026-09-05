@@ -194,6 +194,12 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         core?.refreshRegisters()
     }
 
+    override fun setNetworkReachable(reachable: Boolean) {
+        // No-op before start(), which is correct: a stack that does not exist has no
+        // sockets to rebind, and the first register will bind against whatever is up.
+        core?.isNetworkReachable = reachable
+    }
+
     override fun stop() {
         core?.let { running ->
             running.removeListener(listener)

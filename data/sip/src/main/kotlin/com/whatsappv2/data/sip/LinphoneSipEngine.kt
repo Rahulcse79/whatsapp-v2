@@ -4,6 +4,8 @@ import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.failure
 import com.whatsappv2.core.common.result.success
+import com.whatsappv2.data.sip.network.NetworkMonitor
+import com.whatsappv2.data.sip.network.RegistrationRecoveryCoordinator
 import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.RegistrationStateMapper
 import com.whatsappv2.data.sip.registration.StackAccount
@@ -40,6 +42,13 @@ import javax.inject.Singleton
  * [LinphoneCoreGateway]. What remains is bookkeeping — which accounts exist, what their
  * last known state was — and that is what the tests exercise.
  *
+ * ## Network changes
+ *
+ * [RegistrationRecoveryCoordinator] watches the link and re-registers across handovers and
+ * outages. It lives here, not in `:app`, because its lifetime is the stack's: the case it
+ * exists for - no network, so nothing registered, so the foreground service stops itself -
+ * is precisely when the service is not there to host it.
+ *
  * ## Credentials
  *
  * Fetched from the repository immediately before a REGISTER and handed straight to the
@@ -51,9 +60,26 @@ import javax.inject.Singleton
 internal class LinphoneSipEngine @Inject constructor(
     private val gateway: LinphoneCoreGateway,
     private val accounts: SipAccountRepository,
+    private val networkMonitor: NetworkMonitor,
     private val scope: CoroutineScope,
     private val logger: Logger,
 ) : SipRegistrar {
+
+    /**
+     * Network-change recovery (Task 30).
+     *
+     * Constructed here rather than injected, because it needs this engine as its
+     * registrar and injecting it would be a cycle. Owning it also settles its lifetime:
+     * recovery starts and stops with the stack, which is the only span over which it
+     * means anything.
+     */
+    private val recovery = RegistrationRecoveryCoordinator(
+        networkMonitor = networkMonitor,
+        registrar = this,
+        rebinder = gateway,
+        scope = scope,
+        logger = logger,
+    )
 
     private val states = MutableStateFlow<Map<AccountId, RegistrationState>>(emptyMap())
     override val registrationState: StateFlow<Map<AccountId, RegistrationState>> = states.asStateFlow()
@@ -83,6 +109,7 @@ internal class LinphoneSipEngine @Inject constructor(
         started = true
 
         gateway.start()
+        recovery.start()
         collectJob = scope.launch {
             gateway.registrationEvents.collect { event ->
                 val id = AccountId(event.accountKey)
@@ -185,6 +212,7 @@ internal class LinphoneSipEngine @Inject constructor(
     fun stop() {
         if (!started) return
         started = false
+        recovery.stop()
         collectJob?.cancel()
         collectJob = null
         gateway.stop()

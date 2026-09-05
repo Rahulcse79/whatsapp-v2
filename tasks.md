@@ -1104,9 +1104,64 @@ Build:
 
 Done when:
 - [ ] Airplane-mode on→off recovers registration automatically
+      → asserted as a sequence rather than a handset: radio off produces nothing for ten
+      minutes of virtual time, and the new connection id on the way back up is decided as
+      a network change, which rebinds the transports and re-registers at once.
 - [ ] Wi-Fi → cellular handover re-registers without user action
+      → same rule, one set of arguments apart. The test also asserts the *order*:
+      `setNetworkReachable(false)` then `true` then REGISTER, because a REGISTER sent
+      before the rebind leaves from an interface the device no longer owns.
 - [ ] With no network, retries stop (no battery-burning loop) and resume on reconnect
+      → the case that actually burns a battery is an account already mid-backoff when the
+      network goes, so that is what is tested: a pending retry is cancelled, ten minutes
+      pass with nothing attempted, and the reconnect recovers it.
 - [ ] Log evidence of the backoff sequence is captured in the phase report
+      → `docs/network-recovery.md`. The sequence there is an assertion, not a sample: the
+      coordinator is handed a `Random` that always takes the top of the window, so
+      60s → 120s → 240s → 480s → 960s fails the build if the attempt count stops climbing.
+
+**Verification pending CI.** Boxes stay unticked until a green run compiles and runs these
+tests. The device half — `ConnectivityNetworkMonitor` and the stack's `setNetworkReachable`
+— is verified from Task 33 and cannot be ticked before then either.
+
+**Status: implemented.**
+
+**The rules are pure, so the scenarios are arguments.** `RegistrationRecoveryPolicy` in
+`:domain` decides what should happen given a network status, a registration state, the
+network the account last registered over, and its failure count. Airplane mode, a handover
+and a registrar outage are therefore three sets of arguments rather than a person with a
+handset — which is the only way a rule like this gets exercised more than once.
+
+**Two failures that look identical get opposite treatment.** No network means *stop*:
+no timers, nothing attempted, and the platform's callback is what restarts things. A
+registrar that is down means keep trying, behind the Task 26 backoff, because 5,000 clients
+returning together is what knocks a recovering server over again (§2.1). Both are asserted
+directly, and a wrong password is asserted to produce neither.
+
+**A failed retry schedules the next one itself,** and this was the bug worth catching. The
+obvious design reacts only to registration state, and it stalls: a retry that fails the same
+way produces an *equal* `RegistrationState`, a `StateFlow` does not re-emit an equal value,
+and the chain stops silently after one attempt. There is a test named for it.
+
+**Debounce is the flap defence, not the attempt counter.** A status that has not held still
+for a second is not believed, so a link oscillating at the edge of Wi-Fi coverage produces
+no rebind and no REGISTER at all. Debouncing runs *before* the duplicate filter, so a flap
+that lands back where it started is not even a change. The counter resets only on a
+successful registration, which is what stops a link that connects and drops repeatedly from
+holding the client at the shortest delay.
+
+**Deviation — recovery lives with the engine, not in `:app`.** The task lists `:app` as a
+module and the obvious reading is an `Application`-started singleton. It is instead owned by
+`LinphoneSipEngine` and started and stopped with it, for two reasons: injecting it would be
+a dependency cycle (it needs the engine as its registrar), and its lifetime is the stack's.
+It still outlives the foreground service, which is the requirement that matters — the case
+it exists for, no network so nothing registered so the service stops itself, is exactly when
+the service is gone. `:app`'s contribution was already in place: `ACCESS_NETWORK_STATE` is
+declared, and the notification already reads "Waiting for a network" for that failure.
+
+**What no arrangement of this can do:** recover a process that is not running. No
+`ConnectivityManager` callback reaches a dead process, and that is push's job (ADR-004,
+Task 38).
 
 ### Task 31 — Registration status UI
 **Depends on:** 29, 20 · **Prompt refs:** §5.1, §6 · **Modules:** `:feature:accounts`
