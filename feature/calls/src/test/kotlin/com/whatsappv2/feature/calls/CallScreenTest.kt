@@ -31,7 +31,7 @@ import kotlin.test.assertEquals
  * the stack behind it. `CallViewModelTest` covers the other direction.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [CALLS_ROBOLECTRIC_SDK])
+@Config(sdk = [CALLS_ROBOLECTRIC_SDK], qualifiers = CALLS_SCREEN)
 class CallScreenTest {
 
     @get:Rule

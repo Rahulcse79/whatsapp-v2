@@ -35,7 +35,7 @@ import kotlin.test.assertEquals
  * what makes this a test of the dialler rather than of a layout.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [DIALER_ROBOLECTRIC_SDK])
+@Config(sdk = [DIALER_ROBOLECTRIC_SDK], qualifiers = DIALER_SCREEN)
 class DialerScreenTest {
 
     @get:Rule
