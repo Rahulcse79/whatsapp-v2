@@ -28,7 +28,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,25 +45,6 @@ import com.whatsappv2.core.designsystem.preview.ThemePreviews
 import com.whatsappv2.core.designsystem.theme.AppTheme
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
-
-/**
- * What the dialler can do, gathered into one value.
- *
- * Seven callbacks is a long parameter list by any measure, and every one of them is the
- * same kind of thing: something the user did. Grouping them keeps the screen's signature
- * readable and means a new key or shortcut adds a field here rather than another argument
- * to thread through three call sites.
- */
-@Stable
-data class DialerActions(
-    val onInputChanged: (String) -> Unit = {},
-    val onDigit: (Char) -> Unit = {},
-    val onBackspace: () -> Unit = {},
-    val onClear: () -> Unit = {},
-    val onAccountSelected: (AccountId) -> Unit = {},
-    val onRecentSelected: (String) -> Unit = {},
-    val onCall: () -> Unit = {},
-)
 
 /**
  * The dialer, wired to its ViewModel (Task 36).

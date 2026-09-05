@@ -25,7 +25,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,26 +44,6 @@ import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallControls
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.model.CallId
-import com.whatsappv2.domain.model.DtmfDigit
-
-/**
- * What the call screen can do, gathered into one value.
- *
- * Seven callbacks and every one of them is the same kind of thing: something the user did.
- * Grouping them keeps the screen's signature readable and means the next control — a
- * transfer button, a video toggle — adds a field here rather than another argument threaded
- * through four call sites. `:feature:dialer` groups its own for the same reason.
- */
-@Stable
-data class CallActions(
-    val onAnswer: (Boolean) -> Unit = {},
-    val onReject: () -> Unit = {},
-    val onHangUp: () -> Unit = {},
-    val onToggleMute: (Boolean) -> Unit = {},
-    val onToggleSpeaker: (Boolean) -> Unit = {},
-    val onToggleHold: (Boolean) -> Unit = {},
-    val onDtmf: (DtmfDigit) -> Unit = {},
-)
 
 /**
  * The call screen (Tasks 37 and 39).
@@ -358,21 +337,30 @@ private fun CallControlRow(
 private fun CallDisplay.statusLine(): String = when {
     phase == CallPhase.CONNECTED && durationSeconds != null -> formatDuration(durationSeconds)
     phase == CallPhase.INCOMING && direction == CallDirection.INCOMING -> "Incoming call"
-    else -> when (phase) {
-        CallPhase.CALLING -> "Calling"
-        CallPhase.RINGING -> "Ringing"
-        // Early media is audible - an announcement or a network ringback is already
-        // playing - so it says something different from "ringing", which it is not.
-        CallPhase.EARLY_MEDIA -> "Connecting"
-        CallPhase.INCOMING -> "Incoming call"
-        CallPhase.CONNECTED -> "Connected"
-        CallPhase.ON_HOLD -> "On hold"
-        CallPhase.HELD_BY_REMOTE -> "On hold by the other party"
-        CallPhase.HELD_BY_BOTH -> "On hold by both"
-        CallPhase.RESUMING -> "Resuming"
-        CallPhase.TRANSFERRING -> "Transferring"
-        CallPhase.ENDED -> "Call ended"
-    }
+    else -> phase.label()
+}
+
+/**
+ * What each phase is called on screen.
+ *
+ * Its own function, not a branch of [statusLine]: eleven phases plus the two exceptions
+ * above them is one decision too many for detekt to read as one, and the two questions -
+ * "does the duration replace the phase" and "what is this phase called" - are separate.
+ */
+private fun CallPhase.label(): String = when (this) {
+    CallPhase.CALLING -> "Calling"
+    CallPhase.RINGING -> "Ringing"
+    // Early media is audible - an announcement or a network ringback is already
+    // playing - so it says something different from "ringing", which it is not.
+    CallPhase.EARLY_MEDIA -> "Connecting"
+    CallPhase.INCOMING -> "Incoming call"
+    CallPhase.CONNECTED -> "Connected"
+    CallPhase.ON_HOLD -> "On hold"
+    CallPhase.HELD_BY_REMOTE -> "On hold by the other party"
+    CallPhase.HELD_BY_BOTH -> "On hold by both"
+    CallPhase.RESUMING -> "Resuming"
+    CallPhase.TRANSFERRING -> "Transferring"
+    CallPhase.ENDED -> "Call ended"
 }
 
 /** `m:ss`, or `h:mm:ss` past the hour. Long calls happen; a 75-minute call is not 75:00. */
