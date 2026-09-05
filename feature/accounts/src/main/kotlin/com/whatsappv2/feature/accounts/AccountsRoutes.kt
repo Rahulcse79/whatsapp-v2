@@ -122,4 +122,3 @@ fun AccountDetailRoute(
 
 /** One second: the resolution the countdown is displayed at, so a finer tick shows nothing. */
 private const val COUNTDOWN_TICK_MILLIS = 1_000L
-
