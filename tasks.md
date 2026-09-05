@@ -1180,8 +1180,36 @@ Build:
 
 Done when:
 - [ ] Status updates live, driven by `registrationState`, with no polling
+      → the state is a `combine` of three streams, so there is nowhere in the ViewModel to
+      put a poll. Asserted the only way absence of a timer can be: a change made *only* to
+      the engine arrives on screen, through a ViewModel nobody told to look again.
 - [ ] A wrong password surfaces "Authentication failed", not a generic error
+      → all seven `RegistrationFailure` values get their own wording and their own remedy.
+      "Registration failed" is true of every one of them and useful for none.
 - [ ] Airplane mode shows a distinct offline state, not a failure
+      → it arrives as `FAILED_RETRYING` with `NETWORK_UNAVAILABLE`, so it does not colour
+      as needing attention and its remedy says the app recovers on its own. Telling someone
+      to act on a transient fault is how correct settings get changed.
+
+**Status: implemented, verification pending CI.** Boxes stay unticked until a green run, as
+Task 30's did.
+
+**Next-retry time comes from the thing that schedules it.** New `RegistrationRetrySchedule`
+in `:domain`, published by the recovery coordinator and forwarded by the engine. It cannot
+be recomputed in the UI: the backoff samples a random window, so a screen that worked the
+delay out again would draw a countdown to a moment nothing is going to happen. A second
+flow rather than a field on `RegistrationState`, because the engine publishes that and the
+engine does not schedule retries.
+
+**Deviation — tapping a row now opens status, not the editor.** The task asks for both a
+live list and a detail view; status is what someone opened the list to check, so it is one
+tap away and the form is two.
+
+**Prerequisite found and fixed here.** `LinphoneSipEngine` was never bound — the DI module
+still pointed at `UnavailableSipEngine`, the engine implemented only `SipRegistrar` so it
+could not have been bound anyway, and nothing called `start()`. Every account in the running
+app reported Offline whatever was configured. Tasks 28–30 were built on a stack that was
+never switched on.
 
 ### Task 32 — Wire up the FreeSWITCH test target
 **Depends on:** 1 · **Prompt refs:** §8, DoD 8 · **Modules:** `docs/`, build config
@@ -1204,10 +1232,29 @@ Build:
 
 Done when:
 - [ ] The app registers against the deployed FreeSWITCH from a developer machine
-- [ ] Reserved test extensions, TLS CA, and conference room are documented in `docs/testing.md`
+      → needs a device or emulator; not verifiable from this machine, which has no Android
+      SDK by design. The path is now in place: the engine is bound and started, which it
+      was not before.
+- [x] Reserved test extensions, TLS CA, and conference room are documented in `docs/testing.md`
+      → and in `docs/architecture.md` §3.1, read out of the deployed instance's own config
+      so every value is checkable rather than agreed in the abstract.
 - [ ] Two reserved extensions can call each other through it
-- [ ] No hostname, credential, or certificate is committed to the repo
-- [ ] CI runs unit tests on every push and does **not** require server reachability to be green
+      → blocked on Task 35: there is no `placeCall` yet.
+- [x] No hostname, credential, or certificate is committed to the repo
+      → asserted in CI, on **tracked** files rather than the working tree: a secret that
+      reached git is disclosed even after the commit that removed it.
+- [x] CI runs unit tests on every push and does **not** require server reachability to be green
+      → unchanged in `ci.yml`; integration moved to its own dispatch/scheduled workflow
+      under a concurrency group of one.
+
+**Status: partially complete.** Q3 and Q4 are answered (`docs/architecture.md` §3.1) from
+the running deployment: FreeSWITCH 1.10.11, SIP 5060 over UDP and TCP, extensions
+1000–1019, with **1018 and 1019 reserved for automation** so a manual session cannot fail
+a run and leave no trace of why.
+
+**TLS is off on the target, so it is not claimed.** `internal_ssl_enable=false` and the
+server holds no SIP TLS certificate. Raised as **Q9**, owned by Infra; until then Task 33
+covers two transports of three and says so.
 
 ### Task 33 — Integration test: registration
 **Depends on:** 30, 32 · **Prompt refs:** §8, DoD 6 · **Modules:** `:data:sip` (androidTest)
@@ -1218,10 +1265,23 @@ Build:
 
 Done when:
 - [ ] All three transports register successfully
-- [ ] Recovery after a transport drop happens automatically with a jittered delay.
-      Per ADR-005, prefer a client-side transport drop over restarting a **shared** server;
-      if a real registrar restart is tested, run it as a scheduled manual test
-- [ ] The test suite is documented and runnable from a clean checkout
+      → UDP and TCP are written; TLS carries `@Ignore` naming **Q9**, so the gap shows as a
+      skip in the report rather than being absent. Enabling it is one annotation.
+- [ ] Recovery after a transport drop happens automatically with a jittered delay
+      → written as a client-side drop per ADR-005, not a server restart: restarting shared
+      infrastructure disrupts whoever else is on it.
+- [x] The test suite is documented and runnable from a clean checkout
+      → `docs/testing.md`: how to point it at a server, which extensions are reserved, and
+      why an unconfigured run skips instead of failing.
+
+**Status: written, not run.** These are instrumented tests. They need a device or emulator
+*and* a reachable registrar, and neither exists here — the hosted CI runners cannot reach a
+server on a private network, and this machine has no Android SDK. The two boxes above stay
+unticked until someone runs them.
+
+The androidTest source set declares only artifacts the catalog already pins. The suite
+cannot run in the push gate, so an unverified new version pin here would risk the gate for
+code the gate never executes.
 
 ---
 
@@ -1241,9 +1301,27 @@ Build:
 
 Done when:
 - [ ] The `PhoneAccount` is registered and visible in `adb shell dumpsys telecom`
+      → registered at process start with `CAPABILITY_SELF_MANAGED`; needs a handset to see.
 - [ ] Telecom hold/unhold and mute callbacks drive the FSM
+      → the mapping is asserted on the JVM in `TelecomPolicyTest`; the end-to-end path
+      needs Task 35's call controller, which reports `EngineUnavailable` today.
 - [ ] An incoming SIP call during an active cellular call is handled per Telecom policy,
       not force-shown
+      → `onCreateIncomingConnectionFailed` logs and does nothing else, which is the whole
+      behaviour: honouring the refusal means not working around it. Asserted as a rule in
+      `TelecomPolicy.mayPlaceCall`; the real interaction needs two live calls on a handset.
+
+**Status: implemented, device verification pending.**
+
+**The rules live in a plain object.** A `Connection` cannot be constructed off a device, so
+anything decided inside one is decided where no test can reach. `TelecomPolicy` holds every
+judgement with no Android import; `SipConnection` translates and forwards. The done-when
+suggests `dumpsys`, which needs a handset and only reports what already happened — the same
+trade Task 28 made with `ServiceRunPolicy`.
+
+**The listener bodies log rather than act,** because answering and hanging up need the call
+controller Task 35 builds. A stub that looked like it worked would let the in-call screen be
+built against behaviour that does not exist.
 
 ### Task 35 — Outgoing audio call
 **Depends on:** 34, 27 · **Prompt refs:** §5.2, §4.4 · **Modules:** `:data:sip`, `:app`
