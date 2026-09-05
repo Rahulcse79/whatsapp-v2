@@ -22,6 +22,10 @@ coroutines = "1.11.0"
 # pinned and CI resolution is what confirms it.
 linphone = "5.5.18"
 kover = "0.9.9"
+# ADR-004's client half (Task 38). Resolved against Google Maven rather than remembered:
+# 25.1.2 is what <release> reports there. The google-services plugin is deliberately NOT
+# applied - see app/build.gradle.kts - so no google-services.json is needed to build.
+firebaseMessaging = "25.1.2"
 androidxActivity = "1.13.0"
 androidxLifecycle = "2.11.0"
 androidxHiltNavigation = "1.4.0"
@@ -87,6 +91,7 @@ androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version
 android-desugarJdkLibs = { group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugar" }
 linphone-sdk = { group = "org.linphone", name = "linphone-sdk-android", version.ref = "linphone" }
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
+firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging", version.ref = "firebaseMessaging" }
 hilt-compiler = { group = "com.google.dagger", name = "hilt-android-compiler", version.ref = "hilt" }
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
 androidx-activity-ktx = { group = "androidx.activity", name = "activity-ktx", version.ref = "androidxActivity" }

@@ -57,7 +57,9 @@ class AppRootNavigationTest {
      * bar and the content - which is how the first version of this test failed.
      */
     private val headingFor = mapOf(
-        AppDestination.DIALER to "Dial a number",
+        // The dialler's own heading is its input field's label (Task 36): the screen is a
+        // keypad, and a screen whose purpose is obvious does not need a title above it.
+        AppDestination.DIALER to "Number or SIP address",
         AppDestination.HISTORY to "Call history",
         AppDestination.ACCOUNTS to "SIP accounts",
         AppDestination.SETTINGS to "App settings",
@@ -66,7 +68,7 @@ class AppRootNavigationTest {
     @Test
     fun `the app opens on the dialer`() {
         compose.setContent { WhatsAppV2Theme { AppRoot() } }
-        compose.onNodeWithText("Dial a number").assertIsDisplayed()
+        compose.onNodeWithText("Number or SIP address").assertIsDisplayed()
     }
 
     @Test

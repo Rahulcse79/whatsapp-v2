@@ -1333,9 +1333,39 @@ Build:
 
 Done when:
 - [ ] A call to a test extension rings the far end and connects on answer
+      → the path is complete and asserted on the JVM: `placeCall` publishes the call,
+      waits for Telecom, sends the INVITE, and walks `Outgoing.Calling → Ringing →
+      Connected` off the stack's own events. Ringing a real extension needs a handset and a
+      reachable registrar.
 - [ ] Early media (183 with SDP) is audible when the server sends it
-- [ ] 486 Busy, 404 Not Found, and 408 Timeout each surface a distinct message
+      → `OUTGOING_EARLY_MEDIA` is its own state and its own FSM event, so the app does
+      not play a local ringback over an announcement the network is sending. Audible is a
+      device question.
+- [x] 486 Busy, 404 Not Found, and 408 Timeout each surface a distinct message
+      → one mapping, `SipError.fromResponseCode`, asserted end to end: distinct errors,
+      distinct hangup reasons, and distinct sentences in the dialler.
 - [ ] Cancelling before answer sends `CANCEL` and terminates cleanly
+      → `hangup` before a final response reaches `Call.terminate()`, which is where
+      liblinphone chooses CANCEL over BYE — one method rather than this module tracking
+      call state a second time to pick a verb. Which request went out is a wire question.
+
+**Status: implemented, device verification pending.**
+
+**Telecom is asked before the INVITE, and a refusal is final.** New
+`PlatformCallRegistry` in `:domain`, implemented by `TelecomCallRegistry` in `:app`: the
+engine publishes the call, asks the platform, and only then invites. §3 requires a cellular
+call in progress to be honoured, and the only honest way to honour it is to ask something
+that knows about it. A refusal is `SipError.CallNotPermitted` — its own case, so the
+dialler can say "your phone is on another call" rather than collapsing it into a generic
+failure.
+
+**The ordering is asserted from inside the fake registry.** Once `registerOutgoing` and
+`placeCall` have both returned, nothing observable says which went first; a hook that runs
+*during* the platform call is the only place the rule can be checked.
+
+**Task 34's second done-when closes here.** `SipConnectionService`'s listener bodies now
+drive the engine — answer, reject, disconnect, hold, mute and route — instead of
+logging. They were logging because the call controller did not exist; it does.
 
 ### Task 36 — Dialer screen
 **Depends on:** 35, 22 · **Prompt refs:** §5.2 · **Modules:** `:feature:dialer`
@@ -1345,9 +1375,30 @@ Build:
 - Input accepts both `1234` (resolved against the account domain) and a full `sip:` URI.
 
 Done when:
-- [ ] Both bare-extension and full-URI dialling place a call
-- [ ] The account override is honoured and shown in the in-call UI
-- [ ] The screen is fully driveable by `FakeSipEngine` in a Compose UI test
+- [x] Both bare-extension and full-URI dialling place a call
+      → asserted twice: in `PlaceCallUseCaseTest` on the resolution itself, and in
+      `DialerScreenTest`, where tapping the keypad really does reach `placeCall`.
+- [x] The account override is honoured and shown in the in-call UI
+      → it decides the `From` identity *and* the domain a bare extension is completed
+      against, which is the half that is easy to get wrong. Per call, not a setting: it is
+      cleared once the call is placed.
+- [x] The screen is fully driveable by `FakeSipEngine` in a Compose UI test
+      → `DialerScreenTest` drives screen, ViewModel, use case and engine with no SIP
+      server, no network and no device.
+
+**Status: implemented, verification pending CI.**
+
+**Recent-call shortcuts are session-scoped, and say so.** The call log is Task 47.
+`RecentDials` holds what this dialler dialled, deduplicated and capped; Task 48 swaps the
+source without touching the screen, which already takes a list of strings. Building half a
+call log here would mean having two of them.
+
+**A recent entry fills the field rather than dialling.** A misplaced tap on a phone should
+not place a call.
+
+**An unregistered account is not a disabled button.** The call is attempted and the engine's
+`NotRegistered` becomes "that account is not registered yet" — a dead control explains
+nothing.
 
 ### Task 37 — Incoming call: notification and full-screen UI
 **Depends on:** 34 · **Prompt refs:** §3, §5.2, DoD 7 · **Modules:** `:app`, `:feature:calls`
@@ -1358,9 +1409,44 @@ Build:
 
 Done when:
 - [ ] An incoming call rings on the lock screen and is answerable from there
-- [ ] Rejecting sends `486` and terminates cleanly
-- [ ] Silent/DND modes are respected
-- [ ] The notification is a `CallStyle` notification, not a custom layout
+      → built: a `CallStyle` notification with a full-screen intent, `CallActivity` with
+      `showOnLockScreen`/`turnScreenOn`, and answer and decline as broadcast actions so
+      neither needs the device unlocked. A lock screen is a device.
+- [x] Rejecting sends `486` and terminates cleanly
+      → **as 603 Decline when the user declines, and 486 when the device is busy.** See
+      the deviation below; both paths exist and each is used where it is true.
+- [x] Silent/DND modes are respected
+      → `RingerPolicy` decides, and it is a pure function: total silence and alarms-only
+      ring nothing, vibrate never rings, and priority-only follows the ringer switch
+      rather than making this app louder than the phone app under the same setting.
+- [x] The notification is a `CallStyle` notification, not a custom layout
+      → §3 names a custom layout as the rejected design. `CallStyle` is what makes the
+      platform, a lock screen and Android Auto treat this as a call.
+
+**Status: implemented, device verification pending.**
+
+**Deviation — declining sends 603, not 486.** §5.2 and the `SipCallController` contract map
+`HangupReason.BUSY` to 486 and `LOCAL_REJECTED` to 603, and say the distinction must
+reflect what the user actually chose. So a decline sends 603 and the call log records a
+declined call as declined; 486 is sent where it is true — when Telecom refuses an inbound
+call because a cellular call is already up. Recorded here rather than resolved silently.
+
+**One notification, not two.** `RegistrationService` renders either the registration
+summary or the call. That keeps the `phoneCall` foreground type attached to the thing that
+is actually a call, and stops the user seeing "1 active call" beside a ringing card.
+
+**The channel is silent and the app rings.** Telecom does not ring for self-managed calls,
+so `Ringer` owns the ringtone; a channel sound as well would ring twice and keep ringing
+after the call was answered.
+
+**A call Telecom refuses is not shown at all.** It is answered 486 and nothing appears.
+Forcing this app's full-screen UI over a cellular call is the behaviour §3 rejects.
+
+**Prerequisite found and fixed here.** Nothing started the foreground service. `Task 28`
+built it and taught it when to stop; no code ever called `RegistrationService.start`, so it
+never ran — an account could register and a call could arrive with no service to post a
+notification from. `ServiceLauncher` closes that with the same `ServiceRunPolicy` that
+stops it.
 
 ### Task 38 — Push wake path (FCM / RFC 8599)
 **Depends on:** 37, 1 · **Prompt refs:** §2.5 · **Modules:** `:app`, `:data:sip`
@@ -1376,10 +1462,40 @@ Build:
 
 Done when:
 - [ ] A call placed while the app is force-stopped rings the device
-- [ ] A call placed after 30+ minutes idle (Doze, verified with
-      `adb shell dumpsys deviceidle force-idle`) rings the device
+      → the client half is built: high-priority data message → `SipMessagingService` →
+      wake → re-register if the binding is stale → foreground service → the INVITE arrives
+      on the path Task 37 already draws. It cannot be demonstrated without a push gateway,
+      which ADR-004 puts outside this repository, and a device.
+- [ ] A call placed after 30+ minutes idle rings the device
+      → same path, same blocker. `PushWakePolicy` drops a push older than the ring
+      timeout, so a wake that arrives too late does not wake the device for a call nobody
+      is still making.
 - [ ] FCM token rotation updates the registration
-- [ ] The push payload carries **no** credentials and no call content
+      → `onNewToken` publishes through `PushTokenPublisher`, which re-registers with the
+      new `pn-prid`; the engine's `setPushToken` is asserted on the JVM. Rotation itself is
+      FCM's to trigger.
+- [x] The push payload carries **no** credentials and no call content
+      → `PushPayload` is exactly ADR-004's four fields and there is nowhere in it to put a
+      credential. Its `toString` redacts the `Call-ID` and the account id, and the tests
+      assert both. Caller identity arrives in the INVITE, over the signalling channel.
+
+**Status: client half implemented; end-to-end verification blocked on a push gateway and a
+device.**
+
+**`google-services.json` is deliberately absent, and the plugin is not applied.** A
+checked-in one would tie every build to one Firebase project and put deployment
+configuration in git. The SDK is a dependency, the service is declared, and
+`PushTokenPublisher` catches the missing configuration and logs it: the app registers, takes
+calls on an open socket, and misses the ones that arrive in Doze. That is the honest state
+of a build with no push project, and it is said out loud rather than hidden behind a crash.
+
+**RFC 8599 parameters are sent unconditionally** (ADR-004): they cost nothing when the
+server ignores them, and they are the only way the token reaches the registrar without a
+side channel. Set on the core, not hand-written into `Contact` — liblinphone owns that
+header, and hand-writing them would fight it for the same field.
+
+**The push shows nothing by itself.** It says "wake up and re-register" and no more, so a
+notification is only ever built from an INVITE that actually arrived.
 
 ### Task 39 — In-call screen
 **Depends on:** 35, 37 · **Prompt refs:** §4.2, §5.2 · **Modules:** `:feature:calls`
@@ -1389,9 +1505,27 @@ Build:
   and action buttons. Buttons are enabled/disabled **by state**, not by ad-hoc booleans.
 
 Done when:
-- [ ] Every FSM state renders a correct, previewable screen
-- [ ] Hold is unavailable before `Connected` (enforced by state, not by a disabled flag)
-- [ ] The duration timer survives rotation and is driven by call start, not by a counter
+- [x] Every FSM state renders a correct, previewable screen
+      → `CallPhase` is a total function of `CallState`, asserted case by case, and
+      `CallScreenTest` walks every phase through one composition. Previews cover ringing,
+      incoming, connected and held in light and dark.
+- [x] Hold is unavailable before `Connected` (enforced by state, not by a disabled flag)
+      → `CallControlAvailability.of(phase)` is the only source of every button's `enabled`,
+      so there is no flag to forget to set. Asserted on the value and again on the screen.
+- [x] The duration timer survives rotation and is driven by call start, not by a counter
+      → a ticker emits the time and the duration is recomputed from the call's connect
+      timestamp; the same subtraction gives the same answer however many ticks were
+      missed. Asserted with a clock a test moves by an hour.
+
+**Status: implemented, verification pending CI.**
+
+**One screen, both directions.** An incoming call is not a different screen — it is the
+same call in a different phase, showing answer and decline instead of the in-call controls.
+Two screens would be two places to keep the identity, the timer and the theming in step.
+
+**Hold is offered from `Connected` and reaches an engine that says `EngineUnavailable`.**
+The re-INVITE is Task 41. The refusal surfaces as a message rather than a silent no-op, and
+nothing on the screen changes when Task 41 lands.
 
 ### Task 40 — Audio routing and focus
 **Depends on:** 34 · **Prompt refs:** §3, §5.2, DoD 8 · **Modules:** `:app`
@@ -1404,9 +1538,36 @@ Build:
 
 Done when:
 - [ ] All four routes are selectable and audible
+      → all four are selectable through `SipMediaController.setAudioRoute`, which asks
+      Telecom and **fails** rather than silently playing elsewhere when a route is not
+      available — asserted on the JVM. Audible needs a handset, a headset and an earpiece.
 - [ ] Plugging in a wired headset mid-call switches route automatically
+      → `AudioRoutePolicy.routeAfterDeviceChange` is asserted: an arriving headset beats an
+      earlier choice, and unplugging falls back rather than leaving audio nowhere. The
+      `AudioDeviceCallback` that feeds it needs a device and a headset.
 - [ ] Connecting a Bluetooth headset mid-call switches to SCO automatically
-- [ ] Focus loss (an incoming cellular call) is handled without leaving the mic hot
+      → same rule, same test, same blocker. Telecom owns the SCO link, which is why the
+      route is asked of it rather than set on `AudioManager` behind its back.
+- [x] Focus loss (an incoming cellular call) is handled without leaving the mic hot
+      → both `LOSS` and `LOSS_TRANSIENT` mute, and only what focus loss muted is unmuted
+      again. A call that keeps its microphone open through a cellular call is a microphone
+      recording a conversation the user believes is private.
+
+**Status: implemented, device verification pending.**
+
+**Routing is asked of Telecom, never set behind it.** It arbitrates between apps, owns the
+SCO link, and is what a headset's own buttons talk to; two things setting a route fight
+over it. `CallAudioCoordinator` reads the devices, applies `AudioRoutePolicy`'s answer
+through the engine, and holds the proximity lock.
+
+**A user's choice is recognised without being reported.** Every automatic route goes out
+through one method that records what it asked for, so a route in the call's own controls
+that differs came from somewhere else — the in-call screen, a car display, a headset
+button — and is respected until a device change makes it impossible.
+
+**The proximity lock is the platform's, and it is released on every route that is not the
+earpiece.** §6 is strict about wake locks; this one is held only while a phone is against a
+face, and carries a four-hour ceiling so a lost release cannot black out a device.
 
 ### Task 41 — Hold and resume
 **Depends on:** 39 · **Prompt refs:** §5.2, DoD 8 · **Modules:** `:data:sip`, `:feature:calls`

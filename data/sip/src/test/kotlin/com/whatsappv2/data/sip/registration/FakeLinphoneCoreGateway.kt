@@ -1,5 +1,8 @@
 package com.whatsappv2.data.sip.registration
 
+import com.whatsappv2.data.sip.call.LinphoneCallGateway
+import com.whatsappv2.data.sip.call.StackCallEvent
+import com.whatsappv2.data.sip.call.StackCallState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -22,13 +25,51 @@ import kotlinx.coroutines.flow.asSharedFlow
  * the second: "no decrypted password remains after logout" is a question about what is
  * still held, and an append-only log could never answer it.
  */
-internal class FakeLinphoneCoreGateway : LinphoneCoreGateway {
+internal class FakeLinphoneCoreGateway : LinphoneCoreGateway, LinphoneCallGateway {
 
     private val events = MutableSharedFlow<StackRegistrationEvent>(
         replay = 0,
         extraBufferCapacity = BUFFER,
     )
     override val registrationEvents: Flow<StackRegistrationEvent> = events.asSharedFlow()
+
+    private val callEventFlow = MutableSharedFlow<StackCallEvent>(
+        replay = 0,
+        extraBufferCapacity = BUFFER,
+    )
+    override val callEvents: Flow<StackCallEvent> = callEventFlow.asSharedFlow()
+
+    /** Every INVITE the engine asked for, in order. */
+    val placedCalls: MutableList<PlacedCall> = mutableListOf()
+
+    /** Every call the engine asked to end, in order. */
+    val terminatedCalls: MutableList<String> = mutableListOf()
+
+    /** Every call answered, with the media it was answered on. */
+    val answeredCalls: MutableList<Pair<String, Boolean>> = mutableListOf()
+
+    /** Every call rejected, with true for a 486 and false for a 603. */
+    val rejectedCalls: MutableList<Pair<String, Boolean>> = mutableListOf()
+
+    /** Microphone state per call, as the stack was last told it. */
+    val mutedCalls: MutableMap<String, Boolean> = mutableMapOf()
+
+    /**
+     * The push parameters currently published, or null when they are cleared.
+     *
+     * A field rather than a log: "what would the next REGISTER carry" is a question about
+     * what is held now, and an append-only list could not answer it.
+     */
+    var pushParameters: StackPushParameters? = null
+        private set
+
+    /** One `placeCall`, flattened so a test can assert the whole request in one equals. */
+    data class PlacedCall(
+        val callKey: String,
+        val accountKey: String,
+        val destination: String,
+        val videoEnabled: Boolean,
+    )
 
     val addedAccounts: MutableList<StackAccount> = mutableListOf()
     val removedKeys: MutableList<String> = mutableListOf()
@@ -76,6 +117,10 @@ internal class FakeLinphoneCoreGateway : LinphoneCoreGateway {
         refreshedKeys += accountKey
     }
 
+    override fun setPushParameters(parameters: StackPushParameters?) {
+        pushParameters = parameters
+    }
+
     override fun setNetworkReachable(reachable: Boolean) {
         reachabilitySignals += reachable
     }
@@ -83,6 +128,55 @@ internal class FakeLinphoneCoreGateway : LinphoneCoreGateway {
     override fun stop() {
         stopCount++
         held.clear()
+    }
+
+    override fun placeCall(
+        callKey: String,
+        accountKey: String,
+        destination: String,
+        videoEnabled: Boolean,
+    ) {
+        placedCalls += PlacedCall(callKey, accountKey, destination, videoEnabled)
+    }
+
+    override fun answerCall(callKey: String, videoEnabled: Boolean) {
+        answeredCalls += callKey to videoEnabled
+    }
+
+    override fun rejectCall(callKey: String, busy: Boolean) {
+        rejectedCalls += callKey to busy
+    }
+
+    override fun setMicrophoneMuted(callKey: String, muted: Boolean) {
+        mutedCalls[callKey] = muted
+    }
+
+    override fun terminateCall(callKey: String) {
+        terminatedCalls += callKey
+    }
+
+    /** Emits a call-state change as the stack would. */
+    fun emitCall(
+        callKey: String,
+        state: StackCallState,
+        accountKey: String = "acct-1",
+        remoteUri: String = "sip:bob@sip.example.com",
+        statusCode: Int? = null,
+        displayName: String? = null,
+        videoOffered: Boolean = false,
+    ) {
+        callEventFlow.tryEmit(
+            StackCallEvent(
+                callKey = callKey,
+                accountKey = accountKey,
+                remoteUri = remoteUri,
+                remoteDisplayName = displayName,
+                state = state,
+                statusCode = statusCode,
+                message = null,
+                videoOffered = videoOffered,
+            ),
+        )
     }
 
     /** Emits a state change as the stack would. */

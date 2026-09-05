@@ -24,6 +24,27 @@
         android:minSdkVersion="31" />
 
     <!--
+      An incoming call must reach the lock screen (Task 37). From Android 14 this is
+      granted only to apps whose core function is calling, which this app's is; a device
+      that withholds it still shows the heads-up notification, which stays answerable.
+    -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+
+    <!--
+      The proximity screen-off lock, held only while a call is on the earpiece (Task 40).
+      No wake lock is held while unregistered (§6) - ProximityLock releases on every route
+      that is not the earpiece and on the end of every call.
+    -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!--
+      Vibrating for an incoming call, and only when the ringer says to (Task 37).
+      RingerPolicy decides; without this permission the buzz silently does nothing, which
+      is the kind of failure nobody notices until a call is missed in a meeting.
+    -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!--
       Foreground service. Two types, matching what the service is actually doing:
       specialUse while only holding a registration - which is not a phone call, a data
       sync, or any other standard type - and phoneCall once a call is in progress.
@@ -79,6 +100,49 @@
             android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
             <intent-filter>
                 <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
+
+        <!--
+          The call screen (Tasks 37, 39). Its own task and its own activity because a
+          full-screen intent needs one, and because it must show over the keyguard without
+          dragging the rest of the app onto the lock screen with it.
+
+          singleTask: one call screen, whichever of the three ways opened it - the dialler,
+          a notification, or the platform's own answer button.
+
+          excludeFromRecents: a finished call has no screen worth returning to, and leaving
+          one in the recents list invites someone to reopen a call that is over.
+        -->
+        <activity
+            android:name=".call.CallActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:excludeFromRecents="true"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true"
+            android:taskAffinity=".call"
+            android:theme="@style/Theme.WhatsAppV2" />
+
+        <!--
+          The notification's answer and decline buttons. Not exported: nothing outside this
+          app may end or answer a call.
+        -->
+        <receiver
+            android:name=".call.CallActionReceiver"
+            android:exported="false" />
+
+        <!--
+          The push wake path (Task 38, ADR-004). Fires only when Firebase is configured for
+          the build; with no google-services.json the SDK never delivers a message and this
+          service is simply never called, which is the honest behaviour for a deployment
+          that has no push gateway yet.
+        -->
+        <service
+            android:name=".push.SipMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
 

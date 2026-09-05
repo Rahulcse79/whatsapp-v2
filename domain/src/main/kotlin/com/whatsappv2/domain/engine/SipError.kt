@@ -206,6 +206,19 @@ sealed interface SipError {
     data object EngineUnavailable : SipError
 
     /**
+     * The platform refused the call before it reached the network.
+     *
+     * On Android that is Telecom, and it refuses for one reason that matters: the user is
+     * already on a cellular call. §3 requires that call to be honoured rather than talked
+     * over, so this is a refusal to respect, not a condition to work around — and it is
+     * its own case precisely so a screen can say "your phone is on another call" instead
+     * of the generic failure every other error would collapse into.
+     *
+     * Raised locally: no SIP response maps to this, because nothing was ever sent.
+     */
+    data object CallNotPermitted : SipError
+
+    /**
      * The stack reported something with no domain meaning. Carries whatever it said so
      * a bug report is actionable; never shown to the user verbatim.
      *
@@ -316,6 +329,9 @@ fun SipError.toRegistrationFailure(): RegistrationFailure = when (this) {
  */
 fun SipError.toHangupReason(): HangupReason = when (this) {
     is SipError.Busy -> HangupReason.BUSY
+    // Nothing was ever sent, so nothing failed on the wire: the call was called off
+    // before it started, which is what CANCELLED means in the log.
+    is SipError.CallNotPermitted -> HangupReason.CANCELLED
     is SipError.Declined -> HangupReason.DECLINED
     is SipError.Timeout, is SipError.TemporarilyUnavailable -> HangupReason.NO_ANSWER
     is SipError.Cancelled -> HangupReason.CANCELLED

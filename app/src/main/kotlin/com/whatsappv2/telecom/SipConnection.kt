@@ -38,6 +38,7 @@ internal class SipConnection(
         fun onDisconnected(callId: CallId, reason: HangupReason)
         fun onHoldChanged(callId: CallId, held: Boolean)
         fun onAudioRouteChanged(callId: CallId, route: AudioRoute)
+        fun onMuteChanged(callId: CallId, muted: Boolean)
     }
 
     init {
@@ -97,12 +98,27 @@ internal class SipConnection(
     @Deprecated("Platform replaced this with onCallEndpointChanged in API 34; minSdk is 26")
     @Suppress("OVERRIDE_DEPRECATION")
     override fun onCallAudioStateChanged(state: CallAudioState?) {
-        val route = TelecomPolicy.audioRouteOf(state?.route ?: return)
-        listener.onAudioRouteChanged(callId, route)
+        val current = state ?: return
+        listener.onAudioRouteChanged(callId, TelecomPolicy.audioRouteOf(current.route))
+        // One callback carries both, and the mute half matters as much: a headset's own
+        // mute button reaches this app through here and nowhere else, so dropping it
+        // would leave the microphone live while the platform believes it is muted.
+        listener.onMuteChanged(callId, current.isMuted)
     }
 
     /** The far end is ringing. Telecom shows this as an outgoing call in progress. */
     fun reportRinging() = setDialing()
+
+    /**
+     * Asks the platform to move call audio to [routeMask].
+     *
+     * Deprecated in API 34 in favour of `requestCallEndpointChange`, and still the only
+     * route control that exists across this app's supported range — `minSdk` is 26. The
+     * same trade as [onCallAudioStateChanged], and marked the same way so the obligation
+     * travels with the code rather than hiding behind a bare suppression.
+     */
+    @Suppress("DEPRECATION")
+    fun requestAudioRoute(routeMask: Int) = setAudioRoute(routeMask)
 
     /** The far end answered. */
     fun reportActive() = setActive()

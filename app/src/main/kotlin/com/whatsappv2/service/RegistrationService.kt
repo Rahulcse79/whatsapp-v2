@@ -12,6 +12,10 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.whatsappv2.R
+import com.whatsappv2.call.CallNotification
+import com.whatsappv2.call.CallNotificationPolicy
+import com.whatsappv2.call.CallNotifications
+import com.whatsappv2.call.Ringer
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.engine.SipRegistrar
@@ -44,6 +48,15 @@ import javax.inject.Inject
  * - `phoneCall` while a call is in progress, which Android 14+ also gates on
  *   `MANAGE_OWN_CALLS`.
  *
+ * ## It also renders the call
+ *
+ * One foreground notification, not two. When a call exists the notification **is** the
+ * call — a `CallStyle` notification with answer and decline, or with hang up (Task 37) —
+ * and it goes back to the registration summary when the call ends. Posting a second
+ * notification beside this one would leave the user looking at "1 active call" and a
+ * ringing card that disagree, and would leave the `phoneCall` foreground type attached to
+ * the wrong one.
+ *
  * ## Failing to start
  *
  * Android 12+ refuses to start a foreground service from the background in many
@@ -63,6 +76,12 @@ class RegistrationService : Service() {
     @Inject
     lateinit var logger: Logger
 
+    @Inject
+    lateinit var callNotifications: CallNotifications
+
+    @Inject
+    lateinit var ringer: Ringer
+
     private val scope = CoroutineScope(SupervisorJob())
     private var isForeground = false
 
@@ -72,17 +91,29 @@ class RegistrationService : Service() {
         super.onCreate()
         createChannel()
 
+        callNotifications.createChannel()
+
         scope.launch {
             combine(registrar.registrationState, calls.activeCalls) { registrations, active ->
-                ServiceRunPolicy.decide(registrations, active.size) to
-                    RegistrationSummaryFactory.summarise(registrations, active.size)
+                Presentation(
+                    decision = ServiceRunPolicy.decide(registrations, active.size),
+                    summary = RegistrationSummaryFactory.summarise(registrations, active.size),
+                    call = CallNotificationPolicy.decide(active),
+                )
             }
                 // Rebuilding an identical notification wakes the UI thread for nothing,
                 // and registration state churns during a retry storm.
                 .distinctUntilChanged()
-                .collect { (decision, summary) -> apply(decision, summary) }
+                .collect(::render)
         }
     }
+
+    /** Everything the service shows at one instant, derived once so nothing disagrees. */
+    private data class Presentation(
+        val decision: ServiceDecision,
+        val summary: RegistrationSummary,
+        val call: CallNotification,
+    )
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // START_NOT_STICKY: if the process is killed, the app decides whether to register
@@ -92,19 +123,28 @@ class RegistrationService : Service() {
     }
 
     override fun onDestroy() {
+        // A ringtone that outlives the service is a ringtone with nothing to answer.
+        ringer.stop()
         scope.cancel()
         super.onDestroy()
     }
 
-    private fun apply(decision: ServiceDecision, summary: RegistrationSummary) {
-        when (decision) {
+    private fun render(presentation: Presentation) {
+        // Ringing is driven from the same place as the notification, so a call can never
+        // be ringing without a card to answer it on, or be answered and still ringing.
+        when (presentation.call) {
+            is CallNotification.Incoming -> ringer.start()
+            else -> ringer.stop()
+        }
+
+        when (val decision = presentation.decision) {
             is ServiceDecision.Stop -> stopSelfSafely()
-            is ServiceDecision.Run -> startOrUpdate(decision.reason, summary)
+            is ServiceDecision.Run -> startOrUpdate(decision.reason, presentation)
         }
     }
 
-    private fun startOrUpdate(reason: ServiceReason, summary: RegistrationSummary) {
-        val notification = buildNotification(summary)
+    private fun startOrUpdate(reason: ServiceReason, presentation: Presentation) {
+        val notification = notificationFor(presentation)
 
         if (isForeground) {
             notificationManager().notify(NOTIFICATION_ID, notification)
@@ -122,6 +162,19 @@ class RegistrationService : Service() {
             logger.error(TAG, "Foreground type not permitted: ${e.javaClass.simpleName}")
         }
     }
+
+    /**
+     * The call, if there is one, and the registration summary otherwise.
+     *
+     * The choice is [CallNotificationPolicy]'s, which is a pure function and is tested as
+     * one; this only builds what it chose.
+     */
+    private fun notificationFor(presentation: Presentation): Notification =
+        when (val call = presentation.call) {
+            is CallNotification.Incoming -> callNotifications.buildIncoming(call.call)
+            is CallNotification.Ongoing -> callNotifications.buildOngoing(call.call)
+            is CallNotification.None -> buildNotification(presentation.summary)
+        }
 
     private fun stopSelfSafely() {
         if (isForeground) {
