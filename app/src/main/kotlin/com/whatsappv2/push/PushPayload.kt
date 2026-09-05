@@ -50,7 +50,14 @@ data class PushPayload(
 
             // All four or none: a partial payload is not a payload with defaults, and
             // waking the device for one is the battery cost push exists to avoid.
-            if (type == null || callId == null || accountId == null || sentAt == null) return null
+            //
+            // Checked in two halves rather than one four-way condition, because the two
+            // failures are not the same failure: an unrecognised type or a missing
+            // timestamp is a server newer than this client, while a missing call or
+            // account id is a malformed message. Both are dropped, and a reader looking
+            // for one of them does not have to hold the other two negations in mind.
+            if (type == null || sentAt == null) return null
+            if (callId == null || accountId == null) return null
 
             return PushPayload(callId, accountId, sentAt, type)
         }
