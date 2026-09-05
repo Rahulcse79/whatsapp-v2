@@ -45,7 +45,18 @@ class PushTokenPublisher @Inject constructor(
     private val logger: Logger,
 ) {
 
-    /** Fetches the current token and publishes it. Safe to call more than once. */
+    /**
+     * Fetches the current token and publishes it. Safe to call more than once.
+     *
+     * `getToken` and `getInstance` are deprecated in firebase-messaging 25.1.2, which
+     * replaces the fetch with `register()` plus an `onRegistered` callback on the service.
+     * That is a different shape for the wake path — the token stops being something this
+     * class can ask for and starts arriving on a callback — so it is a migration with a
+     * decision in it (ADR-004) rather than a rename, and it is deliberately not made in
+     * passing here. Suppressed rather than baselined, so the obligation stays at the call
+     * site where the next reader meets it. CI compiles with `-Werror`.
+     */
+    @Suppress("DEPRECATION")
     fun publishCurrentToken() {
         val messaging = runCatching { FirebaseMessaging.getInstance() }
             .onFailure { logger.warn(TAG, "Push is not configured on this build: ${it.javaClass.simpleName}") }

@@ -96,7 +96,16 @@ class SipMessagingService : FirebaseMessagingService() {
      * Publishing it re-registers with the new `pn-prid`, which is Task 38's third
      * done-when: a registrar still holding the old token wakes a device that no longer
      * has this app on it.
+     *
+     * Deprecated in firebase-messaging 25.1.2 in favour of `onRegistered`, which pairs
+     * with `FirebaseMessaging.register()`. Moving to it changes where the token comes
+     * from rather than what it is called, so it belongs to a task that can revisit
+     * ADR-004's wake path with it. Marked rather than silently suppressed, so the
+     * obligation travels with the code — the same way `SipConnection` carries the
+     * platform's own deprecations.
      */
+    @Deprecated("firebase-messaging 25.1.2 replaces this with onRegistered; see ADR-004")
+    @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
     override fun onNewToken(token: String) {
         logger.info(TAG, "Push token rotated")
         tokens.publish(token)
