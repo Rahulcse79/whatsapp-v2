@@ -79,9 +79,16 @@ class TelecomCallRegistry @Inject constructor(
             putBundle(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS, callExtras(call.callId))
         }
 
-        val handedOver = runCatching { telecom.placeCall(call.remote.toTelecomUri(), extras) }
-            .onFailure { logger.error(TAG, "Telecom refused the placement: ${it.javaClass.simpleName}") }
-            .isSuccess
+        // Spelled out as a try/catch, not runCatching: `placeCall` names the revocable
+        // CALL_PHONE alongside the MANAGE_OWN_CALLS this app declares, and lint reads only
+        // the explicit form as handling the SecurityException a refusal arrives as.
+        val handedOver = try {
+            telecom.placeCall(call.remote.toTelecomUri(), extras)
+            true
+        } catch (e: SecurityException) {
+            logger.error(TAG, "Telecom refused the placement: ${e.javaClass.simpleName}")
+            false
+        }
 
         return awaitDecision(call.callId, waiter, handedOver)
     }
