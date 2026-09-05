@@ -103,7 +103,15 @@ internal object CallStateMapper {
      * the no-op it is, instead of a rejection in the log that reads like a bug.
      */
     private fun holdEventFor(state: CallState, by: HoldParty): CallEvent? {
-        val holder = (state as? CallState.Held)?.by
+        val holder = when (state) {
+            is CallState.Held -> state.by
+            // A resume still in flight is a local hold that has not been lifted yet, so
+            // the stack restating PAUSED here is the same repeat as above — the state we
+            // are trying to leave, not news. A hold by the far end is news, and the FSM
+            // accepts that one from Resuming.
+            is CallState.Resuming -> HoldParty.LOCAL
+            else -> null
+        }
         if (holder == by || holder == HoldParty.BOTH) return null
         return if (by == HoldParty.LOCAL) CallEvent.LocalHold else CallEvent.RemoteHold
     }
