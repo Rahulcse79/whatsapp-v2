@@ -14,13 +14,24 @@ package com.whatsappv2.domain.usecase
  *   repository, where the delete and the promotion can share one transaction. A use case
  *   could not make it more atomic; it could only re-state it less reliably.
  *
- * The two use cases that do exist earn their place by composing something no single
+ * The use cases that do exist earn their place by composing something no single
  * collaborator can:
  *
- * - [SaveAccountUseCase] combines validation, the unregister-before-re-register rule and
- *   persistence.
+ * - [SaveAccountUseCase] combines validation, persistence and the full
+ *   unregister-then-register cycle.
  * - [DeleteAccountUseCase] enforces a rule the repository cannot see (a call in progress)
  *   and orders unregistration before the credentials disappear.
+ * - [LogoutUseCase] enforces the same call-in-progress rule and separates "stop
+ *   registering" from "forget this account", which the repository has no notion of.
+ *
+ * ## Why [LoginUseCase] exists despite being two lines
+ *
+ * It looks like the pass-through the rule above forbids, and it is not. Its body is the
+ * *point*: it takes an id and re-reads the stored, password-free account, so a decrypted
+ * credential cannot travel through the call. A caller registering directly would pass
+ * whatever account it happened to be holding — including, in the editor's case, the
+ * plaintext the user just typed. Naming that rule once, in a place both the save path and
+ * the account list go through, is what makes it hold.
  *
  * A ViewModel calls the repository directly for the other two. That is not a shortcut —
  * it is the layering working: the repository interface already lives in `:domain`, so

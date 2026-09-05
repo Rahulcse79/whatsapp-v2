@@ -286,15 +286,29 @@ jobs:
               sys.exit(1)
           print("reports:", reports)
 
+          # Generated code is not code anyone wrote, and measuring it says nothing about
+          # whether the project is tested. Dagger factories, Hilt components and Room _Impl
+          # classes were inflating - and in one case failing - real packages.
+          GENERATED = (
+              "_Factory.java", "_MembersInjector.java", "_Impl.java", "_Impl.kt",
+              "_HiltModules.java", "_GeneratedInjector.java", "_ComponentTreeDeps.java",
+          )
+
+          def is_generated(source_name):
+              return source_name.startswith("Hilt_") or source_name.endswith(GENERATED)
+
           totals = {}
           for path in reports:
               for pkg in ET.parse(path).getroot().iter("package"):
                   name = pkg.get("name", "")
-                  for c in pkg.findall("counter"):
-                      if c.get("type") == "LINE":
-                          missed, covered = int(c.get("missed", 0)), int(c.get("covered", 0))
-                          m, cv = totals.get(name, (0, 0))
-                          totals[name] = (m + missed, cv + covered)
+                  for sf in pkg.findall("sourcefile"):
+                      if is_generated(sf.get("name", "")):
+                          continue
+                      for c in sf.findall("counter"):
+                          if c.get("type") == "LINE":
+                              missed, covered = int(c.get("missed", 0)), int(c.get("covered", 0))
+                              m, cv = totals.get(name, (0, 0))
+                              totals[name] = (m + missed, cv + covered)
 
           failed = False
           rows = []
@@ -335,6 +349,8 @@ jobs:
                       if pkg.get("name", "") not in THRESHOLDS:
                           continue
                       for sf in pkg.findall("sourcefile"):
+                          if is_generated(sf.get("name", "")):
+                              continue
                           missed = [ln.get("nr") for ln in sf.findall("line")
                                     if int(ln.get("mi", 0)) > 0]
                           if missed:

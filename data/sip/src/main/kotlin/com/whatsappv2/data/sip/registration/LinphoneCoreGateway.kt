@@ -32,17 +32,23 @@ internal interface LinphoneCoreGateway {
     fun addAccount(account: StackAccount)
 
     /**
-     * Removes an account, sending `Expires: 0` first.
+     * Removes an account, sending `Expires: 0` first, and forgets its credentials.
      *
      * Returns once the request has been handed to the stack; the acknowledgement arrives
      * as a [StackRegistrationState.CLEARED] event.
+     *
+     * Dropping the credentials is part of the contract, not an afterthought: Task 29
+     * requires that after a logout no decrypted password remains reachable, and the stack
+     * keeps the one it was given in its own auth store for as long as it is running.
+     * Removing the account without removing that leaves the password in memory for the
+     * life of the process.
      */
     fun removeAccount(accountKey: String)
 
     /** Re-sends REGISTER for an account already known to the stack. */
     fun refreshAccount(accountKey: String)
 
-    /** Releases the stack and every transport it holds. */
+    /** Releases the stack, every transport it holds, and every stored credential. */
     fun stop()
 }
 

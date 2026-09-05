@@ -19,8 +19,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -125,13 +127,45 @@ internal class LinphoneSipEngine @Inject constructor(
         return success(Unit)
     }
 
+    /**
+     * Unregisters and waits for the registrar to acknowledge (Task 29).
+     *
+     * The waiting is the part that matters. [SipRegistrar.unregister] promises to return
+     * only once the request has been answered, precisely so that logout can stop the
+     * foreground service next without cutting the `Expires: 0` off mid-flight — a
+     * registrar that never hears it keeps ringing this device until the binding lapses.
+     *
+     * The wait is bounded, because the alternative is a logout that hangs on an
+     * unreachable server. On expiry it gives up and says so in the log rather than
+     * failing: locally the binding is gone and the credentials are wiped either way, so
+     * reporting failure would leave the UI claiming an account is still logged in when it
+     * is not.
+     *
+     * Either way the state is forced to [RegistrationState.Unregistered] before
+     * returning. Leaving a stale `Registered` behind would keep the service alive with
+     * nothing to hold open (§6) and show the user a registration that no longer exists.
+     */
     override suspend fun unregister(accountId: AccountId): Outcome<Unit, SipError> {
         if (!started) return failure(SipError.EngineUnavailable)
 
         // Idempotent per the SipEngine contract: unregistering an unknown account
         // succeeds quietly rather than reporting a problem the caller cannot act on.
+        // Removing the account is also what drops the credentials the stack held for it.
         gateway.removeAccount(accountId.value)
         requestedExpiry -= accountId.value
+
+        val acknowledged = withTimeoutOrNull(UNREGISTER_ACK_TIMEOUT_MILLIS) {
+            // Read from the state flow rather than the event stream: a StateFlow always
+            // has a current value, so an acknowledgement that arrived while this was
+            // being set up is seen rather than missed.
+            states.first { it[accountId].isGone }
+        } != null
+
+        if (!acknowledged) {
+            logger.warn(TAG, "Unregister for $accountId was not acknowledged; dropping it locally")
+        }
+
+        states.update { it + (accountId to RegistrationState.Unregistered) }
         return success(Unit)
     }
 
@@ -170,8 +204,25 @@ internal class LinphoneSipEngine @Inject constructor(
         expirySeconds = registrationExpirySeconds,
     )
 
+    /**
+     * True when this account no longer holds a registration.
+     *
+     * `null` counts: an account the engine has never seen is not registered, which is the
+     * state an unregister is trying to reach.
+     */
+    private val RegistrationState?.isGone: Boolean
+        get() = this == null || this == RegistrationState.Unregistered
+
     private companion object {
         const val TAG = "LinphoneSipEngine"
         const val DEFAULT_EXPIRY_SECONDS = 3_600
+
+        /**
+         * How long to wait for the registrar's answer to `Expires: 0`.
+         *
+         * Five seconds: long enough for a round trip on a slow mobile network, short
+         * enough that logging out of a dead server does not feel broken.
+         */
+        const val UNREGISTER_ACK_TIMEOUT_MILLIS = 5_000L
     }
 }
