@@ -144,8 +144,11 @@ internal class RealLinphoneCoreGateway @Inject constructor(
                     callKey = key,
                     // Which of our accounts placed it. Empty when the core did not
                     // attribute the call to one, which the engine treats as unknown.
+                    // The account hangs off the call's params, not off the call: the
+                    // stack resolves it there for an inbound INVITE just as `placeCall`
+                    // sets it there for an outbound one.
                     accountKey = accountsByKey.entries
-                        .firstOrNull { it.value == call.account }
+                        .firstOrNull { it.value == call.params.account }
                         ?.key
                         .orEmpty(),
                     remoteUri = call.remoteAddress.asStringUriOnly(),
@@ -363,10 +366,16 @@ internal class RealLinphoneCoreGateway @Inject constructor(
 
         core.isPushNotificationEnabled = parameters != null
         if (parameters != null) {
-            core.pushNotificationConfig.apply {
-                provider = parameters.provider
-                param = parameters.param
-                prid = parameters.prid
+            // Nullable in the SDK: a core built without push support exposes no config,
+            // and there is then nowhere to put the token. Warn rather than throw - the
+            // registration itself is still valid, it just will not be woken by a push.
+            val config = core.pushNotificationConfig
+            if (config == null) {
+                logger.warn(TAG, "The core exposes no push notification config")
+            } else {
+                config.provider = parameters.provider
+                config.param = parameters.param
+                config.prid = parameters.prid
             }
         }
 
