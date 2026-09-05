@@ -41,8 +41,20 @@ internal enum class StackCallState {
     /** Answered and media is running in both directions. */
     STREAMS_RUNNING,
 
-    /** Held, by either end. */
+    /**
+     * We are holding: our re-INVITE was accepted and our media is `sendonly`.
+     *
+     * Separate from [PAUSED_BY_REMOTE] because the FSM has two different states for them
+     * and only one of them is ours to resume. Collapsing the two is how "resume did
+     * nothing" bugs happen.
+     */
     PAUSED,
+
+    /** The far end is holding us. */
+    PAUSED_BY_REMOTE,
+
+    /** Our resume re-INVITE is in flight; media is not running again yet. */
+    RESUMING,
 
     /** Ended normally — BYE sent or received, or CANCEL acknowledged. */
     ENDED,

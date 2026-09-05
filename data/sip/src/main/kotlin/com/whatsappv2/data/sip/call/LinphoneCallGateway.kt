@@ -58,6 +58,29 @@ internal interface LinphoneCallGateway {
     fun rejectCall(callKey: String, busy: Boolean)
 
     /**
+     * Holds a call, by re-INVITE (Task 41).
+     *
+     * The SDP direction is the stack's to write — `sendonly` while we hold, `inactive`
+     * when both ends do — and asking it to pause is what produces the correct one. Setting
+     * the direction by hand through call parameters would mean re-deriving a rule the
+     * stack already applies, and getting it wrong in the both-hold case.
+     */
+    fun pauseCall(callKey: String)
+
+    /** Resumes a call this app holds. A no-op for a call the far end is holding. */
+    fun resumeCall(callKey: String)
+
+    /**
+     * Sends one DTMF digit (Task 43).
+     *
+     * @param useInfo true carries it as SIP INFO, false as RFC 4733 telephone-event.
+     *   Passed per digit rather than set once, so a change to the setting takes effect on
+     *   the next digit instead of on the next call — and so nothing here has to hold a
+     *   copy of a preference that lives in settings.
+     */
+    fun sendDtmf(callKey: String, digit: Char, useInfo: Boolean)
+
+    /**
      * Mutes or unmutes the microphone for one call.
      *
      * Per call rather than on the core: with a second call arriving (Task 56) a core-wide

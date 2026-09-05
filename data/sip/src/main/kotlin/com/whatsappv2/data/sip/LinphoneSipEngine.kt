@@ -36,12 +36,15 @@ import com.whatsappv2.domain.engine.SipMediaController
 import com.whatsappv2.domain.engine.UnmanagedCallRegistry
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
+import com.whatsappv2.domain.model.DtmfDigit
+import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.RegistrationState
 import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.registration.RegistrationRetrySchedule
+import com.whatsappv2.domain.repository.AppSettingsRepository
 import com.whatsappv2.domain.repository.SipAccountRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -63,12 +66,12 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Registration and calling, backed by the real SIP stack (Tasks 27, 35, 37, 40).
+ * Registration and calling, backed by the real SIP stack (Tasks 27, 35, 37, 40-43).
  *
- * Registration, placing and answering calls, mute and audio routing are implemented here.
- * Hold, DTMF, transfer and conferencing still report [SipError.EngineUnavailable] until the
- * tasks that implement them (41, 43, 55, 60) — stubbing them to "succeed" would let a
- * screen be built against behaviour that does not exist.
+ * Registration, placing and answering calls, hold and resume, mute, audio routing and DTMF
+ * are implemented here. Transfer and conferencing still report
+ * [SipError.EngineUnavailable] until the tasks that implement them (55, 60) — stubbing them
+ * to "succeed" would let a screen be built against behaviour that does not exist.
  *
  * ## Where the logic lives
  *
@@ -104,6 +107,14 @@ internal class LinphoneSipEngine @Inject constructor(
     private val gateway: LinphoneCoreGateway,
     private val callGateway: LinphoneCallGateway,
     private val accounts: SipAccountRepository,
+    /**
+     * App-wide preferences, read for the DTMF transport (Task 43, §5.1).
+     *
+     * Read per digit rather than cached here: a mode changed in Settings then takes effect
+     * on the next digit instead of the next call, and this class holds no copy of a value
+     * that lives somewhere else.
+     */
+    private val settings: AppSettingsRepository,
     private val networkMonitor: NetworkMonitor,
     @SipStackScope private val scope: CoroutineScope,
     private val logger: Logger,
@@ -133,9 +144,9 @@ internal class LinphoneSipEngine @Inject constructor(
     unimplemented: UnavailableSipEngine = UnavailableSipEngine(),
 ) : SipEngine,
     RegistrationRetrySchedule,
-    // Calls are implemented below - place, answer, reject, hang up, mute and route.
-    // DTMF (Task 43), hold (Task 41), transfer (Task 55) and conferencing (Task 60) are
-    // still EngineUnavailable, which is what those tasks replace.
+    // Calls are implemented below - place, answer, reject, hang up, hold, resume, mute,
+    // route and DTMF. Transfer (Task 55) and conferencing (Task 60) are still
+    // EngineUnavailable, which is what those tasks replace.
     SipCallController by unimplemented,
     SipMediaController by unimplemented,
     SipConferenceController by unimplemented {
@@ -292,7 +303,7 @@ internal class LinphoneSipEngine @Inject constructor(
             return
         }
 
-        val next = CallStateMapper.toCallEvent(event, current.direction)
+        val next = CallStateMapper.toCallEvent(event, current.state, current.direction)
             ?.let { CallStateMachine.transition(current.state, it) }
             ?.let { result ->
                 when (result) {
@@ -307,6 +318,14 @@ internal class LinphoneSipEngine @Inject constructor(
         val justConnected = current.connectedAtEpochMillis == null &&
             CallStateMapper.isConnected(event.state)
         if (justConnected) platform.onConnected(id)
+
+        // Telecom does not learn about a re-INVITE by itself, and a held call on a car
+        // display or a lock screen must show a resume button rather than a hold one.
+        // Reported only on a change, because setting the same state again is a no-op the
+        // platform still has to process (Task 41).
+        val wasHeld = current.state is CallState.Held
+        val isHeld = next is CallState.Held
+        if (next != null && wasHeld != isHeld) platform.onHoldChanged(id, isHeld)
 
         calls.update { live ->
             live + (
@@ -495,18 +514,107 @@ internal class LinphoneSipEngine @Inject constructor(
     }
 
     /**
-     * Mutes or unmutes the microphone (Task 40, DoD 8).
+     * Mutes or unmutes the microphone (Tasks 40 and 42, DoD 8).
      *
      * The FSM decides whether this is legal at all: muting a call that is still ringing is
      * a UI bug, and accepting it would hide the fact that the real microphone was never
      * muted. The stack is only touched once the transition is allowed.
+     *
+     * **Both halves are set, and they are not the same thing.** The stack's mute is what
+     * stops uplink audio for this call; the platform's is what the system call UI and a
+     * Bluetooth headset's mute button read. Setting only one leaves them disagreeing, and
+     * the dangerous disagreement is a headset that believes it unmuted a live microphone.
+     *
+     * **Already-muted is success, not work.** A headset's mute button arrives here through
+     * Telecom, and answering it by setting the platform's mute again would be this app
+     * echoing the platform back at itself. The [SipEngine] contract asks for idempotence
+     * anyway; here it also breaks the loop.
      */
     override suspend fun setMuted(callId: CallId, muted: Boolean): Outcome<Unit, SipError> {
         if (!started) return failure(SipError.EngineUnavailable)
 
+        val call = calls.value[callId] ?: return failure(SipError.UnknownCall)
+        if (call.state.controlsOrNull?.isMuted == muted) return success(Unit)
+
         return applyControl(callId, CallEvent.SetMuted(muted)) {
             callGateway.setMicrophoneMuted(callId.value, muted)
+            platform.setMuted(callId, muted)
         }
+    }
+
+    /**
+     * Holds or resumes, by re-INVITE (Task 41).
+     *
+     * ## The state moves when the stack says so, not when the button is pressed
+     *
+     * This asks the FSM whether the action is legal, and if it is, asks the stack to do
+     * it — and then stops. `Held` arrives when the re-INVITE has been **accepted**, on the
+     * stack's event, exactly as `Connected` arrives on the answer rather than on the
+     * INVITE. A call shown as held whose re-INVITE the far end refused with a 488 is a
+     * screen lying about where the audio is going.
+     *
+     * ## Only the local side
+     *
+     * A hold the far end applied is theirs to lift; the FSM rejects `LocalResume` for it
+     * and this reports that rejection rather than sending a re-INVITE the far end would
+     * answer by holding us again. With both ends holding, our resume moves the call from
+     * `Held(BOTH)` to `Held(REMOTE)` — still held, which is the answer that makes
+     * "resume did nothing" impossible to ship.
+     */
+    override suspend fun setHold(callId: CallId, held: Boolean): Outcome<Unit, SipError> {
+        if (!started) return failure(SipError.EngineUnavailable)
+
+        val call = calls.value[callId] ?: return failure(SipError.UnknownCall)
+        val event = if (held) CallEvent.LocalHold else CallEvent.LocalResume
+
+        val result = CallStateMachine.transition(call.state, event)
+        if (result is TransitionResult.Rejected) {
+            return failure(SipError.InvalidState("cannot ${if (held) "hold" else "resume"} in ${call.state}"))
+        }
+
+        if (held) callGateway.pauseCall(callId.value) else callGateway.resumeCall(callId.value)
+        return success(Unit)
+    }
+
+    /**
+     * Sends one DTMF digit (Task 43, DoD 8).
+     *
+     * ## Established calls only
+     *
+     * A digit needs a media path to travel on — RFC 4733 rides the RTP stream, and SIP
+     * INFO needs the dialog the answer created. `isEstablished` is exactly that question,
+     * and it is asked of the call's own state rather than of the stack: reporting success
+     * for a tone that never left would leave the user pressing keys an IVR never hears.
+     *
+     * Established rather than connected, because SIP INFO travels on the dialog and a held
+     * call still has one. The keypad on screen is offered from `Connected` only, which is
+     * the stricter rule and the right one for a UI that cannot know the carrier in use.
+     *
+     * ## The transport comes from settings, per digit
+     *
+     * Read here rather than held, so changing the mode in Settings takes effect on the
+     * next digit rather than on the next call. The [SipEngine] contract says the transport
+     * comes from configuration and not from the call site, which is exactly this: the
+     * caller passes a digit and never a carrier.
+     */
+    override suspend fun sendDtmf(callId: CallId, digit: DtmfDigit): Outcome<Unit, SipError> {
+        if (!started) return failure(SipError.EngineUnavailable)
+
+        val call = calls.value[callId] ?: return failure(SipError.UnknownCall)
+        if (!call.state.isEstablished) {
+            return failure(SipError.InvalidState("call is ${call.state}; DTMF needs a media path"))
+        }
+
+        val mode = settings.currentSettings().dtmfMode
+        callGateway.sendDtmf(
+            callKey = callId.value,
+            digit = digit.symbol,
+            useInfo = mode == DtmfMode.SIP_INFO,
+        )
+        // The digit is never logged: a DTMF sequence is a PIN or a card number as often as
+        // it is a menu choice (§7, DoD 12). The mode is not a secret and is worth having.
+        logger.debug(TAG, "DTMF sent on $callId as $mode")
+        return success(Unit)
     }
 
     /**

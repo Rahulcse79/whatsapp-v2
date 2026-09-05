@@ -225,6 +225,61 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         callsByKey[callKey]?.microphoneMuted = muted
     }
 
+    /**
+     * Holds by re-INVITE (Task 41).
+     *
+     * `pause()` and nothing else: the stack writes the SDP direction, which is `sendonly`
+     * while only we hold and `inactive` once both ends do. Setting a direction by hand
+     * through call params would re-derive a rule the stack already applies, and the
+     * both-hold case is exactly where a hand-rolled version gets it wrong.
+     *
+     * A non-zero return means the stack refused — a call in a state that cannot be paused.
+     * Logged rather than thrown: the engine's own state is unchanged, so the screen
+     * continues to show a call that is not held, which is the truth.
+     */
+    override fun pauseCall(callKey: String) {
+        val call = callsByKey[callKey] ?: run {
+            logger.warn(TAG, "Hold for a call the stack no longer has: $callKey")
+            return
+        }
+        if (call.pause() != OK) logger.warn(TAG, "The stack refused to hold $callKey")
+    }
+
+    /** Resumes a call this app holds. The far end's own hold is not ours to lift. */
+    override fun resumeCall(callKey: String) {
+        val call = callsByKey[callKey] ?: run {
+            logger.warn(TAG, "Resume for a call the stack no longer has: $callKey")
+            return
+        }
+        if (call.resume() != OK) logger.warn(TAG, "The stack refused to resume $callKey")
+    }
+
+    /**
+     * Sends one DTMF digit (Task 43).
+     *
+     * The transport is set on the core immediately before the digit, because that is
+     * where liblinphone keeps it — `setUseRfc2833ForDtmf` and `setUseInfoForDtmf` are
+     * core-wide settings, not call params. Setting both on every digit is what makes a
+     * change in Settings take effect on the next digit rather than the next call, and it
+     * is the only way the two flags cannot be left in a stale combination.
+     *
+     * Exactly one is enabled. With both on, liblinphone sends the digit by both carriers
+     * at once, and an IVR that counts keypresses hears two.
+     */
+    override fun sendDtmf(callKey: String, digit: Char, useInfo: Boolean) {
+        val call = callsByKey[callKey] ?: run {
+            logger.warn(TAG, "DTMF for a call the stack no longer has: $callKey")
+            return
+        }
+        core?.apply {
+            useRfc2833ForDtmf = !useInfo
+            useInfoForDtmf = useInfo
+        }
+        // The digit itself is never logged: a DTMF sequence is a PIN or a card number as
+        // often as it is a menu choice (§7, DoD 12).
+        if (call.sendDtmf(digit) != OK) logger.warn(TAG, "The stack refused a DTMF digit on $callKey")
+    }
+
     override fun terminateCall(callKey: String) {
         // Idempotent: a call the stack has already released is one the caller wanted gone.
         callsByKey[callKey]?.terminate()
@@ -250,7 +305,14 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         Call.State.OutgoingEarlyMedia -> StackCallState.OUTGOING_EARLY_MEDIA
         Call.State.Connected -> StackCallState.CONNECTED
         Call.State.StreamsRunning -> StackCallState.STREAMS_RUNNING
-        Call.State.Paused, Call.State.PausedByRemote -> StackCallState.PAUSED
+
+        // Three states where there used to be one. Which end is holding decides which end
+        // can resume, and collapsing them is how "resume did nothing" bugs happen (Task
+        // 41). `Pausing` stays absent: it is the intermediate before `Paused`, and the app
+        // has nothing different to do while a hold is in flight.
+        Call.State.Paused -> StackCallState.PAUSED
+        Call.State.PausedByRemote -> StackCallState.PAUSED_BY_REMOTE
+        Call.State.Resuming -> StackCallState.RESUMING
         Call.State.End -> StackCallState.ENDED
         Call.State.Error -> StackCallState.ERROR
         else -> null
@@ -438,5 +500,8 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         const val TAG = "LinphoneGateway"
         const val CONFIG_FILE = "linphone.rc"
         const val EVENT_BUFFER = 64
+
+        /** What liblinphone returns from a request it accepted; anything else is -1. */
+        const val OK = 0
     }
 }

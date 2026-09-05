@@ -24,11 +24,11 @@ import javax.inject.Singleton
  * but this binding was never moved off `UnavailableSipEngine`, so the running app had no
  * SIP stack at all and every account read Offline whatever the user configured.
  *
- * The engine now covers registration and calling — place, answer, reject, hang up, mute and
- * route (Tasks 35, 37, 40). Hold, DTMF, transfer and conferencing are still delegated to
- * `UnavailableSipEngine` and still answer `EngineUnavailable`, which is what Tasks 41, 43,
- * 55 and 60 replace. Delegating rather than restubbing means there is one set of "not built
- * yet" answers instead of two that can drift.
+ * The engine now covers registration and calling — place, answer, reject, hang up, hold,
+ * resume, mute, route and DTMF (Tasks 35, 37, 40-43). Transfer and conferencing are still
+ * delegated to `UnavailableSipEngine` and still answer `EngineUnavailable`, which is what
+ * Tasks 55 and 60 replace. Delegating rather than restubbing means there is one set of "not
+ * built yet" answers instead of two that can drift.
  *
  * The module is `internal` because [LinphoneSipEngine] is: a binding may not be more
  * visible than the type it names.

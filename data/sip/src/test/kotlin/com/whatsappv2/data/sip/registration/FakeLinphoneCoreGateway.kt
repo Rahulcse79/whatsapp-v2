@@ -55,6 +55,20 @@ internal class FakeLinphoneCoreGateway : LinphoneCoreGateway, LinphoneCallGatewa
     val mutedCalls: MutableMap<String, Boolean> = mutableMapOf()
 
     /**
+     * Every hold and resume asked of the stack, in order (Task 41).
+     *
+     * A log rather than a flag: "held, then resumed, then held again" and "held once" are
+     * different behaviours, and only an ordered record tells them apart.
+     */
+    val holdRequests: MutableList<Pair<String, Boolean>> = mutableListOf()
+
+    /** Every DTMF digit sent, with true for SIP INFO and false for RFC 4733 (Task 43). */
+    val sentDtmf: MutableList<SentDtmf> = mutableListOf()
+
+    /** One `sendDtmf`, flattened so a test can assert digit and carrier in one equals. */
+    data class SentDtmf(val callKey: String, val digit: Char, val useInfo: Boolean)
+
+    /**
      * The push parameters currently published, or null when they are cleared.
      *
      * A field rather than a log: "what would the next REGISTER carry" is a question about
@@ -149,6 +163,18 @@ internal class FakeLinphoneCoreGateway : LinphoneCoreGateway, LinphoneCallGatewa
 
     override fun setMicrophoneMuted(callKey: String, muted: Boolean) {
         mutedCalls[callKey] = muted
+    }
+
+    override fun pauseCall(callKey: String) {
+        holdRequests += callKey to true
+    }
+
+    override fun resumeCall(callKey: String) {
+        holdRequests += callKey to false
+    }
+
+    override fun sendDtmf(callKey: String, digit: Char, useInfo: Boolean) {
+        sentDtmf += SentDtmf(callKey, digit, useInfo)
     }
 
     override fun terminateCall(callKey: String) {

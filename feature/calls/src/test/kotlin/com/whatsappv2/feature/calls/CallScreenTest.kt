@@ -7,6 +7,7 @@ import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -15,6 +16,7 @@ import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
 import com.whatsappv2.domain.call.CallControls
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.model.CallId
+import com.whatsappv2.domain.model.DtmfDigit
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -55,9 +57,10 @@ class CallScreenTest {
     @Test
     fun `a ringing inbound call offers answer and decline, and nothing else`() {
         var answeredWithVideo: Boolean? = null
-        setContent(display(CallPhase.INCOMING, direction = CallDirection.INCOMING)) {
-            onAnswer = { answeredWithVideo = it }
-        }
+        setContent(
+            display(CallPhase.INCOMING, direction = CallDirection.INCOMING),
+            CallActions(onAnswer = { answeredWithVideo = it }),
+        )
 
         compose.onNodeWithTag(TAG_ANSWER).assertIsDisplayed().performClick()
         compose.onNodeWithTag(TAG_DECLINE).assertIsDisplayed()
@@ -117,14 +120,69 @@ class CallScreenTest {
     @Test
     fun `pressing a control reports the opposite of its current state`() {
         var muted: Boolean? = null
-        setContent(display(CallPhase.CONNECTED, controls = CallControls(isMuted = true))) {
-            onToggleMute = { muted = it }
-        }
+        setContent(
+            display(CallPhase.CONNECTED, controls = CallControls(isMuted = true)),
+            CallActions(onToggleMute = { muted = it }),
+        )
 
         compose.onNodeWithTag(TAG_MUTE).performClick()
         compose.waitForIdle()
 
         assertEquals(false, muted, "pressing a muted call's mute button unmutes it")
+    }
+
+    @Test
+    fun `the keypad is hidden until it is asked for, and then sends what is pressed`() {
+        // Task 43's UI half. Hidden by default because an in-call screen is mostly used
+        // without one, and every key press sends its tone immediately.
+        val pressed = mutableListOf<DtmfDigit>()
+        setContent(display(CallPhase.CONNECTED), CallActions(onDtmf = { pressed += it }))
+
+        compose.onNodeWithTag(TAG_KEYPAD).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_KEYPAD_TOGGLE).assertIsEnabled().performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithTag(TAG_KEYPAD).assertIsDisplayed()
+        compose.onNodeWithTag(keypadKeyTag(DtmfDigit.STAR)).performClick()
+        compose.onNodeWithTag(keypadKeyTag(DtmfDigit.NINE)).performClick()
+        compose.waitForIdle()
+
+        assertEquals(listOf(DtmfDigit.STAR, DtmfDigit.NINE), pressed)
+        // What was sent is shown, because the tone itself is the stack's to play and the
+        // digits are deliberately never logged.
+        compose.onNodeWithTag(TAG_KEYPAD_SENT).assertTextEquals("*9")
+    }
+
+    @Test
+    fun `A to D are reachable, but not in the way of a keypad`() {
+        // Some PBX signalling needs them and no phone has ever shown them, so they are
+        // behind a disclosure rather than in the grid.
+        setContent(display(CallPhase.CONNECTED))
+        compose.onNodeWithTag(TAG_KEYPAD_TOGGLE).performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithTag(keypadKeyTag(DtmfDigit.A)).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_KEYPAD_LETTERS).performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithTag(keypadKeyTag(DtmfDigit.A)).assertIsDisplayed()
+        compose.onNodeWithTag(keypadKeyTag(DtmfDigit.D)).assertIsDisplayed()
+    }
+
+    @Test
+    fun `a held call cannot open the keypad, because its media is paused`() {
+        // Disabled rather than absent: a control that disappears moves the buttons beside
+        // it under the user's thumb mid-call.
+        val state = setContent(display(CallPhase.CONNECTED))
+        compose.onNodeWithTag(TAG_KEYPAD_TOGGLE).performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag(TAG_KEYPAD).assertIsDisplayed()
+
+        state.value = CallUiState.Active(display(CallPhase.ON_HOLD))
+        compose.waitForIdle()
+
+        compose.onNodeWithTag(TAG_KEYPAD_TOGGLE).assertIsNotEnabled()
+        compose.onNodeWithTag(TAG_KEYPAD).assertDoesNotExist()
     }
 
     @Test
@@ -140,15 +198,6 @@ class CallScreenTest {
 
     // ---------------------------------------------------------------- helpers
 
-    private class Callbacks {
-        var onAnswer: (Boolean) -> Unit = {}
-        var onReject: () -> Unit = {}
-        var onHangUp: () -> Unit = {}
-        var onToggleMute: (Boolean) -> Unit = {}
-        var onToggleSpeaker: (Boolean) -> Unit = {}
-        var onToggleHold: (Boolean) -> Unit = {}
-    }
-
     /**
      * Renders one call and hands back the state, so a test can move it.
      *
@@ -157,9 +206,8 @@ class CallScreenTest {
      */
     private fun setContent(
         call: CallDisplay,
-        configure: Callbacks.() -> Unit = {},
+        actions: CallActions = CallActions(),
     ): MutableState<CallUiState> {
-        val callbacks = Callbacks().apply(configure)
         val state = mutableStateOf<CallUiState>(CallUiState.Active(call))
 
         compose.setContent {
@@ -167,12 +215,7 @@ class CallScreenTest {
                 CallScreen(
                     state = state.value,
                     snackbarHostState = SnackbarHostState(),
-                    onAnswer = callbacks.onAnswer,
-                    onReject = callbacks.onReject,
-                    onHangUp = callbacks.onHangUp,
-                    onToggleMute = callbacks.onToggleMute,
-                    onToggleSpeaker = callbacks.onToggleSpeaker,
-                    onToggleHold = callbacks.onToggleHold,
+                    actions = actions,
                 )
             }
         }

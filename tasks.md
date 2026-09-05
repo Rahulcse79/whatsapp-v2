@@ -1578,9 +1578,40 @@ Build:
 
 Done when:
 - [ ] Local hold produces `a=sendonly` and media stops in the correct direction
-- [ ] Remote hold is detected and shown in the UI
-- [ ] Both-sides hold resolves correctly on resume
+      → the re-INVITE is `Call.pause()`, and the direction is the stack's to write:
+      `sendonly` while only this end holds, `inactive` once both do. What is asserted on
+      the JVM is everything above that seam — hold reaches the stack only from a state the
+      FSM allows, and the call is **not** shown as held until the stack accepts, so a
+      re-INVITE refused with a 488 cannot leave a screen claiming the audio stopped.
+      Reading `a=sendonly` off the wire needs the test target.
+- [x] Remote hold is detected and shown in the UI
+      → `PausedByRemote` is its own stack state, maps to `RemoteHold`, and renders as
+      `CallPhase.HELD_BY_REMOTE` with no resume offered — there is nothing this end can
+      press to lift it. Asserted in `CallStateMapperTest`, `LinphoneSipEngineTest` and
+      `CallViewModelTest`.
+- [x] Both-sides hold resolves correctly on resume
+      → `Held(BOTH)` + a local resume leaves `Held(REMOTE)`, and Telecom is **not** told
+      the call came back. That is what `HoldParty` exists for; a boolean here resumes a
+      call the other party is still holding.
 - [ ] Verified against the FreeSWITCH test target
+      → needs a device and the Task 32 target. The full-call suite is Task 46.
+
+**Status: implemented, verification pending CI; the SDP and the FreeSWITCH run need a
+device.**
+
+**The state moves when the stack accepts, not when the button is pressed.** `setHold` asks
+`CallStateMachine` whether the action is legal, asks the stack to do it, and stops. `Held`
+arrives on the stack's own event, exactly as `Connected` arrives on the answer rather than
+on the INVITE.
+
+**Four stack states where there was one.** `Paused`, `PausedByRemote`, `Resuming` and
+`StreamsRunning` mean our hold, their hold, our re-INVITE in flight, and whichever of those
+just completed — so `CallStateMapper` is given the call's current state rather than guessing
+from the event. A repeat of a hold already in force maps to nothing, because the FSM rejects
+it and a rejection in the log reads like a defect.
+
+**Telecom is told for both directions.** A held call on a lock screen or a car display must
+show a resume button, and the platform does not learn about a re-INVITE by itself.
 
 ### Task 42 — Mute and speaker
 **Depends on:** 40 · **Prompt refs:** §4.4, §5.2 · **Modules:** `:feature:calls`
@@ -1591,8 +1622,28 @@ Build:
 
 Done when:
 - [ ] Mute stops uplink audio, verified at the far end
+      → two mutes are set and both are needed: the stack's, per call rather than core-wide,
+      and the platform's microphone flag. Asserted on the JVM as far as it goes — the stack
+      and the platform are both told, and neither is told twice. "The far end hears
+      silence" needs two endpoints.
 - [ ] Mute toggled from a Bluetooth headset updates the app UI
-- [ ] Neither mute nor speaker appears in the `CallState` enum
+      → the path exists end to end: `onCallAudioStateChanged` carries the headset's mute,
+      the engine applies it through the FSM, and the screen renders `CallControls.isMuted`.
+      A mute already in force short-circuits, so the app cannot echo the platform back at
+      itself. Confirming it needs a headset with a mute button.
+- [x] Neither mute nor speaker appears in the `CallState` enum
+      → both are `CallControls` on the established states, and the speaker is an
+      `AudioRoute` rather than a boolean. Asserted in `CallStateMachineTest` and
+      `CallUiStateTest`.
+
+**Status: implemented, verification pending CI; the two audible checks need hardware.**
+
+**Telecom has no public setter for mute.** `Connection.setMuteState` is package-private and
+`requestCallEndpointChange` (API 34) covers routing only, so a self-managed connection
+cannot report that it muted itself. `TelecomCallRegistry` sets the device's microphone flag
+instead — the same one the system's own mute control writes — and releases it when the call
+ends, because a microphone left muted afterwards is a device-wide mute with nothing on
+screen to explain it.
 
 ### Task 43 — DTMF
 **Depends on:** 39, 23 · **Prompt refs:** §5.2, DoD 8 · **Modules:** `:data:sip`, `:feature:calls`
@@ -1603,8 +1654,29 @@ Build:
 
 Done when:
 - [ ] RFC 4733 digits are received correctly by an IVR on the FreeSWITCH test target
+      → telephone-event is the default and is what the core is set to before each digit;
+      asserted on the JVM at the SDK seam. An IVR hearing it needs the test target.
 - [ ] The INFO fallback works when configured
+      → the carrier is read from `AppSettings.dtmfMode` **per digit**, so a mode changed in
+      Settings applies to the next key press rather than the next call, and exactly one of
+      the two core flags is ever enabled. Asserted; the wire check needs the target.
 - [ ] All 16 digits (0-9, \*, #, A-D) transmit correctly
+      → all sixteen reach the SDK seam unchanged, asserted digit by digit, and A-D are
+      reachable from the keypad behind a disclosure. "Transmit correctly" is a claim about
+      the wire and stays unticked until the target says so.
+
+**Status: implemented, verification pending CI; every wire check needs the test target.**
+
+**The tone the caller hears is the stack's.** liblinphone plays each digit locally as it
+sends it, so the app adds no tone generator of its own — a second one would double every
+keypress. The screen's feedback is the line of digits above the keypad, which is also the
+only record of them: a DTMF sequence is a PIN or a card number as often as it is a menu
+choice, so digits are never logged (§7, DoD 12).
+
+**The keypad is offered from `Connected` only.** RFC 4733 rides the RTP stream and a held
+call's stream is paused. The engine is one step more permissive — SIP INFO travels on the
+dialog, which a held call still has — and the stricter rule belongs in the UI, which cannot
+know which carrier is in use.
 
 ### Task 44 — Termination reasons and error mapping
 **Depends on:** 35 · **Prompt refs:** §4.2, §4.3 · **Modules:** `:domain`, `:feature:calls`

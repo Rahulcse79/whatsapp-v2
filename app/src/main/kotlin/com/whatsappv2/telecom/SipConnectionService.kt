@@ -224,6 +224,16 @@ internal class SipConnectionService : ConnectionService(), SipConnection.Listene
         }
 
         /**
+         * Tells Telecom a call was held or resumed by something it did not do (Task 41).
+         *
+         * Safe for a call the platform never accepted: the map has no entry and nothing
+         * happens, which is the same contract every other method here keeps.
+         */
+        fun reportHeld(callId: CallId, held: Boolean) {
+            connections[callId]?.reportHeld(held)
+        }
+
+        /**
          * Asks Telecom to route this call's audio.
          *
          * @return false when there is no connection to ask — a call the platform never

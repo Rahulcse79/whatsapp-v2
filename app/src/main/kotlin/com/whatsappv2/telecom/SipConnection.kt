@@ -124,6 +124,19 @@ internal class SipConnection(
     fun reportActive() = setActive()
 
     /**
+     * The call was held or resumed by something other than Telecom (Task 41).
+     *
+     * A hold from this app's own screen, or a re-INVITE the far end sent. Telecom learns
+     * about neither by itself, and a platform that believes a held call is active offers a
+     * hold button on the lock screen and a car display for a call that is already held.
+     *
+     * Told for a remote hold too: as far as the system UI is concerned the call is held
+     * either way, and the distinction that matters — who may resume it — is the app's, in
+     * [com.whatsappv2.domain.call.HoldParty].
+     */
+    fun reportHeld(held: Boolean) = if (held) setOnHold() else setActive()
+
+    /**
      * The call ended for a reason that did not come from Telecom.
      *
      * A remote hangup, a network failure, a 486. Telecom has to be told, or the platform

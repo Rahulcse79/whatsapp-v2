@@ -1,6 +1,6 @@
 # Calling — how a call actually happens
 
-Tasks 35–40 (§3, §5.2, DoD 7 and 8). What each layer owns, and why the seams are where
+Tasks 35–43 (§3, §5.2, DoD 7 and 8). What each layer owns, and why the seams are where
 they are.
 
 ## The path of one outgoing call
@@ -49,6 +49,74 @@ The push wake path (ADR-004) sits in front of all of this and adds nothing to it
 message says only "wake up and re-register", the registration comes back, and the INVITE
 then arrives on the path above. Caller identity never travels in a push payload (§7).
 
+## Hold, and who may lift it
+
+```
+CallScreen hold button  ->  SipEngine.setHold        (ask the FSM, then the stack)
+                                 |
+                              liblinphone pause()/resume()   -- writes the SDP direction
+                                 |
+             Paused / PausedByRemote / Resuming / StreamsRunning
+                                 |
+                          CallStateMapper (given the CURRENT state)
+                                 |
+                     CallStateMachine  ->  Held(LOCAL | REMOTE | BOTH) / Resuming
+                                 |
+                          PlatformCallRegistry.onHoldChanged  ->  Telecom
+```
+
+**The state moves when the stack accepts the re-INVITE, not when the button is pressed.**
+The same rule as answering: a call shown as held whose re-INVITE was refused with a 488 is
+a screen lying about where the audio is going. `setHold` therefore asks `CallStateMachine`
+whether the action is legal, asks the stack to do it, and stops.
+
+**Four stack states, because three of them mean different things.** `Paused` is our hold,
+`PausedByRemote` is theirs, `Resuming` is our re-INVITE in flight, and `StreamsRunning`
+means whichever of those has just completed — which is why `CallStateMapper` is given the
+call's current state rather than guessing from the event alone. Collapsing our hold and
+theirs into one state is how "resume did nothing" bugs happen: only one of them is ours to
+lift, and with both ends holding, resuming leaves the call `Held(REMOTE)`.
+
+**The SDP direction is the stack's to write.** `pause()` produces `sendonly` while only we
+hold and `inactive` once both ends do. Setting a direction by hand through call parameters
+would re-derive a rule liblinphone already applies, and the both-hold case is exactly where
+a hand-rolled version gets it wrong.
+
+## Mute is two things, and both are set
+
+The stack's mute stops uplink audio for one call — per call, not core-wide, so a second
+call (Task 56) is not silenced by a mute the user never applied to it. The platform's mute
+is what the system call UI and a Bluetooth headset's mute button read.
+
+Telecom exposes no public way for a self-managed connection to report its own mute:
+`Connection.setMuteState` is package-private and `requestCallEndpointChange` (API 34)
+covers routing only. So `TelecomCallRegistry` sets the device's microphone flag, and
+releases it when the call ends — a microphone left muted afterwards is a device-wide mute
+with nothing on screen to explain it.
+
+The inbound direction already existed: a headset's own mute button arrives through
+`onCallAudioStateChanged` and is applied like any other mute. The engine short-circuits a
+mute that is already in force, which is both the contract's idempotence and what stops the
+app echoing the platform back at itself.
+
+## DTMF
+
+`RFC 4733 telephone-event` by default, `SIP INFO` when Settings says so — read **per
+digit**, so a mode changed because an IVR is not hearing the caller applies to the next key
+press rather than the next call. Exactly one carrier is enabled on the core before each
+digit; with both on, liblinphone sends the digit twice and an IVR that counts keypresses
+hears two.
+
+The tone the caller hears is the stack's: liblinphone plays the digit locally as it sends
+it. A second tone generated in the app would double every keypress, so the screen's own
+feedback is the line of digits above the keypad — which is also the only record of them.
+DTMF digits are never logged, because a sequence is a PIN or a card number as often as it
+is a menu choice (§7).
+
+A, B, C and D sit behind a disclosure on the keypad. Some PBX and carrier signalling needs
+them, no telephone has ever shown them, and `DtmfDigit` carries all sixteen so the path
+below the UI cannot quietly drop the four that are rare.
+
 ## Where each decision lives, and why
 
 | Decision | Lives in | Why not somewhere else |
@@ -62,6 +130,9 @@ then arrives on the path above. Caller identity never travels in a push payload 
 | Where audio goes | `AudioRoutePolicy` (`:app`), applied through Telecom | Telecom owns routing and arbitration; two things setting a route fight over the SCO link. |
 | Whether a push is worth waking for | `PushWakePolicy` (`:app`) | FCM cannot be driven from a JVM test, so everything decidable without it is decided outside it. |
 | Which buttons a call offers | `CallControlAvailability` (`:feature:calls`) | Derived from the phase, so a button cannot be offered for an action the FSM would reject. |
+| What a hold event means, given where the call was | `CallStateMapper` (`:data:sip`) | One stack state can mean our hold, their hold, or a resume completing; only the current state disambiguates it. |
+| Whether a hold or resume is legal at all | `CallStateMachine` (`:domain`) | `HoldParty` is the reason both ends holding resolves correctly, and it is asserted without a stack. |
+| Which carrier a DTMF digit takes | `AppSettings.dtmfMode`, read per digit | §5.1 makes it configurable; reading it at send time is what makes a change apply to the next digit. |
 
 ## One notification, not two
 
@@ -88,11 +159,9 @@ than as busy. The 486 path is implemented and used; it is simply used where it i
 
 ## What is not built yet
 
-- **Hold** is offered by the screen only from `Connected`, and pressing it reaches an
-  engine that still answers `EngineUnavailable`: the re-INVITE is Task 41. The screen does
-  not change when it lands.
-- **DTMF** (Task 43), **transfer** (Task 55) and **conferencing** (Task 60) are likewise
-  still `EngineUnavailable`.
+- **Transfer** (Task 55) and **conferencing** (Task 60) still answer `EngineUnavailable`.
+  They are delegated to `UnavailableSipEngine` rather than restubbed, so there is one set
+  of "not built yet" answers instead of two that can drift.
 - **The push gateway** is a backend component and is out of scope for this app (ADR-004,
   §11). The client half — RFC 8599 parameters on REGISTER, token rotation, the wake path —
   is built and unit-tested; it does nothing until a gateway sends to it.
@@ -107,3 +176,10 @@ Everything below the seams above. In particular: that all four audio routes are 
 that a headset switches the route mid-call, that the full-screen intent shows on a locked
 screen, and that a push wakes a force-stopped app. Each is recorded against its task in
 `tasks.md` rather than ticked from a passing unit test.
+
+Hold, mute and DTMF add three more of the same kind, and they need the FreeSWITCH target
+rather than only a handset: that a local hold puts `a=sendonly` on the wire and stops media
+in that direction, that a far end hears silence while muted, and that an IVR receives all
+sixteen tones over telephone-event and over INFO. Everything above the SDK seam — which
+event means what, which transition is legal, which carrier is chosen — is asserted on the
+JVM, because that is the half a test can reach without a server.

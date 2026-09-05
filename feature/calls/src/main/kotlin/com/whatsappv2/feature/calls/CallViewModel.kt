@@ -9,6 +9,7 @@ import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.SipMediaController
 import com.whatsappv2.domain.model.CallId
+import com.whatsappv2.domain.model.DtmfDigit
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -156,6 +157,20 @@ class CallViewModel @Inject constructor(
     fun setHold(held: Boolean) {
         val callId = watched.value ?: return
         act(CallAction.HOLD) { calls.setHold(callId, held) }
+    }
+
+    /**
+     * Sends one DTMF digit (Task 43).
+     *
+     * One digit per press, never a buffered sequence. An IVR reacts to each tone as it
+     * arrives — a menu changes under the caller, a timeout ends the prompt — so digits
+     * batched and sent together would arrive as a sequence the caller never typed at that
+     * speed. The carrier (RFC 4733 or SIP INFO) is the engine's to choose from settings;
+     * nothing on this screen knows or should know which is in use.
+     */
+    fun sendDtmf(digit: DtmfDigit) {
+        val callId = watched.value ?: return
+        act(CallAction.DTMF) { calls.sendDtmf(callId, digit) }
     }
 
     private fun act(action: CallAction, block: suspend () -> Outcome<*, SipError>) {

@@ -50,12 +50,15 @@ fun CallRoute(
     CallScreen(
         state = state,
         snackbarHostState = snackbarHostState,
-        onAnswer = viewModel::answer,
-        onReject = viewModel::reject,
-        onHangUp = viewModel::hangUp,
-        onToggleMute = viewModel::setMuted,
-        onToggleSpeaker = viewModel::setSpeakerOn,
-        onToggleHold = viewModel::setHold,
+        actions = CallActions(
+            onAnswer = viewModel::answer,
+            onReject = viewModel::reject,
+            onHangUp = viewModel::hangUp,
+            onToggleMute = viewModel::setMuted,
+            onToggleSpeaker = viewModel::setSpeakerOn,
+            onToggleHold = viewModel::setHold,
+            onDtmf = viewModel::sendDtmf,
+        ),
         modifier = modifier,
     )
 }

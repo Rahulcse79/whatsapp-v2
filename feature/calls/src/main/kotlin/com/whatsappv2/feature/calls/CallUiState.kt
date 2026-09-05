@@ -86,6 +86,7 @@ data class CallControlAvailability(
     val canChangeRoute: Boolean,
     val canHold: Boolean,
     val canResume: Boolean,
+    val canSendDtmf: Boolean,
 ) {
     companion object {
         fun of(phase: CallPhase): CallControlAvailability = CallControlAvailability(
@@ -102,6 +103,10 @@ data class CallControlAvailability(
             // dialog to re-INVITE, which is why this is a state question and not a flag.
             canHold = phase == CallPhase.CONNECTED,
             canResume = phase == CallPhase.ON_HOLD || phase == CallPhase.HELD_BY_BOTH,
+            // Connected only, and not merely established: RFC 4733 digits ride the RTP
+            // stream, and a held call's stream is paused, so a keypad offered there would
+            // send tones into a media path that is not running (Task 43).
+            canSendDtmf = phase == CallPhase.CONNECTED,
         )
     }
 }
@@ -188,6 +193,7 @@ enum class CallAction {
     MUTE,
     SPEAKER,
     HOLD,
+    DTMF,
 }
 
 /** Builds the display model for [snapshot] at [nowEpochMillis]. */

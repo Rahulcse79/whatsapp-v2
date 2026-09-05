@@ -10,6 +10,7 @@ import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.CodecPreferences
+import com.whatsappv2.domain.model.DtmfDigit
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.NatPolicy
@@ -207,6 +208,85 @@ class CallViewModelTest {
             viewModel.setSpeakerOn(false)
             runCurrent()
             awaitDisplay { it.controls.audioRoute == AudioRoute.EARPIECE }
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `holding and resuming move the call through the FSM the engine enforces`() = runTest {
+        // The fake runs the real CallStateMachine, so this is the same rule production
+        // applies: Connected -> Held -> Resuming -> Connected, and nothing skipped.
+        val callId = placeCall()
+        engine.simulateRemoteAnswer(callId)
+        val viewModel = viewModel().also { it.watch(callId) }
+
+        viewModel.uiState.test {
+            skipItems(1)
+            viewModel.setHold(true)
+            runCurrent()
+            awaitDisplay { it.phase == CallPhase.ON_HOLD }
+
+            viewModel.setHold(false)
+            runCurrent()
+            awaitDisplay { it.phase == CallPhase.CONNECTED }
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `a hold applied by the far end is shown as theirs, and offers no resume`() = runTest {
+        // Pressing resume would change nothing: the far end is the only side that can
+        // lift it, which is why the phase and the availability are different values.
+        val callId = placeCall()
+        engine.simulateRemoteAnswer(callId)
+        val viewModel = viewModel().also { it.watch(callId) }
+
+        viewModel.uiState.test {
+            skipItems(1)
+            engine.simulateRemoteHold(callId)
+
+            val held = awaitDisplay { it.phase == CallPhase.HELD_BY_REMOTE }
+            assertEquals(false, held.availability.canResume)
+            assertEquals(false, held.availability.canSendDtmf)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `a keypad press sends exactly that digit`() = runTest {
+        // One digit per press: an IVR acts on each tone as it arrives, so a batch sent
+        // together is a sequence the caller never typed.
+        val callId = placeCall()
+        engine.simulateRemoteAnswer(callId)
+        val viewModel = viewModel().also { it.watch(callId) }
+
+        viewModel.sendDtmf(DtmfDigit.STAR)
+        viewModel.sendDtmf(DtmfDigit.SEVEN)
+        runCurrent()
+
+        assertEquals(
+            listOf("${callId.value}:*", "${callId.value}:7"),
+            engine.invocations
+                .filter { it.operation == FakeSipEngine.Operation.SEND_DTMF }
+                .map { it.detail },
+        )
+    }
+
+    @Test
+    fun `a digit the engine refuses is reported, not lost`() = runTest {
+        // A tone that never left is worse than an error: the caller keeps pressing keys
+        // an IVR will never hear.
+        val callId = placeCall()
+        engine.simulateRemoteAnswer(callId)
+        engine.failNext(FakeSipEngine.Operation.SEND_DTMF, SipError.EngineUnavailable)
+        val viewModel = viewModel().also { it.watch(callId) }
+
+        viewModel.events.test {
+            viewModel.sendDtmf(DtmfDigit.ONE)
+            runCurrent()
+
+            val event = assertIs<CallEvent.ActionFailed>(awaitItem())
+            assertEquals(CallAction.DTMF, event.action)
             cancelAndIgnoreRemainingEvents()
         }
     }

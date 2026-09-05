@@ -1,6 +1,8 @@
 package com.whatsappv2.data.sip.call
 
 import com.whatsappv2.domain.call.CallEvent
+import com.whatsappv2.domain.call.CallState
+import com.whatsappv2.domain.call.HoldParty
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.TransportFailureKind
@@ -32,6 +34,14 @@ import com.whatsappv2.domain.model.HangupReason
  *   `Connected` either way; the FSM has two events, because `LocalAnswered` and
  *   `RemoteAnswered` are legal from different states and mean different things in the call
  *   log. That is why [toCallEvent] takes a direction rather than guessing.
+ * - **`StreamsRunning` means whatever the call was doing before it.** Media running again
+ *   after our own resume is `ResumeConfirmed`; after the far end's, `RemoteResume`; on a
+ *   call that was simply connected, nothing at all. One stack state, three meanings — so
+ *   the mapper is given the current state rather than inventing one (Task 41).
+ * - **A hold already in force is not a new hold.** The stack repeats its paused state
+ *   after a re-negotiation, and the FSM rejects a hold from a side that already holds. A
+ *   repeat therefore maps to nothing, so a normal re-negotiation does not fill the log
+ *   with rejected transitions that look like defects.
  */
 internal object CallStateMapper {
 
@@ -44,6 +54,7 @@ internal object CallStateMapper {
      */
     fun toCallEvent(
         event: StackCallEvent,
+        state: CallState = CallState.Idle,
         direction: CallDirection = CallDirection.OUTGOING,
     ): CallEvent? = when (event.state) {
         // The INVITE exists but nothing has come back. The call is already in
@@ -65,13 +76,60 @@ internal object CallStateMapper {
             CallDirection.INCOMING -> CallEvent.LocalAnswered()
         }
 
-        // See the class doc: the answer has already been reported.
-        StackCallState.STREAMS_RUNNING -> null
+        // Media running again means different things depending on what the call was
+        // doing; see [resumeEventFor]. On a call that was already connected it means
+        // nothing, because the answer has already been reported.
+        StackCallState.STREAMS_RUNNING -> resumeEventFor(state)
 
-        StackCallState.PAUSED -> CallEvent.RemoteHold
+        // Ours to resume, and theirs. Two states, because the FSM has two and only one of
+        // them is lifted by our own resume.
+        StackCallState.PAUSED -> holdEventFor(state, HoldParty.LOCAL)
+        StackCallState.PAUSED_BY_REMOTE -> holdEventFor(state, HoldParty.REMOTE)
+
+        // The re-INVITE is on the wire. Reported so the screen can say "resuming" rather
+        // than showing a held call that appears to have ignored the button.
+        StackCallState.RESUMING -> resumeStartedEventFor(state)
 
         StackCallState.ENDED, StackCallState.ERROR ->
             CallEvent.Terminate(toHangupReason(event))
+    }
+
+    /**
+     * A hold by [by], unless that side is already holding.
+     *
+     * The stack repeats a paused state after any re-negotiation, and the FSM rejects a
+     * hold from a side that already holds — correctly, because accepting it would report
+     * success for an action that changed nothing. Returning null here keeps a repeat as
+     * the no-op it is, instead of a rejection in the log that reads like a bug.
+     */
+    private fun holdEventFor(state: CallState, by: HoldParty): CallEvent? {
+        val holder = (state as? CallState.Held)?.by
+        if (holder == by || holder == HoldParty.BOTH) return null
+        return if (by == HoldParty.LOCAL) CallEvent.LocalHold else CallEvent.RemoteHold
+    }
+
+    /**
+     * Our resume re-INVITE going out, but only from a hold that is ours to lift.
+     *
+     * A call the far end alone is holding cannot be resumed from this side, and the FSM
+     * says so by rejecting `LocalResume` there. The stack should never report `Resuming`
+     * for one; if it does, nothing is reported rather than an event that would be refused.
+     */
+    private fun resumeStartedEventFor(state: CallState): CallEvent? =
+        if (state is CallState.Held && state.by != HoldParty.REMOTE) CallEvent.LocalResume else null
+
+    /**
+     * What media running again means, given where the call was.
+     *
+     * `Resuming` is our own resume completing. A call the far end was holding is the far
+     * end resuming it. Anything else — a call that was simply connected, or one whose
+     * media re-negotiated without a hold — has nothing to report, and inventing an event
+     * there would be a second transition out of a state that never moved.
+     */
+    private fun resumeEventFor(state: CallState): CallEvent? = when {
+        state is CallState.Resuming -> CallEvent.ResumeConfirmed
+        state is CallState.Held && state.by != HoldParty.LOCAL -> CallEvent.RemoteResume
+        else -> null
     }
 
     /**

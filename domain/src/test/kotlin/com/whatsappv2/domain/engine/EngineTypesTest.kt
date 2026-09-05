@@ -1,12 +1,15 @@
 package com.whatsappv2.domain.engine
 
 import com.whatsappv2.core.common.result.getOrNull
+import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallControls
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
+import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.SipUri
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -178,5 +181,60 @@ class PushTokenTest {
     fun `a blank provider or token is rejected`() {
         assertFailsWith<IllegalArgumentException> { PushToken("", "s", "t") }
         assertFailsWith<IllegalArgumentException> { PushToken("fcm", "s", "  ") }
+    }
+}
+
+/**
+ * The registry for a platform that has none.
+ *
+ * Two real uses — a JVM test that is not exercising the platform, and a device whose
+ * Telecom refused the phone account — so "permits everything and remembers nothing" is
+ * behaviour worth pinning rather than an accident of a stub.
+ */
+class UnmanagedCallRegistryTest {
+
+    private val callId = CallId("call-1")
+
+    @Test
+    fun `it permits calls, because the alternative is an app that cannot dial`() = runTest {
+        val snapshot = CallSnapshot(
+            callId = callId,
+            accountId = AccountId("acct-1"),
+            remote = ALICE,
+            remoteDisplayName = null,
+            direction = CallDirection.OUTGOING,
+            state = CallState.Outgoing.Calling,
+            media = MediaProfile.AUDIO,
+            startedAtEpochMillis = 0L,
+            connectedAtEpochMillis = null,
+        )
+        val incoming = IncomingCall(
+            callId = callId,
+            accountId = AccountId("acct-1"),
+            from = ALICE,
+            fromDisplayName = null,
+            offeredMedia = MediaProfile.AUDIO,
+            receivedAtEpochMillis = 0L,
+        )
+
+        assertTrue(UnmanagedCallRegistry.registerOutgoing(snapshot))
+        assertTrue(UnmanagedCallRegistry.registerIncoming(incoming))
+    }
+
+    @Test
+    fun `every notification is accepted and dropped`() {
+        // Nothing to assert but that they are callable and harmless: a call the platform
+        // never heard of must not throw, whichever notification arrives for it.
+        UnmanagedCallRegistry.onConnected(callId)
+        UnmanagedCallRegistry.onHoldChanged(callId, held = true)
+        UnmanagedCallRegistry.setMuted(callId, muted = true)
+        UnmanagedCallRegistry.onEnded(callId, HangupReason.REMOTE_HANGUP)
+    }
+
+    @Test
+    fun `it refuses a route, because it has no platform to ask`() = runTest {
+        // False, not true: reporting a route as applied when nothing applied it is how the
+        // in-call screen ends up showing Bluetooth while audio plays on the earpiece.
+        assertFalse(UnmanagedCallRegistry.requestAudioRoute(callId, AudioRoute.BLUETOOTH))
     }
 }

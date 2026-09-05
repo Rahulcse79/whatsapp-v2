@@ -52,6 +52,26 @@ interface PlatformCallRegistry {
     fun onConnected(callId: CallId)
 
     /**
+     * The call went on hold, or came back (Task 41).
+     *
+     * The platform keeps its own idea of a call's state — a held call on a car display or
+     * a lock screen shows a resume button, not a hold one — and it does not learn about a
+     * re-INVITE by itself. Told for **both** directions of hold: a remote hold is still a
+     * held call as far as the system UI is concerned.
+     */
+    fun onHoldChanged(callId: CallId, held: Boolean)
+
+    /**
+     * The microphone was muted or unmuted (Task 42).
+     *
+     * Separate from the stack's own mute, and both are needed: the stack's is what stops
+     * uplink audio for this call, and the platform's is what the system call UI and a
+     * Bluetooth headset's mute button read. Setting only one leaves them disagreeing, and
+     * a headset that thinks it unmuted a live microphone is the dangerous half of that.
+     */
+    fun setMuted(callId: CallId, muted: Boolean)
+
+    /**
      * The call ended for a reason the platform did not cause.
      *
      * A remote hangup, a 486, a transport failure. Without this the platform holds audio
@@ -82,6 +102,8 @@ object UnmanagedCallRegistry : PlatformCallRegistry {
     override suspend fun registerOutgoing(call: CallSnapshot): Boolean = true
     override suspend fun registerIncoming(call: IncomingCall): Boolean = true
     override fun onConnected(callId: CallId) = Unit
+    override fun onHoldChanged(callId: CallId, held: Boolean) = Unit
+    override fun setMuted(callId: CallId, muted: Boolean) = Unit
     override fun onEnded(callId: CallId, reason: HangupReason) = Unit
     override suspend fun requestAudioRoute(callId: CallId, route: AudioRoute): Boolean = false
 }

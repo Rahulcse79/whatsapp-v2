@@ -36,6 +36,12 @@ class FakePlatformCallRegistry(
     val registeredOutgoing: MutableList<CallSnapshot> = mutableListOf()
     val registeredIncoming: MutableList<IncomingCall> = mutableListOf()
     val connected: MutableList<CallId> = mutableListOf()
+
+    /** Hold changes reported to the platform, in order. */
+    val holdChanges: MutableList<Pair<CallId, Boolean>> = mutableListOf()
+
+    /** Mute state as the platform was last told it, per call. */
+    val muted: MutableMap<CallId, Boolean> = mutableMapOf()
     val ended: MutableList<Pair<CallId, HangupReason>> = mutableListOf()
     val requestedRoutes: MutableList<Pair<CallId, AudioRoute>> = mutableListOf()
 
@@ -55,6 +61,14 @@ class FakePlatformCallRegistry(
 
     override fun onConnected(callId: CallId) {
         connected += callId
+    }
+
+    override fun onHoldChanged(callId: CallId, held: Boolean) {
+        holdChanges += callId to held
+    }
+
+    override fun setMuted(callId: CallId, muted: Boolean) {
+        this.muted[callId] = muted
     }
 
     override fun onEnded(callId: CallId, reason: HangupReason) {

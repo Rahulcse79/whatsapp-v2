@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Pause
@@ -24,7 +25,12 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -39,6 +45,26 @@ import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallControls
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.model.CallId
+import com.whatsappv2.domain.model.DtmfDigit
+
+/**
+ * What the call screen can do, gathered into one value.
+ *
+ * Seven callbacks and every one of them is the same kind of thing: something the user did.
+ * Grouping them keeps the screen's signature readable and means the next control — a
+ * transfer button, a video toggle — adds a field here rather than another argument threaded
+ * through four call sites. `:feature:dialer` groups its own for the same reason.
+ */
+@Stable
+data class CallActions(
+    val onAnswer: (Boolean) -> Unit = {},
+    val onReject: () -> Unit = {},
+    val onHangUp: () -> Unit = {},
+    val onToggleMute: (Boolean) -> Unit = {},
+    val onToggleSpeaker: (Boolean) -> Unit = {},
+    val onToggleHold: (Boolean) -> Unit = {},
+    val onDtmf: (DtmfDigit) -> Unit = {},
+)
 
 /**
  * The call screen (Tasks 37 and 39).
@@ -55,12 +81,7 @@ import com.whatsappv2.domain.model.CallId
 internal fun CallScreen(
     state: CallUiState,
     snackbarHostState: SnackbarHostState,
-    onAnswer: (Boolean) -> Unit,
-    onReject: () -> Unit,
-    onHangUp: () -> Unit,
-    onToggleMute: (Boolean) -> Unit,
-    onToggleSpeaker: (Boolean) -> Unit,
-    onToggleHold: (Boolean) -> Unit,
+    actions: CallActions,
     modifier: Modifier = Modifier,
 ) {
     Scaffold(
@@ -88,30 +109,27 @@ internal fun CallScreen(
                     modifier = Modifier.testTag(TAG_ENDED),
                 )
 
-                is CallUiState.Active -> ActiveCall(
-                    call = state.call,
-                    onAnswer = onAnswer,
-                    onReject = onReject,
-                    onHangUp = onHangUp,
-                    onToggleMute = onToggleMute,
-                    onToggleSpeaker = onToggleSpeaker,
-                    onToggleHold = onToggleHold,
-                )
+                is CallUiState.Active -> ActiveCall(call = state.call, actions = actions)
             }
         }
     }
 }
 
 @Composable
-private fun ActiveCall(
-    call: CallDisplay,
-    onAnswer: (Boolean) -> Unit,
-    onReject: () -> Unit,
-    onHangUp: () -> Unit,
-    onToggleMute: (Boolean) -> Unit,
-    onToggleSpeaker: (Boolean) -> Unit,
-    onToggleHold: (Boolean) -> Unit,
-) {
+private fun ActiveCall(call: CallDisplay, actions: CallActions) {
+    // Local to the screen, because neither is call state: the keypad being open is a view
+    // preference, and the digits are a record of what was sent, which the engine does not
+    // keep and must not be asked for. Saveable, so a rotation mid-sequence does not lose
+    // the half a caller has already typed into an IVR.
+    var keypadOpen by rememberSaveable(call.callId.value) { mutableStateOf(false) }
+    var dialled by rememberSaveable(call.callId.value) { mutableStateOf("") }
+
+    // Derived rather than written back: a call that stops being connected hides the keypad,
+    // because DTMF needs a running media path, but the user's own choice is remembered and
+    // the keys come back when the call does. Assigning to the state here instead would be a
+    // write during composition, which is how a recomposition loop starts.
+    val keypadShown = keypadOpen && call.availability.canSendDtmf
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -121,57 +139,76 @@ private fun ActiveCall(
     ) {
         Spacer(Modifier.weight(1f))
 
-        Avatar(displayName = call.title, size = AppTheme.sizing.avatarLarge)
-
-        Text(
-            text = call.title,
-            style = MaterialTheme.typography.headlineSmall,
-            textAlign = TextAlign.Center,
-            modifier = Modifier
-                .padding(top = AppTheme.spacing.large)
-                .testTag(TAG_TITLE),
-        )
-        call.subtitle?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(top = AppTheme.spacing.extraSmall),
-            )
-        }
-
-        Text(
-            text = call.statusLine(),
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .padding(top = AppTheme.spacing.small)
-                .testTag(TAG_STATUS),
-        )
+        // The avatar gives way to the keypad rather than being scrolled off it: on a small
+        // screen both do not fit, and the keys are what the caller is trying to reach.
+        CallIdentity(call = call, showAvatar = !keypadShown)
 
         Spacer(Modifier.weight(1f))
 
         if (call.availability.canAnswer) {
-            IncomingActions(call = call, onAnswer = onAnswer, onReject = onReject)
+            IncomingActions(call = call, actions = actions)
         } else {
+            if (keypadShown) {
+                CallKeypad(
+                    dialled = dialled,
+                    onDigit = {
+                        dialled += it.symbol
+                        actions.onDtmf(it)
+                    },
+                    onHide = { keypadOpen = false },
+                    modifier = Modifier.padding(bottom = AppTheme.spacing.large),
+                )
+            }
             InCallActions(
                 call = call,
-                onHangUp = onHangUp,
-                onToggleMute = onToggleMute,
-                onToggleSpeaker = onToggleSpeaker,
-                onToggleHold = onToggleHold,
+                actions = actions,
+                keypadOpen = keypadShown,
+                onToggleKeypad = { keypadOpen = !keypadShown },
             )
         }
     }
 }
 
+/**
+ * Who the call is with, and what it is doing.
+ *
+ * The same block in every phase, because a call's identity does not change when its state
+ * does — only the line underneath it does, and that line is [CallDisplay.statusLine].
+ */
 @Composable
-private fun IncomingActions(
-    call: CallDisplay,
-    onAnswer: (Boolean) -> Unit,
-    onReject: () -> Unit,
-) {
+private fun CallIdentity(call: CallDisplay, showAvatar: Boolean) {
+    if (showAvatar) Avatar(displayName = call.title, size = AppTheme.sizing.avatarLarge)
+
+    Text(
+        text = call.title,
+        style = MaterialTheme.typography.headlineSmall,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+            .padding(top = AppTheme.spacing.large)
+            .testTag(TAG_TITLE),
+    )
+    call.subtitle?.let {
+        Text(
+            text = it,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = AppTheme.spacing.extraSmall),
+        )
+    }
+
+    Text(
+        text = call.statusLine(),
+        style = MaterialTheme.typography.bodyLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .padding(top = AppTheme.spacing.small)
+            .testTag(TAG_STATUS),
+    )
+}
+
+@Composable
+private fun IncomingActions(call: CallDisplay, actions: CallActions) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -181,7 +218,7 @@ private fun IncomingActions(
         CallActionButton(
             icon = Icons.Filled.CallEnd,
             contentDescription = "Decline call",
-            onClick = onReject,
+            onClick = actions.onReject,
             style = CallActionStyle.HANG_UP,
             enabled = call.availability.canReject,
             label = "Decline",
@@ -193,7 +230,7 @@ private fun IncomingActions(
             CallActionButton(
                 icon = Icons.Filled.Videocam,
                 contentDescription = "Answer with video",
-                onClick = { onAnswer(true) },
+                onClick = { actions.onAnswer(true) },
                 style = CallActionStyle.ANSWER,
                 label = "Video",
                 modifier = Modifier.testTag(TAG_ANSWER_VIDEO),
@@ -202,7 +239,7 @@ private fun IncomingActions(
         CallActionButton(
             icon = Icons.Filled.Call,
             contentDescription = "Answer call",
-            onClick = { onAnswer(false) },
+            onClick = { actions.onAnswer(false) },
             style = CallActionStyle.ANSWER,
             enabled = call.availability.canAnswer,
             label = "Answer",
@@ -214,67 +251,100 @@ private fun IncomingActions(
 @Composable
 private fun InCallActions(
     call: CallDisplay,
-    onHangUp: () -> Unit,
-    onToggleMute: (Boolean) -> Unit,
-    onToggleSpeaker: (Boolean) -> Unit,
-    onToggleHold: (Boolean) -> Unit,
+    actions: CallActions,
+    keypadOpen: Boolean,
+    onToggleKeypad: () -> Unit,
 ) {
-    val controls = call.controls
-    val availability = call.availability
-    val speakerOn = controls.audioRoute == AudioRoute.SPEAKER
-    val held = availability.canResume
-
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-        ) {
-            CallActionButton(
-                icon = if (controls.isMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
-                contentDescription = if (controls.isMuted) "Unmute microphone" else "Mute microphone",
-                activeStateDescription = if (controls.isMuted) "Muted" else "Not muted",
-                onClick = { onToggleMute(!controls.isMuted) },
-                enabled = availability.canMute,
-                active = controls.isMuted,
-                label = "Mute",
-                modifier = Modifier.testTag(TAG_MUTE),
-            )
-            CallActionButton(
-                icon = Icons.AutoMirrored.Filled.VolumeUp,
-                contentDescription = if (speakerOn) "Turn off speakerphone" else "Turn on speakerphone",
-                activeStateDescription = if (speakerOn) "On" else "Off",
-                onClick = { onToggleSpeaker(!speakerOn) },
-                enabled = availability.canChangeRoute,
-                active = speakerOn,
-                label = "Speaker",
-                modifier = Modifier.testTag(TAG_SPEAKER),
-            )
-            CallActionButton(
-                icon = if (held) Icons.Filled.PlayArrow else Icons.Filled.Pause,
-                contentDescription = if (held) "Resume call" else "Hold call",
-                activeStateDescription = if (held) "On hold" else "Not on hold",
-                onClick = { onToggleHold(!held) },
-                // Task 39: unavailable before Connected, and it is the phase that says so.
-                enabled = availability.canHold || availability.canResume,
-                active = held,
-                label = "Hold",
-                modifier = Modifier.testTag(TAG_HOLD),
-            )
-        }
+        CallControlRow(
+            call = call,
+            actions = actions,
+            keypadOpen = keypadOpen,
+            onToggleKeypad = onToggleKeypad,
+        )
 
         CallActionButton(
             icon = Icons.Filled.CallEnd,
             contentDescription = "End call",
-            onClick = onHangUp,
+            onClick = actions.onHangUp,
             style = CallActionStyle.HANG_UP,
             enabled = call.availability.canHangUp,
             label = "End",
             modifier = Modifier
                 .padding(top = AppTheme.spacing.extraLarge, bottom = AppTheme.spacing.extraLarge)
                 .testTag(TAG_HANG_UP),
+        )
+    }
+}
+
+/**
+ * Mute, speaker, hold and the keypad.
+ *
+ * Every `enabled` here comes from [CallControlAvailability]; there is no flag to forget to
+ * set, which is Task 39's second done-when expressed as code.
+ */
+@Composable
+private fun CallControlRow(
+    call: CallDisplay,
+    actions: CallActions,
+    keypadOpen: Boolean,
+    onToggleKeypad: () -> Unit,
+) {
+    val controls = call.controls
+    val availability = call.availability
+    val speakerOn = controls.audioRoute == AudioRoute.SPEAKER
+    val held = availability.canResume
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+    ) {
+        CallActionButton(
+            icon = if (controls.isMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
+            contentDescription = if (controls.isMuted) "Unmute microphone" else "Mute microphone",
+            activeStateDescription = if (controls.isMuted) "Muted" else "Not muted",
+            onClick = { actions.onToggleMute(!controls.isMuted) },
+            enabled = availability.canMute,
+            active = controls.isMuted,
+            label = "Mute",
+            modifier = Modifier.testTag(TAG_MUTE),
+        )
+        CallActionButton(
+            icon = Icons.AutoMirrored.Filled.VolumeUp,
+            contentDescription = if (speakerOn) "Turn off speakerphone" else "Turn on speakerphone",
+            activeStateDescription = if (speakerOn) "On" else "Off",
+            onClick = { actions.onToggleSpeaker(!speakerOn) },
+            enabled = availability.canChangeRoute,
+            active = speakerOn,
+            label = "Speaker",
+            modifier = Modifier.testTag(TAG_SPEAKER),
+        )
+        CallActionButton(
+            icon = if (held) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+            contentDescription = if (held) "Resume call" else "Hold call",
+            activeStateDescription = if (held) "On hold" else "Not on hold",
+            onClick = { actions.onToggleHold(!held) },
+            // Task 39: unavailable before Connected, and it is the phase that says so.
+            enabled = availability.canHold || availability.canResume,
+            active = held,
+            label = "Hold",
+            modifier = Modifier.testTag(TAG_HOLD),
+        )
+        CallActionButton(
+            icon = Icons.Filled.Dialpad,
+            contentDescription = if (keypadOpen) "Hide the keypad" else "Show the keypad",
+            activeStateDescription = if (keypadOpen) "Shown" else "Hidden",
+            onClick = onToggleKeypad,
+            // A tone needs a running media path, so the phase decides this exactly as
+            // it decides hold - and a held call's keypad is disabled, not hidden, so
+            // the control does not move under the user's thumb (Task 43).
+            enabled = availability.canSendDtmf,
+            active = keypadOpen,
+            label = "Keypad",
+            modifier = Modifier.testTag(TAG_KEYPAD_TOGGLE),
         )
     }
 }
@@ -332,6 +402,7 @@ internal const val TAG_HANG_UP = "call-hang-up"
 internal const val TAG_MUTE = "call-mute"
 internal const val TAG_SPEAKER = "call-speaker"
 internal const val TAG_HOLD = "call-hold"
+internal const val TAG_KEYPAD_TOGGLE = "call-keypad-toggle"
 internal const val TAG_CONNECTING = "call-connecting"
 internal const val TAG_ENDED = "call-ended"
 
@@ -346,12 +417,7 @@ private fun IncomingCallPreview() = PreviewSurface {
     CallScreen(
         state = CallUiState.Active(previewCall(CallPhase.INCOMING, direction = CallDirection.INCOMING)),
         snackbarHostState = remember { SnackbarHostState() },
-        onAnswer = {},
-        onReject = {},
-        onHangUp = {},
-        onToggleMute = {},
-        onToggleSpeaker = {},
-        onToggleHold = {},
+        actions = CallActions(),
     )
 }
 
@@ -361,12 +427,7 @@ private fun OutgoingRingingPreview() = PreviewSurface {
     CallScreen(
         state = CallUiState.Active(previewCall(CallPhase.RINGING)),
         snackbarHostState = remember { SnackbarHostState() },
-        onAnswer = {},
-        onReject = {},
-        onHangUp = {},
-        onToggleMute = {},
-        onToggleSpeaker = {},
-        onToggleHold = {},
+        actions = CallActions(),
     )
 }
 
@@ -378,12 +439,7 @@ private fun ConnectedCallPreview() = PreviewSurface {
             previewCall(CallPhase.CONNECTED, durationSeconds = PREVIEW_DURATION_SECONDS),
         ),
         snackbarHostState = remember { SnackbarHostState() },
-        onAnswer = {},
-        onReject = {},
-        onHangUp = {},
-        onToggleMute = {},
-        onToggleSpeaker = {},
-        onToggleHold = {},
+        actions = CallActions(),
     )
 }
 
@@ -393,12 +449,7 @@ private fun HeldCallPreview() = PreviewSurface {
     CallScreen(
         state = CallUiState.Active(previewCall(CallPhase.ON_HOLD)),
         snackbarHostState = remember { SnackbarHostState() },
-        onAnswer = {},
-        onReject = {},
-        onHangUp = {},
-        onToggleMute = {},
-        onToggleSpeaker = {},
-        onToggleHold = {},
+        actions = CallActions(),
     )
 }
 

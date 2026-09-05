@@ -86,6 +86,20 @@ class CallUiStateTest {
     }
 
     @Test
+    fun `the keypad is offered on a connected call and nowhere else`() {
+        // RFC 4733 digits ride the RTP stream, and a held call's stream is paused, so a
+        // keypad offered there would send tones into a media path that is not running.
+        assertTrue(CallControlAvailability.of(CallPhase.CONNECTED).canSendDtmf)
+
+        for (phase in CallPhase.entries.filterNot { it == CallPhase.CONNECTED }) {
+            assertFalse(
+                CallControlAvailability.of(phase).canSendDtmf,
+                "$phase has no running media path to carry a tone",
+            )
+        }
+    }
+
+    @Test
     fun `an ended call offers nothing at all`() {
         val ended = CallControlAvailability.of(CallPhase.ENDED)
 

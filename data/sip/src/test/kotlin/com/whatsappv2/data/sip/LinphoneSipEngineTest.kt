@@ -17,12 +17,15 @@ import com.whatsappv2.data.sip.registration.StackRegistrationEvent
 import com.whatsappv2.data.sip.registration.StackRegistrationState
 import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallState
+import com.whatsappv2.domain.call.HoldParty
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.PushToken
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.CodecPreferences
+import com.whatsappv2.domain.model.DtmfDigit
+import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.NatPolicy
@@ -33,6 +36,7 @@ import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.repository.SipAccountRepository
+import com.whatsappv2.domain.testing.FakeAppSettingsRepository
 import com.whatsappv2.domain.testing.FakePlatformCallRegistry
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -92,6 +96,9 @@ class LinphoneSipEngineTest {
     /** Telecom, faked. Permits everything unless a test says otherwise. */
     private val platform = FakePlatformCallRegistry()
 
+    /** App settings, which is where the DTMF transport comes from (Task 43). */
+    private val settings = FakeAppSettingsRepository()
+
     private fun engine(scope: TestScope) =
         // The same fake twice: one object implements both halves of the seam, exactly as
         // the real gateway does, because one `Core` owns registration and calls alike.
@@ -99,6 +106,7 @@ class LinphoneSipEngineTest {
             gateway,
             gateway,
             repository,
+            settings,
             networkMonitor,
             scope,
             NoOpLogger,
@@ -112,6 +120,26 @@ class LinphoneSipEngineTest {
         engine.start()
         engine.register(account)
         gateway.emit(account.id.value, StackRegistrationState.OK)
+        runCurrent()
+        return engine
+    }
+
+    /** A call that has been placed and answered, ready for hold, mute or a DTMF digit. */
+    private suspend fun TestScope.connectedCall(): LinphoneSipEngine {
+        val engine = registeredEngine()
+        val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+        gateway.emitCall(callId.value, StackCallState.CONNECTED)
+        runCurrent()
+        return engine
+    }
+
+    /** A connected call this end has put on hold, with the stack's acceptance in. */
+    private suspend fun TestScope.heldCall(): LinphoneSipEngine {
+        val engine = connectedCall()
+        val callId = engine.activeCalls.value.single().callId
+        engine.setHold(callId, held = true)
+        gateway.emitCall(callId.value, StackCallState.PAUSED)
         runCurrent()
         return engine
     }
@@ -448,6 +476,243 @@ class LinphoneSipEngineTest {
             )
             engine.stop()
         }
+
+    // ---------------------------------------------------------------- hold (Task 41)
+
+    @Test
+    fun `holding asks the stack and waits for it, rather than showing a hold that has not happened`() =
+        runTest {
+            // A re-INVITE the far end answers with 488 is a hold that did not happen. The
+            // state moves on the stack's event, exactly as Connected does on the answer.
+            val engine = connectedCall()
+            val callId = engine.activeCalls.value.single().callId
+
+            assertTrue(engine.setHold(callId, held = true) is Outcome.Success)
+
+            assertEquals(listOf(callId.value to true), gateway.holdRequests)
+            assertIs<CallState.Connected>(
+                engine.activeCalls.value.single().state,
+                "the call is not held until the re-INVITE is accepted",
+            )
+
+            gateway.emitCall(callId.value, StackCallState.PAUSED)
+            runCurrent()
+
+            assertEquals(CallState.Held(HoldParty.LOCAL), engine.activeCalls.value.single().state)
+            assertEquals(listOf(callId to true), platform.holdChanges)
+            engine.stop()
+        }
+
+    @Test
+    fun `resuming goes through Resuming and only reaches Connected when media runs again`() =
+        runTest {
+            val engine = heldCall()
+            val callId = engine.activeCalls.value.single().callId
+
+            assertTrue(engine.setHold(callId, held = false) is Outcome.Success)
+            assertEquals(callId.value to false, gateway.holdRequests.last())
+
+            gateway.emitCall(callId.value, StackCallState.RESUMING)
+            runCurrent()
+            assertIs<CallState.Resuming>(engine.activeCalls.value.single().state)
+
+            gateway.emitCall(callId.value, StackCallState.STREAMS_RUNNING)
+            runCurrent()
+
+            assertIs<CallState.Connected>(engine.activeCalls.value.single().state)
+            assertEquals(listOf(callId to true, callId to false), platform.holdChanges)
+            engine.stop()
+        }
+
+    @Test
+    fun `a hold by the far end is detected and reported as theirs`() = runTest {
+        // Task 41's second done-when. Shown differently because the remedy is different:
+        // there is nothing the local user can press to lift it.
+        val engine = connectedCall()
+        val callId = engine.activeCalls.value.single().callId
+
+        gateway.emitCall(callId.value, StackCallState.PAUSED_BY_REMOTE)
+        runCurrent()
+
+        assertEquals(CallState.Held(HoldParty.REMOTE), engine.activeCalls.value.single().state)
+        // Telecom is told either way: as far as the system UI is concerned it is held.
+        assertEquals(listOf(callId to true), platform.holdChanges)
+        engine.stop()
+    }
+
+    @Test
+    fun `resuming a call only the far end holds is refused rather than sent`() = runTest {
+        val engine = connectedCall()
+        val callId = engine.activeCalls.value.single().callId
+        gateway.emitCall(callId.value, StackCallState.PAUSED_BY_REMOTE)
+        runCurrent()
+
+        val result = engine.setHold(callId, held = false)
+
+        assertIs<SipError.InvalidState>(result.errorOrNull())
+        assertTrue(gateway.holdRequests.isEmpty(), "no re-INVITE for a hold that is not ours")
+        engine.stop()
+    }
+
+    @Test
+    fun `with both ends holding, our resume leaves the call held by the far end`() = runTest {
+        // Task 41's third done-when. The whole reason HoldParty exists: a boolean here
+        // would resume a call the other party is still holding.
+        val engine = heldCall()
+        val callId = engine.activeCalls.value.single().callId
+
+        gateway.emitCall(callId.value, StackCallState.PAUSED_BY_REMOTE)
+        runCurrent()
+        assertEquals(CallState.Held(HoldParty.BOTH), engine.activeCalls.value.single().state)
+
+        engine.setHold(callId, held = false)
+        gateway.emitCall(callId.value, StackCallState.RESUMING)
+        runCurrent()
+
+        assertEquals(CallState.Held(HoldParty.REMOTE), engine.activeCalls.value.single().state)
+        assertTrue(
+            platform.holdChanges.none { !it.second },
+            "the call never came back, so Telecom must not be told it did",
+        )
+        engine.stop()
+    }
+
+    @Test
+    fun `holding a call that is still ringing is refused, because there is no dialog yet`() =
+        runTest {
+            val engine = registeredEngine()
+            val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+            runCurrent()
+
+            val result = engine.setHold(callId, held = true)
+
+            assertIs<SipError.InvalidState>(result.errorOrNull())
+            assertTrue(gateway.holdRequests.isEmpty())
+            engine.stop()
+        }
+
+    @Test
+    fun `a paused state repeated by the stack does not disturb a call already held`() = runTest {
+        // liblinphone re-reports Paused after a re-negotiation. The call must stay exactly
+        // where it is, and Telecom must not be told about a hold it already knows about.
+        val engine = heldCall()
+        val callId = engine.activeCalls.value.single().callId
+
+        gateway.emitCall(callId.value, StackCallState.PAUSED)
+        runCurrent()
+
+        assertEquals(CallState.Held(HoldParty.LOCAL), engine.activeCalls.value.single().state)
+        assertEquals(listOf(callId to true), platform.holdChanges)
+        engine.stop()
+    }
+
+    // ---------------------------------------------------------------- mute (Task 42)
+
+    @Test
+    fun `muting tells the platform as well as the stack`() = runTest {
+        // Two mutes, and both are needed: the stack's stops uplink audio for this call,
+        // and the platform's is what the system UI and a headset's mute button read.
+        val engine = connectedCall()
+        val callId = engine.activeCalls.value.single().callId
+
+        engine.setMuted(callId, muted = true)
+
+        assertEquals(true, gateway.mutedCalls[callId.value])
+        assertEquals(true, platform.muted[callId])
+        engine.stop()
+    }
+
+    @Test
+    fun `muting a call that is already muted is success, not a second round trip`() = runTest {
+        // A headset's mute button arrives here through Telecom, so answering it by setting
+        // the platform's mute again would be this app echoing the platform back at itself.
+        val engine = connectedCall()
+        val callId = engine.activeCalls.value.single().callId
+        engine.setMuted(callId, muted = true)
+
+        gateway.mutedCalls.clear()
+        platform.muted.clear()
+        val result = engine.setMuted(callId, muted = true)
+
+        assertTrue(result is Outcome.Success)
+        assertTrue(gateway.mutedCalls.isEmpty(), "the stack was told nothing new")
+        assertTrue(platform.muted.isEmpty(), "the platform was told nothing new")
+        engine.stop()
+    }
+
+    // ---------------------------------------------------------------- DTMF (Task 43)
+
+    @Test
+    fun `a digit rides RFC 4733 unless the settings say otherwise`() = runTest {
+        val engine = connectedCall()
+        val callId = engine.activeCalls.value.single().callId
+
+        assertTrue(engine.sendDtmf(callId, DtmfDigit.FIVE) is Outcome.Success)
+
+        assertEquals(
+            FakeLinphoneCoreGateway.SentDtmf(callId.value, '5', useInfo = false),
+            gateway.sentDtmf.single(),
+        )
+        engine.stop()
+    }
+
+    @Test
+    fun `the transport is read per digit, so a changed setting applies to the next one`() =
+        runTest {
+            // Not the next call: a user who changes the mode because an IVR is not hearing
+            // them expects the next key press to be the one that works.
+            val engine = connectedCall()
+            val callId = engine.activeCalls.value.single().callId
+
+            engine.sendDtmf(callId, DtmfDigit.ONE)
+            settings.setDtmfMode(DtmfMode.SIP_INFO)
+            engine.sendDtmf(callId, DtmfDigit.TWO)
+
+            assertEquals(listOf(false, true), gateway.sentDtmf.map { it.useInfo })
+            engine.stop()
+        }
+
+    @Test
+    fun `all sixteen tones reach the stack as themselves`() = runTest {
+        // Task 43's third done-when, as far as the JVM can take it: A-D are rare but
+        // required by some PBX signalling, and an enum that carries them is worth nothing
+        // if the path below drops them.
+        val engine = connectedCall()
+        val callId = engine.activeCalls.value.single().callId
+
+        DtmfDigit.entries.forEach { engine.sendDtmf(callId, it) }
+
+        assertEquals(
+            DtmfDigit.entries.map { it.symbol },
+            gateway.sentDtmf.map { it.digit },
+        )
+        engine.stop()
+    }
+
+    @Test
+    fun `a digit sent before the call is answered is refused, not swallowed`() = runTest {
+        // There is no media path to carry it, and reporting success would leave the user
+        // pressing keys an IVR never hears.
+        val engine = registeredEngine()
+        val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+
+        val result = engine.sendDtmf(callId, DtmfDigit.ONE)
+
+        assertIs<SipError.InvalidState>(result.errorOrNull())
+        assertTrue(gateway.sentDtmf.isEmpty())
+        engine.stop()
+    }
+
+    @Test
+    fun `a digit for a call the engine does not know fails as an unknown call`() = runTest {
+        val engine = registeredEngine()
+
+        val result = engine.sendDtmf(CallId("never-existed"), DtmfDigit.ONE)
+
+        assertEquals(SipError.UnknownCall, result.errorOrNull())
+        engine.stop()
+    }
 
     // ---------------------------------------------------------------- push (Task 38)
 
