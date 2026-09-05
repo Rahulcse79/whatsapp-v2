@@ -3,6 +3,7 @@ package com.whatsappv2.telecom
 import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallEvent
 import com.whatsappv2.domain.model.HangupReason
+import com.whatsappv2.domain.model.MediaProfile
 
 /**
  * Every decision Telecom asks of this app, with no Android type in sight (Task 34).
@@ -58,6 +59,15 @@ internal object TelecomPolicy {
         AudioRoute.SPEAKER -> ROUTE_SPEAKER
         AudioRoute.EARPIECE -> ROUTE_EARPIECE
     }
+
+    /**
+     * What Telecom's answer button answers with.
+     *
+     * Audio, always. The platform's answer action has no way to say "with video", and
+     * guessing video from the offer would turn a lock-screen tap into an unannounced
+     * camera. A video answer is an explicit button on this app's own incoming screen.
+     */
+    val telecomAnswerMedia: MediaProfile = MediaProfile.AUDIO
 
     /** Hold and unhold, as the FSM understands them. */
     fun holdEvent(held: Boolean): CallEvent =
