@@ -51,14 +51,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
@@ -191,9 +189,22 @@ internal class LinphoneSipEngine @Inject constructor(
      */
     private val calls = MutableStateFlow<Map<CallId, CallSnapshot>>(emptyMap())
 
-    override val activeCalls: StateFlow<List<CallSnapshot>> =
-        calls.map { it.values.toList() }
-            .stateIn(scope, SharingStarted.Eagerly, emptyList())
+    /**
+     * The same calls as a list.
+     *
+     * Derived on write rather than with `stateIn`, which starts a sharing coroutine in
+     * [scope] at construction and hands back no way to end it. [collectJob] and
+     * [callCollectJob] are held precisely so [stop] can end them; a job that cannot be
+     * ended outlives the stack it reports on, and under `runTest` it is a child that
+     * never finishes.
+     */
+    private val active = MutableStateFlow<List<CallSnapshot>>(emptyList())
+    override val activeCalls: StateFlow<List<CallSnapshot>> = active.asStateFlow()
+
+    /** The only way [calls] changes, so [active] cannot fall behind it. */
+    private fun updateCalls(transform: (Map<CallId, CallSnapshot>) -> Map<CallId, CallSnapshot>) {
+        active.value = calls.updateAndGet(transform).values.toList()
+    }
 
     /**
      * Inbound INVITEs (Task 37).
@@ -296,7 +307,7 @@ internal class LinphoneSipEngine @Inject constructor(
     private fun advance(id: CallId, current: CallSnapshot, event: StackCallEvent) {
         if (CallStateMapper.isTerminal(event.state)) {
             val reason = CallStateMapper.toHangupReason(event)
-            calls.update { it - id }
+            updateCalls { it - id }
             // Telecom is told, because it did not cause this: without it the platform
             // keeps audio focus for a call that is over (Task 34).
             platform.onEnded(id, reason)
@@ -327,7 +338,7 @@ internal class LinphoneSipEngine @Inject constructor(
         val isHeld = next is CallState.Held
         if (next != null && wasHeld != isHeld) platform.onHoldChanged(id, isHeld)
 
-        calls.update { live ->
+        updateCalls { live ->
             live + (
                 id to current.copy(
                     state = next ?: current.state,
@@ -358,7 +369,7 @@ internal class LinphoneSipEngine @Inject constructor(
 
         val media = if (event.videoOffered) MediaProfile.AUDIO_VIDEO else MediaProfile.AUDIO
         val receivedAt = clock.nowEpochMillis()
-        calls.update {
+        updateCalls {
             it + (
                 id to CallSnapshot(
                     callId = id,
@@ -392,7 +403,7 @@ internal class LinphoneSipEngine @Inject constructor(
             } else {
                 logger.info(TAG, "Telecom refused an inbound call; answering busy")
                 callGateway.rejectCall(event.callKey, busy = true)
-                calls.update { it - id }
+                updateCalls { it - id }
             }
         }
     }
@@ -435,14 +446,14 @@ internal class LinphoneSipEngine @Inject constructor(
             startedAtEpochMillis = clock.nowEpochMillis(),
             connectedAtEpochMillis = null,
         )
-        calls.update { it + (callId to snapshot) }
+        updateCalls { it + (callId to snapshot) }
 
         // Telecom, before the INVITE. It knows about the cellular call this app cannot
         // see, and a refusal is honoured rather than worked around (Task 34, §3). The
         // snapshot goes back out again on refusal: a call that will never exist must not
         // be left on screen.
         if (!platform.registerOutgoing(snapshot)) {
-            calls.update { it - callId }
+            updateCalls { it - callId }
             logger.info(TAG, "Telecom refused an outgoing call")
             return failure(SipError.CallNotPermitted)
         }
@@ -471,7 +482,7 @@ internal class LinphoneSipEngine @Inject constructor(
         // Removed locally rather than waiting for the stack's ENDED event. The user
         // pressed hang up; a row that lingers until a BYE is acknowledged reads as a
         // button that did nothing.
-        calls.update { it - callId }
+        updateCalls { it - callId }
         platform.onEnded(callId, reason)
         return success(Unit)
     }
@@ -508,7 +519,7 @@ internal class LinphoneSipEngine @Inject constructor(
         if (callId !in calls.value) return success(Unit)
 
         callGateway.rejectCall(callId.value, busy = reason == HangupReason.BUSY)
-        calls.update { it - callId }
+        updateCalls { it - callId }
         platform.onEnded(callId, reason)
         return success(Unit)
     }
@@ -659,7 +670,7 @@ internal class LinphoneSipEngine @Inject constructor(
 
             is TransitionResult.Moved -> {
                 onAccepted()
-                calls.update { it + (callId to call.copy(state = result.state)) }
+                updateCalls { it + (callId to call.copy(state = result.state)) }
                 success(Unit)
             }
         }
@@ -774,7 +785,7 @@ internal class LinphoneSipEngine @Inject constructor(
         // Every live call goes down with the stack, and Telecom is told so - a connection
         // left behind keeps audio focus for a call that no longer exists anywhere.
         val live = calls.value.keys
-        calls.value = emptyMap()
+        updateCalls { emptyMap() }
         live.forEach { platform.onEnded(it, HangupReason.NETWORK_FAILURE) }
     }
 
