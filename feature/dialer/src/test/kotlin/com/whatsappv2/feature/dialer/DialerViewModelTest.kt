@@ -283,7 +283,12 @@ class DialerViewModelTest {
     private fun given(vararg accounts: SipAccount, registered: Boolean = true) {
         accounts.forEach { account ->
             repository.given(account)
-            if (registered) engine.givenRegistered(account)
+            // Known to the engine either way. The app hands every account to the stack at
+            // startup, so "not registered" is a state the engine holds for an account it
+            // has — an account it has never heard of is UnknownAccount, a different error
+            // reaching the user as a different sentence.
+            engine.givenRegistered(account)
+            if (!registered) engine.simulateRegistrationExpiry(account.id)
         }
     }
 
