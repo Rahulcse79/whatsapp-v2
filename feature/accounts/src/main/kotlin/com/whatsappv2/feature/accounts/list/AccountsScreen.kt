@@ -87,6 +87,9 @@ fun AccountsScreen(
     onLogOut: (AccountId, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // The two destructive actions are confirmed, so the row that is waiting on an answer
+    // has to outlive the click. Held here, above the list, so scrolling the pending row
+    // off screen cannot dismiss its dialog.
     var pendingDeletion by remember { mutableStateOf<AccountRow?>(null) }
     var pendingLogout by remember { mutableStateOf<AccountRow?>(null) }
 
@@ -99,56 +102,21 @@ fun AccountsScreen(
             }
         },
     ) { innerPadding ->
-        when (state) {
-            AccountsUiState.Loading -> LoadingState(
-                modifier = Modifier.padding(innerPadding),
-                label = "Loading accounts",
-            )
-
-            AccountsUiState.Empty -> EmptyState(
-                title = "No SIP accounts",
-                description = "Add an account to register and start making calls.",
-                actionLabel = "Add account",
-                onAction = onAddAccount,
-                modifier = Modifier.padding(innerPadding),
-            )
-
-            is AccountsUiState.Content -> LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-            ) {
-                items(state.accounts, key = { it.id.value }) { account ->
-                    AccountListItem(
-                        account = account,
-                        onClick = { onEditAccount(account.id) },
-                        onSetDefault = { onSetDefault(account.id) },
-                        onDelete = { pendingDeletion = account },
-                        onToggleSession = {
-                            if (account.isLoggedIn) {
-                                pendingLogout = account
-                            } else {
-                                // Logging in needs no confirmation: it takes nothing away
-                                // and the button already says what it does.
-                                onLogIn(account.id, account.label)
-                            }
-                        },
-                    )
-                    HorizontalDivider()
-                }
-            }
-        }
+        AccountsBody(
+            state = state,
+            onAddAccount = onAddAccount,
+            onEditAccount = onEditAccount,
+            onSetDefault = onSetDefault,
+            onDeleteRequest = { pendingDeletion = it },
+            onLogIn = onLogIn,
+            onLogOutRequest = { pendingLogout = it },
+            modifier = Modifier.padding(innerPadding),
+        )
     }
 
     pendingLogout?.let { account ->
-        ConfirmDialog(
-            title = "Log out of ${account.label}?",
-            // Says what survives as well as what stops, because this is the action people
-            // confuse with delete: the account stays, so logging back in needs no password.
-            message = "Calls to ${account.identity} will stop arriving. " +
-                "The account stays on this device and you can log back in without " +
-                "entering your password again.",
-            confirmLabel = "Log out",
+        LogOutConfirmation(
+            account = account,
             onConfirm = {
                 onLogOut(account.id, account.label)
                 pendingLogout = null
@@ -158,13 +126,8 @@ fun AccountsScreen(
     }
 
     pendingDeletion?.let { account ->
-        ConfirmDialog(
-            title = "Delete ${account.label}?",
-            // Names the consequence rather than asking a vague "are you sure": the SIP
-            // password is removed and cannot be recovered from the device.
-            message = "The password for ${account.identity} will be removed from this device.",
-            confirmLabel = "Delete",
-            destructive = true,
+        DeleteConfirmation(
+            account = account,
             onConfirm = {
                 onDelete(account.id, account.label)
                 pendingDeletion = null
@@ -172,6 +135,89 @@ fun AccountsScreen(
             onDismiss = { pendingDeletion = null },
         )
     }
+}
+
+/** The part of the screen the state actually selects: loading, empty, or the list. */
+@Composable
+private fun AccountsBody(
+    state: AccountsUiState,
+    onAddAccount: () -> Unit,
+    onEditAccount: (AccountId) -> Unit,
+    onSetDefault: (AccountId) -> Unit,
+    onDeleteRequest: (AccountRow) -> Unit,
+    onLogIn: (AccountId, String) -> Unit,
+    onLogOutRequest: (AccountRow) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    when (state) {
+        AccountsUiState.Loading -> LoadingState(modifier = modifier, label = "Loading accounts")
+
+        AccountsUiState.Empty -> EmptyState(
+            title = "No SIP accounts",
+            description = "Add an account to register and start making calls.",
+            actionLabel = "Add account",
+            onAction = onAddAccount,
+            modifier = modifier,
+        )
+
+        is AccountsUiState.Content -> LazyColumn(modifier = modifier.fillMaxSize()) {
+            items(state.accounts, key = { it.id.value }) { account ->
+                AccountListItem(
+                    account = account,
+                    onClick = { onEditAccount(account.id) },
+                    onSetDefault = { onSetDefault(account.id) },
+                    onDelete = { onDeleteRequest(account) },
+                    onToggleSession = {
+                        if (account.isLoggedIn) {
+                            onLogOutRequest(account)
+                        } else {
+                            // Logging in needs no confirmation: it takes nothing away
+                            // and the button already says what it does.
+                            onLogIn(account.id, account.label)
+                        }
+                    },
+                )
+                HorizontalDivider()
+            }
+        }
+    }
+}
+
+@Composable
+private fun LogOutConfirmation(
+    account: AccountRow,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ConfirmDialog(
+        title = "Log out of ${account.label}?",
+        // Says what survives as well as what stops, because this is the action people
+        // confuse with delete: the account stays, so logging back in needs no password.
+        message = "Calls to ${account.identity} will stop arriving. " +
+            "The account stays on this device and you can log back in without " +
+            "entering your password again.",
+        confirmLabel = "Log out",
+        onConfirm = onConfirm,
+        onDismiss = onDismiss,
+    )
+}
+
+@Composable
+private fun DeleteConfirmation(
+    account: AccountRow,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ConfirmDialog(
+        title = "Delete ${account.label}?",
+        // Names the consequence rather than asking a vague "are you sure": the SIP
+        // password is removed and cannot be recovered from the device.
+        message = "The password for ${account.identity} will be removed from this device.",
+        confirmLabel = "Delete",
+        destructive = true,
+        onConfirm = onConfirm,
+        onDismiss = onDismiss,
+    )
 }
 
 @Composable
@@ -191,65 +237,82 @@ private fun AccountListItem(
     ) {
         StatusIcon(account.status)
 
-        Column(
+        AccountSummary(
+            account = account,
             modifier = Modifier
                 .weight(1f)
                 .padding(horizontal = AppTheme.spacing.large),
-            verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraSmall),
-        ) {
-            Text(text = account.label, style = MaterialTheme.typography.titleMedium)
-            Text(
-                text = account.identity,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = account.status.label(),
-                style = MaterialTheme.typography.labelMedium,
-                color = if (account.status.needsAttention) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-        }
+        )
 
-        IconButton(onClick = onSetDefault, enabled = !account.isDefault) {
-            Icon(
-                imageVector = if (account.isDefault) Icons.Filled.Star else Icons.Filled.StarBorder,
-                contentDescription = if (account.isDefault) {
-                    "Default account"
-                } else {
-                    "Make ${account.label} the default account"
-                },
-                tint = if (account.isDefault) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-        }
-
-        IconButton(onClick = onToggleSession) {
-            Icon(
-                imageVector = if (account.isLoggedIn) {
-                    Icons.AutoMirrored.Filled.Logout
-                } else {
-                    Icons.AutoMirrored.Filled.Login
-                },
-                // Names the account, not just the action: a screen reader moving down a
-                // list of identical "Log out" buttons cannot say which one it is on.
-                contentDescription = if (account.isLoggedIn) {
-                    "Log out of ${account.label}"
-                } else {
-                    "Log in to ${account.label}"
-                },
-            )
-        }
+        DefaultAccountButton(account = account, onSetDefault = onSetDefault)
+        SessionButton(account = account, onToggleSession = onToggleSession)
 
         IconButton(onClick = onDelete) {
             Icon(Icons.Filled.Delete, contentDescription = "Delete ${account.label}")
         }
+    }
+}
+
+@Composable
+private fun AccountSummary(account: AccountRow, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraSmall),
+    ) {
+        Text(text = account.label, style = MaterialTheme.typography.titleMedium)
+        Text(
+            text = account.identity,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = account.status.label(),
+            style = MaterialTheme.typography.labelMedium,
+            color = if (account.status.needsAttention) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+    }
+}
+
+@Composable
+private fun DefaultAccountButton(account: AccountRow, onSetDefault: () -> Unit) {
+    IconButton(onClick = onSetDefault, enabled = !account.isDefault) {
+        Icon(
+            imageVector = if (account.isDefault) Icons.Filled.Star else Icons.Filled.StarBorder,
+            contentDescription = if (account.isDefault) {
+                "Default account"
+            } else {
+                "Make ${account.label} the default account"
+            },
+            tint = if (account.isDefault) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+    }
+}
+
+@Composable
+private fun SessionButton(account: AccountRow, onToggleSession: () -> Unit) {
+    IconButton(onClick = onToggleSession) {
+        Icon(
+            imageVector = if (account.isLoggedIn) {
+                Icons.AutoMirrored.Filled.Logout
+            } else {
+                Icons.AutoMirrored.Filled.Login
+            },
+            // Names the account, not just the action: a screen reader moving down a
+            // list of identical "Log out" buttons cannot say which one it is on.
+            contentDescription = if (account.isLoggedIn) {
+                "Log out of ${account.label}"
+            } else {
+                "Log in to ${account.label}"
+            },
+        )
     }
 }
 
