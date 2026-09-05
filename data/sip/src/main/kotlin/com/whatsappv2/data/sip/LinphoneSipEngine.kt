@@ -4,14 +4,18 @@ import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.failure
 import com.whatsappv2.core.common.result.success
+import com.whatsappv2.data.sip.di.SipStackScope
 import com.whatsappv2.data.sip.network.NetworkMonitor
 import com.whatsappv2.data.sip.network.RegistrationRecoveryCoordinator
 import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.RegistrationStateMapper
 import com.whatsappv2.data.sip.registration.StackAccount
 import com.whatsappv2.data.sip.registration.StackRegistrationState
+import com.whatsappv2.domain.engine.SipCallController
+import com.whatsappv2.domain.engine.SipConferenceController
+import com.whatsappv2.domain.engine.SipEngine
 import com.whatsappv2.domain.engine.SipError
-import com.whatsappv2.domain.engine.SipRegistrar
+import com.whatsappv2.domain.engine.SipMediaController
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.RegistrationState
 import com.whatsappv2.domain.model.SipAccount
@@ -61,9 +65,25 @@ internal class LinphoneSipEngine @Inject constructor(
     private val gateway: LinphoneCoreGateway,
     private val accounts: SipAccountRepository,
     private val networkMonitor: NetworkMonitor,
-    private val scope: CoroutineScope,
+    @SipStackScope private val scope: CoroutineScope,
     private val logger: Logger,
-) : SipRegistrar {
+    /**
+     * Everything this engine does not implement yet, delegated rather than restubbed.
+     *
+     * Task 27 said calls, media and conferencing keep reporting
+     * [SipError.EngineUnavailable], and [UnavailableSipEngine] is already exactly that.
+     * Delegating to it means there is one set of "not built yet" answers instead of two
+     * that can drift apart, and each role drops out of this class the moment the task
+     * that implements it overrides the member.
+     *
+     * Defaulted so the tests that construct this directly keep compiling; Dagger ignores
+     * the default and injects the singleton.
+     */
+    unimplemented: UnavailableSipEngine = UnavailableSipEngine(),
+) : SipEngine,
+    SipCallController by unimplemented,
+    SipMediaController by unimplemented,
+    SipConferenceController by unimplemented {
 
     /**
      * Network-change recovery (Task 30).
@@ -207,6 +227,12 @@ internal class LinphoneSipEngine @Inject constructor(
     override suspend fun setPushToken(
         token: com.whatsappv2.domain.engine.PushToken?,
     ): Outcome<Unit, SipError> = failure(SipError.EngineUnavailable)
+
+    /**
+     * The [SipEngine] contract's release. Same thing as [stop], which the tests and
+     * [SipEngineLifecycle] call directly — this is the name the domain uses for it.
+     */
+    override suspend fun shutdown() = stop()
 
     /** Releases the stack. Every account is forgotten; nothing stays registered. */
     fun stop() {

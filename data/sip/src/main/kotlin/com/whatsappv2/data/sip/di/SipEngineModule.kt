@@ -1,6 +1,6 @@
 package com.whatsappv2.data.sip.di
 
-import com.whatsappv2.data.sip.UnavailableSipEngine
+import com.whatsappv2.data.sip.LinphoneSipEngine
 import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.engine.SipEngine
@@ -19,16 +19,23 @@ import javax.inject.Singleton
  * needs - the account list wants [SipRegistrar], not the power to place calls - while all
  * of them resolve to the same singleton.
  *
- * Currently bound to [UnavailableSipEngine]. Task 27 replaces that binding with the
- * liblinphone implementation; nothing above this module changes.
+ * Bound to [LinphoneSipEngine], the real stack. It was written and unit-tested in Task 27
+ * but this binding was never moved off `UnavailableSipEngine`, so the running app had no
+ * SIP stack at all and every account read Offline whatever the user configured. Calls,
+ * media and conferencing still answer `EngineUnavailable` — the engine delegates those to
+ * `UnavailableSipEngine` until the tasks that implement them — so what changes here is
+ * registration, which is the part that exists.
+ *
+ * The module is `internal` because [LinphoneSipEngine] is: a binding may not be more
+ * visible than the type it names.
  */
 @Module
 @InstallIn(SingletonComponent::class)
-abstract class SipEngineModule {
+internal abstract class SipEngineModule {
 
     @Binds
     @Singleton
-    abstract fun bindSipEngine(engine: UnavailableSipEngine): SipEngine
+    abstract fun bindSipEngine(engine: LinphoneSipEngine): SipEngine
 
     @Binds
     abstract fun bindRegistrar(engine: SipEngine): SipRegistrar
