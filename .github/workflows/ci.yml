@@ -469,22 +469,49 @@ jobs:
             exit 1
           fi
 
+          # 16 KB pages are a 64-bit concern, so this is a 64-bit assertion.
+          #
+          # Every device that ships with 16 KB pages is 64-bit-only, and a 32-bit process
+          # is 4 KB-paged on every device that has ever existed. So armeabi-v7a is built
+          # at 0x1000 by everyone, including liblinphone, and always will be. Requiring
+          # 0x4000 of it does not protect anything - it just asserts that the SIP stack
+          # is broken, which is what run 33953349572 did to all 13 of its libraries while
+          # all 32 of the 64-bit ones passed.
+          ALIGNED_ABIS="arm64-v8a x86_64"
+
           BAD=0
+          CHECKED=0
           for lib in "${LIBS[@]}"; do
+            ABI=$(basename "$(dirname "$lib")")
             # A 16 KB-compatible library has LOAD segments aligned to 0x4000 or more.
             ALIGN=$("$READELF" -lW "$lib" 2>/dev/null | awk '/LOAD/ {print $NF}' | sort -u | head -1)
+            case " $ALIGNED_ABIS " in
+              *" $ABI "*) ;;
+              *)
+                echo "  n/a  $ALIGN  $ABI/$(basename "$lib")  (32-bit, always 4 KB-paged)"
+                continue
+                ;;
+            esac
+            CHECKED=$((CHECKED + 1))
             case "$ALIGN" in
               0x4000|0x10000|0x40000) STATUS="ok" ;;
               *) STATUS="MISALIGNED"; BAD=1 ;;
             esac
-            echo "  $STATUS  $ALIGN  $(basename "$(dirname "$lib")")/$(basename "$lib")"
+            echo "  $STATUS  $ALIGN  $ABI/$(basename "$lib")"
           done
 
           if [ "$BAD" -ne 0 ]; then
-            echo "::error::A native library is not 16 KB page-size aligned (§3)."
+            echo "::error::A 64-bit native library is not 16 KB page-size aligned (§3)."
             exit 1
           fi
-          echo "OK - every native library is 16 KB page-size aligned."
+
+          # An assertion that examined nothing passes for the wrong reason. If the ABI
+          # filter or the ABI names ever change, this is what says so.
+          if [ "$CHECKED" -eq 0 ]; then
+            echo "::error::No 64-bit native library was examined - checked ABIs [$ALIGNED_ABIS] against a build that packages [$ACTUAL]."
+            exit 1
+          fi
+          echo "OK - all $CHECKED 64-bit native libraries are 16 KB page-size aligned."
 
       # ---------------------------------------------------------------- APK
       # Every push produces a downloadable, installable debug APK. Debug, not release:
