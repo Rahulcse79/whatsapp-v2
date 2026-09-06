@@ -189,6 +189,18 @@ interface SipCallController {
     val endedCalls: Flow<CallSnapshot>
 
     /**
+     * How transfers are getting on (Task 55, DoD 10).
+     *
+     * A [Flow] rather than state on the snapshot, because a transfer's outcome outlives
+     * the call it happened to: a blind transfer that succeeds takes the call with it, and
+     * an absent call cannot carry the reason it went. See [TransferEvent].
+     *
+     * Not replayed, like [incomingCalls] and [endedCalls] — a transfer failure shown
+     * twice is a second alarm about a call that was fixed minutes ago.
+     */
+    val transferEvents: Flow<TransferEvent>
+
+    /**
      * Places a call from [accountId] to [target].
      *
      * Returns as soon as the INVITE is accepted for sending, with the [CallId] that
@@ -283,13 +295,51 @@ interface SipMediaController {
     suspend fun setAudioRoute(callId: CallId, route: AudioRoute): Outcome<Unit, SipError>
 
     /**
-     * Starts or stops sending video, by re-INVITE. Enabling on an audio-only call is an
-     * escalation the peer may decline (Task 54).
+     * Starts or stops sending video, by re-INVITE (Tasks 53, 54).
+     *
+     * Enabling on an audio-only call is an **escalation** the peer may decline: this
+     * returns as soon as the re-INVITE is sent, and whether video actually appears shows
+     * up in [SipCallController.activeCalls] as a change to the call's `MediaProfile`.
+     * Reporting success here as "video is on" would light up a preview for a stream the
+     * far end refused.
+     *
+     * Disabling on a call that has video is a **de-escalation**: the stream is dropped by
+     * re-INVITE and the camera is released (Task 54's third done-when). Distinct from
+     * video mute, which keeps the negotiated stream and stops sending into it — that is
+     * `CallControls.isVideoEnabled` and does not reach the wire.
      */
     suspend fun setVideoEnabled(callId: CallId, enabled: Boolean): Outcome<Unit, SipError>
 
-    /** Switches between front and rear cameras without renegotiating. */
+    /**
+     * Switches between front and rear cameras without renegotiating (Task 53).
+     *
+     * No SDP changes, so the stream does not drop: the same encoder keeps running and
+     * only its source moves. A re-INVITE here would produce a visible gap at the far end
+     * for a change they have no interest in.
+     */
     suspend fun switchCamera(callId: CallId): Outcome<Unit, SipError>
+
+    /**
+     * Video the far end has asked to add, awaiting an answer (Task 54).
+     *
+     * The engine defers the stack's response while a request is outstanding, so nothing
+     * is negotiated and no camera opens until [respondToVideoRequest] is called. §5.2
+     * requires the prompt; this is the half of it the engine owns.
+     *
+     * Not replayed: a request the user has already answered must not re-prompt on the
+     * next collection, which on a rotation would be immediately.
+     */
+    val videoRequests: Flow<VideoRequest>
+
+    /**
+     * Accepts or declines a pending escalation (Task 54).
+     *
+     * Declining keeps the call: the re-INVITE is answered without the video stream, and
+     * audio continues untouched — Task 54's second done-when. Answering a request that is
+     * no longer pending fails with [SipError.InvalidState] rather than silently
+     * re-negotiating, because by then the peer has usually withdrawn it.
+     */
+    suspend fun respondToVideoRequest(callId: CallId, accept: Boolean): Outcome<Unit, SipError>
 }
 
 /** Multi-party calling (§2.2, ADR-003). */

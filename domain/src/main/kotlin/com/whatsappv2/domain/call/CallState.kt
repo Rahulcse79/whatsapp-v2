@@ -81,10 +81,21 @@ sealed interface CallState {
     /** A re-INVITE to resume is in flight; media is not yet flowing again. */
     data class Resuming(val controls: CallControls = CallControls.DEFAULT) : CallState
 
-    /** A REFER is in flight. A failure returns to [Connected], not to a dead end. */
+    /**
+     * A REFER is in flight. A failure returns the call, never strands it.
+     *
+     * [heldBy] is where the call was before the REFER, and it exists because an attended
+     * transfer starts from a **held** call (Task 57): call A is put on hold, B is consulted,
+     * and only then is the REFER sent. Without this, a failed attended transfer would
+     * return A to [Connected] — a screen saying the audio is flowing while the far end is
+     * still holding, until the stack happens to restate the hold.
+     *
+     * Null for a blind transfer, which starts from [Connected] and returns there.
+     */
     data class Transferring(
         val type: TransferType,
         val controls: CallControls = CallControls.DEFAULT,
+        val heldBy: HoldParty? = null,
     ) : CallState
 
     /** The call is over. Absorbing: no event moves it anywhere. */
