@@ -42,7 +42,16 @@ class CallLogRecorderTest {
     private val engine = FakeSipEngine()
     private val log = FakeCallLogRepository()
     private val contacts = FakeContactRepository()
-    private val clock = MutableClock().set(STARTED_AT)
+
+    /**
+     * The engine's own clock, not a second one.
+     *
+     * The fake stamps `connectedAtEpochMillis` from the clock it was built with, and the
+     * recorder stamps the ending from the clock it was given. Two clocks means a duration
+     * measured between two unrelated timelines, which is a test that can only pass by
+     * accident.
+     */
+    private val clock: MutableClock = engine.clock.also { it.set(STARTED_AT) }
 
     @Test
     fun `an answered call is recorded with the time it ended`() = runTest {
