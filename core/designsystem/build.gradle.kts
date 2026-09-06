@@ -17,6 +17,10 @@ dependencies {
     api(libs.androidx.compose.ui.tooling.preview)
     api(libs.androidx.compose.material.icons.extended)
 
+    // A contact photo arrives as a content:// URI; nothing in Compose decodes one.
+    // implementation, not api: no feature should be loading images of its own (Task 49).
+    implementation(libs.coil.compose)
+
     // Preview rendering only; never in a release APK.
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

@@ -13,8 +13,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.Dp
+import coil3.compose.AsyncImage
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
 import com.whatsappv2.core.designsystem.theme.AppTheme
@@ -30,6 +32,7 @@ fun Avatar(
     displayName: String?,
     modifier: Modifier = Modifier,
     size: Dp = AppTheme.sizing.avatarSmall,
+    photoUri: String? = null,
 ) {
     val initials = displayName?.toInitials()
 
@@ -41,6 +44,19 @@ fun Avatar(
             .clearAndSetSemantics { },
         contentAlignment = Alignment.Center,
     ) {
+        if (photoUri != null) {
+            // The photo is a content:// reference into the address book, loaded when it
+            // is drawn and never copied anywhere: making our own copy of somebody's
+            // photograph is the thing Task 49 is careful not to do (§7, §11).
+            AsyncImage(
+                model = photoUri,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.size(size),
+            )
+            return@Box
+        }
+
         if (initials.isNullOrEmpty()) {
             Icon(
                 imageVector = Icons.Filled.Person,
