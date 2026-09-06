@@ -8,8 +8,11 @@ import com.whatsappv2.core.common.result.success
 import com.whatsappv2.core.common.time.Clock
 import com.whatsappv2.core.common.time.SystemClock
 import com.whatsappv2.data.sip.call.CallStateMapper
+import com.whatsappv2.data.sip.call.ConferenceMapper
 import com.whatsappv2.data.sip.call.LinphoneCallGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
+import com.whatsappv2.data.sip.call.StackCallState
+import com.whatsappv2.data.sip.call.TransferEventMapper
 import com.whatsappv2.data.sip.di.SipStackScope
 import com.whatsappv2.data.sip.network.NetworkMonitor
 import com.whatsappv2.data.sip.network.RegistrationRecoveryCoordinator
@@ -22,18 +25,21 @@ import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallEvent
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.CallStateMachine
+import com.whatsappv2.domain.call.CameraPolicy
 import com.whatsappv2.domain.call.TransitionResult
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.CallSnapshot
+import com.whatsappv2.domain.engine.CameraAvailability
+import com.whatsappv2.domain.engine.ConferenceSession
 import com.whatsappv2.domain.engine.IncomingCall
+import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.engine.PlatformCallRegistry
 import com.whatsappv2.domain.engine.PushToken
-import com.whatsappv2.domain.engine.SipCallController
-import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.engine.SipEngine
 import com.whatsappv2.domain.engine.SipError
-import com.whatsappv2.domain.engine.SipMediaController
+import com.whatsappv2.domain.engine.TransferEvent
 import com.whatsappv2.domain.engine.UnmanagedCallRegistry
+import com.whatsappv2.domain.engine.VideoRequest
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.DtmfDigit
@@ -43,6 +49,7 @@ import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.RegistrationState
 import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SipUri
+import com.whatsappv2.domain.model.TransferType
 import com.whatsappv2.domain.registration.RegistrationRetrySchedule
 import com.whatsappv2.domain.repository.AppSettingsRepository
 import com.whatsappv2.domain.repository.SipAccountRepository
@@ -66,10 +73,18 @@ import javax.inject.Singleton
 /**
  * Registration and calling, backed by the real SIP stack (Tasks 27, 35, 37, 40-43).
  *
- * Registration, placing and answering calls, hold and resume, mute, audio routing and DTMF
- * are implemented here. Transfer and conferencing still report
- * [SipError.EngineUnavailable] until the tasks that implement them (55, 60) — stubbing them
- * to "succeed" would let a screen be built against behaviour that does not exist.
+ * Registration, calling, hold and resume, mute, audio routing, DTMF, video, transfer and
+ * dial-in conferencing are all implemented here, so nothing is delegated any more: as of
+ * Tasks 51-60 this class answers for the whole of [SipEngine].
+ *
+ * ## The camera is owned by the call list, not by any one call
+ *
+ * [CameraPolicy] is asked on every change to [activeCalls] and its answer drives the
+ * capture. That is deliberate and is the whole of Task 51: a `release()` written beside
+ * the hangup button covers hangup and nothing else, while an error, a transfer, a second
+ * call or the stack going down all end a call's claim on the device just as finally.
+ * Deriving the owner from the list means there is no path that ends a call without also
+ * answering the question.
  *
  * ## Where the logic lives
  *
@@ -128,26 +143,16 @@ internal class LinphoneSipEngine @Inject constructor(
      */
     private val platform: PlatformCallRegistry = UnmanagedCallRegistry,
     /**
-     * Everything this engine does not implement yet, delegated rather than restubbed.
+     * Whether this device can capture video at all (Task 51).
      *
-     * Task 27 said calls, media and conferencing keep reporting
-     * [SipError.EngineUnavailable], and [UnavailableSipEngine] is already exactly that.
-     * Delegating to it means there is one set of "not built yet" answers instead of two
-     * that can drift apart, and each role drops out of this class the moment the task
-     * that implements it overrides the member.
-     *
-     * Defaulted so the tests that construct this directly keep compiling; Dagger ignores
-     * the default and injects the singleton.
+     * Asked rather than assumed, and asked every time: a permission granted in Settings
+     * while the app was in the background is granted, and a cached "no" would keep video
+     * off until the process restarted. Defaulted to [NoCameraAvailable] so a JVM test that
+     * is not exercising video need not supply one — and because a graph with nothing bound
+     * should downgrade video calls to audio rather than claim a camera it cannot open.
      */
-    unimplemented: UnavailableSipEngine = UnavailableSipEngine(),
-) : SipEngine,
-    RegistrationRetrySchedule,
-    // Calls are implemented below - place, answer, reject, hang up, hold, resume, mute,
-    // route and DTMF. Transfer (Task 55) and conferencing (Task 60) are still
-    // EngineUnavailable, which is what those tasks replace.
-    SipCallController by unimplemented,
-    SipMediaController by unimplemented,
-    SipConferenceController by unimplemented {
+    private val camera: CameraAvailability = NoCameraAvailable,
+) : SipEngine, RegistrationRetrySchedule {
 
     /**
      * Network-change recovery (Task 30).
@@ -201,10 +206,70 @@ internal class LinphoneSipEngine @Inject constructor(
     private val active = MutableStateFlow<List<CallSnapshot>>(emptyList())
     override val activeCalls: StateFlow<List<CallSnapshot>> = active.asStateFlow()
 
-    /** The only way [calls] changes, so [active] cannot fall behind it. */
+    /**
+     * The only way [calls] changes, so [active] cannot fall behind it.
+     *
+     * Also the only place the camera is claimed or released (Task 51). Every path that
+     * ends a call goes through here — the stack reporting a terminal state, a local
+     * hangup, a rejection, a transfer completing, the stack going down — so hanging the
+     * camera decision off this one function is what makes the release total instead of a
+     * list of places somebody remembered.
+     */
     private fun updateCalls(transform: (Map<CallId, CallSnapshot>) -> Map<CallId, CallSnapshot>) {
         active.value = calls.updateAndGet(transform).values.toList()
+        applyCameraPolicy()
     }
+
+    /**
+     * Starts or stops the camera to match who, if anyone, should have it.
+     *
+     * Idempotent by construction: the decision is compared with what was last applied, so
+     * an ordinary call-state change does not restart the capture device on every event.
+     */
+    private fun applyCameraPolicy() {
+        val shouldCapture = CameraPolicy.shouldCapture(active.value) && camera.isCameraUsable()
+        if (shouldCapture == cameraCapturing) return
+
+        cameraCapturing = shouldCapture
+        callGateway.setCameraCapturing(shouldCapture)
+        logger.debug(TAG, if (shouldCapture) "Camera acquired" else "Camera released")
+    }
+
+    /** What [applyCameraPolicy] last told the stack, so it does not tell it again. */
+    private var cameraCapturing = false
+
+    /**
+     * Escalations the far end has asked for and nothing has answered (Task 54).
+     *
+     * Held rather than answered on arrival. The stack's re-INVITE is deferred while an
+     * entry is here, so declining is a real decline of a live offer rather than a second
+     * re-negotiation after the fact.
+     */
+    private val pendingVideoRequests = mutableMapOf<CallId, VideoRequest>()
+
+    private val videoOffers = MutableSharedFlow<VideoRequest>(
+        replay = 0,
+        extraBufferCapacity = INCOMING_BUFFER,
+    )
+    override val videoRequests: Flow<VideoRequest> = videoOffers.asSharedFlow()
+
+    private val transfers = MutableSharedFlow<TransferEvent>(
+        replay = 0,
+        extraBufferCapacity = INCOMING_BUFFER,
+    )
+    override val transferEvents: Flow<TransferEvent> = transfers.asSharedFlow()
+
+    /**
+     * How each in-flight transfer was started, so its events can say which kind it is.
+     *
+     * The stack reports transfer progress without repeating whether the REFER carried a
+     * `Replaces`, and the two read differently to a user — "transferring to 1002" against
+     * "connecting you to 1002". Remembered here for the length of the REFER only.
+     */
+    private val transferTypes = mutableMapOf<CallId, TransferType>()
+
+    private val conferenceSessions = MutableStateFlow<List<ConferenceSession>>(emptyList())
+    override val conferences: StateFlow<List<ConferenceSession>> = conferenceSessions.asStateFlow()
 
     /**
      * The one way a call ends here (Task 47).
@@ -222,6 +287,11 @@ internal class LinphoneSipEngine @Inject constructor(
     private fun endCall(callId: CallId, reason: HangupReason) {
         val ending = calls.value[callId]?.copy(state = CallState.Terminated(reason))
         updateCalls { it - callId }
+        // The conference leg and the conference are the same thing under a dial-in MCU
+        // (ADR-003), so one ending is the other's (Task 60).
+        conferenceSessions.update { sessions -> sessions.filterNot { it.callId == callId } }
+        pendingVideoRequests -= callId
+        transferTypes -= callId
         platform.onEnded(callId, reason)
         ending?.let(ended::tryEmit)
     }
@@ -268,6 +338,12 @@ internal class LinphoneSipEngine @Inject constructor(
     /** The call-event collector. Held for the same reason as [collectJob]. */
     private var callCollectJob: Job? = null
 
+    /** The transfer-event collector (Task 55). Held for the same reason as [collectJob]. */
+    private var transferCollectJob: Job? = null
+
+    /** The conference-roster collector (Task 60). Held for the same reason. */
+    private var conferenceCollectJob: Job? = null
+
     /**
      * Begins consuming stack events.
      *
@@ -281,6 +357,8 @@ internal class LinphoneSipEngine @Inject constructor(
         gateway.start()
         recovery.start()
         callCollectJob = scope.collectCallEvents()
+        transferCollectJob = scope.collectTransferEvents()
+        conferenceCollectJob = scope.collectConferenceEvents()
         collectJob = scope.launch {
             gateway.registrationEvents.collect { event ->
                 val id = AccountId(event.accountKey)
@@ -331,6 +409,79 @@ internal class LinphoneSipEngine @Inject constructor(
     }
 
     /**
+     * Consumes transfer progress and republishes it to the app (Task 55).
+     *
+     * A stream of its own, beside the call collector, because a transfer's fate is not a
+     * state of the call: the two arrive on different SDK callbacks and a blind transfer's
+     * success is reported *after* the call it belonged to has gone. Merging them would
+     * mean holding an ended call open to have something to attach the outcome to.
+     *
+     * The FSM is driven from here too. `Transferring` has to leave — to `Terminated` on
+     * success, back to `Connected` on failure — and this is where the answer arrives.
+     */
+    private fun CoroutineScope.collectTransferEvents() = launch {
+        callGateway.transferEvents.collect { event ->
+            val id = CallId(event.callKey)
+            val type = transferTypes[id] ?: TransferType.BLIND
+            val mapped = TransferEventMapper.toDomain(event, type) ?: return@collect
+
+            when (mapped) {
+                is TransferEvent.Succeeded -> {
+                    transferTypes -= id
+                    advanceTransfer(id, CallEvent.TransferSucceeded)
+                    // Published before the call is dropped, so a collector watching this
+                    // call is told why it went rather than merely that it did.
+                    transfers.tryEmit(mapped)
+                    endCall(id, HangupReason.LOCAL_HANGUP)
+                    return@collect
+                }
+
+                is TransferEvent.Failed -> {
+                    transferTypes -= id
+                    // Back to Connected, never to a dead end (§5.2, Task 55).
+                    advanceTransfer(id, CallEvent.TransferFailed)
+                }
+
+                is TransferEvent.Accepted, is TransferEvent.Progressing -> Unit
+            }
+            transfers.tryEmit(mapped)
+        }
+    }
+
+    /**
+     * Runs a transfer transition through the FSM, ignoring one it will not accept.
+     *
+     * A late NOTIFY for a call that has already left `Transferring` is normal — a user who
+     * hung up mid-transfer, or a server that reported twice — and forcing it through would
+     * put the call in a state nothing else expects.
+     */
+    private fun advanceTransfer(id: CallId, event: CallEvent) {
+        val current = calls.value[id] ?: return
+        val result = CallStateMachine.transition(current.state, event)
+        if (result is TransitionResult.Moved) {
+            updateCalls { it + (id to current.copy(state = result.state)) }
+        } else {
+            logger.debug(TAG, "Ignoring $event for a call that is no longer transferring")
+        }
+    }
+
+    /**
+     * Consumes conference rosters and republishes them (Task 60).
+     *
+     * An event for a call that is not a joined conference is dropped rather than creating
+     * one: [joinConference] is the only thing that makes a session, so a roster arriving
+     * for anything else is a bridge talking about a call this app did not join as one.
+     */
+    private fun CoroutineScope.collectConferenceEvents() = launch {
+        callGateway.conferenceEvents.collect { event ->
+            val id = CallId(event.callKey)
+            conferenceSessions.update { sessions ->
+                sessions.map { if (it.callId == id) ConferenceMapper.apply(it, event) else it }
+            }
+        }
+    }
+
+    /**
      * Moves a call this engine already knows about.
      *
      * The FSM is the authority on legality: an event it rejects is dropped and logged
@@ -340,6 +491,15 @@ internal class LinphoneSipEngine @Inject constructor(
     private fun advance(id: CallId, current: CallSnapshot, event: StackCallEvent) {
         if (CallStateMapper.isTerminal(event.state)) {
             endCall(id, CallStateMapper.toHangupReason(event))
+            return
+        }
+
+        // The far end wants to add video (Task 54). Nothing is negotiated and no camera
+        // opens: the stack's answer is deferred and the offer waits for a person. §5.2
+        // requires the prompt, and accepting first and asking afterwards would already
+        // have shown them the room.
+        if (event.state == StackCallState.UPDATED_BY_REMOTE) {
+            onVideoRequested(id, current, event)
             return
         }
 
@@ -371,11 +531,47 @@ internal class LinphoneSipEngine @Inject constructor(
             live + (
                 id to current.copy(
                     state = next ?: current.state,
+                    // What is actually negotiated, not what was asked for when the call
+                    // was placed — this is the only place a re-INVITE that added or
+                    // dropped video reaches the screen (Task 54).
+                    //
+                    // Read only once media is running. Before that the stack's params
+                    // describe an offer nobody has answered, and taking them as the
+                    // negotiated truth would show a video call as audio for the length of
+                    // its ring.
+                    media = if (CallStateMapper.isConnected(event.state)) {
+                        MediaProfile.of(audio = true, video = event.videoActive) ?: current.media
+                    } else {
+                        current.media
+                    },
                     connectedAtEpochMillis = current.connectedAtEpochMillis
                         ?: clock.nowEpochMillis().takeIf { justConnected },
                 )
                 )
         }
+    }
+
+    /**
+     * Holds an escalation the far end asked for, and tells the app (Task 54).
+     *
+     * A re-INVITE that does **not** add video — a codec change, a hold renegotiation the
+     * stack surfaces this way — is accepted immediately. Prompting for those would ask the
+     * user about something they cannot see and did not cause.
+     */
+    private fun onVideoRequested(id: CallId, current: CallSnapshot, event: StackCallEvent) {
+        if (!event.videoOffered) {
+            callGateway.respondToVideoUpdate(id.value, accept = false)
+            return
+        }
+
+        val request = VideoRequest(
+            callId = id,
+            from = current.remote,
+            fromDisplayName = current.remoteDisplayName,
+            receivedAtEpochMillis = clock.nowEpochMillis(),
+        )
+        pendingVideoRequests[id] = request
+        videoOffers.tryEmit(request)
     }
 
     /**
@@ -678,6 +874,169 @@ internal class LinphoneSipEngine @Inject constructor(
     }
 
     /**
+     * Adds or drops the video stream by re-INVITE (Tasks 53, 54).
+     *
+     * ## Enabling is a request, not a result
+     *
+     * The re-INVITE goes out and this returns. Whether video actually appears shows up in
+     * [activeCalls] when the far end answers — a peer may decline, and a screen that lit up
+     * a preview on this returning would be showing a stream nobody agreed to send.
+     *
+     * The FSM's `SetVideoEnabled` is applied here rather than on the answer because it is
+     * the *user's* setting, not the negotiated state: turning video off must stop the
+     * camera immediately (that is what Task 53's video mute is), and waiting for a
+     * round trip to do it would keep capturing for the length of one.
+     *
+     * ## Enabling with no camera is refused, not downgraded
+     *
+     * Unlike placing a call — where §5.2 says downgrade — an explicit "turn my video on"
+     * has no audio-only reading. Saying so is more useful than silently doing nothing.
+     */
+    override suspend fun setVideoEnabled(callId: CallId, enabled: Boolean): Outcome<Unit, SipError> {
+        if (!started) return failure(SipError.EngineUnavailable)
+        val call = calls.value[callId] ?: return failure(SipError.UnknownCall)
+        if (enabled && !camera.isCameraUsable()) {
+            return failure(SipError.InvalidState("no camera is available on this device"))
+        }
+        if (call.state.controlsOrNull?.isVideoEnabled == enabled) return success(Unit)
+
+        return applyControl(callId, CallEvent.SetVideoEnabled(enabled)) {
+            callGateway.setVideoEnabled(callId.value, enabled)
+        }
+    }
+
+    /**
+     * Switches between the front and rear cameras (Task 53).
+     *
+     * Established calls only, and only while this call actually holds the camera: asking
+     * the stack to switch a device nothing is capturing with does nothing, and reporting
+     * success for it would leave the button looking broken the one time it mattered.
+     */
+    override suspend fun switchCamera(callId: CallId): Outcome<Unit, SipError> {
+        if (!started) return failure(SipError.EngineUnavailable)
+        val call = calls.value[callId] ?: return failure(SipError.UnknownCall)
+        if (CameraPolicy.ownerOf(active.value) != callId) {
+            return failure(SipError.InvalidState("call is ${call.state} and is not sending video"))
+        }
+
+        callGateway.switchCamera(callId.value)
+        return success(Unit)
+    }
+
+    /**
+     * Accepts or declines an escalation the far end asked for (Task 54).
+     *
+     * Declining answers the re-INVITE **without** video rather than refusing it: the audio
+     * call survives, which is Task 54's second done-when. A 488 would be legal SIP and
+     * would end the call outright on several peers.
+     *
+     * The pending entry is removed either way. A request answered twice — the user
+     * double-tapping, or a rotation replaying an event — must not re-negotiate.
+     */
+    override suspend fun respondToVideoRequest(callId: CallId, accept: Boolean): Outcome<Unit, SipError> {
+        if (!started) return failure(SipError.EngineUnavailable)
+        pendingVideoRequests.remove(callId)
+            ?: return failure(SipError.InvalidState("no video request is pending on $callId"))
+
+        // Accepting needs a camera. Without one the honest answer to the peer is the same
+        // as a decline: audio continues and no stream is promised that cannot be sent.
+        val withVideo = accept && camera.isCameraUsable()
+        callGateway.respondToVideoUpdate(callId.value, accept = withVideo)
+
+        return if (withVideo) {
+            applyControl(callId, CallEvent.SetVideoEnabled(true))
+        } else {
+            success(Unit)
+        }
+    }
+
+    /**
+     * Transfers a call (Tasks 55, 57, DoD 10).
+     *
+     * ## Success here means the REFER was sent
+     *
+     * Nothing more, and for a blind transfer nothing more is knowable: the transferor
+     * leaves the dialog. The outcome arrives on [transferEvents], which is why that stream
+     * exists at all.
+     *
+     * ## The call stays alive
+     *
+     * `Transferring` is not a terminal state and this does not end anything. A REFER the
+     * far end refuses returns the call to `Connected` (the FSM guarantees it), and the
+     * caller is still on the line to be told why — §5.2's requirement, and the reason the
+     * failure path publishes an error rather than a hangup.
+     */
+    override suspend fun transfer(
+        callId: CallId,
+        target: SipUri,
+        type: TransferType,
+        consultationCallId: CallId?,
+    ): Outcome<Unit, SipError> {
+        if (!started) return failure(SipError.EngineUnavailable)
+        val call = calls.value[callId] ?: return failure(SipError.UnknownCall)
+
+        if (type == TransferType.ATTENDED && consultationCallId == null) {
+            return failure(SipError.InvalidState("an attended transfer needs a consultation call"))
+        }
+        // The consultation leg has to exist and be this engine's: the `Replaces` header is
+        // built from its dialog, and there is no dialog to name if the call has gone.
+        val consultation = consultationCallId?.let {
+            calls.value[it] ?: return failure(SipError.UnknownCall)
+        }
+
+        val result = CallStateMachine.transition(call.state, CallEvent.StartTransfer(type))
+        if (result !is TransitionResult.Moved) {
+            return failure(SipError.InvalidState("cannot transfer a call in ${call.state}"))
+        }
+
+        transferTypes[callId] = type
+        updateCalls { it + (callId to call.copy(state = result.state)) }
+
+        if (consultation != null) {
+            callGateway.transferCallToCall(callId.value, consultation.callId.value)
+        } else {
+            callGateway.transferCall(callId.value, target.render())
+        }
+        return success(Unit)
+    }
+
+    /**
+     * Joins a dial-in conference (Task 60, ADR-003, DoD 11).
+     *
+     * Dialling, and then recording that this leg is a conference. The bridge mixes, so
+     * everything afterwards — hold, mute, DTMF, hangup, the call log — is the ordinary
+     * call machinery working on an ordinary call.
+     *
+     * The session starts with **no roster**, not an empty one. Those are different claims:
+     * a bridge that publishes a participant list will send one along shortly, and one that
+     * does not never will, and the UI has to say which (§13). Nothing here guesses —
+     * `rosterAvailable` only becomes true when a roster actually arrives.
+     */
+    override suspend fun joinConference(
+        accountId: AccountId,
+        conferenceUri: SipUri,
+        media: MediaProfile,
+    ): Outcome<CallId, SipError> {
+        val placed = placeCall(accountId, conferenceUri, media)
+        if (placed !is Outcome.Success) return placed
+
+        val callId = placed.value
+        updateCalls { live ->
+            live[callId]?.let { live + (callId to it.copy(isConference = true)) } ?: live
+        }
+        conferenceSessions.update {
+            it + ConferenceSession(
+                callId = callId,
+                accountId = accountId,
+                conferenceUri = conferenceUri,
+                participants = emptyList(),
+                rosterAvailable = false,
+            )
+        }
+        return placed
+    }
+
+    /**
      * Runs a control event through the FSM and, if it is legal, does the thing.
      *
      * The order is the point. `CallStateMachine` is asked first, so an action the call
@@ -805,6 +1164,10 @@ internal class LinphoneSipEngine @Inject constructor(
         collectJob = null
         callCollectJob?.cancel()
         callCollectJob = null
+        transferCollectJob?.cancel()
+        transferCollectJob = null
+        conferenceCollectJob?.cancel()
+        conferenceCollectJob = null
         gateway.stop()
         requestedExpiry.clear()
         states.value = emptyMap()
@@ -812,6 +1175,12 @@ internal class LinphoneSipEngine @Inject constructor(
         // Every live call goes down with the stack, and Telecom is told so - a connection
         // left behind keeps audio focus for a call that no longer exists anywhere.
         val live = calls.value.keys
+        conferenceSessions.value = emptyList()
+        pendingVideoRequests.clear()
+        transferTypes.clear()
+        // Emptying the call list is what releases the camera: `updateCalls` asks
+        // `CameraPolicy` again, and with no calls left the answer is nobody (Task 51).
+        // This is the process-death path as well as the shutdown one.
         updateCalls { emptyMap() }
         live.forEach { platform.onEnded(it, HangupReason.NETWORK_FAILURE) }
     }

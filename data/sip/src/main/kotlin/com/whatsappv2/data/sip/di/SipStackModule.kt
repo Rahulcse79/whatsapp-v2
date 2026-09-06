@@ -2,8 +2,10 @@ package com.whatsappv2.data.sip.di
 
 import com.whatsappv2.core.common.dispatcher.DispatcherProvider
 import com.whatsappv2.data.sip.call.LinphoneCallGateway
+import com.whatsappv2.data.sip.call.StackVideoSurfaceController
 import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.stack.RealLinphoneCoreGateway
+import com.whatsappv2.domain.engine.VideoSurfaceController
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -44,6 +46,16 @@ internal abstract class SipStackModule {
     @Binds
     @Singleton
     abstract fun bindCallGateway(gateway: RealLinphoneCoreGateway): LinphoneCallGateway
+
+    /**
+     * Where video is drawn (Task 52).
+     *
+     * Bound here because the implementation is `internal` to this module — the call screen
+     * asks for the `:domain` port and never learns which stack answers.
+     */
+    @Binds
+    @Singleton
+    abstract fun bindVideoSurfaces(controller: StackVideoSurfaceController): VideoSurfaceController
 }
 
 /**

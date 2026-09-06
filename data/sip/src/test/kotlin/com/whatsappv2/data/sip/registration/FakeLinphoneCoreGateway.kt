@@ -3,6 +3,9 @@ package com.whatsappv2.data.sip.registration
 import com.whatsappv2.data.sip.call.LinphoneCallGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
+import com.whatsappv2.data.sip.call.StackConferenceEvent
+import com.whatsappv2.data.sip.call.StackParticipant
+import com.whatsappv2.data.sip.call.StackTransferEvent
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -38,6 +41,50 @@ internal class FakeLinphoneCoreGateway : LinphoneCoreGateway, LinphoneCallGatewa
         extraBufferCapacity = BUFFER,
     )
     override val callEvents: Flow<StackCallEvent> = callEventFlow.asSharedFlow()
+
+    private val transferEventFlow = MutableSharedFlow<StackTransferEvent>(
+        replay = 0,
+        extraBufferCapacity = BUFFER,
+    )
+    override val transferEvents: Flow<StackTransferEvent> = transferEventFlow.asSharedFlow()
+
+    private val conferenceEventFlow = MutableSharedFlow<StackConferenceEvent>(
+        replay = 0,
+        extraBufferCapacity = BUFFER,
+    )
+    override val conferenceEvents: Flow<StackConferenceEvent> = conferenceEventFlow.asSharedFlow()
+
+    /** Every video re-INVITE the engine asked for, in order (Tasks 53, 54). */
+    val videoRequests: MutableList<Pair<String, Boolean>> = mutableListOf()
+
+    /** Every answer to an escalation the far end offered, in order (Task 54). */
+    val videoUpdateAnswers: MutableList<Pair<String, Boolean>> = mutableListOf()
+
+    /** Every camera switch asked of the stack (Task 53). */
+    val cameraSwitches: MutableList<String> = mutableListOf()
+
+    /**
+     * Whether the camera is capturing, and every change to it, in order (Task 51).
+     *
+     * A log rather than a flag, because the assertion that matters is a sequence: the
+     * camera must be released after a call ends, and a flag that reads false at the end
+     * cannot tell "released" from "never claimed".
+     */
+    val cameraCaptureChanges: MutableList<Boolean> = mutableListOf()
+
+    /** The surfaces the stack was last given, if any (Task 52). */
+    var videoWindows: Pair<Any?, Any?> = null to null
+        private set
+
+    /** Every blind transfer asked for, as call key to destination (Task 55). */
+    val blindTransfers: MutableList<Pair<String, String>> = mutableListOf()
+
+    /** Every attended transfer asked for, as call key to consultation key (Task 57). */
+    val attendedTransfers: MutableList<Pair<String, String>> = mutableListOf()
+
+    /** Every recording started, as call key to path, and every one stopped (Task 58). */
+    val startedRecordings: MutableList<Pair<String, String>> = mutableListOf()
+    val stoppedRecordings: MutableList<String> = mutableListOf()
 
     /** Every INVITE the engine asked for, in order. */
     val placedCalls: MutableList<PlacedCall> = mutableListOf()
@@ -181,6 +228,56 @@ internal class FakeLinphoneCoreGateway : LinphoneCoreGateway, LinphoneCallGatewa
         terminatedCalls += callKey
     }
 
+    override fun setVideoEnabled(callKey: String, enabled: Boolean) {
+        videoRequests += callKey to enabled
+    }
+
+    override fun respondToVideoUpdate(callKey: String, accept: Boolean) {
+        videoUpdateAnswers += callKey to accept
+    }
+
+    override fun switchCamera(callKey: String) {
+        cameraSwitches += callKey
+    }
+
+    override fun setCameraCapturing(capturing: Boolean) {
+        cameraCaptureChanges += capturing
+    }
+
+    override fun setVideoWindows(remoteView: Any?, localPreview: Any?) {
+        videoWindows = remoteView to localPreview
+    }
+
+    override fun transferCall(callKey: String, destination: String) {
+        blindTransfers += callKey to destination
+    }
+
+    override fun transferCallToCall(callKey: String, consultationCallKey: String) {
+        attendedTransfers += callKey to consultationCallKey
+    }
+
+    override fun startRecording(callKey: String, filePath: String) {
+        startedRecordings += callKey to filePath
+    }
+
+    override fun stopRecording(callKey: String) {
+        stoppedRecordings += callKey
+    }
+
+    /** Emits transfer progress as the stack would (Task 55). */
+    fun emitTransfer(callKey: String, state: StackCallState, statusCode: Int? = null) {
+        transferEventFlow.tryEmit(StackTransferEvent(callKey, state, statusCode))
+    }
+
+    /** Emits a conference roster as the bridge would (Task 60). */
+    fun emitConference(
+        callKey: String,
+        participants: List<StackParticipant> = emptyList(),
+        rosterAvailable: Boolean = participants.isNotEmpty(),
+    ) {
+        conferenceEventFlow.tryEmit(StackConferenceEvent(callKey, participants, rosterAvailable))
+    }
+
     /** Emits a call-state change as the stack would. */
     fun emitCall(
         callKey: String,
@@ -190,6 +287,7 @@ internal class FakeLinphoneCoreGateway : LinphoneCoreGateway, LinphoneCallGatewa
         statusCode: Int? = null,
         displayName: String? = null,
         videoOffered: Boolean = false,
+        videoActive: Boolean = false,
     ) {
         callEventFlow.tryEmit(
             StackCallEvent(
@@ -201,6 +299,7 @@ internal class FakeLinphoneCoreGateway : LinphoneCoreGateway, LinphoneCallGatewa
                 statusCode = statusCode,
                 message = null,
                 videoOffered = videoOffered,
+                videoActive = videoActive,
             ),
         )
     }

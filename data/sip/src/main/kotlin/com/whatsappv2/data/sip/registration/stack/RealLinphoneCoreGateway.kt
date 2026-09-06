@@ -5,6 +5,9 @@ import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.data.sip.call.LinphoneCallGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
+import com.whatsappv2.data.sip.call.StackConferenceEvent
+import com.whatsappv2.data.sip.call.StackParticipant
+import com.whatsappv2.data.sip.call.StackTransferEvent
 import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.StackAccount
 import com.whatsappv2.data.sip.registration.StackPushParameters
@@ -18,9 +21,13 @@ import kotlinx.coroutines.flow.asSharedFlow
 import org.linphone.core.Account
 import org.linphone.core.AuthInfo
 import org.linphone.core.Call
+import org.linphone.core.Conference
+import org.linphone.core.ConferenceListenerStub
 import org.linphone.core.Core
 import org.linphone.core.CoreListenerStub
 import org.linphone.core.Factory
+import org.linphone.core.Participant
+import org.linphone.core.ParticipantDevice
 import org.linphone.core.Reason
 import org.linphone.core.RegistrationState
 import java.io.File
@@ -74,6 +81,29 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     override val callEvents: Flow<StackCallEvent> = callEventFlow.asSharedFlow()
+
+    private val transferEventFlow = MutableSharedFlow<StackTransferEvent>(
+        replay = 0,
+        extraBufferCapacity = EVENT_BUFFER,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    override val transferEvents: Flow<StackTransferEvent> = transferEventFlow.asSharedFlow()
+
+    private val conferenceEventFlow = MutableSharedFlow<StackConferenceEvent>(
+        replay = 0,
+        extraBufferCapacity = EVENT_BUFFER,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    override val conferenceEvents: Flow<StackConferenceEvent> = conferenceEventFlow.asSharedFlow()
+
+    /**
+     * Conferences already being watched, by the call key of the leg that joined them.
+     *
+     * Tracked so a listener is attached exactly once. liblinphone reports the same
+     * conference on every subsequent call state change, and attaching again would publish
+     * the roster once per listener per change.
+     */
+    private val watchedConferences = mutableMapOf<String, Conference>()
 
     /** Our call key to the stack's call, so terminate can find the right one. */
     private val callsByKey = mutableMapOf<String, Call>()
@@ -158,12 +188,154 @@ internal class RealLinphoneCoreGateway @Inject constructor(
                     message = message,
                     // What the peer offered, read from the remote parameters rather than
                     // from ours: ours say what we would accept, not what was asked for.
-                    videoOffered = mapped == StackCallState.INCOMING_RECEIVED &&
-                        call.remoteParams?.isVideoEnabled == true,
+                    // Also read on UpdatedByRemote, which is the other moment an offer
+                    // exists and nothing has answered it (Task 54).
+                    videoOffered = (
+                        mapped == StackCallState.INCOMING_RECEIVED ||
+                            mapped == StackCallState.UPDATED_BY_REMOTE
+                        ) && call.remoteParams?.isVideoEnabled == true,
+                    // What is negotiated and running now, from our own params: after a
+                    // re-INVITE this is the only place the change is visible (Task 54).
+                    videoActive = call.currentParams?.isVideoEnabled == true,
+                ),
+            )
+
+            watchConferenceOf(key, call)
+        }
+
+        /**
+         * REFER progress (Task 55).
+         *
+         * A callback of its own in the SDK, and rightly: `call` here is the call being
+         * transferred, while `state` describes the *transfer*, not the call. A version
+         * that read this as a call state would report the transferor's leg as ringing.
+         */
+        override fun onTransferStateChanged(core: Core, call: Call, state: Call.State) {
+            val key = callsByKey.entries.firstOrNull { it.value == call }?.key ?: return
+            val mapped = state.toStackCallState() ?: return
+
+            transferEventFlow.tryEmit(
+                StackTransferEvent(
+                    callKey = key,
+                    state = mapped,
+                    // The code from the NOTIFY sipfrag. `errorInfo` is where liblinphone
+                    // puts it, which is why a busy transferee can be named as busy rather
+                    // than as a generic failure.
+                    statusCode = call.errorInfo.protocolCode.takeIf { it > 0 },
                 ),
             )
         }
     }
+
+    /**
+     * The roster listener, shared by every conference this app joins (Task 60).
+     *
+     * One stub rather than one per conference: every callback publishes the same thing —
+     * the full roster, restated — so there is nothing per-conference to close over. The
+     * conference is a parameter of each callback, which is how the right call key is
+     * found.
+     */
+    private val conferenceListener = object : ConferenceListenerStub() {
+        override fun onParticipantAdded(conference: Conference, participant: Participant) =
+            publishRoster(conference)
+
+        override fun onParticipantRemoved(conference: Conference, participant: Participant) =
+            publishRoster(conference)
+
+        override fun onParticipantDeviceAdded(conference: Conference, device: ParticipantDevice) =
+            publishRoster(conference)
+
+        override fun onParticipantDeviceRemoved(conference: Conference, device: ParticipantDevice) =
+            publishRoster(conference)
+
+        override fun onParticipantDeviceIsMuted(
+            conference: Conference,
+            device: ParticipantDevice,
+            isMuted: Boolean,
+        ) = publishRoster(conference)
+
+        override fun onParticipantDeviceIsSpeakingChanged(
+            conference: Conference,
+            device: ParticipantDevice,
+            isSpeaking: Boolean,
+        ) = publishRoster(conference)
+
+        override fun onActiveSpeakerParticipantDevice(
+            conference: Conference,
+            device: ParticipantDevice,
+        ) = publishRoster(conference)
+
+        /** The bridge stated the complete list. The one callback that proves a roster exists. */
+        override fun onFullStateReceived(conference: Conference) = publishRoster(conference)
+    }
+
+    /**
+     * Starts watching [call]'s conference, if it has one and is not already watched.
+     *
+     * Called from the call listener because that is when a conference becomes reachable:
+     * `call.conference` is null until the bridge has answered, so there is nothing to
+     * attach to at the moment [placeCall] returns.
+     */
+    private fun watchConferenceOf(callKey: String, call: Call) {
+        val conference = call.conference ?: return
+        if (watchedConferences[callKey] === conference) return
+
+        watchedConferences[callKey] = conference
+        conference.addListener(conferenceListener)
+        // Published immediately: the bridge may have sent its full state before this
+        // listener existed, and a roster nobody asked for again would never arrive.
+        publishRoster(conference)
+    }
+
+    /**
+     * Publishes [conference]'s participants as they stand.
+     *
+     * Full state every time — see [StackConferenceEvent]. Reconciling deltas against a
+     * roster that may have been missed is how a list ends up showing somebody who left.
+     *
+     * `rosterAvailable` is **false when the bridge names nobody at all**, including us.
+     * Every bridge that publishes a roster lists the local participant, so an entirely
+     * empty list means there is no roster rather than an empty room — which the UI has to
+     * say out loud rather than render as nobody being there (§13, Task 60).
+     */
+    private fun publishRoster(conference: Conference) {
+        val callKey = watchedConferences.entries.firstOrNull { it.value === conference }?.key ?: return
+        val devices = conference.participantDeviceList.orEmpty()
+
+        conferenceEventFlow.tryEmit(
+            StackConferenceEvent(
+                callKey = callKey,
+                participants = devices.map { it.toStackParticipant(conference) },
+                rosterAvailable = devices.isNotEmpty(),
+            ),
+        )
+    }
+
+    /**
+     * One participant device, flattened.
+     *
+     * A *device* rather than a participant: one person may join from a phone and a
+     * desktop, and it is the device that is muted, speaking, and sending video. A roster
+     * keyed on participants would show one entry for two streams and no way to say which
+     * of them is talking.
+     */
+    private fun ParticipantDevice.toStackParticipant(conference: Conference) = StackParticipant(
+        id = address?.asStringUriOnly() ?: name.orEmpty(),
+        uri = address?.asStringUriOnly(),
+        displayName = name ?: address?.displayName,
+        isMuted = isMuted,
+        isSpeaking = isSpeaking,
+        // Identity by address, which is what the bridge echoes back to us. `Conference.me`
+        // is the local participant, and its devices are the ones that are ours.
+        isSelf = address?.let { mine ->
+            conference.me?.devices.orEmpty().any { it.address?.weakEqual(mine) == true }
+        } == true,
+        // Under a mixing MCU this is false for everyone: one composed stream carries the
+        // room. It becomes true under an SFU, which is the swap §2.2 asks the model to
+        // survive.
+        hasVideoStream = thumbnailStreamAvailability,
+        joinedAtEpochMillis = timeOfJoining.takeIf { it > 0 }?.times(MILLIS_PER_SECOND),
+    )
 
     override fun placeCall(
         callKey: String,
@@ -286,6 +458,151 @@ internal class RealLinphoneCoreGateway @Inject constructor(
     }
 
     /**
+     * Adds or drops the video stream, by re-INVITE (Tasks 53, 54).
+     *
+     * `update()` on the existing dialog rather than a new INVITE: audio is working and has
+     * no interest in this change, and re-offering the whole session would interrupt it to
+     * negotiate something it does not care about.
+     */
+    override fun setVideoEnabled(callKey: String, enabled: Boolean) {
+        val call = callsByKey[callKey] ?: run {
+            logger.warn(TAG, "Video change for a call the stack no longer has: $callKey")
+            return
+        }
+        val params = call.core.createCallParams(call) ?: run {
+            logger.error(TAG, "The core refused to create update params for $callKey")
+            return
+        }
+        params.isVideoEnabled = enabled
+        if (call.update(params) != OK) logger.warn(TAG, "The stack refused a video update on $callKey")
+    }
+
+    /**
+     * Answers a re-INVITE that offered video (Task 54).
+     *
+     * `acceptUpdate` with video off is a **decline of the video, not of the call**: the
+     * re-INVITE is answered and audio carries on. Refusing the update outright with a 488
+     * would be legal SIP and would drop the call on several peers, which is not what
+     * declining an escalation should mean.
+     */
+    override fun respondToVideoUpdate(callKey: String, accept: Boolean) {
+        val call = callsByKey[callKey] ?: run {
+            logger.warn(TAG, "Video answer for a call the stack no longer has: $callKey")
+            return
+        }
+        val params = call.core.createCallParams(call) ?: run {
+            logger.error(TAG, "The core refused to create answer params for $callKey")
+            return
+        }
+        params.isVideoEnabled = accept
+        if (call.acceptUpdate(params) != OK) {
+            logger.warn(TAG, "The stack refused the video answer on $callKey")
+        }
+    }
+
+    /**
+     * Points the encoder at the next camera (Task 53).
+     *
+     * Set on the core, which is where liblinphone keeps the capture device, and with no
+     * re-negotiation: the same stream keeps running and only its source moves, so the far
+     * end sees the picture change rather than a gap.
+     *
+     * Cycling the list rather than looking for a device called "front" — device names are
+     * vendor strings and a device with one camera has one entry, where cycling correctly
+     * does nothing.
+     */
+    override fun switchCamera(callKey: String) {
+        val core = this.core ?: return
+        val devices = core.videoDevicesList
+        if (devices.size < 2) {
+            logger.info(TAG, "Only one camera on this device; nothing to switch to")
+            return
+        }
+
+        val next = devices[(devices.indexOf(core.videoDevice) + 1) % devices.size]
+        if (core.setVideoDevice(next) != OK) logger.warn(TAG, "The stack refused the camera switch")
+    }
+
+    /**
+     * Claims or releases the camera device (Task 51).
+     *
+     * Core-wide, because the camera is: one process, one capture device, whatever any
+     * individual call has negotiated. `CameraPolicy` decides from the whole call list and
+     * this obeys, which is what makes the release cover every way a call can end rather
+     * than only the hangup button.
+     */
+    override fun setCameraCapturing(capturing: Boolean) {
+        val core = this.core ?: return
+        core.isVideoCaptureEnabled = capturing
+    }
+
+    /**
+     * Attaches the views video is drawn into, or clears them (Task 52).
+     *
+     * Nulls are the important half. A surface handed to the stack and never taken back is
+     * a texture it keeps writing into after the screen has gone — which on some devices is
+     * a crash and on the rest is a leak of every frame of the call.
+     */
+    override fun setVideoWindows(remoteView: Any?, localPreview: Any?) {
+        val core = this.core ?: return
+        core.nativeVideoWindowId = remoteView
+        core.nativePreviewWindowId = localPreview
+    }
+
+    /** `REFER` to [destination] — the transferor drops out (Task 55). */
+    override fun transferCall(callKey: String, destination: String) {
+        val call = callsByKey[callKey] ?: run {
+            logger.warn(TAG, "Transfer for a call the stack no longer has: $callKey")
+            return
+        }
+        val address = Factory.instance().createAddress(destination) ?: run {
+            logger.error(TAG, "Unparseable transfer target for $callKey")
+            return
+        }
+        if (call.transferTo(address) != OK) logger.warn(TAG, "The stack refused the transfer of $callKey")
+    }
+
+    /**
+     * `REFER` with `Replaces`, naming the consultation call (Task 57).
+     *
+     * `transferToAnother` rather than an address: the `Replaces` header identifies a
+     * *dialog*, and an address cannot name one. This is the whole difference between an
+     * attended transfer and a blind one to the same extension.
+     */
+    override fun transferCallToCall(callKey: String, consultationCallKey: String) {
+        val call = callsByKey[callKey] ?: return
+        val consultation = callsByKey[consultationCallKey] ?: run {
+            logger.warn(TAG, "Attended transfer with no consultation call: $consultationCallKey")
+            return
+        }
+        if (call.transferToAnother(consultation) != OK) {
+            logger.warn(TAG, "The stack refused the attended transfer of $callKey")
+        }
+    }
+
+    /**
+     * Records this call's media to [filePath] (Task 58).
+     *
+     * The file goes on the call's own params — liblinphone has no per-recording API — and
+     * the path comes from the encrypted store above. Nothing here chooses where a
+     * recording lives, and nothing here decides whether one is allowed: `RecordingPolicy`
+     * has already answered that, and this is only reached once it has.
+     */
+    override fun startRecording(callKey: String, filePath: String) {
+        val call = callsByKey[callKey] ?: run {
+            logger.warn(TAG, "Recording for a call the stack no longer has: $callKey")
+            return
+        }
+        call.params.recordFile = filePath
+        call.startRecording()
+    }
+
+    override fun stopRecording(callKey: String) {
+        // Idempotent: a call that was not recording is one the caller wanted stopped.
+        callsByKey[callKey]?.takeIf { it.isRecording }?.stopRecording()
+    }
+
+    /**
      * liblinphone's call states, reduced to the ones this app branches on.
      *
      * Null for the states that carry no decision - `Released`, the `Updating` family, the
@@ -313,6 +630,15 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         Call.State.Paused -> StackCallState.PAUSED
         Call.State.PausedByRemote -> StackCallState.PAUSED_BY_REMOTE
         Call.State.Resuming -> StackCallState.RESUMING
+
+        // The far end sent a re-INVITE and the stack is holding it for an answer. Carried
+        // up rather than collapsed, because it is the one moment an escalation can be
+        // declined (Task 54) - and with `automaticallyAccept` off it is a state the core
+        // will sit in until this app answers.
+        Call.State.UpdatedByRemote -> StackCallState.UPDATED_BY_REMOTE
+
+        // A REFER arrived for this leg; it is being transferred away by the far end.
+        Call.State.Referred -> StackCallState.REFERRED
         Call.State.End -> StackCallState.ENDED
         Call.State.Error -> StackCallState.ERROR
         else -> null
@@ -327,9 +653,40 @@ internal class RealLinphoneCoreGateway @Inject constructor(
             context,
         )
         created.addListener(listener)
+        created.configureVideo()
         created.start()
         core = created
         logger.info(TAG, "SIP core started")
+    }
+
+    /**
+     * The video defaults this app needs (Tasks 51, 54).
+     *
+     * ## Nothing is automatic
+     *
+     * `automaticallyInitiate` false: an outgoing call offers video only when the profile
+     * asked for it, so a video-capable build does not quietly add a camera stream to every
+     * call somebody places.
+     *
+     * `automaticallyAccept` false is the one that matters. Left on — and it is on by
+     * default in some builds — the core answers an incoming re-INVITE offering video by
+     * accepting it, and the first anyone knows about the escalation is their own camera
+     * light. With it off the core reports `UpdatedByRemote` and waits, which is what makes
+     * the prompt §5.2 requires possible at all (Task 54).
+     *
+     * ## Capture starts off
+     *
+     * The camera is claimed by `CameraPolicy` when a call needs it and not before
+     * (Task 51). Display is left enabled: it costs nothing without a stream to draw, and
+     * turning it on later would mean re-negotiating a running call to see it.
+     */
+    private fun Core.configureVideo() {
+        videoActivationPolicy = Factory.instance().createVideoActivationPolicy().apply {
+            automaticallyInitiate = false
+            automaticallyAccept = false
+        }
+        isVideoCaptureEnabled = false
+        isVideoDisplayEnabled = true
     }
 
     override fun addAccount(account: StackAccount) {
@@ -466,6 +823,11 @@ internal class RealLinphoneCoreGateway @Inject constructor(
     override fun stop() {
         core?.let { running ->
             running.removeListener(listener)
+            // Cleared while the core is still alive, because afterwards there is nothing
+            // to clear them on: a held surface outlives its screen otherwise (Task 52).
+            running.nativeVideoWindowId = null
+            running.nativePreviewWindowId = null
+            running.isVideoCaptureEnabled = false
             // Every credential this gateway handed over, taken back before the core is
             // released - the same rule as `removeAccount`, applied to a shutdown.
             authInfoByKey.values.forEach(running::removeAuthInfo)
@@ -476,6 +838,9 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         // The calls go with the core that owned them. Keeping the references would leave
         // this gateway able to terminate calls belonging to a stack that no longer exists.
         callsByKey.clear()
+        // The surfaces go before the core does. A view the stack still holds after its
+        // owner has gone is a texture written into for the life of the process (Task 52).
+        watchedConferences.clear()
         core = null
         logger.info(TAG, "SIP core stopped")
     }
@@ -503,5 +868,8 @@ internal class RealLinphoneCoreGateway @Inject constructor(
 
         /** What liblinphone returns from a request it accepted; anything else is -1. */
         const val OK = 0
+
+        /** The stack reports a participant's join time in seconds; the app works in millis. */
+        const val MILLIS_PER_SECOND = 1_000L
     }
 }

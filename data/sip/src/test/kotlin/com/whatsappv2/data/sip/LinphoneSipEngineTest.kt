@@ -21,6 +21,7 @@ import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.HoldParty
 import com.whatsappv2.domain.engine.CallDirection
+import com.whatsappv2.domain.engine.CameraAvailability
 import com.whatsappv2.domain.engine.PushToken
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
@@ -107,6 +108,18 @@ open class LinphoneSipEngineFixture {
     /** App settings, which is where the DTMF transport comes from (Task 43). */
     internal val settings = FakeAppSettingsRepository()
 
+    /**
+     * Whether this "device" has a camera (Task 51).
+     *
+     * A var rather than a constructor argument, so a test can revoke the permission
+     * part-way through — which is the case Android 14 actually checks at
+     * `startForeground` and the case a cached answer would get wrong.
+     */
+    internal val camera = object : CameraAvailability {
+        var usable: Boolean = true
+        override fun isCameraUsable(): Boolean = usable
+    }
+
     internal fun engine(scope: TestScope) =
         // The same fake twice: one object implements both halves of the seam, exactly as
         // the real gateway does, because one `Core` owns registration and calls alike.
@@ -120,6 +133,7 @@ open class LinphoneSipEngineFixture {
             NoOpLogger,
             clock,
             platform,
+            camera,
         ).also { repository.given(account) }
 
     /** Registered and ready to place a call. */

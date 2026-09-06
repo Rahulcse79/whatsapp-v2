@@ -19,6 +19,24 @@ internal interface LinphoneCallGateway {
     val callEvents: Flow<StackCallEvent>
 
     /**
+     * Transfer progress, as the stack reports it (Task 55).
+     *
+     * A stream of its own rather than more [StackCallState] values, because a transfer's
+     * progress is *about* a call without being a state of it: while a REFER is in flight
+     * the call itself stays exactly where it was, and folding the two together would mean
+     * inventing call states for something the call is not doing.
+     */
+    val transferEvents: Flow<StackTransferEvent>
+
+    /**
+     * Conference roster changes, as the bridge publishes them (Task 60).
+     *
+     * Empty on a bridge that publishes nothing, which is a fact the UI has to state
+     * rather than paper over — hence [StackConferenceEvent.rosterAvailable].
+     */
+    val conferenceEvents: Flow<StackConferenceEvent>
+
+    /**
      * Sends an INVITE.
      *
      * @param callKey the app's id for this call, echoed back on every event so the engine
@@ -98,4 +116,81 @@ internal interface LinphoneCallGateway {
      * sends a BYE for a call that was never answered.
      */
     fun terminateCall(callKey: String)
+
+    /**
+     * Adds or drops the video stream by re-INVITE (Tasks 53, 54).
+     *
+     * `update()` with new params, not a fresh INVITE: the dialog is already established
+     * and re-offering it would tear down audio that is working perfectly well in order to
+     * change something audio does not care about.
+     */
+    fun setVideoEnabled(callKey: String, enabled: Boolean)
+
+    /**
+     * Answers a re-INVITE the far end sent offering video (Task 54).
+     *
+     * @param accept true accepts with a video stream; false accepts the re-INVITE while
+     *   leaving video off — which keeps the audio call rather than refusing it outright,
+     *   Task 54's second done-when. A 488 here would be within the letter of SIP and would
+     *   end some peers' calls entirely.
+     */
+    fun respondToVideoUpdate(callKey: String, accept: Boolean)
+
+    /**
+     * Points the encoder at the other camera (Task 53).
+     *
+     * No SDP: the stream keeps running and only its source moves, so the far end sees the
+     * picture change rather than a gap.
+     */
+    fun switchCamera(callKey: String)
+
+    /**
+     * Starts or stops the camera capturing at all (Task 51).
+     *
+     * Core-wide and separate from [setVideoEnabled], because the two answer different
+     * questions: whether a *call* has negotiated video, and whether this process is
+     * holding the *device*. Only the second decides whether the next call finds the camera
+     * free, which is the failure Task 51 names — so `CameraPolicy` drives this one from
+     * the whole call list rather than from any single call's teardown.
+     */
+    fun setCameraCapturing(capturing: Boolean)
+
+    /**
+     * Attaches the views video is drawn into, or clears them with nulls (Task 52).
+     *
+     * Both at once, because they are released together: a surface that outlives its call
+     * is a texture the stack keeps writing into after the screen has gone.
+     */
+    fun setVideoWindows(remoteView: Any?, localPreview: Any?)
+
+    /**
+     * `REFER` to [destination] — a blind transfer (Task 55).
+     *
+     * Returns immediately. Whether the transferee answered arrives on [transferEvents],
+     * and cannot arrive any other way: this leg leaves the dialog as soon as the REFER is
+     * accepted.
+     */
+    fun transferCall(callKey: String, destination: String)
+
+    /**
+     * `REFER` with `Replaces`, naming the consultation call — an attended transfer
+     * (Task 57).
+     *
+     * [consultationCallKey] must be an established second call. The stack builds the
+     * `Replaces` header from its dialog identifiers, which is why this takes a call rather
+     * than an address: the address alone cannot identify the dialog to replace.
+     */
+    fun transferCallToCall(callKey: String, consultationCallKey: String)
+
+    /**
+     * Starts writing this call's media to [filePath] (Task 58).
+     *
+     * The path is chosen above, in the encrypted store — this only writes where it is
+     * told. What Android permits an app to capture is documented in `docs/security.md`
+     * and is narrower than "the call".
+     */
+    fun startRecording(callKey: String, filePath: String)
+
+    /** Stops recording and closes the file. A no-op for a call that was not recording. */
+    fun stopRecording(callKey: String)
 }
