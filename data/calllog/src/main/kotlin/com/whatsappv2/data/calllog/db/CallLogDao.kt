@@ -37,6 +37,33 @@ interface CallLogDao {
     )
     fun observeMissed(): Flow<List<CallLogEntity>>
 
+    /**
+     * One page, newest first.
+     *
+     * `:missedOnly` folds both filters into one statement rather than two near-identical
+     * queries: the pair would drift the first time the ordering changed in one of them.
+     */
+    @Query(
+        """
+        SELECT * FROM call_log
+        WHERE :missedOnly = 0
+           OR (direction = 'INCOMING' AND answered_at_epoch_millis IS NULL)
+        ORDER BY started_at_epoch_millis DESC, id DESC
+        LIMIT :limit OFFSET :offset
+        """,
+    )
+    suspend fun page(missedOnly: Int, offset: Int, limit: Int): List<CallLogEntity>
+
+    /**
+     * A value that changes when the table does.
+     *
+     * Room re-runs a Flow query whenever the table it reads is written, so this emits on
+     * every insert, delete and clear — including the ones that leave the count alone.
+     * That is the signal a paged reader invalidates on; the number itself is not used.
+     */
+    @Query("SELECT COUNT(*) FROM call_log")
+    fun observeCount(): Flow<Int>
+
     /** One entry as a stream. Emits null once it is deleted. */
     @Query("SELECT * FROM call_log WHERE id = :id")
     fun observeById(id: Long): Flow<CallLogEntity?>

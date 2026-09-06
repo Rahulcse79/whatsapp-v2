@@ -12,6 +12,7 @@ import com.whatsappv2.domain.model.CallLogId
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.SipUri
+import com.whatsappv2.domain.repository.CallLogFilter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -80,7 +81,7 @@ class CallLogRepositoryImplTest {
         repository.record(entry(startedAt = STARTED_AT))
         repository.record(entry(startedAt = STARTED_AT + ONE_MINUTE))
 
-        val entries = repository.observeEntries().first()
+        val entries = repository.observe().first()
         assertEquals(STARTED_AT + ONE_MINUTE, entries.first().startedAtEpochMillis)
     }
 
@@ -91,7 +92,7 @@ class CallLogRepositoryImplTest {
         // An outbound call nobody picked up is not missed - nobody misses their own call.
         repository.record(entry(direction = CallDirection.OUTGOING, answeredAt = null))
 
-        assertEquals(listOf(missed.id), repository.observeMissed().first().map { it.id })
+        assertEquals(listOf(missed.id), repository.observe(CallLogFilter.MISSED).first().map { it.id })
     }
 
     @Test
@@ -102,7 +103,7 @@ class CallLogRepositoryImplTest {
         repository.delete(first.id)
         repository.delete(first.id)
 
-        assertEquals(listOf(second.id), repository.observeEntries().first().map { it.id })
+        assertEquals(listOf(second.id), repository.observe().first().map { it.id })
     }
 
     @Test
@@ -112,7 +113,7 @@ class CallLogRepositoryImplTest {
 
         repository.clear()
 
-        assertTrue(repository.observeEntries().first().isEmpty())
+        assertTrue(repository.observe().first().isEmpty())
     }
 
     @Test
@@ -129,7 +130,7 @@ class CallLogRepositoryImplTest {
 
     @Test
     fun `the list updates when a call ends rather than when the screen reopens`() = runTest {
-        repository.observeEntries().test {
+        repository.observe().test {
             assertTrue(awaitItem().isEmpty())
             repository.record(entry())
             assertEquals(1, awaitItem().size)

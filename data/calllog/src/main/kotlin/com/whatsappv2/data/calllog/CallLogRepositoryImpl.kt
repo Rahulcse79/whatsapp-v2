@@ -5,6 +5,7 @@ import com.whatsappv2.data.calllog.mapper.toDomain
 import com.whatsappv2.data.calllog.mapper.toEntity
 import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.model.CallLogId
+import com.whatsappv2.domain.repository.CallLogFilter
 import com.whatsappv2.domain.repository.CallLogRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -24,11 +25,23 @@ class CallLogRepositoryImpl @Inject constructor(
     private val dao: CallLogDao,
 ) : CallLogRepository {
 
-    override fun observeEntries(): Flow<List<CallLogEntry>> =
-        dao.observeAll().map { rows -> rows.mapNotNull { it.toDomain() } }
+    override fun observe(filter: CallLogFilter): Flow<List<CallLogEntry>> =
+        when (filter) {
+            CallLogFilter.ALL -> dao.observeAll()
+            CallLogFilter.MISSED -> dao.observeMissed()
+        }.map { rows -> rows.mapNotNull { it.toDomain() } }
 
-    override fun observeMissed(): Flow<List<CallLogEntry>> =
-        dao.observeMissed().map { rows -> rows.mapNotNull { it.toDomain() } }
+    override suspend fun page(filter: CallLogFilter, offset: Int, limit: Int): List<CallLogEntry> =
+        dao.page(missedOnly = if (filter == CallLogFilter.MISSED) 1 else 0, offset = offset, limit = limit)
+            .mapNotNull { it.toDomain() }
+
+    /**
+     * The table's own change signal, with the count discarded.
+     *
+     * `map { }` rather than `distinctUntilChanged`: two writes that leave the count equal
+     * are still two changes a paged reader has to reload for.
+     */
+    override fun changes(): Flow<Unit> = dao.observeCount().map { }
 
     override fun observeEntry(id: CallLogId): Flow<CallLogEntry?> =
         dao.observeById(id.value).map { it?.toDomain() }
