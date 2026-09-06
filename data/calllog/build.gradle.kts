@@ -1,7 +1,32 @@
 plugins {
     id("whatsappv2.android.library")
+    id("whatsappv2.hilt")
+    alias(libs.plugins.androidx.room)
 }
 
 android {
     namespace = "com.whatsappv2.data.calllog"
+}
+
+room {
+    // Committed, like the account module's. Without an exported schema Room cannot verify
+    // a migration, and a schema change ships as silent data loss instead of a build error.
+    schemaDirectory("$projectDir/schemas")
+}
+
+dependencies {
+    implementation(project(":core:common"))
+    implementation(project(":domain"))
+    implementation(libs.kotlinx.coroutines.core)
+
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
+
+    testImplementation(libs.androidx.room.testing)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core.ktx)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.turbine)
+    testImplementation(testFixtures(project(":core:common")))
 }
