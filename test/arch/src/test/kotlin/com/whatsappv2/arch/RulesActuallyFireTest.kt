@@ -99,7 +99,15 @@ class RulesActuallyFireTest {
         assertTrue(violations.any { "dimension" in it.detail }, "hardcoded dimension not detected")
     }
 
+    @Test
+    fun `rule 9 fires on contact data heading for the network`() {
+        val violations = ArchitectureRules.contactDataStaysOnTheDevice(fixtures)
+        assertFires("Rule 9", violations)
+        assertTrue(violations.any { "okhttp3.OkHttpClient" in it.detail })
+        assertTrue(violations.any { "java.net.HttpURLConnection" in it.detail })
+    }
+
     private companion object {
-        const val EXPECTED_FIXTURES = 8
+        const val EXPECTED_FIXTURES = 9
     }
 }

@@ -88,4 +88,9 @@ class ArchitectureTest {
     private companion object {
         const val MINIMUM_EXPECTED_FILES = 40
     }
+
+    @Test
+    fun `rule 9 - contact data stays on the device`() {
+        assertNoViolations("Rule 9", ArchitectureRules.contactDataStaysOnTheDevice(files))
+    }
 }

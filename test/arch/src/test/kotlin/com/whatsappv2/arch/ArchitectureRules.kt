@@ -279,4 +279,43 @@ object ArchitectureRules {
     private val COLOR_LITERAL = Regex("""Color\(\s*0x[0-9A-Fa-f]{6,8}""")
     private val TEXT_STYLE = Regex("""\bTextStyle\s*\(""")
     private val DIMENSION_LITERAL = Regex("""(?<![\w.])\d+(?:\.\d+)?\.(?:dp|sp)\b""")
+
+    /**
+     * **Rule 9 — contact data does not leave the device (Task 49, §7, §11).**
+     *
+     * The address book is somebody else's personal data, held on loan to draw a name on a
+     * ringing screen. §11 forbids collecting it in bulk and §7 forbids sending it anywhere,
+     * and neither is the kind of promise a code review keeps on its own — the mistake is
+     * one import in one file, months later, in a class that already had a good reason to
+     * talk to the network.
+     *
+     * So: nothing under `:data:contacts`, and no file that touches a [Contact], may also
+     * reach for a way off the device. That is coarse on purpose. A file that genuinely
+     * needs both is a file worth arguing about.
+     */
+    fun contactDataStaysOnTheDevice(files: List<SourceFile>): List<Violation> =
+        files.filter { file ->
+            file.isUnder("data/contacts") ||
+                file.imports.any { it.startsWith("com.whatsappv2.domain.contacts") }
+        }.flatMap { file ->
+            file.imports
+                .filter { import -> EGRESS.any { import.startsWith(it) } }
+                .map { Violation(file.relativePath, "reaches off-device with $it while holding contact data") }
+        }
+
+    /**
+     * Ways off the device, as imports.
+     *
+     * Not exhaustive and cannot be: the point is to catch the ordinary ones, so that
+     * getting contact data out takes a deliberate act nobody can call an accident.
+     */
+    private val EGRESS = listOf(
+        "java.net.",
+        "javax.net.",
+        "okhttp3.",
+        "retrofit2.",
+        "io.ktor.",
+        "android.webkit.",
+        "com.google.firebase.",
+    )
 }

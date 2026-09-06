@@ -2,6 +2,7 @@ package com.whatsappv2.domain.usecase
 
 import com.whatsappv2.core.common.time.Clock
 import com.whatsappv2.domain.call.CallState
+import com.whatsappv2.domain.contacts.ContactRepository
 import com.whatsappv2.domain.engine.CallSnapshot
 import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.model.CallLogEntry
@@ -29,6 +30,7 @@ import javax.inject.Inject
 class CallLogRecorder @Inject constructor(
     private val calls: SipCallController,
     private val log: CallLogRepository,
+    private val contacts: ContactRepository,
     private val clock: Clock,
 ) {
 
@@ -41,7 +43,12 @@ class CallLogRecorder @Inject constructor(
     suspend fun record() {
         calls.endedCalls.collect { snapshot ->
             val entry = snapshot.toLogEntry(clock.nowEpochMillis()) ?: return@collect
-            log.record(entry)
+            // Resolved once, here, and stored with the row. The alternative — resolving
+            // when the list is drawn — would re-read the address book for every visible
+            // entry on every scroll, and would rewrite history whenever a contact was
+            // renamed or deleted (Task 49).
+            val contact = contacts.resolve(entry.remote)
+            log.record(entry.copy(contactName = contact?.displayName))
         }
     }
 }
@@ -62,8 +69,8 @@ fun CallSnapshot.toLogEntry(endedAtEpochMillis: Long): CallLogEntry? {
         accountId = accountId,
         remote = remote,
         remoteDisplayName = remoteDisplayName,
-        // Task 49 resolves the address book. Until it does, the screen falls back through
-        // the peer's display name to the raw address, which is what it would show anyway.
+        // Filled in by the recorder, which is the only thing that has an address book to
+        // ask. Null here keeps this function pure and testable without one.
         contactName = null,
         direction = direction,
         startedAtEpochMillis = startedAtEpochMillis,

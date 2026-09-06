@@ -16,6 +16,7 @@ import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.testing.FakeCallLogRepository
+import com.whatsappv2.domain.testing.FakeContactRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -40,6 +41,7 @@ class CallLogRecorderTest {
 
     private val engine = FakeSipEngine()
     private val log = FakeCallLogRepository()
+    private val contacts = FakeContactRepository()
     private val clock = MutableClock().set(STARTED_AT)
 
     @Test
@@ -122,11 +124,32 @@ class CallLogRecorderTest {
         assertEquals(TEN_SECONDS / MILLIS_PER_SECOND, log.recorded.single().durationSeconds)
     }
 
+    @Test
+    fun `a call from someone in the address book is recorded under their name`() = runTest {
+        contacts.given(REMOTE, name = "Bob Smith")
+        val callId = outgoingCall()
+        engine.hangup(callId, HangupReason.LOCAL_HANGUP)
+        runCurrent()
+
+        assertEquals("Bob Smith", log.recorded.single().contactName)
+    }
+
+    @Test
+    fun `a call from a stranger is recorded without one, and that is not a failure`() = runTest {
+        // Also what a denied READ_CONTACTS looks like: the entry is written either way,
+        // and the screen falls back to the address.
+        val callId = outgoingCall()
+        engine.hangup(callId, HangupReason.LOCAL_HANGUP)
+        runCurrent()
+
+        assertNull(log.recorded.single().contactName)
+    }
+
     // ---------------------------------------------------------------- fixture
 
     /** Starts the recorder collecting, before anything can end. */
     private fun TestScope.recording() {
-        backgroundScope.launch { CallLogRecorder(engine, log, clock).record() }
+        backgroundScope.launch { CallLogRecorder(engine, log, contacts, clock).record() }
         runCurrent()
     }
 
