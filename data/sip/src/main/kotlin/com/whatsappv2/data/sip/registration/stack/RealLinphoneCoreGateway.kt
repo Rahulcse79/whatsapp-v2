@@ -260,9 +260,11 @@ internal class RealLinphoneCoreGateway @Inject constructor(
             isSpeaking: Boolean,
         ) = publishRoster(conference)
 
+        // Nullable, unlike the other device callbacks: the bridge reports "nobody is
+        // speaking" by naming no device at all.
         override fun onActiveSpeakerParticipantDevice(
             conference: Conference,
-            device: ParticipantDevice,
+            device: ParticipantDevice?,
         ) = publishRoster(conference)
 
         /** The bridge stated the complete list. The one callback that proves a roster exists. */

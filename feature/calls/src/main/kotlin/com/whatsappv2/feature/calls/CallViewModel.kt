@@ -24,6 +24,8 @@ import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.recording.CallRecorder
 import com.whatsappv2.domain.recording.RecordingConsent
+import com.whatsappv2.domain.recording.RecordingError
+import com.whatsappv2.domain.recording.RecordingRefusal
 import com.whatsappv2.domain.usecase.CallWaitingUseCase
 import com.whatsappv2.domain.usecase.TransferCallUseCase
 import com.whatsappv2.domain.usecase.TransferError
@@ -495,11 +497,15 @@ class CallViewModel @Inject constructor(
     fun confirmRecording() {
         val callId = watched.value ?: return
         askingRecordingConsent.value = false
-        act(CallAction.RECORD) {
-            recorder.start(
+
+        viewModelScope.launch {
+            val result = recorder.start(
                 callId = callId,
                 consent = RecordingConsent.GrantedByLocalUser(callId, clock.nowEpochMillis()),
             )
+            if (result is Outcome.Failure) {
+                eventChannel.send(CallEvent.ActionFailed(CallAction.RECORD, result.error.describe()))
+            }
         }
     }
 
@@ -509,6 +515,26 @@ class CallViewModel @Inject constructor(
     }
 
     // ---------------------------------------------------------------- plumbing
+
+    /**
+     * Why a recording could not start, in words the user can act on (Task 58).
+     *
+     * The consent cases are deliberately specific rather than "recording failed": the
+     * commonest of them is a consent that belongs to a call that has since ended, and
+     * telling somebody that is the difference between tapping again and giving up.
+     */
+    private fun RecordingError.describe(): String = when (this) {
+        is RecordingError.Refused -> when (refusal) {
+            is RecordingRefusal.NoConsent -> "Recording needs your confirmation first"
+            is RecordingRefusal.ConsentForAnotherCall ->
+                "That confirmation was for a different call — confirm again for this one"
+            is RecordingRefusal.CallNotEstablished -> "There is no audio to record yet"
+            is RecordingRefusal.NotSupportedOnThisPlatform ->
+                "This device will not let the app record a call"
+        }
+        is RecordingError.StorageUnavailable -> "The recording could not be saved"
+        is RecordingError.EngineRefused -> "That call cannot be recorded"
+    }
 
     private fun act(action: CallAction, block: suspend () -> Outcome<*, SipError>) {
         viewModelScope.launch {
