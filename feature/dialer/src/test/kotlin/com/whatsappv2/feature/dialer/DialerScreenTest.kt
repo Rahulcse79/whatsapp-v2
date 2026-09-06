@@ -17,8 +17,8 @@ import com.whatsappv2.domain.model.NatPolicy
 import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
-import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeContactRepository
+import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import org.junit.Rule
