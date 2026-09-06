@@ -148,12 +148,7 @@ internal fun DialerScreen(
                     .testTag(TAG_INPUT),
             )
 
-            if (state.recent.isNotEmpty()) {
-                Recents(recent = state.recent, onRecentSelected = actions.onRecentSelected)
-            }
-            if (state.contacts.isNotEmpty()) {
-                Contacts(contacts = state.contacts, onContactSelected = actions.onContactSelected)
-            }
+            Suggestions(state = state, actions = actions)
 
             Spacer(Modifier.weight(1f))
 
@@ -231,6 +226,23 @@ private fun AccountPicker(
                 )
             }
         }
+    }
+}
+
+/**
+ * The two rows of shortcuts above the keypad: what was dialled, and who can be dialled.
+ *
+ * Together in one composable because they are one idea — ways to avoid typing an address —
+ * and because each is hidden when it is empty, so a screen with neither shows the keypad
+ * and nothing else, exactly as it did before either existed.
+ */
+@Composable
+private fun Suggestions(state: DialerUiState, actions: DialerActions) {
+    if (state.recent.isNotEmpty()) {
+        Recents(recent = state.recent, onRecentSelected = actions.onRecentSelected)
+    }
+    if (state.contacts.isNotEmpty()) {
+        Contacts(contacts = state.contacts, onContactSelected = actions.onContactSelected)
     }
 }
 
