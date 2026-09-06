@@ -111,14 +111,12 @@ open class LinphoneSipEngineFixture {
     /**
      * Whether this "device" has a camera (Task 51).
      *
-     * A var rather than a constructor argument, so a test can revoke the permission
-     * part-way through — which is the case Android 14 actually checks at
-     * `startForeground` and the case a cached answer would get wrong.
+     * A named class rather than an object expression: the anonymous type of a non-private
+     * declaration is not visible to callers, so `camera.usable` would not resolve. A `var`
+     * so a test can revoke the permission part-way through, which is the case Android 14
+     * actually checks at `startForeground` and the case a cached answer would get wrong.
      */
-    internal val camera = object : CameraAvailability {
-        var usable: Boolean = true
-        override fun isCameraUsable(): Boolean = usable
-    }
+    internal val camera = FakeCameraAvailability()
 
     internal fun engine(scope: TestScope) =
         // The same fake twice: one object implements both halves of the seam, exactly as
@@ -1153,4 +1151,9 @@ private class StringWalk {
     private companion object {
         const val PROJECT_PACKAGE = "com.whatsappv2"
     }
+}
+
+/** A camera that is there until a test says otherwise (Task 51). */
+internal class FakeCameraAvailability(var usable: Boolean = true) : CameraAvailability {
+    override fun isCameraUsable(): Boolean = usable
 }
