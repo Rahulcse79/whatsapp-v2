@@ -2,6 +2,7 @@ package com.whatsappv2
 
 import android.app.Application
 import com.whatsappv2.audio.CallAudioCoordinator
+import com.whatsappv2.calllog.CallLogWriter
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.data.sip.SipEngineLifecycle
 import com.whatsappv2.push.PushTokenPublisher
@@ -49,6 +50,9 @@ class SipApplication : Application() {
     lateinit var callAudio: CallAudioCoordinator
 
     @Inject
+    lateinit var callLog: CallLogWriter
+
+    @Inject
     lateinit var pushTokens: PushTokenPublisher
 
     @Inject
@@ -66,6 +70,10 @@ class SipApplication : Application() {
         // starting it here costs a coroutine and buys audio that follows every call,
         // including the ones answered from a lock screen this process never drew (Task 40).
         callAudio.start()
+        // Started here rather than with the history screen: a call that ends while the
+        // user is elsewhere - or with nothing on screen at all - is still a call to
+        // record, and those are the missed ones (Task 47).
+        callLog.start()
         // Nothing started the foreground service until now, so it never ran: an account
         // could register and a call could arrive with no service to post a notification
         // from. The same ServiceRunPolicy that stops it decides when to start it.
