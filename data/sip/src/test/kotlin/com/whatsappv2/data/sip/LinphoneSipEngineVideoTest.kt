@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalCoroutinesApi::class)
+
 package com.whatsappv2.data.sip
 
 import com.whatsappv2.core.common.result.Outcome
@@ -7,6 +9,7 @@ import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
