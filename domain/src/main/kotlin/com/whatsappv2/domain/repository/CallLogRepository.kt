@@ -4,32 +4,63 @@ import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.model.CallLogId
 import kotlinx.coroutines.flow.Flow
 
+/** Which calls the history screen is showing. */
+enum class CallLogFilter {
+    /** Everything, answered or not. */
+    ALL,
+
+    /** Inbound calls that were never answered. */
+    MISSED,
+}
+
 /**
  * Which calls have happened (Task 47, §5.2).
  *
- * ## Reads are flows, writes are suspending
+ * ## Two ways to read, for two different readers
  *
- * The history screen must update the moment a call ends rather than when the user next
- * opens it, so [observeEntries] is a [Flow] the store keeps current. The writes are
- * one-shot and ordinary.
+ * [observe] is for anything that wants the whole list and will re-render when it changes —
+ * a "recent calls" strip, a test. [page] is for the history screen, which is paged over
+ * ten thousand entries and must not load them to show twenty.
  *
- * ## Filtering here, not in the screen
+ * ## Why paging is offset-and-limit rather than `PagingData`
  *
- * [observeMissed] exists rather than leaving the screen to filter what [observeEntries]
- * emits, because the list is paged: filtering after the fact would page through answered
- * calls to find the missed ones and show a short page whenever a page held few of them.
- * The store is where the question can be asked of the index.
+ * `PagingData` is an `androidx` type and `:domain` may not import one — the architecture
+ * test enforces that, and a feature may not reach past the domain into `:data:*` to get
+ * around it. So the seam is the plainest thing that supports paging, and the `PagingSource`
+ * that adapts it lives in `:feature:history` where androidx belongs. [changes] is how that
+ * source knows to reload: a paged reader cannot notice a write the way a [Flow] of the
+ * whole list does.
+ *
+ * ## Filtering here, not in the reader
+ *
+ * [CallLogFilter.MISSED] is asked of the store rather than applied to what [observe]
+ * emits, because filtering after the fact would page through answered calls to find the
+ * missed ones and show a short page whenever a page held few of them.
  */
 interface CallLogRepository {
 
-    /** Every call, newest first. */
-    fun observeEntries(): Flow<List<CallLogEntry>>
-
-    /** Inbound calls that were never answered, newest first. */
-    fun observeMissed(): Flow<List<CallLogEntry>>
+    /** Every entry matching [filter], newest first. */
+    fun observe(filter: CallLogFilter = CallLogFilter.ALL): Flow<List<CallLogEntry>>
 
     /** One entry, or null once it has been deleted. */
     fun observeEntry(id: CallLogId): Flow<CallLogEntry?>
+
+    /**
+     * One page of entries matching [filter], newest first.
+     *
+     * [offset] and [limit] are rows, not pages, because that is what the store indexes on
+     * and what a `PagingSource` asks for.
+     */
+    suspend fun page(filter: CallLogFilter, offset: Int, limit: Int): List<CallLogEntry>
+
+    /**
+     * Emits whenever the log changes.
+     *
+     * The value carries nothing; it is the fact of the change that matters. A paged
+     * reader invalidates on it, which is what makes the list update when a call ends
+     * rather than when the screen is next opened.
+     */
+    fun changes(): Flow<Unit>
 
     /**
      * Records a finished call and returns it with the id the store assigned.

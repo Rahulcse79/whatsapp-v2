@@ -17,6 +17,7 @@ import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.testing.FakeCallLogRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
@@ -34,6 +35,7 @@ import kotlin.test.assertTrue
  * directly: "exactly one entry per call" is a claim about the engine's terminal
  * transitions, and a test that fed the recorder by hand would assert nothing about them.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class CallLogRecorderTest {
 
     private val engine = FakeSipEngine()

@@ -2,6 +2,7 @@ package com.whatsappv2.domain.testing
 
 import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.model.CallLogId
+import com.whatsappv2.domain.repository.CallLogFilter
 import com.whatsappv2.domain.repository.CallLogRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,10 +28,13 @@ class FakeCallLogRepository : CallLogRepository {
     /** Everything recorded, newest first. */
     val recorded: List<CallLogEntry> get() = entries.value
 
-    override fun observeEntries(): Flow<List<CallLogEntry>> = entries
+    override fun observe(filter: CallLogFilter): Flow<List<CallLogEntry>> =
+        entries.map { list -> list.matching(filter) }
 
-    override fun observeMissed(): Flow<List<CallLogEntry>> =
-        entries.map { list -> list.filter { it.wasMissed } }
+    override suspend fun page(filter: CallLogFilter, offset: Int, limit: Int): List<CallLogEntry> =
+        entries.value.matching(filter).drop(offset).take(limit)
+
+    override fun changes(): Flow<Unit> = entries.map { }
 
     override fun observeEntry(id: CallLogId): Flow<CallLogEntry?> =
         entries.map { list -> list.firstOrNull { it.id == id } }
@@ -48,4 +52,12 @@ class FakeCallLogRepository : CallLogRepository {
     override suspend fun clear() {
         entries.value = emptyList()
     }
+
+    // `wanted`, not `filter`: naming it after the parameter would shadow the stdlib
+    // function used in the same expression, which reads as a bug even when it is not.
+    private fun List<CallLogEntry>.matching(wanted: CallLogFilter): List<CallLogEntry> =
+        when (wanted) {
+            CallLogFilter.ALL -> this
+            CallLogFilter.MISSED -> filter { it.wasMissed }
+        }
 }
