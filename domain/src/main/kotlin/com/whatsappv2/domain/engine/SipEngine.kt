@@ -169,6 +169,26 @@ interface SipCallController {
     val incomingCalls: Flow<IncomingCall>
 
     /**
+     * Calls that have ended, as their final snapshot (Task 47).
+     *
+     * A call leaves [activeCalls] the moment it terminates — that is what the name
+     * promises — and with it goes the only record that it happened. This is where it
+     * goes instead: one emission per call, carrying the state it ended in, so
+     * `CallState.Terminated.reason` says whether it was answered, missed, rejected or
+     * failed without anyone re-deriving it from a response code.
+     *
+     * A [Flow] rather than a [StateFlow] for the same reason as [incomingCalls]: a call
+     * log entry must be written exactly once, and a replaying stream would write it
+     * again on every re-collection.
+     *
+     * The collector is expected to outlive the engine — the recorder is started with the
+     * stack, not with a screen — because a replay-free stream has nowhere to keep an
+     * ending nobody is listening for, and the endings that would go missing are the
+     * missed calls.
+     */
+    val endedCalls: Flow<CallSnapshot>
+
+    /**
      * Places a call from [accountId] to [target].
      *
      * Returns as soon as the INVITE is accepted for sending, with the [CallId] that

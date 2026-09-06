@@ -109,6 +109,11 @@ class FakeSipEngine(
     private val incoming = MutableSharedFlow<IncomingCall>(replay = 0, extraBufferCapacity = INCOMING_BUFFER)
     override val incomingCalls: Flow<IncomingCall> = incoming.asSharedFlow()
 
+    // Buffered like [incoming], and for the same reason: a test that ends a call before
+    // it starts collecting still wants the ending it is about to assert on.
+    private val endings = MutableSharedFlow<CallSnapshot>(replay = 0, extraBufferCapacity = INCOMING_BUFFER)
+    override val endedCalls: Flow<CallSnapshot> = endings.asSharedFlow()
+
     private val conferenceSessions = MutableStateFlow<List<ConferenceSession>>(emptyList())
     override val conferences: StateFlow<List<ConferenceSession>> = conferenceSessions.asStateFlow()
 
@@ -542,6 +547,9 @@ class FakeSipEngine(
                     // but are retained in `ended` so a test can assert the final state
                     // and reason - which the call log (Task 47) will need.
                     ended += updated
+                    // And published, which is how the recorder hears about them: the
+                    // list above is for tests to read, the flow is the real seam.
+                    endings.tryEmit(updated)
                     calls.update { list -> list.filterNot { it.callId == callId } }
                     conferenceSessions.update { list -> list.filterNot { it.callId == callId } }
                 } else {

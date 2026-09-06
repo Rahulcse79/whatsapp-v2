@@ -50,6 +50,9 @@ class UnavailableSipEngine @Inject constructor() : SipEngine {
 
     override val incomingCalls: Flow<IncomingCall> = emptyFlow()
 
+    /** No stack, so no call ever starts and none can end. */
+    override val endedCalls: Flow<CallSnapshot> = emptyFlow()
+
     override val conferences: StateFlow<List<ConferenceSession>> = MutableStateFlow(emptyList())
 
     override suspend fun register(account: SipAccount) = unavailable()

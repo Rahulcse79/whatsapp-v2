@@ -207,6 +207,26 @@ internal class LinphoneSipEngine @Inject constructor(
     }
 
     /**
+     * The one way a call ends here (Task 47).
+     *
+     * Three paths reach it — the stack reporting a terminal state, a local hangup, and a
+     * local rejection — and each has to do the same three things. The third is the one
+     * that is easy to forget: a call that leaves [calls] without being published is a
+     * call the log never hears about, and it is the missed ones that go missing. Doing
+     * them together makes "exactly one entry per call" a property of this function
+     * rather than of three call sites happening to agree.
+     *
+     * Telecom is told because it did not cause this: without it the platform keeps audio
+     * focus for a call that is over (Task 34).
+     */
+    private fun endCall(callId: CallId, reason: HangupReason) {
+        val ending = calls.value[callId]?.copy(state = CallState.Terminated(reason))
+        updateCalls { it - callId }
+        platform.onEnded(callId, reason)
+        ending?.let(ended::tryEmit)
+    }
+
+    /**
      * Inbound INVITEs (Task 37).
      *
      * Buffered and never replayed, as [SipCallController.incomingCalls] requires. The
@@ -220,6 +240,19 @@ internal class LinphoneSipEngine @Inject constructor(
         extraBufferCapacity = INCOMING_BUFFER,
     )
     override val incomingCalls: Flow<IncomingCall> = incoming.asSharedFlow()
+
+    /**
+     * Calls that have ended (Task 47).
+     *
+     * Buffered and never replayed, for the same reason as [incoming]: the call log writes
+     * one row per emission, so replaying would duplicate rows on every re-collection, and
+     * dropping would lose the missed call nobody was watching for.
+     */
+    private val ended = MutableSharedFlow<CallSnapshot>(
+        replay = 0,
+        extraBufferCapacity = INCOMING_BUFFER,
+    )
+    override val endedCalls: Flow<CallSnapshot> = ended.asSharedFlow()
 
     private var started = false
 
@@ -306,11 +339,7 @@ internal class LinphoneSipEngine @Inject constructor(
      */
     private fun advance(id: CallId, current: CallSnapshot, event: StackCallEvent) {
         if (CallStateMapper.isTerminal(event.state)) {
-            val reason = CallStateMapper.toHangupReason(event)
-            updateCalls { it - id }
-            // Telecom is told, because it did not cause this: without it the platform
-            // keeps audio focus for a call that is over (Task 34).
-            platform.onEnded(id, reason)
+            endCall(id, CallStateMapper.toHangupReason(event))
             return
         }
 
@@ -479,11 +508,10 @@ internal class LinphoneSipEngine @Inject constructor(
         if (callId !in calls.value) return success(Unit)
 
         callGateway.terminateCall(callId.value)
-        // Removed locally rather than waiting for the stack's ENDED event. The user
-        // pressed hang up; a row that lingers until a BYE is acknowledged reads as a
-        // button that did nothing.
-        updateCalls { it - callId }
-        platform.onEnded(callId, reason)
+        // Ended locally rather than on the stack's ENDED event. The user pressed hang up;
+        // a row that lingers until a BYE is acknowledged reads as a button that did
+        // nothing.
+        endCall(callId, reason)
         return success(Unit)
     }
 
@@ -519,8 +547,7 @@ internal class LinphoneSipEngine @Inject constructor(
         if (callId !in calls.value) return success(Unit)
 
         callGateway.rejectCall(callId.value, busy = reason == HangupReason.BUSY)
-        updateCalls { it - callId }
-        platform.onEnded(callId, reason)
+        endCall(callId, reason)
         return success(Unit)
     }
 
