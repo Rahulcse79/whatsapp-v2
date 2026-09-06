@@ -51,5 +51,4 @@ class VideoAndTransferTypesTest {
         NoVideoSurfaces.detach()
         NoVideoSurfaces.detach()
     }
-
 }
