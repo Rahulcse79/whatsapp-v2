@@ -18,6 +18,7 @@ import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
+import com.whatsappv2.domain.testing.FakeContactRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -32,6 +33,7 @@ import org.junit.Before
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 
 /**
  * The call screen's state, driven by [FakeSipEngine] (Tasks 37 and 39).
@@ -44,6 +46,7 @@ import kotlin.test.assertIs
 class CallViewModelTest {
 
     private val engine = FakeSipEngine()
+    private val contacts = FakeContactRepository()
     private val clock = engine.clock
     private val dispatcher = StandardTestDispatcher()
 
@@ -53,7 +56,8 @@ class CallViewModelTest {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
-    private fun viewModel() = CallViewModel(calls = engine, media = engine, clock = clock)
+    private fun viewModel() =
+        CallViewModel(calls = engine, media = engine, contacts = contacts, clock = clock)
 
     @Test
     fun `an outgoing call renders its phase as the stack moves it`() = runTest {
@@ -315,6 +319,41 @@ class CallViewModelTest {
     }
 
     // ---------------------------------------------------------------- helpers
+
+    @Test
+    fun `a caller in the address book is shown by the name the user filed them under`() =
+        runTest {
+            // Task 49's first done-when. The contact's name wins over whatever the far end
+            // put in its From header: the user's own word for a person is the one they
+            // will recognise.
+            contacts.given(REMOTE, name = "Bob Smith", photoUri = "content://photo/1")
+            val callId = placeCall()
+            val viewModel = viewModel().also { it.watch(callId) }
+
+            viewModel.uiState.test {
+                skipItems(1)
+                val call = awaitDisplay { it.title == "Bob Smith" }
+
+                assertEquals("content://photo/1", call.photoUri)
+                cancelAndIgnoreRemainingEvents()
+            }
+        }
+
+    @Test
+    fun `a caller nobody has filed is still shown, by their address`() = runTest {
+        // Also the shape of a device where READ_CONTACTS was declined: the screen is
+        // exactly what it was before contacts existed, which is the whole promise.
+        val callId = placeCall()
+        val viewModel = viewModel().also { it.watch(callId) }
+
+        viewModel.uiState.test {
+            skipItems(1)
+            val call = awaitDisplay { it.title.isNotBlank() }
+
+            assertNull(call.photoUri)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
 
     private suspend fun placeCall(): CallId {
         engine.givenRegistered(ACCOUNT)

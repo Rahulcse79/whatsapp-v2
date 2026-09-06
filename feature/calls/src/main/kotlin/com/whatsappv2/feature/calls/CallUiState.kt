@@ -3,6 +3,7 @@ package com.whatsappv2.feature.calls
 import com.whatsappv2.domain.call.CallControls
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.HoldParty
+import com.whatsappv2.domain.contacts.Contact
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.CallSnapshot
 import com.whatsappv2.domain.model.CallId
@@ -149,6 +150,14 @@ data class CallDisplay(
      */
     val durationSeconds: Long?,
 
+    /**
+     * The caller's photo from the address book, or null (Task 49).
+     *
+     * A `content://` reference rather than an image: the screen loads it when it draws,
+     * and nothing here makes a copy of somebody's photograph.
+     */
+    val photoUri: String? = null,
+
     /** True when the peer offered video, so an inbound call can be answered with it. */
     val videoOffered: Boolean,
 ) {
@@ -196,9 +205,18 @@ enum class CallAction {
     DTMF,
 }
 
-/** Builds the display model for [snapshot] at [nowEpochMillis]. */
-internal fun CallSnapshot.toDisplay(nowEpochMillis: Long): CallDisplay {
-    val name = remoteDisplayName?.takeIf { it.isNotBlank() }
+/**
+ * Builds the display model for [snapshot] at [nowEpochMillis].
+ *
+ * [contact] is what the address book said, when it knew and when it was allowed to be
+ * asked. It wins over the name the peer asserted: the user's own word for a person is
+ * more trustworthy than whatever the far end chose to call itself, and it is the name
+ * they will recognise. Null for a stranger, and for a device where READ_CONTACTS was
+ * declined — both of which leave the screen exactly as it was before Task 49.
+ */
+internal fun CallSnapshot.toDisplay(nowEpochMillis: Long, contact: Contact? = null): CallDisplay {
+    val name = contact?.displayName?.takeIf { it.isNotBlank() }
+        ?: remoteDisplayName?.takeIf { it.isNotBlank() }
     val address = remote.render()
 
     return CallDisplay(
@@ -206,6 +224,7 @@ internal fun CallSnapshot.toDisplay(nowEpochMillis: Long): CallDisplay {
         title = name ?: remote.user ?: remote.host.rendered,
         // Only when it adds something: repeating the address under itself is noise.
         subtitle = address.takeIf { name != null },
+        photoUri = contact?.photoUri,
         direction = direction,
         phase = CallPhase.of(state),
         controls = state.controlsOrNull ?: CallControls.DEFAULT,

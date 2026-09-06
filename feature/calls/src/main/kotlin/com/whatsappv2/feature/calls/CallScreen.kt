@@ -156,7 +156,13 @@ private fun ActiveCall(call: CallDisplay, actions: CallActions) {
  */
 @Composable
 private fun CallIdentity(call: CallDisplay, showAvatar: Boolean) {
-    if (showAvatar) Avatar(displayName = call.title, size = AppTheme.sizing.avatarLarge)
+    if (showAvatar) {
+        Avatar(
+            displayName = call.title,
+            size = AppTheme.sizing.avatarLarge,
+            photoUri = call.photoUri,
+        )
+    }
 
     Text(
         text = call.title,

@@ -6,6 +6,8 @@ import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.time.Clock
 import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.userMessage
+import com.whatsappv2.domain.contacts.Contact
+import com.whatsappv2.domain.contacts.ContactRepository
 import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.SipMediaController
@@ -22,9 +24,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -53,6 +59,7 @@ import javax.inject.Inject
 class CallViewModel @Inject constructor(
     private val calls: SipCallController,
     private val media: SipMediaController,
+    private val contacts: ContactRepository,
     private val clock: Clock,
 ) : ViewModel() {
 
@@ -89,12 +96,12 @@ class CallViewModel @Inject constructor(
         // than inheriting the first call's history.
         var seen = false
 
-        return combine(calls.activeCalls, ticker()) { active, now ->
+        return combine(calls.activeCalls, ticker(), contactFor(callId)) { active, now, contact ->
             val call = active.firstOrNull { it.callId == callId }
             if (call != null) seen = true
 
             when {
-                call != null -> CallUiState.Active(call.toDisplay(now))
+                call != null -> CallUiState.Active(call.toDisplay(now, contact))
                 // Absent after it was present means the call ended. Absent before it was
                 // ever present means the engine has not published it yet, which happens
                 // for a frame when the screen is opened from a notification. Telling the
@@ -104,6 +111,23 @@ class CallViewModel @Inject constructor(
             }
         }
     }
+
+    /**
+     * Who is calling, if the address book knows (Task 49).
+     *
+     * Resolved once per address rather than per tick: the ticker fires every second and a
+     * provider read on each of them would be a lot of reads of somebody's address book to
+     * answer the same question. `null` first, so the screen draws the moment the call
+     * arrives rather than waiting on a lookup — the name appears when it appears, which is
+     * the right way round for a phone that is already ringing.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun contactFor(callId: CallId): Flow<Contact?> = calls.activeCalls
+        .map { active -> active.firstOrNull { it.callId == callId }?.remote }
+        .filterNotNull()
+        .distinctUntilChanged()
+        .mapLatest { remote -> contacts.resolve(remote) }
+        .onStart { emit(null) }
 
     /**
      * A tick a second, and one immediately.
