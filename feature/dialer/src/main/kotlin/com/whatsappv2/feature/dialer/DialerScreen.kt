@@ -38,11 +38,13 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.whatsappv2.core.designsystem.component.Avatar
 import com.whatsappv2.core.designsystem.component.CallActionButton
 import com.whatsappv2.core.designsystem.component.CallActionStyle
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
 import com.whatsappv2.core.designsystem.theme.AppTheme
+import com.whatsappv2.domain.contacts.SipContact
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
 
@@ -85,6 +87,7 @@ fun DialerScreen(
             onClear = viewModel::onClear,
             onAccountSelected = viewModel::onAccountSelected,
             onRecentSelected = viewModel::onRecentSelected,
+            onContactSelected = viewModel::onContactSelected,
             onCall = viewModel::onCall,
         ),
         modifier = modifier,
@@ -147,6 +150,9 @@ internal fun DialerScreen(
 
             if (state.recent.isNotEmpty()) {
                 Recents(recent = state.recent, onRecentSelected = actions.onRecentSelected)
+            }
+            if (state.contacts.isNotEmpty()) {
+                Contacts(contacts = state.contacts, onContactSelected = actions.onContactSelected)
             }
 
             Spacer(Modifier.weight(1f))
@@ -228,6 +234,39 @@ private fun AccountPicker(
     }
 }
 
+/**
+ * Contacts with a SIP address matching what has been typed (Task 50).
+ *
+ * A row of chips like the recents above it, and hidden entirely when there is nothing to
+ * show — which is the same thing the screen does when READ_CONTACTS was declined, so a
+ * user who said no is never shown an empty space where a list should be.
+ */
+@Composable
+private fun Contacts(contacts: List<SipContact>, onContactSelected: (SipContact) -> Unit) {
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = AppTheme.spacing.small)
+            .testTag(TAG_CONTACTS),
+    ) {
+        items(contacts) { match ->
+            AssistChip(
+                onClick = { onContactSelected(match) },
+                label = { Text(match.contact.displayName) },
+                leadingIcon = {
+                    Avatar(
+                        displayName = match.contact.displayName,
+                        photoUri = match.contact.photoUri,
+                        size = AppTheme.sizing.avatarSmall,
+                    )
+                },
+                modifier = Modifier.testTag(contactTag(match)),
+            )
+        }
+    }
+}
+
 @Composable
 private fun Recents(recent: List<String>, onRecentSelected: (String) -> Unit) {
     LazyRow(
@@ -298,9 +337,12 @@ internal const val TAG_BACKSPACE = "dialer-backspace"
 internal const val TAG_CLEAR = "dialer-clear"
 internal const val TAG_ACCOUNT = "dialer-account"
 internal const val TAG_RECENTS = "dialer-recents"
+internal const val TAG_CONTACTS = "dialer-contacts"
 
 internal fun keyTag(key: Char): String = "dialer-key-$key"
 internal fun recentTag(target: String): String = "dialer-recent-$target"
+
+internal fun contactTag(match: SipContact): String = "dialer-contact-${match.address.render()}"
 internal fun accountTag(id: AccountId): String = "dialer-account-${id.value}"
 
 @ThemePreviews

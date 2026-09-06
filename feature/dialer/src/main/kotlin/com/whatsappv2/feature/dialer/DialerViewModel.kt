@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.domain.call.userMessage
+import com.whatsappv2.domain.contacts.ContactRepository
+import com.whatsappv2.domain.contacts.SipContact
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.SipRegistrar
 import com.whatsappv2.domain.model.AccountId
@@ -12,12 +14,16 @@ import com.whatsappv2.domain.repository.SipAccountRepository
 import com.whatsappv2.domain.usecase.PlaceCallError
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -42,6 +48,7 @@ import javax.inject.Inject
 class DialerViewModel @Inject constructor(
     private val placeCall: PlaceCallUseCase,
     private val recentDials: RecentDials,
+    private val contacts: ContactRepository,
     repository: SipAccountRepository,
     registrar: SipRegistrar,
 ) : ViewModel() {
@@ -64,12 +71,26 @@ class DialerViewModel @Inject constructor(
     private val eventChannel = Channel<DialerEvent>(Channel.BUFFERED)
     val events: Flow<DialerEvent> = eventChannel.receiveAsFlow()
 
+    /**
+     * Contacts matching what has been typed (Task 50).
+     *
+     * `mapLatest`, so a keystroke cancels the search the one before it started: a picker
+     * that queued a provider read per character would show results for a prefix the user
+     * has already finished typing past.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val matchingContacts: Flow<List<SipContact>> = entry
+        .map { it.input }
+        .distinctUntilChanged()
+        .mapLatest { query -> contacts.search(query, CONTACT_RESULTS) }
+
     val uiState: StateFlow<DialerUiState> = combine(
         repository.observeAccounts(),
         registrar.registrationState,
         entry,
         recentDials.recent,
-    ) { accounts, registrations, current, recent ->
+        matchingContacts,
+    ) { accounts, registrations, current, recent, matches ->
         val rows = accounts.map { account ->
             DialerAccount(
                 id = account.id,
@@ -91,6 +112,7 @@ class DialerViewModel @Inject constructor(
             isOverridden = current.override != null,
             selectionIsDefault = accounts.firstOrNull { it.id == selected?.id }?.isDefault == true,
             recent = recent,
+            contacts = matches,
             isPlacing = current.placing,
         )
     }.stateIn(
@@ -145,8 +167,25 @@ class DialerViewModel @Inject constructor(
     fun onCall() {
         val state = uiState.value
         if (!state.canPlaceCall) return
-        val target = state.input
+        place(state.input)
+    }
 
+    /**
+     * Calls a contact straight from the picker (Task 50).
+     *
+     * The address is placed directly rather than typed into the field and then dialled:
+     * [onCall] reads `uiState`, which is one dispatch behind the entry it is combined
+     * from, so it would dial whatever was in the field a moment ago. The field is still
+     * filled in, because a call that is placed should show what is being called.
+     */
+    fun onContactSelected(contact: SipContact) {
+        val target = contact.address.render()
+        entry.update { it.copy(input = target) }
+        place(target)
+    }
+
+    private fun place(target: String) {
+        val state = uiState.value
         entry.update { it.copy(placing = true) }
         viewModelScope.launch {
             try {
@@ -191,5 +230,13 @@ class DialerViewModel @Inject constructor(
 
     private companion object {
         const val SUBSCRIPTION_TIMEOUT_MILLIS = 5_000L
+
+        /**
+         * How many contacts the picker offers.
+         *
+         * A screenful. The bound is not a nicety: it is what stops a blank query reading
+         * as "give me the address book" (§7, §11).
+         */
+        const val CONTACT_RESULTS = 20
     }
 }

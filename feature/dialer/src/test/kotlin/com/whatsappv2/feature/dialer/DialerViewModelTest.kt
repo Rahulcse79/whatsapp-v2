@@ -1,14 +1,19 @@
 package com.whatsappv2.feature.dialer
 
 import app.cash.turbine.test
+import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
+import com.whatsappv2.domain.contacts.Contact
+import com.whatsappv2.domain.contacts.SipContact
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CodecPreferences
 import com.whatsappv2.domain.model.NatPolicy
 import com.whatsappv2.domain.model.SipAccount
+import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
+import com.whatsappv2.domain.testing.FakeContactRepository
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
@@ -42,6 +47,7 @@ class DialerViewModelTest {
     private val repository = FakeSipAccountRepository()
     private val engine = FakeSipEngine()
     private val recents = RecentDials()
+    private val contacts = FakeContactRepository()
     private val dispatcher = StandardTestDispatcher()
 
     @Before
@@ -53,6 +59,7 @@ class DialerViewModelTest {
     private fun viewModel() = DialerViewModel(
         placeCall = PlaceCallUseCase(repository, engine),
         recentDials = recents,
+        contacts = contacts,
         repository = repository,
         registrar = engine,
     )
@@ -271,6 +278,68 @@ class DialerViewModelTest {
      * scope keeps it live for the length of the test and lets each assertion read the
      * current state directly rather than counting emissions.
      */
+    // ---------------------------------------------------------------- contacts (Task 50)
+
+    @Test
+    fun `contacts with a SIP address are offered, and narrow as the user types`() = runTest {
+        given(work)
+        contacts.given(uri("sip:bob@sip.example.com"), name = "Bob Smith")
+        contacts.given(uri("sip:carol@sip.example.com"), name = "Carol Jones")
+        val viewModel = ready(viewModel())
+
+        assertEquals(2, viewModel.uiState.value.contacts.size)
+
+        viewModel.onInputChanged("carol")
+        runCurrent()
+
+        assertEquals(listOf("Carol Jones"), viewModel.uiState.value.contacts.map { it.contact.displayName })
+    }
+
+    @Test
+    fun `a contact with no SIP address is not offered, because it cannot be called`() = runTest {
+        // The picker's whole job is a name to tap and an address to dial. Someone this app
+        // cannot reach is a dead end dressed up as a choice.
+        given(work)
+        val viewModel = ready(viewModel())
+
+        assertTrue(viewModel.uiState.value.contacts.isEmpty())
+    }
+
+    @Test
+    fun `calling a contact dials their address, not whatever was typed before`() = runTest {
+        // onCall reads uiState, which lags the entry by a dispatch, so placing through it
+        // would dial the previous input. This is the case that catches that.
+        given(work)
+        val bob = uri("sip:bob@sip.example.com")
+        contacts.given(bob, name = "Bob Smith")
+        val viewModel = ready(viewModel())
+        viewModel.onInputChanged("999")
+        runCurrent()
+
+        viewModel.onContactSelected(SipContact(Contact("Bob Smith", null), bob))
+        runCurrent()
+
+        assertEquals("sip:bob@sip.example.com", lastDialled())
+    }
+
+    @Test
+    fun `calling a contact goes out on the account the screen is showing`() = runTest {
+        // Task 50's second done-when: the override the user chose still applies.
+        given(work, home)
+        val bob = uri("sip:bob@sip.example.com")
+        contacts.given(bob, name = "Bob Smith")
+        val viewModel = ready(viewModel())
+        viewModel.onAccountSelected(home.id)
+        runCurrent()
+
+        viewModel.onContactSelected(SipContact(Contact("Bob Smith", null), bob))
+        runCurrent()
+
+        assertEquals(home.id, engine.activeCalls.value.single().accountId)
+    }
+
+    private fun uri(value: String): SipUri = SipUri.parse(value).getOrNull()!!
+
     private fun TestScope.ready(viewModel: DialerViewModel): DialerViewModel {
         backgroundScope.launch { viewModel.uiState.collect { } }
         runCurrent()

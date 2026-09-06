@@ -1,5 +1,6 @@
 package com.whatsappv2.feature.dialer
 
+import com.whatsappv2.domain.contacts.SipContact
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
 
@@ -46,6 +47,15 @@ data class DialerUiState(
      * where the screen shows an account and the use case would otherwise find none.
      */
     val selectionIsDefault: Boolean = false,
+
+    /**
+     * Contacts with a SIP address matching what has been typed (Task 50).
+     *
+     * Empty when nothing has been typed yet is not the same as empty because the
+     * permission was declined — but the screen treats them alike, showing the keypad and
+     * nothing else, which is exactly what the app did before contacts existed.
+     */
+    val contacts: List<SipContact> = emptyList(),
 
     /** Recently dialled targets, most recent first. */
     val recent: List<String> = emptyList(),

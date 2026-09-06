@@ -1,6 +1,7 @@
 package com.whatsappv2.feature.dialer
 
 import androidx.compose.runtime.Stable
+import com.whatsappv2.domain.contacts.SipContact
 import com.whatsappv2.domain.model.AccountId
 
 /**
@@ -19,5 +20,7 @@ data class DialerActions(
     val onClear: () -> Unit = {},
     val onAccountSelected: (AccountId) -> Unit = {},
     val onRecentSelected: (String) -> Unit = {},
+    /** Call this contact on the account the screen is showing (Task 50). */
+    val onContactSelected: (SipContact) -> Unit = {},
     val onCall: () -> Unit = {},
 )
