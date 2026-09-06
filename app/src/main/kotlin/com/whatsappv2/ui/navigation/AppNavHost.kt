@@ -14,7 +14,7 @@ import com.whatsappv2.feature.accounts.AccountDetailRoute
 import com.whatsappv2.feature.accounts.AccountEditorRoute
 import com.whatsappv2.feature.accounts.AccountsRoute
 import com.whatsappv2.feature.dialer.DialerScreen
-import com.whatsappv2.feature.history.HistoryScreen
+import com.whatsappv2.feature.history.HistoryRoute
 import com.whatsappv2.feature.settings.SettingsScreen
 
 /**
@@ -44,7 +44,13 @@ fun AppNavHost(
                 onCallPlaced = { callId -> context.startActivity(CallActivity.intentFor(context, callId)) },
             )
         }
-        composable(AppDestination.HISTORY.route) { HistoryScreen() }
+        composable(AppDestination.HISTORY.route) {
+            HistoryRoute(
+                // The same hand-off the dialler uses: a redial opens the same call screen,
+                // reached the same way (Task 48).
+                onCallPlaced = { callId -> context.startActivity(CallActivity.intentFor(context, callId)) },
+            )
+        }
         composable(AppDestination.ACCOUNTS.route) {
             AccountsRoute(
                 onAddAccount = { navController.navigate(ACCOUNT_EDITOR_NEW) },
