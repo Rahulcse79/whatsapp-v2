@@ -5,9 +5,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PhoneForwarded
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.FiberManualRecord
-import androidx.compose.material.icons.filled.PhoneForwarded
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.runtime.Composable
@@ -62,7 +62,7 @@ internal fun CallSecondaryControls(
             modifier = Modifier.testTag(TAG_SWITCH_CAMERA),
         )
         CallActionButton(
-            icon = Icons.Filled.PhoneForwarded,
+            icon = Icons.AutoMirrored.Filled.PhoneForwarded,
             contentDescription = "Transfer this call",
             onClick = actions.onStartTransfer,
             enabled = availability.canTransfer,

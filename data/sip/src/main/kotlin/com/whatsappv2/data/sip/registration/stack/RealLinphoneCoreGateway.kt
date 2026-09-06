@@ -196,7 +196,7 @@ internal class RealLinphoneCoreGateway @Inject constructor(
                         ) && call.remoteParams?.isVideoEnabled == true,
                     // What is negotiated and running now, from our own params: after a
                     // re-INVITE this is the only place the change is visible (Task 54).
-                    videoActive = call.currentParams?.isVideoEnabled == true,
+                    videoActive = call.currentParams.isVideoEnabled,
                 ),
             )
 
@@ -322,16 +322,17 @@ internal class RealLinphoneCoreGateway @Inject constructor(
      * of them is talking.
      */
     private fun ParticipantDevice.toStackParticipant(conference: Conference) = StackParticipant(
-        id = address?.asStringUriOnly() ?: name.orEmpty(),
-        uri = address?.asStringUriOnly(),
-        displayName = name ?: address?.displayName,
+        // The address is the id: the bridge echoes it back on every later notification, and
+        // it is the only handle stable across them. A device with a blank one falls back to
+        // its name, which is worse but is still something to key on.
+        id = address.asStringUriOnly().ifBlank { name.orEmpty() },
+        uri = address.asStringUriOnly(),
+        displayName = name ?: address.displayName,
         isMuted = isMuted,
         isSpeaking = isSpeaking,
         // Identity by address, which is what the bridge echoes back to us. `Conference.me`
         // is the local participant, and its devices are the ones that are ours.
-        isSelf = address?.let { mine ->
-            conference.me?.devices.orEmpty().any { it.address?.weakEqual(mine) == true }
-        } == true,
+        isSelf = conference.me.devices.any { it.address.weakEqual(address) },
         // Under a mixing MCU this is false for everyone: one composed stream carries the
         // room. It becomes true under an SFU, which is the swap §2.2 asks the model to
         // survive.
@@ -600,8 +601,10 @@ internal class RealLinphoneCoreGateway @Inject constructor(
     }
 
     override fun stopRecording(callKey: String) {
-        // Idempotent: a call that was not recording is one the caller wanted stopped.
-        callsByKey[callKey]?.takeIf { it.isRecording }?.stopRecording()
+        // Unconditional: `Call.isRecording` is deprecated in the SDK, and the stack's own
+        // stop is already a no-op for a call that was not recording — which is exactly the
+        // idempotence the gateway's contract asks for.
+        callsByKey[callKey]?.stopRecording()
     }
 
     /**

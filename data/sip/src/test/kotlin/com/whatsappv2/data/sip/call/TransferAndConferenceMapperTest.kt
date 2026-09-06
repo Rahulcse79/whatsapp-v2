@@ -216,6 +216,22 @@ class TransferAndConferenceMapperTest {
     }
 
     @Test
+    fun `a participant the bridge cannot identify at all is dropped`() {
+        val applied = ConferenceMapper.apply(
+            session,
+            StackConferenceEvent(
+                callId.value,
+                listOf(stackParticipant("bob"), stackParticipant("", uri = null)),
+                rosterAvailable = true,
+            ),
+        )
+
+        // Not given a made-up id: one that changes on every roster is a participant who
+        // appears to leave and rejoin continuously. `ParticipantId` refuses blank anyway.
+        assertEquals(listOf("bob"), applied.participants.map { it.id.value })
+    }
+
+    @Test
     fun `the local participant is marked as self and excluded from others`() {
         val applied = ConferenceMapper.apply(
             session,

@@ -31,7 +31,12 @@ internal object ConferenceMapper {
         if (!event.rosterAvailable) {
             session.withoutRoster()
         } else {
-            session.withRoster(event.participants.map(::toDomain))
+            // A participant the bridge names with neither an address nor a name cannot be
+            // identified across notifications, so it is dropped rather than given a made-up
+            // id: an id that changes on every roster is a participant that appears to leave
+            // and rejoin continuously. `ParticipantId` refuses a blank value outright, and
+            // this is the one place a blank one could arrive from.
+            session.withRoster(event.participants.filter { it.id.isNotBlank() }.map(::toDomain))
         }
 
     private fun toDomain(participant: StackParticipant) = ConferenceParticipant(
