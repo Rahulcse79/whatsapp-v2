@@ -60,7 +60,10 @@ class AppRootNavigationTest {
         // The dialler's own heading is its input field's label (Task 36): the screen is a
         // keypad, and a screen whose purpose is obvious does not need a title above it.
         AppDestination.DIALER to "Number or SIP address",
-        AppDestination.HISTORY to "Call history",
+        // History's own heading is its filter row (Task 48): "Missed" is on screen with
+        // calls or without any, while the empty state's wording is only there while the
+        // log is empty.
+        AppDestination.HISTORY to "Missed",
         AppDestination.ACCOUNTS to "SIP accounts",
         AppDestination.SETTINGS to "App settings",
     )
