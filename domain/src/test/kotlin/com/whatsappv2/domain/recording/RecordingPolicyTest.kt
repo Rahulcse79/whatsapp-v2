@@ -9,6 +9,7 @@ import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.SipUri
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
@@ -118,6 +119,28 @@ class RecordingPolicyTest {
             ),
         )
         assertFalse(RecordingPolicy.mustStop(CallState.Held(HoldParty.LOCAL)))
+    }
+
+    @Test
+    fun `a recording id must not be blank, and renders as itself`() {
+        assertEquals("rec-1", RecordingId("rec-1").toString())
+        assertFailsWith<IllegalArgumentException> { RecordingId("") }
+        assertFailsWith<IllegalArgumentException> { RecordingId("  ") }
+    }
+
+    @Test
+    fun `a recording's duration is measured from its own timestamps, never negative`() {
+        val recording = Recording(
+            id = RecordingId("rec-1"),
+            callId = callId,
+            startedAtEpochMillis = 1_000,
+            endedAtEpochMillis = 4_000,
+            sizeBytes = 2_048,
+        )
+
+        assertEquals(3_000L, recording.durationMillis)
+        // A clock that went backwards is a clock, not a negative recording.
+        assertEquals(0L, recording.copy(endedAtEpochMillis = 0).durationMillis)
     }
 
     @Test

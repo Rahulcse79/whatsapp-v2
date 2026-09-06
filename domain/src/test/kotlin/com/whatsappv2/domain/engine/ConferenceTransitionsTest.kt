@@ -120,6 +120,20 @@ class ConferenceTransitionsTest {
     }
 
     @Test
+    fun `a participant's own video stream can be turned on, which is the SFU case`() {
+        // Under the dial-in MCU (ADR-003) one composed stream carries the room and this
+        // stays false for everyone. It is here because §2.2 asks the model to survive the
+        // swap, and a transition nothing can drive is a transition that does not work.
+        val room = session.withParticipantJoined(participant("alice"))
+        assertFalse(room.hasPerParticipantVideo)
+
+        val sfu = room.withParticipantVideo(ParticipantId("alice"), hasVideo = true)
+        assertTrue(sfu.hasPerParticipantVideo)
+
+        assertFalse(sfu.withParticipantVideo(ParticipantId("alice"), hasVideo = false).hasPerParticipantVideo)
+    }
+
+    @Test
     fun `a transition naming somebody absent changes nothing`() {
         val room = session
             .withParticipantJoined(participant("alice"))

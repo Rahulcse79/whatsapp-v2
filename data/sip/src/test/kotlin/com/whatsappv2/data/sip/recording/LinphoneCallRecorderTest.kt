@@ -231,8 +231,24 @@ class LinphoneCallRecorderTest {
 
         recorder.purgeOlderThan(NOW)
 
+        // A hook, not a schedule: nothing here decides what the retention period is,
+        // because that belongs to whoever deploys the app (Task 58, docs/security.md).
         assertEquals(listOf(NOW), store.purgedBefore)
     }
+
+    @Test
+    fun `listing and deleting go to the store, which is the only thing that knows where`() =
+        runTest {
+            val recorder = recorder(this)
+            val callId = connectedCall()
+            recorder.start(callId, consent(callId))
+            val sealed = requireNotNull(recorder.stop(callId).getOrNull())
+
+            assertEquals(listOf(sealed), recorder.recordings())
+
+            recorder.delete(sealed.id)
+            assertTrue(recorder.recordings().isEmpty())
+        }
 
     private companion object {
         const val NOW = 1_700_000_000_000L
