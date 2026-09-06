@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FiberManualRecord
-import androidx.compose.material.icons.filled.SwapCalls
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -97,7 +97,7 @@ internal fun HeldCallBanner(
         horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
     ) {
         Icon(
-            imageVector = Icons.Filled.SwapCalls,
+            imageVector = Icons.Filled.SwapVert,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(AppTheme.spacing.large),

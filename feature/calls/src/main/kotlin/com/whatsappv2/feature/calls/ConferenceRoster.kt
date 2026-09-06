@@ -6,8 +6,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.MicOff
-import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -95,7 +95,7 @@ private fun ParticipantRow(participant: ConferenceParticipantRow, modifier: Modi
 
         if (participant.isSpeaking) {
             Icon(
-                imageVector = Icons.Filled.RecordVoiceOver,
+                imageVector = Icons.Filled.GraphicEq,
                 contentDescription = "Speaking",
                 tint = MaterialTheme.colorScheme.primary,
             )
