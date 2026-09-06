@@ -5,7 +5,6 @@ import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.model.TransferType
 import kotlin.test.Test
-import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -53,8 +52,4 @@ class VideoAndTransferTypesTest {
         NoVideoSurfaces.detach()
     }
 
-    @Test
-    fun `a participant id must not be blank`() {
-        assertEquals("bob", ParticipantId("bob").toString())
-    }
 }

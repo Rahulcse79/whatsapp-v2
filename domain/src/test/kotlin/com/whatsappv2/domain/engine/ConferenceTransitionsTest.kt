@@ -11,14 +11,14 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Task 59's first done-when: N participants, and no assumption that the transport is a
- * dial-in bridge baked into the model.
+ * The roster transitions Task 59 added to [ConferenceSession].
  *
- * The SFU case is exercised alongside the MCU one throughout — [hasPerParticipantVideo]
- * and per-participant streams are what §2.2 asks the model to survive, and a model tested
- * only against one mixed stream would satisfy today's transport and nothing else.
+ * `ConferenceSessionTest` in `EngineTypesTest.kt` covers the shape of the model — N
+ * participants, `others`, the active speaker, the SFU case, and an absent roster being
+ * distinguishable from an empty one. This covers what *moves*: joins, departures, mutes,
+ * and the difference between a full-state roster and an incremental one.
  */
-class ConferenceSessionTest {
+class ConferenceTransitionsTest {
 
     private val uri = requireNotNull(SipUri.parse("sip:3000@example.com").getOrNull())
 
@@ -36,27 +36,11 @@ class ConferenceSessionTest {
     )
 
     @Test
-    fun `a new session has no roster, which is not the same as an empty one`() {
-        assertFalse(session.rosterAvailable)
-        assertTrue(session.participants.isEmpty())
-        // The count is unknown rather than zero: zero would be a claim about the room.
-        assertNull(session.participantCount)
-    }
-
-    @Test
     fun `somebody joining makes the roster available`() {
         val joined = session.withParticipantJoined(participant("alice"))
 
         assertTrue(joined.rosterAvailable)
         assertEquals(1, joined.participantCount)
-    }
-
-    @Test
-    fun `the model holds more than two participants`() {
-        val room = listOf("alice", "bob", "carol", "dave", "erin")
-            .fold(session) { acc, id -> acc.withParticipantJoined(participant(id)) }
-
-        assertEquals(5, room.participantCount)
     }
 
     @Test
@@ -115,15 +99,6 @@ class ConferenceSessionTest {
     }
 
     @Test
-    fun `others excludes the local participant`() {
-        val room = session
-            .withParticipantJoined(participant("me", self = true))
-            .withParticipantJoined(participant("alice"))
-
-        assertEquals(listOf("alice"), room.others.map { it.id.value })
-    }
-
-    @Test
     fun `a full-state roster removes anyone it does not mention`() {
         val room = session
             .withParticipantJoined(participant("alice"))
@@ -142,15 +117,6 @@ class ConferenceSessionTest {
         assertFalse(room.rosterAvailable)
         assertTrue(room.participants.isEmpty())
         assertNull(room.participantCount)
-    }
-
-    @Test
-    fun `per-participant video is false under a mixing bridge and true under an SFU`() {
-        val mcu = session.withParticipantJoined(participant("alice"))
-        assertFalse(mcu.hasPerParticipantVideo)
-
-        val sfu = mcu.withParticipantVideo(ParticipantId("alice"), hasVideo = true)
-        assertTrue(sfu.hasPerParticipantVideo)
     }
 
     @Test

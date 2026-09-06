@@ -83,7 +83,10 @@ class ConferenceIntegrationTest {
         // The bridge answers a dial-in immediately; a generous wait, because what is being
         // measured here is a network rather than a client.
         val connected = withTimeoutOrNull(ANSWER_TIMEOUT_MILLIS) {
-            waitUntil { harness.engine.activeCalls.value.any { it.callId == callId && it.state is CallState.Connected } }
+            waitUntil {
+                harness.engine.activeCalls.value
+                    .any { it.callId == callId && it.state is CallState.Connected }
+            }
         }
         assertNotNull(connected, "the conference leg never connected")
 

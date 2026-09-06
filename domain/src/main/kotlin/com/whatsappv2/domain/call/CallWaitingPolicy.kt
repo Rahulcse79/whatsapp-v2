@@ -111,7 +111,9 @@ object CallWaitingPolicy {
         val resume = if (target.isLocallyHeld) listOf(CallStep.Resume(activate)) else emptyList()
 
         // Nothing to hold and nothing to resume means this call is already the live one.
-        return if (toHold.isEmpty() && resume.isEmpty()) emptyList() else toHold.map { CallStep.Hold(it.callId) } + resume
+        if (toHold.isEmpty() && resume.isEmpty()) return emptyList()
+
+        return toHold.map { CallStep.Hold(it.callId) } + resume
     }
 
     /**
