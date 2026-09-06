@@ -18,8 +18,8 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -105,7 +105,9 @@ fun HistoryScreen(
 
 @Composable
 private fun FilterTabs(selected: CallLogFilter, onFilterChanged: (CallLogFilter) -> Unit) {
-    TabRow(selectedTabIndex = CallLogFilter.entries.indexOf(selected)) {
+    // PrimaryTabRow, not TabRow: the plain one is deprecated in Material 3 and CI
+    // builds warnings as errors.
+    PrimaryTabRow(selectedTabIndex = CallLogFilter.entries.indexOf(selected)) {
         CallLogFilter.entries.forEach { filter ->
             Tab(
                 selected = filter == selected,
