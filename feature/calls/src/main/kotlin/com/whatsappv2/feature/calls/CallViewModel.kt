@@ -16,19 +16,14 @@ import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.SipMediaController
-import com.whatsappv2.domain.engine.TransferEvent
 import com.whatsappv2.domain.engine.VideoSurfaceController
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.DtmfDigit
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.recording.CallRecorder
-import com.whatsappv2.domain.recording.RecordingConsent
-import com.whatsappv2.domain.recording.RecordingError
-import com.whatsappv2.domain.recording.RecordingRefusal
 import com.whatsappv2.domain.usecase.CallWaitingUseCase
 import com.whatsappv2.domain.usecase.TransferCallUseCase
-import com.whatsappv2.domain.usecase.TransferError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
@@ -61,10 +56,15 @@ import javax.inject.Inject
  * requirement stated as code: a button cannot be offered for an action the state machine
  * would reject, because nothing but the state decides whether it is offered.
  *
- * The later tasks added surface without changing that. Video, transfer, a second call, a
- * conference roster and recording are each either read from the engine or held here as a
- * question awaiting an answer — and the questions are *state*, not events, so a rotation
- * does not lose a prompt somebody is halfway through answering.
+ * The later tasks added surface without changing that. Video, a second call and a
+ * conference roster are read from the engine; an escalation the far end asked for is held
+ * here as a question awaiting an answer. The questions are *state*, not events, so a
+ * rotation does not lose a prompt somebody is halfway through answering.
+ *
+ * Transfer and recording are [CallTransferController] and [CallRecordingController]. Both
+ * are conversations with a state machine of their own that the rest of the screen has no
+ * interest in, and folding them in here left a class nobody could read to find out what a
+ * call actually does.
  *
  * ## The timer is a subtraction, not a counter
  *
@@ -101,10 +101,22 @@ class CallViewModel @Inject constructor(
      */
     private val pendingVideo = MutableStateFlow<PendingVideoRequest?>(null)
 
-    private val transferState = MutableStateFlow<TransferUiState>(TransferUiState.Idle)
+    /**
+     * Transfer, held apart (Tasks 55, 57).
+     *
+     * A transfer is a *conversation* rather than an action — an attended one spans however
+     * long somebody spends talking to a third party — and its state machine is of no
+     * interest to the rest of this screen. Split out so the call screen's own surface stays
+     * readable; see [CallTransferController].
+     */
+    internal val transfer = CallTransferController(viewModelScope, transfers) { message ->
+        eventChannel.send(CallEvent.ActionFailed(CallAction.TRANSFER, message))
+    }
 
-    /** Whether the consent dialog is up. The recording itself is the recorder's to report. */
-    private val askingRecordingConsent = MutableStateFlow(false)
+    /** The consent dialog and the recording it gates (Task 58, §2.6). */
+    internal val recording = CallRecordingController(viewModelScope, recorder, clock) { message ->
+        eventChannel.send(CallEvent.ActionFailed(CallAction.RECORD, message))
+    }
 
     init {
         watchVideoRequests()
@@ -154,9 +166,9 @@ class CallViewModel @Inject constructor(
             // Combined into one source rather than read inside the block: a value only
             // *read* during a combine does not re-run it, so a consent dialog opened that
             // way would never appear until something else changed (Task 58).
-            recordingState(callId),
+            recording.stateFor(callId),
             pendingVideo,
-            transferState,
+            transfer.state,
         ) { active, rooms, recording, video, transfer ->
             EngineState(
                 calls = active,
@@ -192,12 +204,6 @@ class CallViewModel @Inject constructor(
             }
         }
     }
-
-    /** Whether this call is being recorded, and whether the consent dialog is up (Task 58). */
-    private fun recordingState(callId: CallId): Flow<RecordingUiState> =
-        combine(recorder.active, askingRecordingConsent) { recording, asking ->
-            RecordingUiState(isRecording = callId in recording, askingConsent = asking)
-        }
 
     /**
      * A second call ringing while this one is up (Task 56).
@@ -251,27 +257,14 @@ class CallViewModel @Inject constructor(
     }
 
     /**
-     * Follows a transfer so the screen can say what happened (Task 55).
+     * Carries transfer progress to the controller that folds it (Task 55).
      *
-     * A failure is left on screen rather than cleared after a moment: the caller is still
-     * on the line, and the user needs long enough to read why and decide what to do about
-     * it. It clears when they start another transfer or dismiss it.
+     * The folding is [CallTransferController.onEvent]'s, so there is one place that
+     * decides what a transfer looks like on screen rather than two that can disagree.
      */
     private fun watchTransfers() {
         viewModelScope.launch {
-            calls.transferEvents.collect { event ->
-                val current = transferState.value
-                val target = (current as? TransferUiState.InProgress)?.target.orEmpty()
-
-                transferState.value = when (event) {
-                    is TransferEvent.Accepted -> TransferUiState.InProgress(target)
-                    is TransferEvent.Progressing -> TransferUiState.InProgress(target, RINGING_DETAIL)
-                    // The call goes with it, so the screen is about to close; the state is
-                    // reset so a later call does not inherit a finished transfer.
-                    is TransferEvent.Succeeded -> TransferUiState.Idle
-                    is TransferEvent.Failed -> TransferUiState.Failed(target, event.cause.userMessage())
-                }
-            }
+            calls.transferEvents.collect(transfer::onEvent)
         }
     }
 
@@ -392,62 +385,6 @@ class CallViewModel @Inject constructor(
         surfaces.detach()
     }
 
-    // ---------------------------------------------------------------- transfer
-
-    /** Opens the transfer sheet (Task 55). */
-    fun startTransfer() {
-        transferState.value = TransferUiState.Choosing()
-    }
-
-    fun onTransferTargetChanged(input: String) {
-        transferState.value = TransferUiState.Choosing(input)
-    }
-
-    /** Closes the sheet, or dismisses a failure the user has read. */
-    fun cancelTransfer() {
-        transferState.value = TransferUiState.Idle
-    }
-
-    /** `REFER` straight to [target] — the transferor drops out (Task 55). */
-    fun transferBlind(target: String) {
-        val callId = watched.value ?: return
-        transferState.value = TransferUiState.InProgress(target)
-        actOnTransfer(target) { transfers.blind(callId, target) }
-    }
-
-    /** Holds this call and rings [target] so the user can speak to them first (Task 57). */
-    fun startConsultation(target: String) {
-        val callId = watched.value ?: return
-        viewModelScope.launch {
-            when (val started = transfers.startConsultation(callId, target)) {
-                is Outcome.Failure -> reportTransferFailure(target, started.error)
-                is Outcome.Success -> transferState.value = TransferUiState.Consulting(
-                    callId = callId,
-                    consultationCallId = started.value,
-                    target = target,
-                )
-            }
-        }
-    }
-
-    /** Completes the attended transfer: `REFER` with `Replaces` (Task 57). */
-    fun completeConsultation() {
-        val consulting = transferState.value as? TransferUiState.Consulting ?: return
-        transferState.value = TransferUiState.InProgress(consulting.target)
-        actOnTransfer(consulting.target) {
-            transfers.completeAttended(consulting.callId, consulting.consultationCallId)
-        }
-    }
-
-    /** Abandons the consultation and brings the first call back (Task 57). */
-    fun cancelConsultation() {
-        val consulting = transferState.value as? TransferUiState.Consulting ?: return
-        transferState.value = TransferUiState.Idle
-        actOnTransfer(consulting.target) {
-            transfers.cancelConsultation(consulting.callId, consulting.consultationCallId)
-        }
-    }
-
     // ---------------------------------------------------------------- call waiting
 
     /** One of the three answers to a second call (Task 56). */
@@ -471,71 +408,7 @@ class CallViewModel @Inject constructor(
         }
     }
 
-    // ---------------------------------------------------------------- recording
-
-    /**
-     * Asks for consent before anything is recorded (Task 58, §2.6).
-     *
-     * The only route to [confirmRecording]. There is deliberately no method that starts a
-     * recording without going through the dialog this opens.
-     */
-    fun requestRecording() {
-        askingRecordingConsent.value = true
-    }
-
-    fun dismissRecordingConsent() {
-        askingRecordingConsent.value = false
-    }
-
-    /**
-     * The user consented, on this call, now (Task 58).
-     *
-     * The consent is built here from the tap that produced it, so it names the call it was
-     * given for and the moment it was given. A consent carried in from anywhere else would
-     * be a consent for something else.
-     */
-    fun confirmRecording() {
-        val callId = watched.value ?: return
-        askingRecordingConsent.value = false
-
-        viewModelScope.launch {
-            val result = recorder.start(
-                callId = callId,
-                consent = RecordingConsent.GrantedByLocalUser(callId, clock.nowEpochMillis()),
-            )
-            if (result is Outcome.Failure) {
-                eventChannel.send(CallEvent.ActionFailed(CallAction.RECORD, result.error.describe()))
-            }
-        }
-    }
-
-    fun stopRecording() {
-        val callId = watched.value ?: return
-        viewModelScope.launch { recorder.stop(callId) }
-    }
-
     // ---------------------------------------------------------------- plumbing
-
-    /**
-     * Why a recording could not start, in words the user can act on (Task 58).
-     *
-     * The consent cases are deliberately specific rather than "recording failed": the
-     * commonest of them is a consent that belongs to a call that has since ended, and
-     * telling somebody that is the difference between tapping again and giving up.
-     */
-    private fun RecordingError.describe(): String = when (this) {
-        is RecordingError.Refused -> when (refusal) {
-            is RecordingRefusal.NoConsent -> "Recording needs your confirmation first"
-            is RecordingRefusal.ConsentForAnotherCall ->
-                "That confirmation was for a different call — confirm again for this one"
-            is RecordingRefusal.CallNotEstablished -> "There is no audio to record yet"
-            is RecordingRefusal.NotSupportedOnThisPlatform ->
-                "This device will not let the app record a call"
-        }
-        is RecordingError.StorageUnavailable -> "The recording could not be saved"
-        is RecordingError.EngineRefused -> "That call cannot be recorded"
-    }
-
     private fun act(action: CallAction, block: suspend () -> Outcome<*, SipError>) {
         viewModelScope.launch {
             val result = block()
@@ -545,38 +418,11 @@ class CallViewModel @Inject constructor(
         }
     }
 
-    private fun actOnTransfer(target: String, block: suspend () -> Outcome<*, TransferError>) {
-        viewModelScope.launch {
-            val result = block()
-            if (result is Outcome.Failure) reportTransferFailure(target, result.error)
-        }
-    }
-
-    /**
-     * Puts a transfer failure on screen and tells the user why.
-     *
-     * Both, not either: the state keeps the reason visible while they decide what to do,
-     * and the event makes sure they notice it happened at all.
-     */
-    private suspend fun reportTransferFailure(target: String, error: TransferError) {
-        val message = when (error) {
-            is TransferError.Rejected -> error.cause.userMessage()
-            is TransferError.InvalidTarget -> "That is not an address this call can be sent to"
-            is TransferError.UnknownAccount -> "The account this call belongs to is gone"
-            is TransferError.UnknownCall -> "That call has already ended"
-        }
-        transferState.value = TransferUiState.Failed(target, message)
-        eventChannel.send(CallEvent.ActionFailed(CallAction.TRANSFER, message))
-    }
-
     private companion object {
         const val SUBSCRIPTION_TIMEOUT_MILLIS = 5_000L
 
         /** One second, which is the resolution a call timer is read at. */
         const val TICK_MILLIS = 1_000L
-
-        /** What a sipfrag during a transfer means, in words (Task 55). */
-        const val RINGING_DETAIL = "Ringing"
 
         /** A participant the bridge named without saying anything about (Task 60). */
         const val UNKNOWN_PARTICIPANT = "Unknown participant"
