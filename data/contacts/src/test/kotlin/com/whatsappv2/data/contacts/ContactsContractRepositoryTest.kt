@@ -10,8 +10,7 @@ import com.whatsappv2.core.common.logging.NoOpLogger
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.domain.model.SipUri
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
@@ -29,13 +28,12 @@ import kotlin.test.assertNull
  * the thing under test, and a fake resolver would only prove that the strings this class
  * builds match the strings the test expects.
  */
-@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [CONTACTS_ROBOLECTRIC_SDK])
 class ContactsContractRepositoryTest {
 
     private val context = ApplicationProvider.getApplicationContext<Application>()
-    private val dispatchers = TestDispatchers(StandardTestDispatcher())
+    private val dispatchers = TestDispatchers()
 
     private fun repository() = ContactsContractRepository(context, dispatchers, NoOpLogger)
 
@@ -109,12 +107,16 @@ class ContactsContractRepositoryTest {
 }
 
 /**
- * Every dispatcher is the test's, so a provider read is on the test scheduler rather than
- * on a real IO thread the test cannot wait for.
+ * Unconfined, not a `TestDispatcher`.
+ *
+ * A `TestDispatcher` built here carries its own scheduler, and `runTest` builds another —
+ * mixing the two is the "Detected use of different schedulers" failure. The repository
+ * only steps off the caller's thread to read a provider, with no delays to fast-forward,
+ * so running that inline is both simpler and closer to what it does.
  */
-private class TestDispatchers(private val dispatcher: CoroutineDispatcher) : DispatcherProvider {
-    override val main: CoroutineDispatcher get() = dispatcher
-    override val io: CoroutineDispatcher get() = dispatcher
-    override val default: CoroutineDispatcher get() = dispatcher
-    override val unconfined: CoroutineDispatcher get() = dispatcher
+private class TestDispatchers : DispatcherProvider {
+    override val main: CoroutineDispatcher get() = Dispatchers.Unconfined
+    override val io: CoroutineDispatcher get() = Dispatchers.Unconfined
+    override val default: CoroutineDispatcher get() = Dispatchers.Unconfined
+    override val unconfined: CoroutineDispatcher get() = Dispatchers.Unconfined
 }
