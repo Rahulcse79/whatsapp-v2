@@ -16,10 +16,12 @@ import com.whatsappv2.domain.contacts.Contact
  */
 internal class LookupCache(private val maxEntries: Int) {
 
+    // accessOrder = true is the third argument: it is what makes this least-recently-used
+    // rather than least-recently-inserted, so a caller asked for repeatedly stays.
     private val entries = object : LinkedHashMap<String, Contact?>(
         INITIAL_CAPACITY,
         LOAD_FACTOR,
-        /* accessOrder = */ true,
+        true,
     ) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Contact?>): Boolean =
             size > maxEntries
