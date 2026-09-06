@@ -71,6 +71,24 @@ endpoints, and a call needs both ends. This is ADR-005's mitigation for a shared
 automation owns its extensions exclusively, a manual session cannot make a run fail and
 leave no trace of why.
 
+## 3a. What the call suite covers (Task 46)
+
+`CallIntegrationTest` registers **both** configured extensions on one engine and places a
+call from the first to the second. That is why `sip.test.extension.secondary` is required:
+a call needs both ends, and one engine holding two accounts gives a real INVITE over the
+wire with a real 200 OK coming back — the outgoing leg and the inbound one are the same
+call seen from each side.
+
+It covers an outgoing call, the inbound INVITE it produces, answering, hold and resume
+across a real re-INVITE, mute, the speaker route, all sixteen DTMF digits, and hangup.
+
+**Bluetooth is not covered.** Selecting a Bluetooth route needs a paired, connected
+headset; an emulator has none and a device in a rack has none either, so the test would be
+asserting that the runner has a headset. It is present as an `@Ignore` with that reason, so
+the gap shows up in the report rather than being something a reader has to notice is
+missing. The route request itself is exact on the JVM, where the available routes are
+injected.
+
 ## 4. Transports
 
 UDP and TCP on **5060** are available and are what Task 33 covers.

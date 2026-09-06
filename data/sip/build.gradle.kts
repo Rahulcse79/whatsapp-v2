@@ -64,6 +64,11 @@ dependencies {
     androidTestImplementation(libs.androidx.test.core.ktx)
     androidTestImplementation(libs.kotlin.test)
     androidTestImplementation(libs.kotlin.test.junit)
+    // Task 46 drives the engine, which needs a platform registry and an app-settings
+    // store. The fakes stand in for Telecom and DataStore; what is under test is the
+    // SIP, not the platform seams the JVM suite already covers exactly.
+    androidTestImplementation(testFixtures(project(":domain")))
+    androidTestImplementation(libs.kotlinx.coroutines.test)
 }
 
 /**
