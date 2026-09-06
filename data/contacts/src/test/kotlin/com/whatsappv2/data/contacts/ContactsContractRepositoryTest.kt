@@ -94,6 +94,8 @@ class ContactsContractRepositoryTest {
 
     // ---------------------------------------------------------------- fixture
 
+    /** Files a contact the way the deprecated-but-still-populated SIP table does. */
+    @Suppress("DEPRECATION")
     private fun givenSipContact(name: String, sipAddress: String) {
         val values = ContentValues().apply {
             put(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.SipAddress.CONTENT_ITEM_TYPE)
