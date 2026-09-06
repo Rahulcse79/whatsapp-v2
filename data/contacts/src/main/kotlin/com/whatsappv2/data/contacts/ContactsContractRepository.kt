@@ -118,24 +118,32 @@ class ContactsContractRepository @Inject constructor(
         val photo = getColumnIndexOrThrow(PHOTO_COLUMN)
         val sip = getColumnIndexOrThrow(sipColumn)
 
+        // `size < limit` rather than a counter: a row that is skipped does not grow the
+        // list, so a page of unusable rows still yields a full page of usable ones.
         return buildList {
             while (size < limit && moveToNext()) {
-                val displayName = getString(name)
-                // A row that cannot be called or cannot be named is not worth offering:
-                // the picker's whole job is a name to tap and an address to dial.
-                if (displayName.isNullOrBlank()) continue
-                val address = SipUri.parse(sipUriOf(getString(sip))).getOrNull() ?: continue
-                add(
-                    SipContact(
-                        contact = Contact(
-                            displayName = displayName,
-                            photoUri = getString(photo)?.takeIf { it.isNotBlank() },
-                        ),
-                        address = address,
-                    ),
-                )
+                sipContactAt(name, photo, sip)?.let(::add)
             }
         }
+    }
+
+    /**
+     * One row, or null if it is not worth offering.
+     *
+     * The picker's whole job is a name to tap and an address to dial, so a row missing
+     * either is not a choice — it is a dead end that looks like one.
+     */
+    private fun Cursor.sipContactAt(name: Int, photo: Int, sip: Int): SipContact? {
+        val displayName = getString(name)?.takeIf { it.isNotBlank() } ?: return null
+        val address = SipUri.parse(sipUriOf(getString(sip))).getOrNull() ?: return null
+
+        return SipContact(
+            contact = Contact(
+                displayName = displayName,
+                photoUri = getString(photo)?.takeIf { it.isNotBlank() },
+            ),
+            address = address,
+        )
     }
 
     /** The address book stores `user@host`; a URI needs the scheme this app dials with. */
