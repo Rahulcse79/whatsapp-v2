@@ -90,10 +90,13 @@ object CallStateMachine {
     }
 
     private fun fromHeld(state: CallState.Held, event: CallEvent): TransitionResult = when (event) {
-        // An attended transfer sends its REFER from a held call: A is put on hold, B is
-        // consulted, and only then is the REFER sent (Task 57). Rejecting it here would
-        // make the one transfer that needs consultation impossible. Where the call was is
-        // remembered, so a failure returns it to the hold rather than to Connected.
+        // A REFER may go out from a held call, whichever kind of transfer it is. Attended
+        // is the case that needs it — A is put on hold, B is consulted, and only then is
+        // the REFER sent (Task 57) — and rejecting it would make the one transfer that
+        // needs consultation impossible. Blind is allowed from here too: a user who parked
+        // a call and then decided to pass it on should not have to resume it first, and
+        // the protocol does not ask them to. Where the call was is remembered either way,
+        // so a failure returns it to the hold rather than to Connected.
         is CallEvent.StartTransfer ->
             moved(CallState.Transferring(event.type, state.controls, heldBy = state.by))
 

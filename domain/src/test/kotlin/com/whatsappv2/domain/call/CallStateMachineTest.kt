@@ -88,26 +88,31 @@ class CallStateMachineTest {
             CallEvent.TransferFailed,
             CallState.Connected(),
         ),
+    ) + transfersFromHold() + terminationTransitions() + controlTransitions()
 
-        // An attended transfer's REFER goes out from a held call: A is held, B is
-        // consulted, and only then is the REFER sent (Task 57). Where the call was is
-        // carried into Transferring so a failure can put it back there.
-        Legal(
-            CallState.Held(HoldParty.LOCAL),
-            CallEvent.StartTransfer(TransferType.ATTENDED),
-            CallState.Transferring(TransferType.ATTENDED, heldBy = HoldParty.LOCAL),
-        ),
-        Legal(
-            CallState.Held(HoldParty.REMOTE),
-            CallEvent.StartTransfer(TransferType.ATTENDED),
-            CallState.Transferring(TransferType.ATTENDED, heldBy = HoldParty.REMOTE),
-        ),
-        Legal(
-            CallState.Held(HoldParty.BOTH),
-            CallEvent.StartTransfer(TransferType.ATTENDED),
-            CallState.Transferring(TransferType.ATTENDED, heldBy = HoldParty.BOTH),
-        ),
-    ) + terminationTransitions() + controlTransitions()
+    /**
+     * A REFER may go out from a held call, whichever kind of transfer it is.
+     *
+     * Attended is the case that needs it — A is held, B is consulted, and only then is the
+     * REFER sent (Task 57) — and where the call was is carried into `Transferring` so a
+     * failure can put it back there. But nothing about a blind transfer makes it illegal
+     * from hold: a user who parked a call and then decided to pass it on would otherwise
+     * have to resume it first, for no reason the protocol asks for.
+     *
+     * Generated over both types and all three hold parties rather than listed, because
+     * listing them is how the blind pairs came to be missing while the state machine
+     * accepted them.
+     */
+    private fun transfersFromHold(): List<Legal> =
+        HoldParty.entries.flatMap { by ->
+            TransferType.entries.map { type ->
+                Legal(
+                    CallState.Held(by),
+                    CallEvent.StartTransfer(type),
+                    CallState.Transferring(type, heldBy = by),
+                )
+            }
+        }
 
     /** Terminate is legal from every active state. */
     private fun terminationTransitions(): List<Legal> =
