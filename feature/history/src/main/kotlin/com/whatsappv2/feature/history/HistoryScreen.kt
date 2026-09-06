@@ -58,7 +58,19 @@ fun HistoryScreen(
     zone: ZoneId = ZoneId.systemDefault(),
 ) {
     Column(modifier = modifier.fillMaxSize()) {
-        FilterTabs(state.filter, actions.onFilterChanged)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FilterTabs(
+                selected = state.filter,
+                onFilterChanged = actions.onFilterChanged,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(
+                onClick = actions.onClearAllRequested,
+                modifier = Modifier.testTag(TAG_CLEAR_ALL),
+            ) {
+                Icon(Icons.Filled.Delete, contentDescription = "Clear call history")
+            }
+        }
 
         if (rows.itemCount == 0) {
             EmptyState(
@@ -104,10 +116,17 @@ fun HistoryScreen(
 }
 
 @Composable
-private fun FilterTabs(selected: CallLogFilter, onFilterChanged: (CallLogFilter) -> Unit) {
+private fun FilterTabs(
+    selected: CallLogFilter,
+    onFilterChanged: (CallLogFilter) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     // PrimaryTabRow, not TabRow: the plain one is deprecated in Material 3 and CI
     // builds warnings as errors.
-    PrimaryTabRow(selectedTabIndex = CallLogFilter.entries.indexOf(selected)) {
+    PrimaryTabRow(
+        selectedTabIndex = CallLogFilter.entries.indexOf(selected),
+        modifier = modifier,
+    ) {
         CallLogFilter.entries.forEach { filter ->
             Tab(
                 selected = filter == selected,
@@ -251,6 +270,7 @@ internal const val TAG_LIST = "history-list"
 internal const val TAG_EMPTY = "history-empty"
 internal const val TAG_DETAIL = "history-detail"
 internal const val TAG_CONFIRM_CLEAR = "history-confirm-clear"
+internal const val TAG_CLEAR_ALL = "history-clear-all"
 
 internal fun filterTag(filter: CallLogFilter) = "history-filter-${filter.name.lowercase()}"
 internal fun entryTag(entry: CallLogEntry) = "history-entry-${entry.id.value}"
