@@ -88,14 +88,15 @@ internal fun CallScreen(
                     modifier = Modifier.testTag(TAG_ENDED),
                 )
 
-                is CallUiState.Active -> ActiveCall(call = state.call, actions = actions)
+                is CallUiState.Active -> ActiveCall(state = state, actions = actions)
             }
         }
     }
 }
 
 @Composable
-private fun ActiveCall(call: CallDisplay, actions: CallActions) {
+private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
+    val call = state.call
     // Local to the screen, because neither is call state: the keypad being open is a view
     // preference, and the digits are a record of what was sent, which the engine does not
     // keep and must not be asked for. Saveable, so a rotation mid-sequence does not lose
@@ -109,6 +110,14 @@ private fun ActiveCall(call: CallDisplay, actions: CallActions) {
     // write during composition, which is how a recomposition loop starts.
     val keypadShown = keypadOpen && call.availability.canSendDtmf
 
+    // Behind everything, when there is a picture to draw. The identity and the controls
+    // stay on top of it: a video call still has to say who it is with and offer a way to
+    // end it, and putting the video in a panel of its own would waste most of the screen
+    // on a call whose whole point is the picture (Task 52).
+    if (call.showsRemoteVideo) {
+        CallVideo(call = call, actions = actions)
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -116,11 +125,36 @@ private fun ActiveCall(call: CallDisplay, actions: CallActions) {
             .padding(AppTheme.spacing.large),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        // Above everything, and present for the whole recording — Task 58's second
+        // done-when is about duration, so this is rendered from what the recorder says it
+        // is writing rather than from an event somebody has to remember to send.
+        if (state.recording.isRecording) {
+            RecordingBanner(modifier = Modifier.padding(bottom = AppTheme.spacing.small))
+        }
+
+        // The held call, by name, and tappable. Without it a user has no way to tell a
+        // successful hold from a dropped call (Task 56).
+        state.otherCalls.firstOrNull()?.let { other ->
+            HeldCallBanner(
+                other = other,
+                onSwap = { actions.onSwapTo(other.callId) },
+                modifier = Modifier.padding(bottom = AppTheme.spacing.small),
+            )
+        }
+
         Spacer(Modifier.weight(1f))
 
         // The avatar gives way to the keypad rather than being scrolled off it: on a small
-        // screen both do not fit, and the keys are what the caller is trying to reach.
-        CallIdentity(call = call, showAvatar = !keypadShown)
+        // screen both do not fit, and the keys are what the caller is trying to reach. It
+        // also gives way to video, where the picture is the identity.
+        CallIdentity(call = call, showAvatar = !keypadShown && !call.showsRemoteVideo)
+
+        state.conference?.let { conference ->
+            ConferenceRoster(
+                state = conference,
+                modifier = Modifier.padding(top = AppTheme.spacing.medium),
+            )
+        }
 
         Spacer(Modifier.weight(1f))
 
@@ -143,9 +177,46 @@ private fun ActiveCall(call: CallDisplay, actions: CallActions) {
                 actions = actions,
                 keypadOpen = keypadShown,
                 onToggleKeypad = { keypadOpen = !keypadShown },
+                secondaryControls = {
+                    CallSecondaryControls(call = call, recording = state.recording, actions = actions)
+                },
             )
         }
     }
+
+    CallDialogs(state = state, actions = actions)
+}
+
+/**
+ * Everything that is a question rather than a control.
+ *
+ * Gathered into one composable because they share a rule: each is a modal awaiting an
+ * answer somebody else is blocked on — the far end's re-INVITE (Task 54), a second caller
+ * who is ringing (Task 56), a transfer in flight (Task 55). At most one is up at a time in
+ * practice, and rendering them together keeps that visible.
+ */
+@Composable
+private fun CallDialogs(state: CallUiState.Active, actions: CallActions) {
+    state.pendingVideoRequest?.let { request ->
+        VideoRequestPrompt(request = request, onRespond = actions.onRespondToVideoRequest)
+    }
+
+    state.secondCall?.let { prompt ->
+        SecondCallPromptDialog(
+            prompt = prompt,
+            onRespond = { response -> actions.onSecondCall(prompt.callId, response) },
+        )
+    }
+
+    if (state.recording.askingConsent) {
+        RecordingConsentPrompt(
+            remoteName = state.call.title,
+            onConfirm = actions.onConfirmRecording,
+            onDismiss = actions.onDismissRecordingConsent,
+        )
+    }
+
+    CallTransferSheet(state = state.transfer, actions = actions)
 }
 
 /**
@@ -239,6 +310,7 @@ private fun InCallActions(
     actions: CallActions,
     keypadOpen: Boolean,
     onToggleKeypad: () -> Unit,
+    secondaryControls: @Composable () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -250,6 +322,10 @@ private fun InCallActions(
             keypadOpen = keypadOpen,
             onToggleKeypad = onToggleKeypad,
         )
+
+        // Passed in rather than called directly so this stays a layout: the second row
+        // needs the recording state, which is not a property of the call.
+        secondaryControls()
 
         CallActionButton(
             icon = Icons.Filled.CallEnd,

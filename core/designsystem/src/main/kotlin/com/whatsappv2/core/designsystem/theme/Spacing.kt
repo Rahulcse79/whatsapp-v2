@@ -64,6 +64,15 @@ data class Sizing(
 
     /** Icon inside a call action button. */
     val callActionIcon: Dp = 28.dp,
+
+    /**
+     * The local video preview on an in-call screen (Task 52).
+     *
+     * Fixed rather than a fraction of the screen: a preview exists so you can check you
+     * are in frame, and one that grows with the display becomes a second video call
+     * competing with the person you are talking to.
+     */
+    val videoPreview: Dp = 112.dp,
 )
 
 val LocalSpacing = staticCompositionLocalOf { Spacing() }

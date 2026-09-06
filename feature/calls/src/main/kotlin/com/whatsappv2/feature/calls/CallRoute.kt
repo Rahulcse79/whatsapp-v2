@@ -11,7 +11,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.whatsappv2.domain.model.CallId
 
 /**
- * The call screen, wired to the engine (Tasks 37 and 39).
+ * The call screen, wired to the engine (Tasks 37, 39, 52-60).
  *
  * The route is where the ViewModel is obtained and where one-shot events become snackbars;
  * [CallScreen] stays a function of its arguments so it can be previewed and driven by a
@@ -58,6 +58,24 @@ fun CallRoute(
             onToggleSpeaker = viewModel::setSpeakerOn,
             onToggleHold = viewModel::setHold,
             onDtmf = viewModel::sendDtmf,
+            onToggleVideo = viewModel::setVideoEnabled,
+            onSwitchCamera = viewModel::switchCamera,
+            onRespondToVideoRequest = viewModel::respondToVideoRequest,
+            onVideoSurfaces = viewModel::attachVideoSurfaces,
+            onReleaseVideoSurfaces = viewModel::detachVideoSurfaces,
+            onStartTransfer = viewModel::startTransfer,
+            onTransferTargetChanged = viewModel::onTransferTargetChanged,
+            onCancelTransfer = viewModel::cancelTransfer,
+            onTransferBlind = viewModel::transferBlind,
+            onStartConsultation = viewModel::startConsultation,
+            onCompleteConsultation = viewModel::completeConsultation,
+            onCancelConsultation = viewModel::cancelConsultation,
+            onSecondCall = viewModel::respondToSecondCall,
+            onSwapTo = viewModel::swapTo,
+            onRequestRecording = viewModel::requestRecording,
+            onConfirmRecording = viewModel::confirmRecording,
+            onDismissRecordingConsent = viewModel::dismissRecordingConsent,
+            onStopRecording = viewModel::stopRecording,
         ),
         modifier = modifier,
     )
