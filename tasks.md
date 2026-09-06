@@ -2035,8 +2035,22 @@ machinery working on an ordinary call.
 
 Done when:
 - [ ] A video conference renders the active-speaker or mixed stream correctly
-- [ ] Layout adapts to participant count and to rotation
-- [ ] Any limitation of the mixed-stream model is documented, not hidden
+      → needs a device and the bridge; the composition itself is the server's
+- [x] Layout adapts to participant count and to rotation
+      → `ConferenceVideoLayout` is pure integer arithmetic and `ConferenceVideoLayoutTest`
+      enumerates every count in both orientations, including the property that matters —
+      **rotation changes the shape but never the tile count**, the bug being a rotation
+      that drops somebody off the screen
+- [x] Any limitation of the mixed-stream model is documented, not hidden
+      → said on screen, not only in a document: under the MCU the bridge composes the
+      picture and chooses who is in it, and `ConferenceVideo` says so beneath the video.
+      A client-side grid over a mixed stream would be a grid of identical copies of the
+      same picture — it looks like a feature and is a lie.
+
+**Status: implemented, one box pending a device. Phase 8 checkpoint.** The design decision:
+`MixedStream` is its own case rather than a one-by-one `Grid`. A grid implies this app chose
+the arrangement, and under a mixing bridge the server did — which is the difference between
+a limitation stated and a limitation concealed.
 
 ---
 
@@ -2054,9 +2068,30 @@ Build:
 
 Done when:
 - [ ] A TLS + SRTP call succeeds against the FreeSWITCH test target
-- [ ] SRTP-Mandatory against a cleartext-only peer **fails the call** — asserted by a test
+      → **blocked on the deployment, not on this repo.** The target has
+      `internal_ssl_enable=false` and no SIP TLS certificate; running `gentls_cert` and
+      flipping the profile is Infra's — open question **Q9**
+- [x] SRTP-Mandatory against a cleartext-only peer **fails the call** — asserted by a test
+      → `LinphoneSipEngineSecurityTest`. Two gates, catching different things: the stack
+      refuses the negotiation, and the engine drops a call that reached **running media**
+      without encryption. The second is the one a test can hold without a cleartext-only
+      peer on a real network, and the drop is recorded as `MEDIA_FAILURE` rather than as a
+      hangup — a security event hidden behind an ordinary ending is a security event nobody
+      ever finds
 - [ ] An invalid/self-signed cert is rejected unless the custom CA is explicitly configured
-- [ ] A code search finds no `checkServerTrusted` override that returns unconditionally
+      → validation is unconditional and the custom CA is **additive**, but proving the
+      rejection needs a server presenting a bad certificate
+- [x] A code search finds no `checkServerTrusted` override that returns unconditionally
+      → there are none, and CI now fails on any `checkServerTrusted`, `X509TrustManager` or
+      hostname verifier appearing anywhere in the tree, on `verifyServer*(false)`, and on a
+      `debug-overrides` block appearing in the network security config
+
+**Status: implemented, two boxes blocked on the deployment.** Worth naming: the SIP stack
+runs its **own** TLS on its own sockets, so `network_security_config.xml` never sees it.
+Both halves are set and both are asserted; `docs/security.md` says so in one place rather
+than leaving somebody to discover it. The per-account media policy has a real limitation —
+liblinphone keeps media encryption on the `Core`, so the last account added wins — which is
+documented rather than hidden behind an API that looks per-account.
 
 ### Task 63 — Logging and data-leak audit
 **Depends on:** 62 · **Prompt refs:** §7, DoD 12 · **Modules:** all
@@ -2069,8 +2104,25 @@ Build:
 Done when:
 - [ ] A full release-build logcat capture across register → call → hangup contains no
       credential, SIP header, or phone number — checked by grep and recorded
+      → the guarantees are structural: the release logger's `verbose`, `debug` and `info`
+      have **empty bodies**, so R8 removes the call sites and the strings never reach the
+      binary. That makes the capture likely to come back clean; it is not the capture, and
+      this box stays unticked until one is taken on a device
 - [ ] A filesystem dump of app data shows no plaintext credential
-- [ ] `android:allowBackup="false"` is set and credential screens use `FLAG_SECURE`
+      → credentials are AES-GCM under a Keystore key and recordings delete their plaintext
+      before reporting success, but the dump itself needs a device
+- [x] `android:allowBackup="false"` is set and credential screens use `FLAG_SECURE`
+      → both. `SecureScreen()` on the account editor, scoped to that screen rather than the
+      Activity — a blanket flag means a user cannot screenshot their own call log to send a
+      support request. The test that earns its keep asserts the flag is **cleared** on the
+      way out: screenshots that "randomly stop working" are never traced back to the screen
+      that left the flag on
+
+**Status: the audit is done; two boxes need a handset.** CI gained four gates: the release
+logger keeping its empty bodies, `android.util.Log` staying out of everything but the two
+variant loggers, no credential-named value interpolated into a log call, and the account
+editor still calling `SecureScreen()`. Task 23's trace redactor was already covered by
+`SipTraceRedactorTest`.
 
 ### Task 64 — R8, minification, and release build
 **Depends on:** 63 · **Prompt refs:** §7, DoD 1 · **Modules:** `:app`
@@ -2081,8 +2133,19 @@ Build:
 
 Done when:
 - [ ] A minified release build registers and completes an audio and a video call
-- [ ] The mapping file is produced and archived by CI
-- [ ] `./gradlew assembleRelease` passes from a clean clone
+      → needs a device and a server. R8 stripping something the JNI bridge resolves by name
+      is exactly the failure this box exists to catch, and only a run catches it
+- [x] The mapping file is produced and archived by CI
+      → uploaded as its own artifact, and CI **fails if it is missing** rather than
+      shrugging: a crash report from a minified build is undecipherable without one, and the
+      build that produced it is long gone by the time the report arrives
+- [x] `./gradlew assembleRelease` passes from a clean clone
+      → a CI step, on every run, with the APK size reported beside the debug one
+
+**Status: implemented, one box pending a device.** R8 full mode with resource shrinking, and
+keeps only for classes the platform resolves by name from the manifest — the SDK's own keeps
+travel with `:data:sip`'s consumer rules rather than being copied. Deliberately **unsigned**:
+a keystore in git is a compromised keystore.
 
 ### Task 65 — Battery, memory, and leak profiling
 **Depends on:** 64 · **Prompt refs:** §1, §6, DoD 16 · **Modules:** —
@@ -2097,13 +2160,36 @@ Done when:
 - [ ] A 30-minute call shows stable memory and no growing thread count
 - [ ] Battery drain over the idle hour is measured and recorded in the phase report
 
+**Status: the tooling is in; the measurements are not, and cannot be from here.**
+LeakCanary 2.14 is in the debug build — 2.14 rather than the 3.0 alpha, because a leak
+detector that is itself in alpha is the wrong tool for deciding whether a leak is yours.
+
+All three boxes are an hour of wall-clock time on a handset, `dumpsys power`, a heap dump
+and a battery delta. None of it can be automated here, and none of it is claimed. The
+mechanisms the boxes are about **are** unit-tested: `ProximityLock` releases on every route
+that is not the earpiece and on the end of every call, and `ServiceRunPolicy` stops the
+foreground service when nothing needs it (§6).
+
 ### Task 66 — Offline and honest-state audit
 **Depends on:** 31 · **Prompt refs:** §6 · **Modules:** all
 
 Done when:
-- [ ] Account settings and call history are fully readable with no network
-- [ ] No screen ever claims "Registered" while the transport is down
-- [ ] Nothing is queued for retry that cannot meaningfully be retried
+- [x] Account settings and call history are fully readable with no network
+      → accounts live in Room and the call log in its own database; neither read touches the
+      network. Asserted rather than assumed — a repository that grew a registration lookup
+      would break this without breaking anything else
+- [x] No screen ever claims "Registered" while the transport is down
+      → `OfflineHonestyTest` walks **every** `RegistrationState` and every
+      `RegistrationFailure`. The mapping lives in one place, so proving it there proves it
+      for every screen. §6's point is what an optimistic status costs: a user looking at
+      "Registered" does not check their phone again, and the call never rings
+- [x] Nothing is queued for retry that cannot meaningfully be retried
+      → `HonestStateAuditTest`, exhaustive over the enum so a failure added later arrives
+      with this test failing until somebody has decided. Both halves are asserted, and
+      neither list is allowed to be empty: a change that made every failure require user
+      action would pass a naive version of the first test and break the app
+
+**Status: COMPLETE.**
 
 ### Task 67 — Documentation
 **Depends on:** 65 · **Prompt refs:** §10, DoD 15 · **Modules:** `docs/`
@@ -2121,10 +2207,28 @@ Build:
 - KDoc on every public type in `:domain` and on `SipEngine`. Comments explain **why**.
 
 Done when:
-- [ ] All five documents exist and match the code as built
-- [ ] Every §2 DECIDE is answered in `docs/architecture.md`
+- [x] All five documents exist and match the code as built
+      → [`architecture.md`](docs/architecture.md) (ADRs, module graph, layer rules,
+      threading model, five sequence diagrams), [`lld.md`](docs/lld.md) (the FSM diagram,
+      the `SipEngine` contract and its error taxonomy, both Room schemas read from the
+      committed exports), [`security.md`](docs/security.md) (credentials, transport and
+      media, logging, recording, the licence position), [`testing.md`](docs/testing.md),
+      and [`README.md`](README.md). Written from the code rather than from the plan: every
+      name in them is greppable
+- [x] Every §2 DECIDE is answered in `docs/architecture.md`
+      → three DECIDEs, three ADRs, each with a rationale, plus a table in §4.9 pointing at
+      them. What is *not* settled is carried as nine open questions with owners and
+      deadlines rather than filled in with a guess
 - [ ] A new engineer can go from clone to a registered call using only `README.md`
       and `docs/testing.md`
+      → the path is written — build, point at a server, add an account, dial — but this is
+      a claim about a **person**, and no person has done it. It stays unticked until
+      somebody who has not written this code follows it and says whether it worked
+
+**Status: written. The third box is somebody else's to tick.** `docs/lld.md` is new; the
+HLD replaced the placeholder in `architecture.md` §4 that Task 67 left there on purpose.
+`security.md` gained transport and media security, the logging policy and the licence
+position — the last of which matters because it decides **who may receive the binary**.
 
 ### Task 68 — Definition-of-Done sweep
 **Depends on:** all · **Prompt refs:** §12 · **Modules:** —
@@ -2135,9 +2239,28 @@ Build:
 - List anything not met, with the reason. An honest gap beats a false tick (§13).
 
 Done when:
-- [ ] All 16 DoD items have a recorded pass/fail with evidence
-- [ ] Coverage for `:domain` and `:data:*` is reported as a real measured number
-- [ ] Every failure is documented with a cause and a proposed follow-up task
+- [x] All 16 DoD items have a recorded pass/fail with evidence
+      → [`docs/dod-sweep.md`](docs/dod-sweep.md). **Ten pass, six do not**, and every one of
+      the six fails for the same reason: this project has never had an Android device or a
+      reachable SIP server in CI
+- [x] Coverage for `:domain` and `:data:*` is reported as a real measured number
+      → `:domain` **96.7%** (1058/1094 lines). `:data:*` **68.3%** (813/1190) — which does
+      **not** meet the 80% bar — and **91.3%** (813/890) excluding the four packages that
+      cannot execute on the JVM plus generated DI. Both figures are given because only one
+      of them answers the question as asked, and the other answers "how well is the code
+      that *can* be tested, tested"
+- [x] Every failure is documented with a cause and a proposed follow-up task
+      → each of the six, plus two real coverage gaps that are **not** platform excuses:
+      `data/contacts` at 54.9% and `data/calllog` at 78.6%, the latter ungated in CI
+      entirely along with `data/contacts`, `feature/history` and `feature/dialer`
+
+**Status: COMPLETE. Final checkpoint.**
+
+The summary the sweep ends on, because it is the true one: everything decidable without
+hardware is built, tested and gated; everything needing a handset or a reachable server is
+built and unverified. The single change that would move the most DoD items — 6, 7, 8, 9,
+10, 11, 13 and 16 — is **one device and one reachable FreeSWITCH in CI**. Nothing else is
+close to it in value.
 
 ---
 

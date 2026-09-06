@@ -9,7 +9,11 @@ SIP registration, Telecom integration, and conferencing against FreeSWITCH.
 |---|---|
 | [`android-sip-app-prompt.md`](android-sip-app-prompt.md) | The requirements specification |
 | [`tasks.md`](tasks.md) | 68-task implementation plan, in dependency order |
-| [`docs/architecture.md`](docs/architecture.md) | Decision record (ADR-001…005); HLD lands in Task 67 |
+| [`docs/architecture.md`](docs/architecture.md) | HLD — decision record, module graph, layers, threading, sequence diagrams |
+| [`docs/lld.md`](docs/lld.md) | LLD — the call FSM, the `SipEngine` contract and its error taxonomy, the Room schemas |
+| [`docs/security.md`](docs/security.md) | Credentials at rest, transport and media security, logging policy, call recording |
+| [`docs/testing.md`](docs/testing.md) | Unit, instrumented and server-backed suites, and how to point them at a server |
+| [`docs/dod-sweep.md`](docs/dod-sweep.md) | Every Definition-of-Done item with its actual measured result |
 | [`docs/calling.md`](docs/calling.md) | How a call happens: the Telecom seam, notifications, audio and push |
 
 ## Build policy — CI, not laptops
@@ -44,10 +48,76 @@ Every version lives in the version catalog. No version literal belongs in a
 
 ## Status
 
-Task 2 of 68 — repository and Gradle skeleton. The module list in
-`settings.gradle.kts` is deliberately empty; modules arrive in Task 4.
+All 68 tasks implemented. What is **verified** is narrower than what is built, and the
+difference is written down rather than smoothed over: see
+[`docs/dod-sweep.md`](docs/dod-sweep.md) for every Definition-of-Done item with its actual
+result, and the `Done when` boxes in [`tasks.md`](tasks.md) for the per-task detail.
 
-## Configuration (not yet required)
+The short version: everything decidable without hardware is covered by the JVM suite and
+gated in CI. Everything that needs a handset or a reachable SIP server — video on a real
+camera, a transfer between three endpoints, a conference of three clients, battery over an
+hour — is implemented and **not** verified, because this project has never had a device or
+a reachable target in CI. Those boxes are left unticked.
 
-From Task 32, the app is pointed at a FreeSWITCH server via Gradle properties or CI
-secrets. Hostnames, credentials, and certificates are **never committed** (ADR-005).
+## Getting to a registered call
+
+The whole path, for somebody who has just cloned this.
+
+### 1. Build
+
+Nothing to install. Push a branch or open a PR and the **CI** workflow builds, tests and
+publishes a debug APK as a run artifact. To build locally instead you need JDK 21 and the
+Android SDK, then `./gradlew :app:assembleDebug`.
+
+### 2. Point it at a SIP server
+
+Nothing about a server is committed — a host is a LAN address that changes with the
+network and a password is a credential, and either in git is a leak that outlives the
+commit that removed it. A CI step fails the build if they reappear.
+
+Put them in `~/.gradle/gradle.properties`, outside the repository:
+
+```properties
+sip.test.host=192.168.1.10
+sip.test.domain=192.168.1.10
+sip.test.port=5060
+sip.test.extension=1018
+sip.test.extension.secondary=1019
+sip.test.password=your-extension-password
+sip.test.conference=3000
+```
+
+These configure the **instrumented** suite. To use the app by hand, install it and add an
+account through the UI — Accounts → Add — which needs the same host, extension and
+password and nothing else.
+
+Full detail, including which extensions are reserved for automation:
+[`docs/testing.md`](docs/testing.md).
+
+### 3. Register and call
+
+Add an account, wait for the row to read **Registered**, then dial an extension on the
+same server from the keypad. If the row does not reach Registered it says why: a wrong
+password reads "Authentication failed" and no network reads "Offline" — never a generic
+error, and never an optimistic "Registered" over a transport that is down (§6).
+
+## Configuration
+
+| What | Required for | Supplied how |
+|---|---|---|
+| SIP host, extension, password | the instrumented suite | Gradle properties or CI secrets — never committed |
+| A SIP account | using the app at all | entered in the UI; stored AES-GCM encrypted under a Keystore key |
+| `google-services.json` | the push wake path | **not committed and not required.** Without it the app builds and runs with no push; `PushTokenPublisher` logs that rather than hiding it |
+| An ESL push gateway | calls arriving while the app is asleep | a backend service outside this repository (ADR-004, open question Q6) |
+| A release keystore | a signed APK | held by the release pipeline. `assembleRelease` here produces an **unsigned** APK on purpose — a keystore in git is a compromised keystore |
+
+## Build variants
+
+| Variant | Minified | Logging | Extras |
+|---|---|---|---|
+| `debug` | no | verbose and up | LeakCanary; the SIP trace toggle in Settings |
+| `release` | R8 full mode, resources shrunk | **warn and error only**, by construction | mapping file archived by CI |
+
+The release logger's `verbose`, `debug` and `info` have empty bodies rather than a runtime
+level check, so R8 removes the call sites entirely and the strings never reach the binary
+(§7, DoD 12). A CI step fails the build if that stops being true.

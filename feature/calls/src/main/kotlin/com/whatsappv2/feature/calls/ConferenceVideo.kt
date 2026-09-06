@@ -1,6 +1,6 @@
 package com.whatsappv2.feature.calls
 
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -9,7 +9,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import com.whatsappv2.core.designsystem.theme.AppTheme
@@ -40,17 +39,20 @@ internal fun ConferenceVideo(
     actions: CallActions,
     modifier: Modifier = Modifier,
 ) {
-    val isLandscape = LocalConfiguration.current.screenWidthDp > LocalConfiguration.current.screenHeightDp
-    val mode = ConferenceVideoLayout.of(
-        participantCount = conference.participants.size,
-        hasVideo = call.showsRemoteVideo,
-        // False today, and read from the roster rather than assumed: the model carries it
-        // so the transport can change without this composable being rewritten.
-        perParticipantVideo = false,
-        isLandscape = isLandscape,
-    )
+    // Measured from the space this composable actually has, not from the screen. A
+    // `LocalConfiguration` read would describe the display even when the video sits in half
+    // of it, and would be wrong on a foldable or in split-screen — which is precisely where
+    // "adapts to rotation" stops being a rotation question.
+    BoxWithConstraints(modifier = modifier.fillMaxSize().testTag(TAG_CONFERENCE_VIDEO)) {
+        val mode = ConferenceVideoLayout.of(
+            participantCount = conference.participants.size,
+            hasVideo = call.showsRemoteVideo,
+            // False today, and read from the roster rather than assumed: the model carries
+            // it so the transport can change without this composable being rewritten.
+            perParticipantVideo = false,
+            isLandscape = maxWidth > maxHeight,
+        )
 
-    Box(modifier = modifier.fillMaxSize().testTag(TAG_CONFERENCE_VIDEO)) {
         when (mode) {
             // Audio conference. The roster is the screen, and it is drawn by the caller.
             is ConferenceVideoMode.AudioOnly -> Unit

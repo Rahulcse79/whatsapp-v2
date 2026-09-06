@@ -180,3 +180,160 @@ by *any* route seals its recording, and that the retention hook reaches the stor
 On a device: the encryption round trip and the plaintext deletion, which need the Android
 Keystore and are therefore out of reach of the JVM suite — the same seam and the same
 reasoning as `SecretKeyProvider` above.
+
+
+---
+
+## Transport and media security (Task 62, DoD 13)
+
+### Two TLS stacks, and neither covers the other
+
+This is the thing most likely to be got wrong by somebody changing one of them.
+
+| Path | Whose TLS | Configured by |
+|---|---|---|
+| SIP signalling and media | **liblinphone's own**, over mbedTLS on its own sockets | `RealLinphoneCoreGateway.applySecurity` |
+| Firebase, and any platform HTTP | Android's | `res/xml/network_security_config.xml` |
+
+`network_security_config.xml` **never sees a SIP packet.** A change that tightened it and
+assumed SIP was covered would be a change that did nothing to the traffic that matters.
+Both are set, and CI asserts both.
+
+### Certificate validation is unconditional
+
+```kotlin
+verifyServerCertificates(true)
+verifyServerCn(true)
+```
+
+No branch turns these off and none is meant to. §7 forbids a permissive `TrustManager`
+outright, and the usual way one arrives is a debug flag added to unblock an afternoon's
+testing against a self-signed PBX, which then outlives the debugging.
+
+A deployment with its own certificate authority is served by `StackAccount.customCaPath`,
+which passes a PEM bundle to `Core.setRootCa`. It is **additive**: it adds a trust anchor
+and never removes the check. That is the distinction between a supported enterprise
+deployment and a disabled one.
+
+There is likewise no `debug-overrides` block in the network security config, and a CI step
+fails the build if one appears.
+
+### What CI enforces
+
+| Gate | Fails on |
+|---|---|
+| No permissive TrustManager | any `checkServerTrusted`, `checkClientTrusted`, `X509TrustManager` or hostname verifier anywhere in the tree |
+| Validation stays on | `verifyServerCertificates(true)` / `verifyServerCn(true)` missing, or their `false` form appearing |
+| Cleartext refused | `usesCleartextTraffic="false"` or `cleartextTrafficPermitted="false"` missing, or a `debug-overrides` block appearing |
+
+### SRTP: Mandatory means the call fails
+
+`SrtpPolicy` is per account, because one identity may be an internal PBX that mandates
+encryption while another is a carrier trunk that cannot do it at all.
+
+| Policy | Offer | A peer that cannot encrypt |
+|---|---|---|
+| `DISABLED` | cleartext RTP | — |
+| `OPTIONAL` | SRTP | accepted in the clear; the user chose this |
+| `MANDATORY` | SRTP | **the call fails** |
+
+Two gates enforce Mandatory, and they catch different things:
+
+1. `setMediaEncryptionMandatory(true)` makes liblinphone refuse the **negotiation**.
+2. `LinphoneSipEngine.enforceMediaEncryption` drops a call that reached **running media**
+   without encryption. That is the case the first gate cannot see, and it is the one a test
+   can hold — proving the first needs a cleartext-only peer on a real network.
+
+A call dropped by the second gate is recorded as `MEDIA_FAILURE`, not as a hangup. "Remote
+hangup" for a call this app refused would hide a security event behind an ordinary ending.
+
+### Known limitation: media encryption is core-wide
+
+liblinphone keeps media encryption on the `Core`, not on `AccountParams`. With two accounts
+configured differently, **the last one added wins**. That is a limitation of this stack
+rather than a design choice, and it is written here rather than hidden behind an API that
+looks per-account. A deployment that needs genuinely per-account media policy needs either
+a second `Core` or a different stack.
+
+---
+
+## Logging policy (Task 63, DoD 12)
+
+### The release build cannot emit what it does not compile
+
+`PlatformLogger` has two variants. In `release`, `verbose`, `debug` and `info` have **empty
+bodies** — not a level check. R8 inlines the empty body and removes the call site, so the
+strings never reach the binary at all. A runtime level check would leave every message
+sitting in the APK for anybody who unzips it.
+
+`warn` and `error` survive, because a field failure that leaves no trace is not
+diagnosable. Callers must not pass credentials, SIP headers, phone numbers or contact data
+into them.
+
+### `android.util.Log` is forbidden
+
+Everywhere except the two `PlatformLogger` variants themselves, enforced by a detekt
+`ForbiddenImport` rule and by a CI step. One facade means the release variant can drop the
+debug paths by construction; a direct `Log.d` cannot be dropped by anything.
+
+### Redaction is a safety net, not permission
+
+`:core:common` supplies `redact`, `redactPartial` and `redactSipUri`. They exist for the
+lines that must be logged at all — a SIP URI in a warning, a token's last four characters
+to correlate two lines — and not as a licence to log sensitive values.
+
+`SipTraceRedactor` strips `Authorization`, `Proxy-Authorization`, `WWW-Authenticate`,
+`Proxy-Authenticate` and `Authentication-Info` from a SIP trace before it reaches a log.
+Header *names* and the challenge's realm and algorithm are kept, because a trace with the
+headers removed cannot answer the question it exists to answer. The trace toggle is off by
+default and is a debug-build feature.
+
+### What is never logged, anywhere
+
+| Value | Why |
+|---|---|
+| Passwords, in any form | the obvious one |
+| DTMF digits | a PIN or a card number as often as a menu choice |
+| A recording's file path | a log line naming one is a map to it |
+| An FCM token | it identifies a device |
+| Contact names and photos | personal data this app reads and never collects (§11) |
+
+### What CI enforces
+
+| Gate | Fails on |
+|---|---|
+| Release logger stays silent | `verbose`, `debug` or `info` gaining a body in the release variant |
+| Log facade only | `android.util.Log` imported outside the two variant loggers |
+| No credential in a log | a variable named `password`, `secret`, `credential`, `token` or `passphrase` interpolated into a log call |
+| Credential screen is secure | the account editor no longer calling `SecureScreen()` |
+
+### What still needs a device
+
+Task 63's first done-when asks for a **full release-build logcat capture** across register
+→ call → hangup, grepped and recorded. That needs a handset running a release build against
+a live registrar, and this project has never had one in CI. The structural guarantees above
+are what make the capture likely to come back clean; they are not the capture, and this
+document does not claim they are. Recorded as an unmet item in
+[`dod-sweep.md`](dod-sweep.md).
+
+---
+
+## The SIP stack's licence, and what it means for distribution
+
+**liblinphone is GPLv3** (ADR-001, ADR-002). The consequence is not a footnote:
+
+- **Open-source or internal distribution**: fine. The GPL's obligations are met by
+  offering the corresponding source.
+- **Closed-source distribution — an app store release, or shipping to a customer without
+  source**: this requires a **commercial licence from Belledonne Communications**. It is a
+  purchase, not a preference, and it is **unresolved** — tracked as open questions Q1 and
+  Q2 in [`architecture.md`](architecture.md) §3, owned by the business, needed before
+  release.
+
+Nothing in this repository assumes the licence has been bought. The alternative considered
+was PJSIP, whose licence terms differ; ADR-001 records why liblinphone was chosen anyway
+and what the cost of that choice is.
+
+This affects security because it affects **who may receive the binary**, and a build shipped
+without the licence that permits it is a legal exposure of exactly the kind this document
+exists to make visible rather than discover later.
