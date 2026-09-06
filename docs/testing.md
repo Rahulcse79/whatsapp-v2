@@ -66,10 +66,30 @@ The deployed instance carries extensions **1000–1019**.
 | **1018, 1019** | **automation** | Reserved. Do not sign a handset in on either. |
 | 3000 | shared | Conference room, `mod_conference` dial-in (Tasks 59–61). |
 
+`3000` is FreeSWITCH's own stock number — the shipped dialplan maps it to
+`conference 3000@default` — so a default install needs no extra configuration for
+`ConferenceIntegrationTest`. Set `sip.test.conference` where a deployment numbers its
+rooms differently.
+
 Two are reserved rather than one because Task 35 onward needs a call between two
 endpoints, and a call needs both ends. This is ADR-005's mitigation for a shared server: if
 automation owns its extensions exclusively, a manual session cannot make a run fail and
 leave no trace of why.
+
+## 3b. What the conference suite covers (Task 60)
+
+`ConferenceIntegrationTest` dials the conference extension and asserts the **client** half:
+the INVITE goes out, the bridge answers, the leg is recorded as a conference, and the
+session's roster does not overstate what the bridge said.
+
+**Three clients hearing each other is not covered and the suite does not claim it.** That
+needs three endpoints and a person to listen, and no automated run on one device can
+produce it. Task 60's first done-when stays unticked until somebody does it by hand.
+
+The roster assertion is deliberately conditional. `mod_conference` does not publish a SIP
+conference event package to a dial-in participant by default, so an absent roster is
+correct behaviour rather than a defect — what is asserted is that `rosterAvailable` tells
+the truth either way and that no participant list is ever fabricated (§13).
 
 ## 3a. What the call suite covers (Task 46)
 

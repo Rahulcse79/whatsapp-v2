@@ -1774,11 +1774,28 @@ Build:
 - `camera` and `microphone` foreground-service types declared with matching permissions.
 
 Done when:
-- [ ] The camera is released on hangup, on error, and on process death — no
+- [x] The camera is released on hangup, on error, and on process death — no
       "camera in use" on the next call
-- [ ] Denying the camera permission downgrades to audio-only rather than failing the call
+      → `CameraPolicy` derives the owner from the **whole call list**, and the engine asks
+      it on every change to that list, so there is no path that ends a call without also
+      answering the question. Asserted for hangup, a 503 error, video mute and the stack
+      going down (`LinphoneSipEngineVideoTest`), plus every terminal state in
+      `CameraPolicyTest`. The "next call" half is a device observation and is not claimed.
+- [x] Denying the camera permission downgrades to audio-only rather than failing the call
+      → `MediaProfile.downgradedWhenCameraUnavailable`, applied wherever a profile is
+      built from a user's choice; `AndroidCameraAvailability` answers "no camera" and
+      "declined" with one boolean so no caller can nag about the second
 - [ ] The FGS types are declared and the app starts the service without a
       `ForegroundServiceTypeException` on Android 14+
+      → declared (`camera|microphone` on the service, both permissions), and
+      `ForegroundServiceTypes` picks only the subset whose permissions are held at the
+      moment `startForeground` runs — every combination table-tested. **The absence of the
+      exception itself needs an Android 14 device**, so the box stays unticked.
+
+**Status: COMPLETE in code, one box pending a device.** The design decision worth naming:
+the camera is owned by the call list, not by any one call. A `release()` beside the hangup
+button covers hangup and nothing else, and the bug Task 51 names — "camera in use" on the
+*next* call — is caused by the paths it misses.
 
 ### Task 52 — Video rendering and orientation
 **Depends on:** 51 · **Prompt refs:** §5.2, DoD 9 · **Modules:** `:feature:calls`
@@ -1789,16 +1806,38 @@ Build:
 
 Done when:
 - [ ] Bidirectional video establishes against the FreeSWITCH test target
+      → needs a device and a reachable bridge; the integration suite has never run
+      (`integration.yml` skips with no `SIP_TEST_HOST`)
 - [ ] Rotating the device keeps both streams correctly oriented at both ends
-- [ ] A remote resolution change does not stretch or crash the view
+      → `VideoLayout.orient` handles every quarter turn and normalises negative and
+      over-full rotations, but "at both ends" is a two-device observation
+- [x] A remote resolution change does not stretch or crash the view
+      → `VideoLayout.fit` letterboxes from the **current** frame rather than the first one,
+      which is the bug; asserted directly in `VideoLayoutTest`, including the
+      change-mid-call case and the unknown-size case that would otherwise collapse the view
+
+**Status: implemented, device verification pending.** `CallVideo` hands the stack two
+`TextureView`s through a `:domain` port and takes them back in `onDispose` — a surface a
+native renderer keeps after its composable has gone is a leak of every frame of the call.
 
 ### Task 53 — Camera switch and video mute
 **Depends on:** 52 · **Prompt refs:** §5.2, DoD 9 · **Modules:** `:feature:calls`
 
 Done when:
 - [ ] Front/back switch works mid-call without dropping the stream
-- [ ] Video mute stops the outbound stream while audio continues
-- [ ] Both are attributes of `Connected`, not FSM states
+      → implemented with no re-negotiation (`Core.setVideoDevice`, cycling the device
+      list), and the engine refuses it unless this call actually holds the camera. That
+      the picture does not drop is a device observation.
+- [x] Video mute stops the outbound stream while audio continues
+      → `CameraPolicy` releases the camera for a call whose `isVideoEnabled` is false while
+      the call stays `Connected`; asserted in `LinphoneSipEngineVideoTest` and
+      `CameraPolicyTest`
+- [x] Both are attributes of `Connected`, not FSM states
+      → `CallControls.isVideoEnabled`; the FSM has no video state and
+      `CallStateMachineTest` walks every state and event to prove no video event moves the
+      phase
+
+**Status: implemented, one box pending a device.**
 
 ### Task 54 — Audio ⇄ video escalation
 **Depends on:** 53 · **Prompt refs:** §5.2 · **Modules:** `:data:sip`, `:feature:calls`
@@ -1809,8 +1848,20 @@ Build:
 
 Done when:
 - [ ] Escalating an audio call to video works against the FreeSWITCH test target
-- [ ] Declining an escalation keeps the audio call alive
-- [ ] De-escalation to audio-only releases the camera
+      → needs the target; the re-INVITE path is exercised against the fake gateway
+- [x] Declining an escalation keeps the audio call alive
+      → declining answers the re-INVITE **without** video rather than refusing it: a 488
+      is legal SIP and ends the call on several peers. Asserted in
+      `LinphoneSipEngineVideoTest` and `FakeSipEngineVideoTest`.
+- [x] De-escalation to audio-only releases the camera
+      → dropping video takes the call out of `CameraPolicy`'s candidates, so the release is
+      the same one every other terminal path uses
+
+**Status: implemented, one box pending the target.** The load-bearing decision is
+`automaticallyAccept = false` on the core's video activation policy. Left on — and it is on
+by default in some builds — the stack accepts an incoming video re-INVITE by itself, and
+the first anyone knows about the escalation is their own camera light. With it off the
+stack reports `UpdatedByRemote` and waits, which is what makes §5.2's prompt possible.
 
 ---
 
@@ -1825,8 +1876,19 @@ Build:
 
 Done when:
 - [ ] A blind transfer to a third extension completes against the FreeSWITCH test target
-- [ ] Transfer progress and failure are both shown to the user
-- [ ] A failed transfer returns the call to `Connected`, not to a dead state
+      → needs the target and a third endpoint
+- [x] Transfer progress and failure are both shown to the user
+      → `TransferEvent` carries the 202, each NOTIFY sipfrag, and the outcome;
+      `TransferUiState` renders all three, and a failure names the reason
+      (`SipError.userMessage()`) and stays until dismissed — the caller is still on the
+      line and "that line is busy" is something they can act on
+- [x] A failed transfer returns the call to `Connected`, not to a dead state
+      → the FSM guarantees it, and `TransferEventMapper` never reports the 202 as success:
+      only the sipfrag saying the transferee **answered** becomes `Succeeded`. Reporting
+      the 202 as success is the classic transfer bug — the UI says "transferred", the
+      transferor hangs up, and the caller is dropped into a dead call.
+
+**Status: implemented, one box pending the target.**
 
 ### Task 56 — Call waiting and second call
 **Depends on:** 46 · **Prompt refs:** §5.2 · **Modules:** `:feature:calls`, `:app`
@@ -1837,9 +1899,21 @@ Build:
 - This is also the consultation-call machinery attended transfer needs (Task 57).
 
 Done when:
-- [ ] All three responses to a second call behave correctly
-- [ ] Swapping calls puts exactly one on hold and one active — never two active
+- [x] All three responses to a second call behave correctly
+      → `CallWaitingPolicy` produces the steps and `CallWaitingUseCase` runs them,
+      stopping at the first refusal; all three asserted end-to-end against the fake engine,
+      including the case that matters — a **failed hold does not go on to answer**
+- [x] Swapping calls puts exactly one on hold and one active — never two active
+      → the policy returns an ordered list, so the invariant is a property of the sequence
+      and is asserted as one: anything that gives up the audio path comes before anything
+      that takes it. Answering first is briefly two live microphones, and the user hears
+      both callers at once.
 - [ ] The system call UI and the app UI never disagree
+      → they cannot diverge by construction — both are driven from the same steps, and the
+      engine reports each to `PlatformCallRegistry` as it completes — but "never disagree"
+      is an observation about a system call UI, which needs a device.
+
+**Status: implemented, one box pending a device.**
 
 ### Task 57 — Attended transfer
 **Depends on:** 55, 56 · **Prompt refs:** §5.2, DoD 10 · **Modules:** `:data:sip`, `:feature:calls`
@@ -1849,8 +1923,20 @@ Build:
 
 Done when:
 - [ ] An attended transfer completes with all three parties behaving correctly
-- [ ] Cancelling the consultation returns cleanly to call A
+      → needs the target and three endpoints
+- [x] Cancelling the consultation returns cleanly to call A
+      → `TransferCallUseCase.cancelConsultation` ends B and resumes A, and **attempts the
+      resume even when the hangup fails**: the two are independent, and the failure the
+      user would notice is a call they can see and cannot hear. Asserted both ways.
 - [ ] Verified against the FreeSWITCH test target
+      → the suite has never run; `integration.yml` skips with no `SIP_TEST_HOST`
+
+**Status: implemented, two boxes pending the target.** One FSM change was needed and is
+worth naming: `StartTransfer` is now legal from `Held`, because an attended transfer sends
+its REFER from a held call. `Transferring` carries where the call came from, so a failed
+attended transfer returns it to the hold rather than to `Connected` — a screen claiming
+audio is flowing while the far end still holds is wrong until the stack happens to restate
+it.
 
 ### Task 58 — Call recording architecture
 **Depends on:** 46 · **Prompt refs:** §2.6, §7 · **Modules:** `:domain`, `:data:sip`, `:feature:calls`
@@ -1865,10 +1951,29 @@ Build:
   GDPR exposure, in `docs/security.md`.
 
 Done when:
-- [ ] Recording is **off by default** and cannot start without explicit consent
-- [ ] A visible indicator is present for the entire duration of any recording
+- [x] Recording is **off by default** and cannot start without explicit consent
+      → `RecordingConsent` is per call and starts at `None` on every one; there is no
+      setting, because a preference switched on once months ago *is* the silent recorder
+      §2.6 forbids. `CallRecorder.start` takes the consent as a parameter rather than
+      looking one up, so no implementation can find a path that skips the gate.
+- [x] A visible indicator is present for the entire duration of any recording
+      → the banner renders from `CallRecorder.active`, the recorder's own account of what
+      it is writing — state, not an event, so it survives a process restart. Marked
+      `liveRegion`: a recording that starts silently for a blind user is a silent recording.
 - [ ] Recordings are encrypted at rest and excluded from backup
-- [ ] `docs/security.md` states the legal and platform constraints plainly
+      → backup is excluded (every domain, plus `allowBackup=false`), and
+      `EncryptedRecordingStore` seals each file with AES-GCM under a Keystore key and
+      deletes the plaintext before reporting success. **The encryption round trip needs the
+      Keystore and therefore a device**, exactly like `SecretKeyProvider` in Task 16, so
+      this stays unticked until it runs there.
+- [x] `docs/security.md` states the legal and platform constraints plainly
+      → [`docs/security.md`](docs/security.md) § "Call recording": what Android will not
+      let an ordinary app capture, two-party consent and GDPR, the plaintext window and how
+      it is closed, and that the far-end announcement is **not implemented**
+
+**Status: architecture COMPLETE, one box pending a device.** As §2.6 asks, this is the
+shape and the safeguards rather than a shipped recorder: nothing calls the retention hook
+automatically, because what the retention period is belongs to whoever deploys this app.
 
 ---
 
@@ -1883,8 +1988,19 @@ Build:
   is an implementation swap, not a rewrite.
 
 Done when:
-- [ ] The model supports N > 2 participants with no dial-in-specific assumption baked in
-- [ ] Participant join/leave/mute transitions are unit-tested against `FakeSipEngine`
+- [x] The model supports N > 2 participants with no dial-in-specific assumption baked in
+      → `ConferenceSession` holds N participants with per-participant video, mute and
+      speaking state. `hasPerParticipantVideo` is false under a mixing MCU and true under
+      an SFU, and both are tested — a model exercised only against one mixed stream would
+      satisfy today's transport and nothing else (§2.2).
+- [x] Participant join/leave/mute transitions are unit-tested against `FakeSipEngine`
+      → `FakeSipEngineConferenceTest`, driven through the engine seam rather than against
+      the model alone: a transition that composes correctly but never reaches `conferences`
+      is one no screen can read
+
+**Status: COMPLETE.** The distinction the model exists to keep is between an **empty**
+roster and **no** roster — `rosterAvailable` — because a bridge that publishes nothing and
+a room nobody has joined produce the same empty list and mean opposite things (§13).
 
 ### Task 60 — Dial-in conference
 **Depends on:** 59, 32 · **Prompt refs:** §2.2, DoD 11 · **Modules:** `:data:sip`, `:feature:calls`
@@ -1896,8 +2012,23 @@ Build:
 
 Done when:
 - [ ] Three clients join one conference on the FreeSWITCH bridge and hear each other
-- [ ] The participant list reflects joins and leaves
-- [ ] If the server provides no roster, the UI says so rather than showing a fake list
+      → needs three endpoints and a person to listen. `ConferenceIntegrationTest` covers
+      the client half — join, answer, the leg recorded as a conference — and explicitly
+      does not claim the rest.
+- [x] The participant list reflects joins and leaves
+      → the roster is applied as **full state** rather than deltas, because reconciling
+      deltas against a roster that may have been missed is how a list ends up showing
+      somebody who left ten minutes ago
+- [x] If the server provides no roster, the UI says so rather than showing a fake list
+      → `ConferenceRoster` renders three different things — no roster, a roster with only
+      you, and a roster with others — because collapsing the first two turns "we cannot
+      see" into "there is nobody". `mod_conference` does not publish a conference event
+      package to a dial-in participant by default, so this is the *normal* case, not an
+      edge one.
+
+**Status: implemented, one box pending three endpoints.** Joining is dialling (ADR-003), so
+everything afterwards — hold, mute, DTMF, hangup, the call log — is the ordinary call
+machinery working on an ordinary call.
 
 ### Task 61 — Video conference
 **Depends on:** 60, 52 · **Prompt refs:** §2.2 · **Modules:** `:feature:calls`
