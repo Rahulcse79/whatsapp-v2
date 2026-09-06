@@ -132,22 +132,7 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
             .padding(AppTheme.spacing.large),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // Above everything, and present for the whole recording — Task 58's second
-        // done-when is about duration, so this is rendered from what the recorder says it
-        // is writing rather than from an event somebody has to remember to send.
-        if (state.recording.isRecording) {
-            RecordingBanner(modifier = Modifier.padding(bottom = AppTheme.spacing.small))
-        }
-
-        // The held call, by name, and tappable. Without it a user has no way to tell a
-        // successful hold from a dropped call (Task 56).
-        state.otherCalls.firstOrNull()?.let { other ->
-            HeldCallBanner(
-                other = other,
-                onSwap = { actions.onSwapTo(other.callId) },
-                modifier = Modifier.padding(bottom = AppTheme.spacing.small),
-            )
-        }
+        CallBanners(state = state, actions = actions)
 
         Spacer(Modifier.weight(1f))
 
@@ -195,6 +180,33 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
     }
 
     CallDialogs(state = state, actions = actions)
+}
+
+/**
+ * What is going on besides this call, above the caller's name.
+ *
+ * Both are statements rather than controls — one says the call is being recorded, the
+ * other that somebody else is on hold — and both sit above the identity because a user
+ * reads down from the name.
+ */
+@Composable
+private fun CallBanners(state: CallUiState.Active, actions: CallActions) {
+    // Present for the whole recording — Task 58's second done-when is about duration, so
+    // this is rendered from what the recorder says it is writing rather than from an event
+    // somebody has to remember to send.
+    if (state.recording.isRecording) {
+        RecordingBanner(modifier = Modifier.padding(bottom = AppTheme.spacing.small))
+    }
+
+    // The held call, by name, and tappable. Without it a user has no way to tell a
+    // successful hold from a dropped call (Task 56).
+    state.otherCalls.firstOrNull()?.let { other ->
+        HeldCallBanner(
+            other = other,
+            onSwap = { actions.onSwapTo(other.callId) },
+            modifier = Modifier.padding(bottom = AppTheme.spacing.small),
+        )
+    }
 }
 
 /**

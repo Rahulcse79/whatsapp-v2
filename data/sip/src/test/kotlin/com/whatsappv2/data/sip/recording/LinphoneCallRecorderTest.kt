@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalCoroutinesApi::class)
+
 package com.whatsappv2.data.sip.recording
 
 import com.whatsappv2.core.common.logging.NoOpLogger
@@ -23,6 +25,7 @@ import com.whatsappv2.domain.recording.RecordingError
 import com.whatsappv2.domain.recording.RecordingId
 import com.whatsappv2.domain.recording.RecordingRefusal
 import com.whatsappv2.domain.testing.FakeSipEngine
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
