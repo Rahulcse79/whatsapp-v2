@@ -18,6 +18,7 @@ import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
+import com.whatsappv2.domain.testing.FakeContactRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import org.junit.Rule
@@ -43,6 +44,7 @@ class DialerScreenTest {
 
     private val repository = FakeSipAccountRepository()
     private val engine = FakeSipEngine()
+    private val contacts = FakeContactRepository()
 
     @Test
     fun `tapping the keypad and calling places the call the digits spell`() {
@@ -126,6 +128,7 @@ class DialerScreenTest {
         val viewModel = DialerViewModel(
             placeCall = PlaceCallUseCase(repository, engine),
             recentDials = RecentDials(),
+            contacts = contacts,
             repository = repository,
             registrar = engine,
         )
