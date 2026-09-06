@@ -201,6 +201,16 @@ internal class SipConnectionService : ConnectionService(), SipConnection.Listene
         private val pending = ConcurrentHashMap<CallId, CompletableDeferred<Boolean>>()
 
         /** Registers interest in [callId] before asking Telecom for it. */
+        /**
+         * The calls Telecom is holding a connection for, right now (Task 45).
+         *
+         * This is the platform's record, not the app's: it is what a rebuilt screen asks
+         * "is there still a call?" after the process was killed and restarted. An empty
+         * answer is a real answer — the call did not survive — and the screen finishing
+         * on it is better than one stuck on Loading for a call that is over.
+         */
+        fun liveCallIds(): Set<CallId> = connections.keys.toSet()
+
         fun expect(callId: CallId): CompletableDeferred<Boolean> =
             CompletableDeferred<Boolean>().also { pending[callId] = it }
 

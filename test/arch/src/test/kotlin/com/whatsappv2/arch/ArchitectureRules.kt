@@ -318,4 +318,37 @@ object ArchitectureRules {
         "android.webkit.",
         "com.google.firebase.",
     )
+
+    /**
+     * **Rule 10 — call state is never restored from `SavedStateHandle` (Task 45, §6).**
+     *
+     * A `SavedStateHandle` survives process death, which is exactly what makes it the
+     * wrong place for this: it remembers what was true when the process was killed, and a
+     * call is precisely the thing that may not be true any more. Restoring a call screen
+     * from it produces a screen for a call that has ended — with a running timer, and
+     * buttons that reach a stack which no longer has that dialog.
+     *
+     * The sources that can answer are the platform's Telecom connections and the engine's
+     * own list, both rebuilt from what is still running. So a file that touches a call id
+     * or a call snapshot may not also hold a `SavedStateHandle`.
+     *
+     * Navigation arguments are the ordinary use of one, which is why this looks for the
+     * combination rather than for the type: reading an account id out of one is fine, and
+     * common.
+     */
+    fun callStateIsNotRestoredFromSavedState(files: List<SourceFile>): List<Violation> =
+        files.filter { it.imports.any { import -> import.endsWith(".SavedStateHandle") } }
+            .filter { file -> CALL_STATE.containsMatchIn(file.code) }
+            .map {
+                Violation(it.relativePath, "restores call state from a SavedStateHandle")
+            }
+
+    /**
+     * What "call state" looks like in a file.
+     *
+     * The domain's own call types. A screen that names one of these and holds a
+     * `SavedStateHandle` is reconstructing a call from memory, whatever it calls the
+     * variable.
+     */
+    private val CALL_STATE = Regex("""\b(CallSnapshot|CallState|CallUiState|CallDisplay)\b""")
 }

@@ -107,7 +107,14 @@ class RulesActuallyFireTest {
         assertTrue(violations.any { "java.net.HttpURLConnection" in it.detail })
     }
 
+    @Test
+    fun `rule 10 fires on a call rebuilt from saved state`() {
+        val violations = ArchitectureRules.callStateIsNotRestoredFromSavedState(fixtures)
+        assertFires("Rule 10", violations)
+        assertTrue(violations.any { "SavedStateHandle" in it.detail })
+    }
+
     private companion object {
-        const val EXPECTED_FIXTURES = 9
+        const val EXPECTED_FIXTURES = 10
     }
 }

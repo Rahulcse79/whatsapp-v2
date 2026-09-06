@@ -40,16 +40,27 @@ class CallActivity : ComponentActivity() {
     @Inject
     lateinit var logger: Logger
 
+    @Inject
+    lateinit var ongoingCall: OngoingCall
+
     override fun onCreate(savedInstanceState: Bundle?) {
         showOverLockScreen()
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
-        val callId = intent?.getStringExtra(EXTRA_CALL_ID)?.let(::CallId)
+        // The intent is a request, not the answer (Task 45). After the process was killed
+        // the system hands the original intent back, and the call it names may be long
+        // over; asking Telecom and the engine is what makes this a screen for a call that
+        // is actually up rather than one that was.
+        //
+        // Deliberately not savedInstanceState: that is the app's memory of what was true,
+        // and what was true is exactly what a restart cannot rely on.
+        val requested = intent?.getStringExtra(EXTRA_CALL_ID)?.let(::CallId)
+        val callId = ongoingCall.current(requested)
         if (callId == null) {
             // Nothing to show. Finishing is the honest response: an empty call screen
             // that cannot be dismissed is worse than no screen at all.
-            logger.error(TAG, "Call screen opened with no call id")
+            logger.info(TAG, "Call screen opened with no call in progress")
             finish()
             return
         }

@@ -93,4 +93,9 @@ class ArchitectureTest {
     fun `rule 9 - contact data stays on the device`() {
         assertNoViolations("Rule 9", ArchitectureRules.contactDataStaysOnTheDevice(files))
     }
+
+    @Test
+    fun `rule 10 - call state is not restored from SavedStateHandle`() {
+        assertNoViolations("Rule 10", ArchitectureRules.callStateIsNotRestoredFromSavedState(files))
+    }
 }
