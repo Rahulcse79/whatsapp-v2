@@ -10,6 +10,7 @@ import com.whatsappv2.data.sip.call.StackParticipant
 import com.whatsappv2.data.sip.call.StackTransferEvent
 import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.StackAccount
+import com.whatsappv2.data.sip.registration.StackMediaEncryption
 import com.whatsappv2.data.sip.registration.StackPushParameters
 import com.whatsappv2.data.sip.registration.StackRegistrationEvent
 import com.whatsappv2.data.sip.registration.StackRegistrationState
@@ -26,6 +27,7 @@ import org.linphone.core.ConferenceListenerStub
 import org.linphone.core.Core
 import org.linphone.core.CoreListenerStub
 import org.linphone.core.Factory
+import org.linphone.core.MediaEncryption
 import org.linphone.core.Participant
 import org.linphone.core.ParticipantDevice
 import org.linphone.core.Reason
@@ -197,6 +199,9 @@ internal class RealLinphoneCoreGateway @Inject constructor(
                     // What is negotiated and running now, from our own params: after a
                     // re-INVITE this is the only place the change is visible (Task 54).
                     videoActive = call.currentParams.isVideoEnabled,
+                    // After negotiation, not before: a peer that answers an SRTP offer
+                    // with cleartext has encrypted nothing (Task 62, DoD 13).
+                    mediaEncrypted = call.currentParams.mediaEncryption != MediaEncryption.None,
                 ),
             )
 
@@ -665,6 +670,49 @@ internal class RealLinphoneCoreGateway @Inject constructor(
     }
 
     /**
+     * Transport and media security, from the account's own settings (Task 62, §7, DoD 13).
+     *
+     * ## Certificate validation is never turned off
+     *
+     * `verifyServerCertificates(true)` and `verifyServerCn(true)`, unconditionally. There
+     * is no branch here that disables them and there is not meant to be: §7 forbids a
+     * permissive `TrustManager` outright, and the usual way one arrives is a debug flag
+     * that outlives the debugging. An enterprise with its own PBX certificate authority is
+     * served by [StackAccount.customCaPath], which **adds** a trust anchor rather than
+     * removing the check.
+     *
+     * ## Mandatory means the stack refuses
+     *
+     * `setMediaEncryptionMandatory(true)` is what makes liblinphone fail a call it cannot
+     * encrypt instead of continuing in the clear. The engine checks again once media is
+     * running — see `LinphoneSipEngine.advance` — because the two catch different things:
+     * this one stops the negotiation, and that one catches a call that negotiated
+     * encryption and then did not have any.
+     *
+     * ## Core-wide, from a per-account setting
+     *
+     * liblinphone keeps media encryption on the `Core`, not on `AccountParams`, so with two
+     * accounts configured differently the last one added wins. That is a real limitation of
+     * this stack rather than a choice, and it is written down in `docs/security.md` instead
+     * of being hidden behind an API that looks per-account.
+     */
+    private fun Core.applySecurity(account: StackAccount) {
+        verifyServerCertificates(true)
+        verifyServerCn(true)
+
+        // Additive, and only when a deployment has explicitly configured one.
+        account.customCaPath?.let { rootCa = it }
+
+        setMediaEncryption(
+            when (account.mediaEncryption) {
+                StackMediaEncryption.NONE -> MediaEncryption.None
+                StackMediaEncryption.OPTIONAL, StackMediaEncryption.MANDATORY -> MediaEncryption.SRTP
+            },
+        )
+        isMediaEncryptionMandatory = account.mediaEncryption == StackMediaEncryption.MANDATORY
+    }
+
+    /**
      * The video defaults this app needs (Tasks 51, 54).
      *
      * ## Nothing is automatic
@@ -730,6 +778,9 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         )
         core.addAuthInfo(authInfo)
         authInfoByKey[account.key] = authInfo
+
+        // Applied before the account is added, so the first REGISTER already carries them.
+        core.applySecurity(account)
 
         val params = core.createAccountParams().apply {
             identityAddress = identity

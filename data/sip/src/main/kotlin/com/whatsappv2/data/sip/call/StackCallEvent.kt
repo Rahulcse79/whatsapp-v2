@@ -118,6 +118,16 @@ internal data class StackCallEvent(
      * describing what was negotiated at the start.
      */
     val videoActive: Boolean = false,
+
+    /**
+     * True when the media on this call is encrypted right now (Task 62, DoD 13).
+     *
+     * Read from the call's **current** parameters, which is the answer after negotiation
+     * rather than the offer before it. That is the whole point: a peer that answers an
+     * SRTP offer with cleartext has not encrypted anything, and a check made only when the
+     * offer was built would never notice.
+     */
+    val mediaEncrypted: Boolean = false,
 )
 
 /**

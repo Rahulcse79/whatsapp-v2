@@ -288,6 +288,9 @@ internal class FakeLinphoneCoreGateway : LinphoneCoreGateway, LinphoneCallGatewa
         displayName: String? = null,
         videoOffered: Boolean = false,
         videoActive: Boolean = false,
+        // Encrypted by default: the interesting assertion is the call that is NOT, and a
+        // default of false would make every unrelated test look like a security failure.
+        mediaEncrypted: Boolean = true,
     ) {
         callEventFlow.tryEmit(
             StackCallEvent(
@@ -300,6 +303,7 @@ internal class FakeLinphoneCoreGateway : LinphoneCoreGateway, LinphoneCallGatewa
                 message = null,
                 videoOffered = videoOffered,
                 videoActive = videoActive,
+                mediaEncrypted = mediaEncrypted,
             ),
         )
     }

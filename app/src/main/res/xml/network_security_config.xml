@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Transport security for everything Android's own networking stack carries (Task 62, §7).
+
+  ## Cleartext is off, everywhere, in every build
+
+  There is no `debug-overrides` block and no per-domain exception, and that is deliberate.
+  A debug override is how a permissive trust configuration reaches production: it is added
+  to unblock one afternoon's testing against a self-signed PBX, and nothing ever removes
+  it. A deployment that needs to trust its own certificate authority configures one
+  explicitly - see StackAccount.customCaPath - which ADDS a trust anchor rather than
+  disabling validation.
+
+  ## What this does and does not cover
+
+  It covers Firebase and any HTTP this app makes through the platform.
+
+  It does NOT cover SIP over TLS: liblinphone opens its own sockets and runs its own TLS
+  through mbedTLS, so `network_security_config.xml` never sees them. The equivalent
+  settings for that path are `verifyServerCertificates` and `verifyServerCn`, set
+  unconditionally in RealLinphoneCoreGateway.applySecurity. Both halves are needed and
+  neither substitutes for the other; docs/security.md says so in one place rather than
+  leaving somebody to discover it.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <!-- The system store, and nothing else. -->
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

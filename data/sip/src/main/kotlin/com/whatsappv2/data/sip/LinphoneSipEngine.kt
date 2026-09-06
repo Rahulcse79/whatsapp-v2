@@ -19,6 +19,7 @@ import com.whatsappv2.data.sip.network.RegistrationRecoveryCoordinator
 import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.RegistrationStateMapper
 import com.whatsappv2.data.sip.registration.StackAccount
+import com.whatsappv2.data.sip.registration.StackMediaEncryption
 import com.whatsappv2.data.sip.registration.StackPushParameters
 import com.whatsappv2.data.sip.registration.StackRegistrationState
 import com.whatsappv2.domain.call.AudioRoute
@@ -49,6 +50,7 @@ import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.RegistrationState
 import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SipUri
+import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.TransferType
 import com.whatsappv2.domain.registration.RegistrationRetrySchedule
 import com.whatsappv2.domain.repository.AppSettingsRepository
@@ -184,6 +186,17 @@ internal class LinphoneSipEngine @Inject constructor(
 
     /** Requested expiry per account, so a state event can report the right figure. */
     private val requestedExpiry = mutableMapOf<String, Int>()
+
+    /**
+     * Each account's media-encryption policy, kept for the enforcement in [advance]
+     * (Task 62, DoD 13).
+     *
+     * Held rather than read from the repository per event: the check runs on every call
+     * state change, and a database read on the stack's event loop is the wrong place for
+     * one. Populated by [register] and dropped by [unregister], so an account that is no
+     * longer registered cannot leave a stale policy behind.
+     */
+    private val mediaPolicy = mutableMapOf<AccountId, SrtpPolicy>()
 
     /**
      * Calls this engine currently knows about, keyed by the app's own call id.
@@ -515,6 +528,11 @@ internal class LinphoneSipEngine @Inject constructor(
                 }
             }
 
+        // §7, DoD 13: a call that reached media without encrypting it, on an account that
+        // requires encryption, is dropped rather than carried on in the clear. See
+        // [enforceMediaEncryption] for why this exists as well as the stack's own gate.
+        if (CallStateMapper.isConnected(event.state) && !enforceMediaEncryption(id, current, event)) return
+
         val justConnected = current.connectedAtEpochMillis == null &&
             CallStateMapper.isConnected(event.state)
         if (justConnected) platform.onConnected(id)
@@ -549,6 +567,38 @@ internal class LinphoneSipEngine @Inject constructor(
                 )
                 )
         }
+    }
+
+    /**
+     * Drops a call whose media is not encrypted when the account requires it (Task 62).
+     *
+     * ## Why this exists when the stack already refuses
+     *
+     * `setMediaEncryptionMandatory(true)` makes liblinphone fail the *negotiation*. This
+     * catches the case after it: a call that negotiated encryption and then arrived at
+     * running media without any. The two are not the same event, and the second is the one
+     * that would otherwise be a cleartext call on an account whose whole point is that it
+     * cannot have one.
+     *
+     * It is also the check a test can make. DoD 13 asks for "Mandatory fails rather than
+     * downgrades" to be *asserted*, and the stack's internal refusal is not assertable
+     * without a cleartext-only peer on the other end of a real network.
+     *
+     * @return false when the call was dropped, so the caller stops processing the event.
+     */
+    private fun enforceMediaEncryption(
+        id: CallId,
+        current: CallSnapshot,
+        event: StackCallEvent,
+    ): Boolean {
+        val policy = mediaPolicy[current.accountId] ?: return true
+        if (policy.permits(event.mediaEncrypted)) return true
+
+        // The account id and the call, never the peer's address (§7).
+        logger.warn(TAG, "Dropping $id: ${current.accountId} requires encrypted media and this call has none")
+        callGateway.terminateCall(id.value)
+        endCall(id, HangupReason.MEDIA_FAILURE)
+        return false
     }
 
     /**
@@ -1071,6 +1121,7 @@ internal class LinphoneSipEngine @Inject constructor(
         }
 
         requestedExpiry[account.id.value] = account.registrationExpirySeconds
+        mediaPolicy[account.id] = account.srtpPolicy
 
         // Reported immediately rather than waiting for the stack's first event: the UI
         // must show that something is happening the moment the user presses save.
@@ -1106,6 +1157,7 @@ internal class LinphoneSipEngine @Inject constructor(
         // Removing the account is also what drops the credentials the stack held for it.
         gateway.removeAccount(accountId.value)
         requestedExpiry -= accountId.value
+        mediaPolicy -= accountId
 
         val acknowledged = withTimeoutOrNull(UNREGISTER_ACK_TIMEOUT_MILLIS) {
             // Read from the state flow rather than the event stream: a StateFlow always
@@ -1170,6 +1222,7 @@ internal class LinphoneSipEngine @Inject constructor(
         conferenceCollectJob = null
         gateway.stop()
         requestedExpiry.clear()
+        mediaPolicy.clear()
         states.value = emptyMap()
 
         // Every live call goes down with the stack, and Telecom is told so - a connection
@@ -1195,6 +1248,13 @@ internal class LinphoneSipEngine @Inject constructor(
         proxyUri = outboundProxy?.let { "sip:${it.render()}" },
         transport = transport.token,
         expirySeconds = registrationExpirySeconds,
+        // §7, DoD 13. MANDATORY becomes `setMediaEncryptionMandatory(true)` on the stack,
+        // which is what makes it fail a call it cannot encrypt rather than downgrade.
+        mediaEncryption = when (srtpPolicy) {
+            SrtpPolicy.DISABLED -> StackMediaEncryption.NONE
+            SrtpPolicy.OPTIONAL -> StackMediaEncryption.OPTIONAL
+            SrtpPolicy.MANDATORY -> StackMediaEncryption.MANDATORY
+        },
     )
 
     /**

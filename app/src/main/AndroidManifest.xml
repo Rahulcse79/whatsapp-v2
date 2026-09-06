@@ -87,12 +87,19 @@
 
       android:allowBackup is false from the first commit because this app stores SIP
       credentials, and backup would copy them off the device (§7, DoD 12).
+
+      usesCleartextTraffic and networkSecurityConfig are Task 62's platform half. They do
+      not cover SIP over TLS - liblinphone runs its own TLS on its own sockets - so the
+      certificate validation for that path is set in RealLinphoneCoreGateway. Both are
+      needed; see docs/security.md.
     -->
     <application
         android:name=".SipApplication"
         android:allowBackup="false"
         android:fullBackupContent="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:usesCleartextTraffic="false"
         android:label="whatsapp-v2"
         android:supportsRtl="true"
         android:theme="@style/Theme.WhatsAppV2">

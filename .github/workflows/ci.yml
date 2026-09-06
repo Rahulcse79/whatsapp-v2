@@ -246,6 +246,104 @@ jobs:
           [ "$missing" -eq 0 ] && echo "OK - both variant loggers are tracked."
           exit $missing
 
+      - name: Assert the release logger stays silent below warn (Task 63, DoD 12)
+        run: |
+          # Release builds must emit no SIP messages, headers, credentials, phone numbers
+          # or contact data. The guarantee is structural rather than a runtime level check:
+          # verbose, debug and info have empty bodies in the release variant, so R8 removes
+          # the call sites entirely. A level check would leave the strings in the binary.
+          f=app/src/release/java/com/whatsappv2/logging/PlatformLogger.kt
+          for method in verbose debug info; do
+            grep -qE "override fun $method\(tag: String, message: String\) = Unit" "$f" || {
+              echo "::error::$f no longer discards $method(). Release builds would emit it."
+              exit 1
+            }
+          done
+          echo "The release logger discards verbose, debug and info by construction."
+
+      - name: Assert the credential screen is marked secure (Tasks 21, 63)
+        run: |
+          # A SIP password is typed on exactly one screen, and a screenshot or a screen
+          # recorder would carry it off the device past every other protection §7 applies.
+          editor=feature/accounts/src/main/kotlin/com/whatsappv2/feature/accounts/editor/AccountEditorScreen.kt
+          grep -qF 'SecureScreen()' "$editor" || {
+            echo "::error::$editor no longer calls SecureScreen(). See Task 21 done-when #3."
+            exit 1
+          }
+          echo "The account editor marks its window secure."
+
+      - name: Assert no credential is interpolated into a log line (Task 63, DoD 12)
+        run: |
+          # Narrow on purpose. A grep cannot tell a safe log line from an unsafe one in
+          # general, but it can catch the specific mistake worth catching: a variable
+          # whose NAME says it is a secret, interpolated straight into a message.
+          hits=$(grep -rnE '(verbose|debug|info|warn|error)\(.*\$\{?[A-Za-z.]*(password|secret|credential|token|passphrase)' \
+                   --include='*.kt' --exclude-dir=build --exclude-dir=.git . || true)
+          if [ -n "$hits" ]; then
+            echo "::error::A credential-named value is interpolated into a log call (§7, DoD 12)."
+            echo "$hits"
+            exit 1
+          fi
+          echo "No credential-named value reaches a log call."
+
+      - name: Assert no permissive TrustManager (Task 62, DoD 13)
+        run: |
+          # §7 forbids a permissive TrustManager outright, and the usual way one arrives is
+          # a debug helper that outlives the debugging. This looks for the shape rather
+          # than for a name: a checkServerTrusted anywhere in this repository is worth a
+          # human reading it, and there are currently none.
+          hits=$(grep -rn --include='*.kt' --include='*.java' \
+                   --exclude-dir=build --exclude-dir=.git \
+                   -e 'checkServerTrusted' \
+                   -e 'checkClientTrusted' \
+                   -e 'X509TrustManager' \
+                   -e 'ALLOW_ALL_HOSTNAME_VERIFIER' \
+                   -e 'setHostnameVerifier' \
+                   . || true)
+          if [ -n "$hits" ]; then
+            echo "::error::A TrustManager or hostname verifier was found. §7 forbids overriding certificate validation."
+            echo "$hits"
+            exit 1
+          fi
+          echo "No TrustManager override anywhere in the tree."
+
+      - name: Assert certificate validation is never switched off (Task 62)
+        run: |
+          # The SIP stack runs its own TLS, so `network_security_config.xml` never sees it.
+          # These two calls are the equivalent, and they must be unconditional.
+          gateway=data/sip/src/main/kotlin/com/whatsappv2/data/sip/registration/stack/RealLinphoneCoreGateway.kt
+          for call in 'verifyServerCertificates(true)' 'verifyServerCn(true)'; do
+            grep -qF "$call" "$gateway" || {
+              echo "::error::$gateway no longer calls $call"
+              exit 1
+            }
+          done
+          if grep -nE 'verifyServer(Certificates|Cn)\(false\)' "$gateway"; then
+            echo "::error::Certificate validation is disabled somewhere in the SIP gateway."
+            exit 1
+          fi
+          echo "The SIP stack validates certificates unconditionally."
+
+      - name: Assert cleartext traffic is refused (Task 62)
+        run: |
+          manifest=app/src/main/AndroidManifest.xml
+          config=app/src/main/res/xml/network_security_config.xml
+          grep -qF 'android:usesCleartextTraffic="false"' "$manifest" || {
+            echo "::error::$manifest no longer sets usesCleartextTraffic=false"
+            exit 1
+          }
+          grep -qF 'cleartextTrafficPermitted="false"' "$config" || {
+            echo "::error::$config no longer refuses cleartext"
+            exit 1
+          }
+          # A debug-overrides block is how a permissive trust configuration reaches
+          # production: added to unblock an afternoon's testing, never removed.
+          if grep -q 'debug-overrides' "$config"; then
+            echo "::error::$config contains a debug-overrides block. See its own comment for why not."
+            exit 1
+          fi
+          echo "Cleartext is refused in every build, with no debug override."
+
       - name: Coverage
         run: ./gradlew koverXmlReport koverHtmlReport --stacktrace
 
@@ -583,6 +681,54 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Build minified release APK (Task 64, DoD 1)
+        run: ./gradlew :app:assembleRelease --stacktrace
+
+      - name: Assert R8 actually ran and produced a mapping (Task 64)
+        run: |
+          # A release build that silently skipped minification is a release build nobody
+          # has tested the shape of - and the mapping file is the only way a crash from
+          # one is ever deobfuscated. Both are checked rather than assumed.
+          mapping=app/build/outputs/mapping/release/mapping.txt
+          if [ ! -s "$mapping" ]; then
+            echo "::error::No mapping file at $mapping. Did minification get switched off?"
+            exit 1
+          fi
+
+          apk=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          if [ -z "$apk" ]; then
+            echo "::error::assembleRelease produced no APK."
+            exit 1
+          fi
+
+          debug=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
+          {
+            echo "### Release APK (minified)"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| File | \`$(basename "$apk")\` |"
+            echo "| Size | $(du -h "$apk" | cut -f1) |"
+            if [ -n "$debug" ]; then
+              echo "| Debug APK, for comparison | $(du -h "$debug" | cut -f1) |"
+            fi
+            echo "| Mapping | $(wc -l < "$mapping") lines |"
+            echo ""
+            echo "> Unsigned on purpose: a keystore in git is a compromised keystore."
+            echo "> A release pipeline signs this with credentials it holds itself."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "R8 ran; mapping is $(wc -l < "$mapping") lines."
+
+      - name: Upload the R8 mapping file (Task 64)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          # Retained because a crash report from a release build is undecipherable without
+          # it, and the build that produced it may be long gone by the time one arrives.
+          name: mapping-${{ github.sha }}
+          path: app/build/outputs/mapping/release/
+          if-no-files-found: error
 
       - name: Upload build reports
         if: failure()

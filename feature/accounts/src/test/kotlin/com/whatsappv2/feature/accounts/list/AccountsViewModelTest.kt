@@ -320,4 +320,29 @@ class AccountsViewModelTest {
             cancelAndIgnoreRemainingEvents()
         }
     }
+
+    @Test
+    fun `accounts stay fully readable with the network gone`() = runTest {
+        // Task 66's first done-when. The claim is architectural — accounts live in Room and
+        // nothing about reading them touches the network — but "architectural" is how
+        // regressions get missed, and a repository that grew a registration lookup would
+        // break this without breaking anything else.
+        repository.given(
+            account(id = "acct-1", label = "Work"),
+            account(id = "acct-2", username = "bob", label = "Home", isDefault = false),
+        )
+        engine.givenRegistered(account(id = "acct-1", label = "Work"))
+        val viewModel = viewModel()
+
+        engine.simulateNetworkLoss()
+
+        viewModel.uiState.test {
+            skipItems(1)
+            val content = assertIs<AccountsUiState.Content>(awaitItem())
+            assertEquals(listOf("Work", "Home"), content.accounts.map { it.label })
+            // Readable, and honest about it: nothing claims to be registered (§6).
+            assertTrue(content.accounts.none { it.status == AccountStatus.REGISTERED })
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
 }

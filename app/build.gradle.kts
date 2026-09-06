@@ -23,6 +23,32 @@ android {
         }
     }
 
+    buildTypes {
+        release {
+            // Task 64, DoD 1. R8 in full mode - the AGP default since 8.0 and stated
+            // explicitly in gradle.properties so an upgrade cannot quietly change it.
+            //
+            // Shrinking resources as well as code: the SIP stack's native libraries
+            // dominate this APK, but the Compose and Material resources behind them are
+            // not free either, and an unshrunk release build is a release build nobody
+            // has actually tested the shape of.
+            isMinifyEnabled = true
+            isShrinkResources = true
+
+            proguardFiles(
+                // AGP's own optimised defaults, not the plain ones: the difference is
+                // whether R8 is allowed to inline and merge, which is most of the point.
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+
+            // Deliberately NOT signed here. A signing config needs a keystore, and a
+            // keystore in git is a compromised keystore - `assembleRelease` therefore
+            // produces an unsigned APK, which is what CI verifies and what a release
+            // pipeline signs with credentials it holds itself.
+        }
+    }
+
     testOptions {
         // Robolectric needs the merged resources and manifest to build a real
         // Application and Activity on the JVM.
@@ -57,6 +83,13 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.kotlinx.coroutines.android)
+
+    // Task 65, DoD 16. Debug only, and that is the whole arrangement: LeakCanary installs
+    // itself, dumps the heap in-process and holds every watched object weakly, which is a
+    // profiling cost nobody should pay in a release build. It finds the leak class this
+    // app is most exposed to - a Compose screen or a Telecom connection holding a call
+    // that ended - which is exactly what §6 forbids and what no unit test can see.
+    debugImplementation(libs.leakcanary)
 
     // Proves the fake is consumable from an Android module (Task 11 done-when #2) and
     // is what lets the whole app run with no SIP server (DoD 4).

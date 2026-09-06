@@ -37,6 +37,9 @@ androidxRoom = "2.8.4"
 androidxCore = "1.19.0"
 androidxTestCore = "1.7.0"
 androidxTestExtJunit = "1.3.0"
+# 2.14, the newest stable. 3.0 is still alpha, and a memory-leak detector that itself
+# ships in alpha is the wrong tool for finding out whether a leak is yours (Task 65).
+leakcanary = "2.14"
 robolectric = "4.16.1"
 turbine = "1.2.1"
 javaxInject = "1"
@@ -85,6 +88,7 @@ kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.re
 kotlin-test-junit = { group = "org.jetbrains.kotlin", name = "kotlin-test-junit", version.ref = "kotlin" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 hilt-android-testing = { group = "com.google.dagger", name = "hilt-android-testing", version.ref = "hilt" }
+leakcanary = { group = "com.squareup.leakcanary", name = "leakcanary-android", version.ref = "leakcanary" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
 androidx-test-core-ktx = { group = "androidx.test", name = "core-ktx", version.ref = "androidxTestCore" }

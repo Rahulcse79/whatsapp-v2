@@ -2,6 +2,7 @@ package com.whatsappv2.domain.model
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -65,6 +66,39 @@ class MediaAndTargetTest {
         // call, and the factory refuses to build one.
         assertEquals(MediaProfile.AUDIO, videoOnly.downgradedWhenCameraUnavailable(false))
         assertTrue(videoOnly.requiresCamera)
+    }
+
+    // ================================================================ SrtpPolicy
+
+    @Test
+    fun `mandatory refuses a call whose media is not encrypted`() {
+        // DoD 13, as a function of two values. The enforcement that matters happens after
+        // negotiation, when the answer is in and the media is about to flow.
+        assertFalse(SrtpPolicy.MANDATORY.permits(mediaEncrypted = false))
+        assertTrue(SrtpPolicy.MANDATORY.permits(mediaEncrypted = true))
+        assertTrue(SrtpPolicy.MANDATORY.requiresEncryptedMedia)
+    }
+
+    @Test
+    fun `optional permits both, which is what optional means`() {
+        assertTrue(SrtpPolicy.OPTIONAL.permits(mediaEncrypted = false))
+        assertTrue(SrtpPolicy.OPTIONAL.permits(mediaEncrypted = true))
+        assertFalse(SrtpPolicy.OPTIONAL.requiresEncryptedMedia)
+    }
+
+    @Test
+    fun `disabled permits both, and never claims to require encryption`() {
+        assertTrue(SrtpPolicy.DISABLED.permits(mediaEncrypted = false))
+        assertTrue(SrtpPolicy.DISABLED.permits(mediaEncrypted = true))
+        assertFalse(SrtpPolicy.DISABLED.requiresEncryptedMedia)
+    }
+
+    @Test
+    fun `exactly one policy requires encryption, so a new one cannot be added silently`() {
+        assertEquals(
+            listOf(SrtpPolicy.MANDATORY),
+            SrtpPolicy.entries.filter { it.requiresEncryptedMedia },
+        )
     }
 
     // ================================================================ DialledTarget

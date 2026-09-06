@@ -114,8 +114,15 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
     // stay on top of it: a video call still has to say who it is with and offer a way to
     // end it, and putting the video in a panel of its own would waste most of the screen
     // on a call whose whole point is the picture (Task 52).
+    // A conference's video is not a call's video: the bridge composes it, and the screen
+    // has to say so rather than present the server's arrangement as its own (Task 61).
+    val conference = state.conference
     if (call.showsRemoteVideo) {
-        CallVideo(call = call, actions = actions)
+        if (conference != null) {
+            ConferenceVideo(call = call, conference = conference, actions = actions)
+        } else {
+            CallVideo(call = call, actions = actions)
+        }
     }
 
     Column(
@@ -149,9 +156,12 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
         // also gives way to video, where the picture is the identity.
         CallIdentity(call = call, showAvatar = !keypadShown && !call.showsRemoteVideo)
 
-        state.conference?.let { conference ->
+        // The roster stays even with video on: under a mixing bridge the composed picture
+        // is the only place a participant appears, and it does not say who is muted or
+        // who has just left (Task 60).
+        conference?.let {
             ConferenceRoster(
-                state = conference,
+                state = it,
                 modifier = Modifier.padding(top = AppTheme.spacing.medium),
             )
         }

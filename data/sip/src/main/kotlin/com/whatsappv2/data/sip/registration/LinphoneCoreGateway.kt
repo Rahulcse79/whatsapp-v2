@@ -99,4 +99,41 @@ internal data class StackAccount(
     val transport: String,
     val expirySeconds: Int,
     val registerEnabled: Boolean = true,
+
+    /**
+     * How strictly media encryption is required (Task 62, §7, DoD 13).
+     *
+     * Carried per account rather than set once on the core, because it is an account
+     * setting (§5.1): one identity may be an internal PBX that mandates SRTP while another
+     * is a carrier trunk that cannot do it at all.
+     */
+    val mediaEncryption: StackMediaEncryption = StackMediaEncryption.OPTIONAL,
+
+    /**
+     * A PEM bundle to trust **in addition to** the system store, or null for system only.
+     *
+     * Null is the default and the only value an ordinary deployment should use. A custom CA
+     * is for an enterprise with its own PBX certificate authority, and it is additive: it
+     * never disables validation, which is the distinction between a supported deployment
+     * and the permissive `TrustManager` §7 forbids outright.
+     */
+    val customCaPath: String? = null,
 )
+
+/**
+ * Media encryption, as this module asks the stack for it (Task 62).
+ *
+ * A separate enum from `:domain`'s `SrtpPolicy` for the same reason every other type at
+ * this seam is separate: the gateway's contract must not change shape because a domain
+ * enum gained a case, and the mapping between them is a decision worth being able to test.
+ */
+internal enum class StackMediaEncryption {
+    /** Cleartext RTP. */
+    NONE,
+
+    /** Offer SRTP, accept a peer that cannot do it. */
+    OPTIONAL,
+
+    /** Require SRTP. The stack fails the call rather than downgrading. */
+    MANDATORY,
+}
