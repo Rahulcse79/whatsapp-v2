@@ -306,6 +306,15 @@ jobs:
               # needs a device. The coordinator beside it does not, and is held to the
               # same bar as the rest of the module.
               "com/whatsappv2/data/sip/network": 85,
+
+              # Call recording (Task 58). The consent gate and the retention hook are pure
+              # decisions and are held to the domain bar. EncryptedRecordingStore lives in
+              # .../recording/stack and is ungated for the same reason as .../stack and
+              # .../network/platform: the Android Keystore does not run on the JVM, so its
+              # round trip is verified on a device. What IS gated here is the part that
+              # decides whether a recording may start at all, which is where §2.6 lives.
+              "com/whatsappv2/domain/recording": 90,
+              "com/whatsappv2/data/sip/recording": 85,
           }
 
           reports = glob.glob("**/build/reports/kover/report.xml", recursive=True)

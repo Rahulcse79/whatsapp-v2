@@ -18,6 +18,17 @@ internal data class TestTarget(
     val extension: String,
     val secondaryExtension: String,
     val password: String,
+
+    /**
+     * The conference room to dial (Tasks 60, 61).
+     *
+     * Defaulted rather than required, unlike the extensions: a deployment without a
+     * conference bridge should still be able to run the call suite, and `3000` is what
+     * `docs/testing.md` reserves and what FreeSWITCH's stock dialplan maps to
+     * `conference 3000@default`. Override it with `sip.test.conference` where a
+     * deployment numbers its rooms differently.
+     */
+    val conferenceExtension: String = DEFAULT_CONFERENCE_EXTENSION,
 ) {
     /** `sip:host:port`, the registrar these tests register against. */
     val registrarUri: String get() = "sip:$host:$port"
@@ -42,6 +53,7 @@ internal data class TestTarget(
                 secondaryExtension = argument("sipTestExtensionSecondary")
                     ?: return null,
                 password = argument("sipTestPassword") ?: return null,
+                conferenceExtension = argument("sipTestConference") ?: DEFAULT_CONFERENCE_EXTENSION,
             )
         }
 
@@ -62,5 +74,8 @@ internal data class TestTarget(
         }
 
         private const val DEFAULT_SIP_PORT = 5060
+
+        /** Reserved in `docs/testing.md`, and FreeSWITCH's own stock conference number. */
+        private const val DEFAULT_CONFERENCE_EXTENSION = "3000"
     }
 }
