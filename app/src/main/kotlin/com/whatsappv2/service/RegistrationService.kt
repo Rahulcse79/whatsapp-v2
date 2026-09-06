@@ -6,17 +6,19 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import com.whatsappv2.R
 import com.whatsappv2.call.CallNotification
 import com.whatsappv2.call.CallNotificationPolicy
 import com.whatsappv2.call.CallNotifications
 import com.whatsappv2.call.Ringer
 import com.whatsappv2.core.common.logging.Logger
+import com.whatsappv2.domain.engine.CameraAvailability
 import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.engine.SipRegistrar
 import dagger.hilt.android.AndroidEntryPoint
@@ -40,13 +42,11 @@ import javax.inject.Inject
  *
  * ## Service type
  *
- * Two types, matching what the service is actually doing at the time:
- *
- * - `specialUse` while only holding a registration. That is not a phone call, a data
- *   sync, or any other standard type, and declaring it as one would be a false claim
- *   about the app's behaviour.
- * - `phoneCall` while a call is in progress, which Android 14+ also gates on
- *   `MANAGE_OWN_CALLS`.
+ * Whatever the service is actually doing at the time, and no more —
+ * [ForegroundServiceTypes] decides, and it is a pure function so every combination can be
+ * enumerated in a test rather than discovered on one handset. `specialUse` while only
+ * holding a registration, `phoneCall` during a call, plus `microphone` and `camera` when
+ * those permissions are held and the call is using them (Task 51).
  *
  * ## It also renders the call
  *
@@ -75,6 +75,16 @@ class RegistrationService : Service() {
 
     @Inject
     lateinit var logger: Logger
+
+    /**
+     * Whether a camera may be used, asked at the moment the service goes foreground.
+     *
+     * Android 14 checks the `camera` service type against the permission then and there,
+     * so a cached answer from app start is the wrong one after somebody revokes it in
+     * Settings — and being wrong here throws (Task 51).
+     */
+    @Inject
+    lateinit var camera: CameraAvailability
 
     @Inject
     lateinit var callNotifications: CallNotifications
@@ -152,7 +162,7 @@ class RegistrationService : Service() {
         }
 
         try {
-            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, reason.serviceType())
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, serviceTypesFor(reason))
             isForeground = true
         } catch (e: IllegalStateException) {
             // Android 12+ background-start restriction.
@@ -220,17 +230,26 @@ class RegistrationService : Service() {
     private fun notificationManager() =
         getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-    private fun ServiceReason.serviceType(): Int = when {
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.Q -> 0
-        this == ServiceReason.ACTIVE_CALL -> ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE ->
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-        // specialUse did not exist before 14; phoneCall is the closest honest type there.
-        else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
-    }
+    /**
+     * The foreground types to declare, decided by [ForegroundServiceTypes] (Task 51).
+     *
+     * Everything variable is read here, at the moment of the call, and passed in: the
+     * platform checks each type against a live permission, so an answer cached anywhere
+     * else is an answer that can be stale by the time it is used.
+     */
+    private fun serviceTypesFor(reason: ServiceReason): Int = ForegroundServiceTypes.of(
+        reason = reason,
+        microphoneGranted = ContextCompat.checkSelfPermission(this, RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED,
+        cameraGranted = camera.isCameraUsable(),
+        // Any call sending video is enough: the type describes what the service is doing,
+        // and one video call among several is still a service using the camera.
+        videoActive = calls.activeCalls.value.any { it.media.hasVideo },
+    )
 
     companion object {
         private const val TAG = "RegistrationService"
+        private const val RECORD_AUDIO = android.Manifest.permission.RECORD_AUDIO
         private const val CHANNEL_ID = "sip-registration"
         private const val NOTIFICATION_ID = 1
 

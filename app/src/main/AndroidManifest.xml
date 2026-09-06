@@ -8,7 +8,8 @@
 
       The foreground-service and Telecom entries arrive with the tasks that need them
       (28, 34, 51); declaring them before anything starts a service would be asking for
-      capability the app cannot yet use.
+      capability the app cannot yet use. Task 51 added the camera and microphone service
+      types, which is the last of them.
     -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -45,16 +46,32 @@
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <!--
-      Foreground service. Two types, matching what the service is actually doing:
-      specialUse while only holding a registration - which is not a phone call, a data
-      sync, or any other standard type - and phoneCall once a call is in progress.
-      Declaring registration as a phone call would be a false claim about behaviour.
+      Foreground service. The types match what the service is actually doing: specialUse
+      while only holding a registration - which is not a phone call, a data sync, or any
+      other standard type - phoneCall once a call is in progress, and microphone/camera
+      while a call is using them. Declaring registration as a phone call would be a false
+      claim about behaviour.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
-    <!-- Video calling is optional: the app must install on devices without a camera. -->
+    <!--
+      Video calling (Task 51). From Android 14 a foreground service must declare what it
+      is doing and the platform checks each declared type against its permission at the
+      moment startForeground runs - so declaring camera here is only half of it.
+      ForegroundServiceTypes picks the subset that is actually true and permitted, which
+      is what stops a user who declined the camera from getting a crash instead of an
+      audio call.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+    <!--
+      Video calling is optional: the app must install on devices without a camera, and a
+      user who declines CAMERA keeps a working phone - the call is placed without video
+      rather than refused (Task 51, MediaProfile.downgradedWhenCameraUnavailable).
+    -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature
         android:name="android.hardware.camera"
@@ -83,7 +100,7 @@
         <service
             android:name=".service.RegistrationService"
             android:exported="false"
-            android:foregroundServiceType="phoneCall|specialUse">
+            android:foregroundServiceType="phoneCall|specialUse|camera|microphone">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Maintains a SIP registration so incoming calls can be received while the app is in the background." />

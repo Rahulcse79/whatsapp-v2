@@ -2,6 +2,11 @@
 <!--
   Backup and device-transfer are disabled outright: this app stores SIP credentials,
   and there is no subset of its data worth the risk of copying off-device (§7, DoD 12).
+
+  Every domain is excluded, which already covers the encrypted call recordings under
+  files/recordings (Task 58). The exclusion is restated in EncryptedRecordingStore's own
+  documentation so that a future decision to allow backup of *some* data cannot start
+  copying them off-device without somebody deliberately overriding this.
 -->
 <data-extraction-rules>
     <cloud-backup>
