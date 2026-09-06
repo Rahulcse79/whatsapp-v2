@@ -4,13 +4,16 @@ import android.Manifest
 import android.content.ContentResolver
 import android.content.Context
 import android.content.pm.PackageManager
+import android.database.Cursor
 import android.net.Uri
 import android.provider.ContactsContract
 import androidx.core.content.ContextCompat
 import com.whatsappv2.core.common.dispatcher.DispatcherProvider
 import com.whatsappv2.core.common.logging.Logger
+import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.domain.contacts.Contact
 import com.whatsappv2.domain.contacts.ContactRepository
+import com.whatsappv2.domain.contacts.SipContact
 import com.whatsappv2.domain.model.SipUri
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.withContext
@@ -64,6 +67,85 @@ class ContactsContractRepository @Inject constructor(
         val found = withContext(dispatchers.io) { query(address) }
         cache.put(address, found)
         return found
+    }
+
+    /**
+     * Contacts with a SIP address matching [query] (Task 50).
+     *
+     * Read straight through rather than cached: the cache exists to stop a ringing screen
+     * re-reading the address book for one caller, and a picker's results change with every
+     * keystroke. Caching them would fill it with rows nobody asks for twice.
+     */
+    override suspend fun search(query: String, limit: Int): List<SipContact> {
+        if (!canReadContacts()) return emptyList()
+        return withContext(dispatchers.io) { searchSipContacts(query.trim(), limit) }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun searchSipContacts(query: String, limit: Int): List<SipContact> {
+        val mimeType = ContactsContract.CommonDataKinds.SipAddress.CONTENT_ITEM_TYPE
+        val sipColumn = ContactsContract.CommonDataKinds.SipAddress.SIP_ADDRESS
+        // A blank query is the picker's opening state, so it filters on nothing but the
+        // mime type. Anything else matches the name or the address, because a user looking
+        // for someone types whichever they remember.
+        val selection = if (query.isEmpty()) {
+            "${ContactsContract.Data.MIMETYPE} = ?"
+        } else {
+            "${ContactsContract.Data.MIMETYPE} = ? AND " +
+                "($NAME_COLUMN LIKE ? OR $sipColumn LIKE ?)"
+        }
+        val args = if (query.isEmpty()) {
+            arrayOf(mimeType)
+        } else {
+            arrayOf(mimeType, "%$query%", "%$query%")
+        }
+
+        return runCatching {
+            resolver().query(
+                ContactsContract.Data.CONTENT_URI,
+                arrayOf(NAME_COLUMN, PHOTO_COLUMN, sipColumn),
+                selection,
+                args,
+                "$NAME_COLUMN ASC",
+            )?.use { cursor -> cursor.readSipContacts(limit, sipColumn) }
+        }.onFailure {
+            logger.warn(TAG, "Contact search failed: ${it.javaClass.simpleName}")
+        }.getOrNull().orEmpty()
+    }
+
+    private fun Cursor.readSipContacts(limit: Int, sipColumn: String): List<SipContact> {
+        val name = getColumnIndexOrThrow(NAME_COLUMN)
+        val photo = getColumnIndexOrThrow(PHOTO_COLUMN)
+        val sip = getColumnIndexOrThrow(sipColumn)
+
+        return buildList {
+            while (size < limit && moveToNext()) {
+                val displayName = getString(name)
+                // A row that cannot be called or cannot be named is not worth offering:
+                // the picker's whole job is a name to tap and an address to dial.
+                if (displayName.isNullOrBlank()) continue
+                val address = SipUri.parse(sipUriOf(getString(sip))).getOrNull() ?: continue
+                add(
+                    SipContact(
+                        contact = Contact(
+                            displayName = displayName,
+                            photoUri = getString(photo)?.takeIf { it.isNotBlank() },
+                        ),
+                        address = address,
+                    ),
+                )
+            }
+        }
+    }
+
+    /** The address book stores `user@host`; a URI needs the scheme this app dials with. */
+    private fun sipUriOf(stored: String?): String {
+        val trimmed = stored.orEmpty().trim()
+        return if (trimmed.startsWith(SIP_SCHEME) || trimmed.startsWith(SIPS_SCHEME)) {
+            trimmed
+        } else {
+            SIP_SCHEME + trimmed
+        }
     }
 
     private fun canReadContacts(): Boolean =
@@ -153,5 +235,8 @@ class ContactsContractRepository @Inject constructor(
          * provider every frame, not to hold an address book in memory.
          */
         const val CACHE_ENTRIES = 32
+
+        const val SIP_SCHEME = "sip:"
+        const val SIPS_SCHEME = "sips:"
     }
 }
