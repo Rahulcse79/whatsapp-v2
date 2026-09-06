@@ -2,6 +2,8 @@ package com.whatsappv2.data.sip.di
 
 import com.whatsappv2.core.common.dispatcher.DispatcherProvider
 import com.whatsappv2.data.sip.call.LinphoneCallGateway
+import com.whatsappv2.data.sip.call.LinphoneRecordingGateway
+import com.whatsappv2.data.sip.call.LinphoneVideoGateway
 import com.whatsappv2.data.sip.call.StackVideoSurfaceController
 import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.stack.RealLinphoneCoreGateway
@@ -46,6 +48,12 @@ internal abstract class SipStackModule {
     @Binds
     @Singleton
     abstract fun bindCallGateway(gateway: RealLinphoneCoreGateway): LinphoneCallGateway
+
+    @Binds
+    abstract fun bindVideoGateway(gateway: RealLinphoneCoreGateway): LinphoneVideoGateway
+
+    @Binds
+    abstract fun bindRecordingGateway(gateway: RealLinphoneCoreGateway): LinphoneRecordingGateway
 
     /**
      * Where video is drawn (Task 52).

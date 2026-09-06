@@ -1,6 +1,8 @@
 package com.whatsappv2.data.sip.registration
 
 import com.whatsappv2.data.sip.call.LinphoneCallGateway
+import com.whatsappv2.data.sip.call.LinphoneRecordingGateway
+import com.whatsappv2.data.sip.call.LinphoneVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.StackConferenceEvent
@@ -28,7 +30,11 @@ import kotlinx.coroutines.flow.asSharedFlow
  * the second: "no decrypted password remains after logout" is a question about what is
  * still held, and an append-only log could never answer it.
  */
-internal class FakeLinphoneCoreGateway : LinphoneCoreGateway, LinphoneCallGateway {
+internal class FakeLinphoneCoreGateway :
+    LinphoneCoreGateway,
+    LinphoneCallGateway,
+    LinphoneVideoGateway,
+    LinphoneRecordingGateway {
 
     private val events = MutableSharedFlow<StackRegistrationEvent>(
         replay = 0,

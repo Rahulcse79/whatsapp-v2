@@ -3,6 +3,8 @@ package com.whatsappv2.data.sip.registration.stack
 import android.content.Context
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.data.sip.call.LinphoneCallGateway
+import com.whatsappv2.data.sip.call.LinphoneRecordingGateway
+import com.whatsappv2.data.sip.call.LinphoneVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.StackConferenceEvent
@@ -66,7 +68,7 @@ import javax.inject.Singleton
 internal class RealLinphoneCoreGateway @Inject constructor(
     @ApplicationContext private val context: Context,
     private val logger: Logger,
-) : LinphoneCoreGateway, LinphoneCallGateway {
+) : LinphoneCoreGateway, LinphoneCallGateway, LinphoneVideoGateway, LinphoneRecordingGateway {
 
     private val events = MutableSharedFlow<StackRegistrationEvent>(
         replay = 0,

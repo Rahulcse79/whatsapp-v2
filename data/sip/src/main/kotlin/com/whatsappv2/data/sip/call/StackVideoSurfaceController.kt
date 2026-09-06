@@ -15,7 +15,7 @@ import javax.inject.Singleton
  */
 @Singleton
 internal class StackVideoSurfaceController @Inject constructor(
-    private val gateway: LinphoneCallGateway,
+    private val gateway: LinphoneVideoGateway,
 ) : VideoSurfaceController {
 
     override fun attach(remoteView: Any?, localPreview: Any?) {

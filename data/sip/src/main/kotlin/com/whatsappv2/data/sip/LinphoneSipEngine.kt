@@ -10,6 +10,7 @@ import com.whatsappv2.core.common.time.SystemClock
 import com.whatsappv2.data.sip.call.CallStateMapper
 import com.whatsappv2.data.sip.call.ConferenceMapper
 import com.whatsappv2.data.sip.call.LinphoneCallGateway
+import com.whatsappv2.data.sip.call.LinphoneVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.TransferEventMapper
@@ -121,6 +122,7 @@ import javax.inject.Singleton
 internal class LinphoneSipEngine @Inject constructor(
     private val gateway: LinphoneCoreGateway,
     private val callGateway: LinphoneCallGateway,
+    private val videoGateway: LinphoneVideoGateway,
     private val accounts: SipAccountRepository,
     /**
      * App-wide preferences, read for the DTMF transport (Task 43, §5.1).
@@ -244,7 +246,7 @@ internal class LinphoneSipEngine @Inject constructor(
         if (shouldCapture == cameraCapturing) return
 
         cameraCapturing = shouldCapture
-        callGateway.setCameraCapturing(shouldCapture)
+        videoGateway.setCameraCapturing(shouldCapture)
         logger.debug(TAG, if (shouldCapture) "Camera acquired" else "Camera released")
     }
 
@@ -516,7 +518,27 @@ internal class LinphoneSipEngine @Inject constructor(
             return
         }
 
-        val next = CallStateMapper.toCallEvent(event, current.state, current.direction)
+        val next = nextStateFor(id, current, event)
+
+        // §7, DoD 13: a call that reached media without encrypting it, on an account that
+        // requires encryption, is dropped rather than carried on in the clear. See
+        // [enforceMediaEncryption] for why this exists as well as the stack's own gate.
+        if (CallStateMapper.isConnected(event.state) && !enforceMediaEncryption(id, current, event)) return
+
+        val justConnected = current.connectedAtEpochMillis == null &&
+            CallStateMapper.isConnected(event.state)
+        reportToPlatform(id, current, next, justConnected)
+        store(id, current, next, event, justConnected)
+    }
+
+    /**
+     * Where the FSM says this event takes the call, or null if it says nowhere.
+     *
+     * A rejected transition is logged and dropped rather than forced through: a snapshot
+     * in a state the machine does not allow is worse than one that missed a step.
+     */
+    private fun nextStateFor(id: CallId, current: CallSnapshot, event: StackCallEvent): CallState? =
+        CallStateMapper.toCallEvent(event, current.state, current.direction)
             ?.let { CallStateMachine.transition(current.state, it) }
             ?.let { result ->
                 when (result) {
@@ -528,46 +550,61 @@ internal class LinphoneSipEngine @Inject constructor(
                 }
             }
 
-        // §7, DoD 13: a call that reached media without encrypting it, on an account that
-        // requires encryption, is dropped rather than carried on in the clear. See
-        // [enforceMediaEncryption] for why this exists as well as the stack's own gate.
-        if (CallStateMapper.isConnected(event.state) && !enforceMediaEncryption(id, current, event)) return
-
-        val justConnected = current.connectedAtEpochMillis == null &&
-            CallStateMapper.isConnected(event.state)
+    /**
+     * Tells Telecom what this event changed.
+     *
+     * The platform does not learn about a re-INVITE by itself, and a held call on a car
+     * display or a lock screen must show a resume button rather than a hold one. Reported
+     * only on a change, because setting the same state again is a no-op the platform still
+     * has to process (Task 41).
+     */
+    private fun reportToPlatform(
+        id: CallId,
+        current: CallSnapshot,
+        next: CallState?,
+        justConnected: Boolean,
+    ) {
         if (justConnected) platform.onConnected(id)
 
-        // Telecom does not learn about a re-INVITE by itself, and a held call on a car
-        // display or a lock screen must show a resume button rather than a hold one.
-        // Reported only on a change, because setting the same state again is a no-op the
-        // platform still has to process (Task 41).
         val wasHeld = current.state is CallState.Held
         val isHeld = next is CallState.Held
         if (next != null && wasHeld != isHeld) platform.onHoldChanged(id, isHeld)
+    }
 
+    /** The call as it now is, with the media the stack actually negotiated. */
+    private fun store(
+        id: CallId,
+        current: CallSnapshot,
+        next: CallState?,
+        event: StackCallEvent,
+        justConnected: Boolean,
+    ) {
         updateCalls { live ->
             live + (
                 id to current.copy(
                     state = next ?: current.state,
-                    // What is actually negotiated, not what was asked for when the call
-                    // was placed — this is the only place a re-INVITE that added or
-                    // dropped video reaches the screen (Task 54).
-                    //
-                    // Read only once media is running. Before that the stack's params
-                    // describe an offer nobody has answered, and taking them as the
-                    // negotiated truth would show a video call as audio for the length of
-                    // its ring.
-                    media = if (CallStateMapper.isConnected(event.state)) {
-                        MediaProfile.of(audio = true, video = event.videoActive) ?: current.media
-                    } else {
-                        current.media
-                    },
+                    media = negotiatedMedia(current, event),
                     connectedAtEpochMillis = current.connectedAtEpochMillis
                         ?: clock.nowEpochMillis().takeIf { justConnected },
                 )
                 )
         }
     }
+
+    /**
+     * What is actually negotiated, not what was asked for when the call was placed.
+     *
+     * This is the only place a re-INVITE that added or dropped video reaches the screen
+     * (Task 54). Read only once media is running: before that the stack's params describe
+     * an offer nobody has answered, and taking them as the negotiated truth would show a
+     * video call as audio for the length of its ring.
+     */
+    private fun negotiatedMedia(current: CallSnapshot, event: StackCallEvent): MediaProfile =
+        if (CallStateMapper.isConnected(event.state)) {
+            MediaProfile.of(audio = true, video = event.videoActive) ?: current.media
+        } else {
+            current.media
+        }
 
     /**
      * Drops a call whose media is not encrypted when the account requires it (Task 62).
@@ -610,7 +647,7 @@ internal class LinphoneSipEngine @Inject constructor(
      */
     private fun onVideoRequested(id: CallId, current: CallSnapshot, event: StackCallEvent) {
         if (!event.videoOffered) {
-            callGateway.respondToVideoUpdate(id.value, accept = false)
+            videoGateway.respondToVideoUpdate(id.value, accept = false)
             return
         }
 
@@ -951,7 +988,7 @@ internal class LinphoneSipEngine @Inject constructor(
         if (call.state.controlsOrNull?.isVideoEnabled == enabled) return success(Unit)
 
         return applyControl(callId, CallEvent.SetVideoEnabled(enabled)) {
-            callGateway.setVideoEnabled(callId.value, enabled)
+            videoGateway.setVideoEnabled(callId.value, enabled)
         }
     }
 
@@ -969,7 +1006,7 @@ internal class LinphoneSipEngine @Inject constructor(
             return failure(SipError.InvalidState("call is ${call.state} and is not sending video"))
         }
 
-        callGateway.switchCamera(callId.value)
+        videoGateway.switchCamera(callId.value)
         return success(Unit)
     }
 
@@ -991,7 +1028,7 @@ internal class LinphoneSipEngine @Inject constructor(
         // Accepting needs a camera. Without one the honest answer to the peer is the same
         // as a decline: audio continues and no stream is promised that cannot be sent.
         val withVideo = accept && camera.isCameraUsable()
-        callGateway.respondToVideoUpdate(callId.value, accept = withVideo)
+        videoGateway.respondToVideoUpdate(callId.value, accept = withVideo)
 
         return if (withVideo) {
             applyControl(callId, CallEvent.SetVideoEnabled(true))

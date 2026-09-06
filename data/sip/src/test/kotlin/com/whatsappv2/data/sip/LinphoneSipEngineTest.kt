@@ -119,9 +119,11 @@ open class LinphoneSipEngineFixture {
     internal val camera = FakeCameraAvailability()
 
     internal fun engine(scope: TestScope) =
-        // The same fake twice: one object implements both halves of the seam, exactly as
-        // the real gateway does, because one `Core` owns registration and calls alike.
+        // The same fake three times: one object implements every half of the seam, exactly
+        // as the real gateway does, because one `Core` owns registration, calls and video
+        // alike.
         LinphoneSipEngine(
+            gateway,
             gateway,
             gateway,
             repository,

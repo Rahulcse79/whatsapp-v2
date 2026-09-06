@@ -16,9 +16,13 @@ import com.whatsappv2.domain.recording.RecordingError
 import com.whatsappv2.domain.recording.RecordingId
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
+import java.io.IOException
+import java.io.InputStream
+import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.util.UUID
 import javax.crypto.Cipher
+import javax.crypto.CipherInputStream
 import javax.crypto.CipherOutputStream
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -192,20 +196,30 @@ internal class EncryptedRecordingStore @Inject constructor(
             ?: return failure(RecordingError.StorageUnavailable("the recording key is unavailable"))
 
         return try {
-            sealed.inputStream().use { raw ->
-                val iv = ByteArray(GCM_IV_BYTES).also { raw.read(it) }
-                val cipher = Cipher.getInstance(TRANSFORMATION).apply {
-                    init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
-                }
-                javax.crypto.CipherInputStream(raw, cipher).use { plain ->
-                    destination.outputStream().use { plain.copyTo(it) }
-                }
-            }
+            sealed.inputStream().use { raw -> raw.decryptInto(destination, key) }
             success(Unit)
-        } catch (e: java.io.IOException) {
+        } catch (e: IOException) {
             failure(RecordingError.StorageUnavailable(e.message.orEmpty()))
-        } catch (e: java.security.GeneralSecurityException) {
+        } catch (e: GeneralSecurityException) {
             failure(RecordingError.StorageUnavailable(e.message.orEmpty()))
+        }
+    }
+
+    /**
+     * Reads the IV off the front and copies the rest out, decrypted.
+     *
+     * Its own function because the streams nest three deep and the reader of [decrypt]
+     * should see what it does — find the file, find the key, copy it out — rather than
+     * how a GCM stream is assembled.
+     */
+    private fun InputStream.decryptInto(destination: File, key: SecretKey) {
+        // Written by `seal` as the first GCM_IV_BYTES of the file, before the ciphertext.
+        val iv = ByteArray(GCM_IV_BYTES).also { read(it) }
+        val cipher = Cipher.getInstance(TRANSFORMATION).apply {
+            init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
+        }
+        CipherInputStream(this, cipher).use { plain ->
+            destination.outputStream().use { plain.copyTo(it) }
         }
     }
 
@@ -220,25 +234,42 @@ internal class EncryptedRecordingStore @Inject constructor(
             .joinToString(FIELD_SEPARATOR) + SEALED_SUFFIX
     }
 
+    /**
+     * A sealed file as a [Recording], or null if the name is not one this store wrote.
+     *
+     * Every unreadable field is the same answer — not one of ours — so they are gathered
+     * into one exit rather than each taking its own. A directory can hold anything, and a
+     * file that does not parse is a file to walk past, not an error.
+     */
     private fun toRecording(file: File): Recording? {
-        if (!file.name.endsWith(SEALED_SUFFIX)) return null
-        val fields = file.name.removeSuffix(SEALED_SUFFIX).split(FIELD_SEPARATOR)
-        if (fields.size != FIELD_COUNT) return null
+        val fields = file.name
+            .takeIf { it.endsWith(SEALED_SUFFIX) }
+            ?.removeSuffix(SEALED_SUFFIX)
+            ?.split(FIELD_SEPARATOR)
+            ?.takeIf { it.size == FIELD_COUNT }
+            ?: return null
 
-        val started = fields[FIELD_STARTED].toLongOrNull() ?: return null
-        val ended = fields[FIELD_ENDED].toLongOrNull() ?: return null
-        val callId = runCatching {
-            String(Base64.decode(fields[FIELD_CALL], Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP))
-        }.getOrNull() ?: return null
+        val started = fields[FIELD_STARTED].toLongOrNull()
+        val ended = fields[FIELD_ENDED].toLongOrNull()
+        val callId = decodedCallId(fields[FIELD_CALL])
 
-        return Recording(
-            id = RecordingId(fields[FIELD_ID]),
-            callId = CallId(callId),
-            startedAtEpochMillis = started,
-            endedAtEpochMillis = ended,
-            sizeBytes = file.length(),
-        )
+        return if (started == null || ended == null || callId == null) {
+            null
+        } else {
+            Recording(
+                id = RecordingId(fields[FIELD_ID]),
+                callId = CallId(callId),
+                startedAtEpochMillis = started,
+                endedAtEpochMillis = ended,
+                sizeBytes = file.length(),
+            )
+        }
     }
+
+    /** The call id `nameOf` base64'd, or null if the field is not decodable. */
+    private fun decodedCallId(field: String): String? = runCatching {
+        String(Base64.decode(field, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP))
+    }.getOrNull()
 
     /**
      * The recording key, created on first use.

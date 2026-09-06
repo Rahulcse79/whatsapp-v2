@@ -63,6 +63,7 @@ internal class CallTestHarness(context: Context, private val target: TestTarget)
     val engine = LinphoneSipEngine(
         gateway = gateway,
         callGateway = gateway,
+        videoGateway = gateway,
         accounts = accounts,
         settings = FakeAppSettingsRepository(),
         networkMonitor = AlwaysOnline,

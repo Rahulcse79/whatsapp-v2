@@ -7,8 +7,13 @@ import kotlinx.coroutines.flow.Flow
  *
  * Separate from `LinphoneCoreGateway` for the same reason `SipEngine` splits into role
  * interfaces: the thing that places calls and the thing that registers accounts are used
- * by different code, and a narrow interface is a narrow fake. One class implements both,
- * because one `Core` owns both — but nothing above here has to know that.
+ * by different code, and a narrow interface is a narrow fake. One class implements them
+ * all, because one `Core` owns them all — but nothing above here has to know that.
+ *
+ * Video and recording are seams of their own, [LinphoneVideoGateway] and
+ * [LinphoneRecordingGateway], because their callers are of their own too: the recorder
+ * needs two functions and the surface controller needs five, and neither should be handed
+ * the whole of the stack's call API to get them.
  *
  * As with registration, everything decidable without the stack lives above this line.
  * The gateway reports what happened; [CallStateMapper] decides what it means.
@@ -118,52 +123,6 @@ internal interface LinphoneCallGateway {
     fun terminateCall(callKey: String)
 
     /**
-     * Adds or drops the video stream by re-INVITE (Tasks 53, 54).
-     *
-     * `update()` with new params, not a fresh INVITE: the dialog is already established
-     * and re-offering it would tear down audio that is working perfectly well in order to
-     * change something audio does not care about.
-     */
-    fun setVideoEnabled(callKey: String, enabled: Boolean)
-
-    /**
-     * Answers a re-INVITE the far end sent offering video (Task 54).
-     *
-     * @param accept true accepts with a video stream; false accepts the re-INVITE while
-     *   leaving video off — which keeps the audio call rather than refusing it outright,
-     *   Task 54's second done-when. A 488 here would be within the letter of SIP and would
-     *   end some peers' calls entirely.
-     */
-    fun respondToVideoUpdate(callKey: String, accept: Boolean)
-
-    /**
-     * Points the encoder at the other camera (Task 53).
-     *
-     * No SDP: the stream keeps running and only its source moves, so the far end sees the
-     * picture change rather than a gap.
-     */
-    fun switchCamera(callKey: String)
-
-    /**
-     * Starts or stops the camera capturing at all (Task 51).
-     *
-     * Core-wide and separate from [setVideoEnabled], because the two answer different
-     * questions: whether a *call* has negotiated video, and whether this process is
-     * holding the *device*. Only the second decides whether the next call finds the camera
-     * free, which is the failure Task 51 names — so `CameraPolicy` drives this one from
-     * the whole call list rather than from any single call's teardown.
-     */
-    fun setCameraCapturing(capturing: Boolean)
-
-    /**
-     * Attaches the views video is drawn into, or clears them with nulls (Task 52).
-     *
-     * Both at once, because they are released together: a surface that outlives its call
-     * is a texture the stack keeps writing into after the screen has gone.
-     */
-    fun setVideoWindows(remoteView: Any?, localPreview: Any?)
-
-    /**
      * `REFER` to [destination] — a blind transfer (Task 55).
      *
      * Returns immediately. Whether the transferee answered arrives on [transferEvents],
@@ -181,16 +140,4 @@ internal interface LinphoneCallGateway {
      * than an address: the address alone cannot identify the dialog to replace.
      */
     fun transferCallToCall(callKey: String, consultationCallKey: String)
-
-    /**
-     * Starts writing this call's media to [filePath] (Task 58).
-     *
-     * The path is chosen above, in the encrypted store — this only writes where it is
-     * told. What Android permits an app to capture is documented in `docs/security.md`
-     * and is narrower than "the call".
-     */
-    fun startRecording(callKey: String, filePath: String)
-
-    /** Stops recording and closes the file. A no-op for a call that was not recording. */
-    fun stopRecording(callKey: String)
 }
