@@ -17,15 +17,15 @@ import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.testing.FakeCallLogRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.runCurrent
-import kotlinx.coroutines.test.runTest
 
 /**
  * What reaches the call log when a call ends (Task 47).
