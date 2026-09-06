@@ -6,6 +6,8 @@ import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallState
+import com.whatsappv2.domain.engine.NoCameraAvailable
+import com.whatsappv2.domain.engine.NoVideoSurfaces
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
@@ -18,8 +20,12 @@ import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
+import com.whatsappv2.domain.testing.FakeCallRecorder
 import com.whatsappv2.domain.testing.FakeContactRepository
+import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
+import com.whatsappv2.domain.usecase.CallWaitingUseCase
+import com.whatsappv2.domain.usecase.TransferCallUseCase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -47,6 +53,8 @@ class CallViewModelTest {
 
     private val engine = FakeSipEngine()
     private val contacts = FakeContactRepository()
+    private val accounts = FakeSipAccountRepository()
+    private val recorder = FakeCallRecorder()
     private val clock = engine.clock
     private val dispatcher = StandardTestDispatcher()
 
@@ -56,8 +64,19 @@ class CallViewModelTest {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
-    private fun viewModel() =
-        CallViewModel(calls = engine, media = engine, contacts = contacts, clock = clock)
+    private fun viewModel() = CallViewModel(
+        calls = engine,
+        media = engine,
+        contacts = contacts,
+        conferences = engine,
+        recorder = recorder,
+        // The real use cases over the fake engine, not fakes of their own: the ordering
+        // they enforce is the thing worth exercising from here (Tasks 55-57).
+        transfers = TransferCallUseCase(engine, accounts),
+        callWaiting = CallWaitingUseCase(engine, NoCameraAvailable),
+        surfaces = NoVideoSurfaces,
+        clock = clock,
+    )
 
     @Test
     fun `an outgoing call renders its phase as the stack moves it`() = runTest {
