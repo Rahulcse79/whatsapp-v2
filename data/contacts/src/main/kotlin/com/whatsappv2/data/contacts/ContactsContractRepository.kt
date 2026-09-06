@@ -80,6 +80,14 @@ class ContactsContractRepository @Inject constructor(
     private fun query(address: String): Contact? =
         bySipAddress(address) ?: byPhoneNumber(address)
 
+    /**
+     * Android deprecated the SIP address table without removing it, and without moving the
+     * rows already in it: a contact filed with a SIP address years ago is still filed that
+     * way on the device in the user's hand. Reading it is the only way to find them, so the
+     * deprecation is carried here, at the call site, rather than in a baseline — and
+     * [byPhoneNumber] is what finds contacts filed the way the platform now prefers.
+     */
+    @Suppress("DEPRECATION")
     private fun bySipAddress(address: String): Contact? = read(
         uri = ContactsContract.Data.CONTENT_URI,
         selection = "${ContactsContract.Data.MIMETYPE} = ? AND " +
