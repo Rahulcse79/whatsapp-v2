@@ -107,6 +107,10 @@ class UnavailableSipEngineTest {
         assertEquals(SipError.EngineUnavailable, engine.switchCamera(callId).errorOrNull())
         assertEquals(
             SipError.EngineUnavailable,
+            engine.respondToVideoRequest(callId, accept = true).errorOrNull(),
+        )
+        assertEquals(
+            SipError.EngineUnavailable,
             engine.joinConference(account.id, target, MediaProfile.AUDIO).errorOrNull(),
         )
     }
@@ -125,6 +129,10 @@ class UnavailableSipEngineTest {
         assertTrue(engine.activeCalls.value.isEmpty())
         assertTrue(engine.conferences.value.isEmpty())
         assertTrue(engine.incomingCalls.toList().isEmpty())
+        // Nothing can be transferred when nothing can be called, and no peer can ask to
+        // add video to a call that does not exist (Tasks 54, 55).
+        assertTrue(engine.transferEvents.toList().isEmpty())
+        assertTrue(engine.videoRequests.toList().isEmpty())
     }
 
     @Test

@@ -5,16 +5,25 @@ import androidx.lifecycle.viewModelScope
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.time.Clock
 import com.whatsappv2.domain.call.AudioRoute
+import com.whatsappv2.domain.call.CallState
+import com.whatsappv2.domain.call.SecondCallResponse
 import com.whatsappv2.domain.call.userMessage
 import com.whatsappv2.domain.contacts.Contact
 import com.whatsappv2.domain.contacts.ContactRepository
+import com.whatsappv2.domain.engine.CallSnapshot
+import com.whatsappv2.domain.engine.ConferenceSession
 import com.whatsappv2.domain.engine.SipCallController
+import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.SipMediaController
+import com.whatsappv2.domain.engine.VideoSurfaceController
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.DtmfDigit
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
+import com.whatsappv2.domain.recording.CallRecorder
+import com.whatsappv2.domain.usecase.CallWaitingUseCase
+import com.whatsappv2.domain.usecase.TransferCallUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
@@ -37,7 +46,7 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /**
- * The call screen's state and actions (Tasks 37 and 39).
+ * The call screen's state and actions (Tasks 37, 39, 52-58, 60).
  *
  * ## Everything comes from the FSM
  *
@@ -46,6 +55,16 @@ import javax.inject.Inject
  * [CallControlAvailability], which is a function of the phase. That is Task 39's
  * requirement stated as code: a button cannot be offered for an action the state machine
  * would reject, because nothing but the state decides whether it is offered.
+ *
+ * The later tasks added surface without changing that. Video, a second call and a
+ * conference roster are read from the engine; an escalation the far end asked for is held
+ * here as a question awaiting an answer. The questions are *state*, not events, so a
+ * rotation does not lose a prompt somebody is halfway through answering.
+ *
+ * Transfer and recording are [CallTransferController] and [CallRecordingController]. Both
+ * are conversations with a state machine of their own that the rest of the screen has no
+ * interest in, and folding them in here left a class nobody could read to find out what a
+ * call actually does.
  *
  * ## The timer is a subtraction, not a counter
  *
@@ -60,6 +79,11 @@ class CallViewModel @Inject constructor(
     private val calls: SipCallController,
     private val media: SipMediaController,
     private val contacts: ContactRepository,
+    private val conferences: SipConferenceController,
+    private val recorder: CallRecorder,
+    private val transfers: TransferCallUseCase,
+    private val callWaiting: CallWaitingUseCase,
+    private val surfaces: VideoSurfaceController,
     private val clock: Clock,
 ) : ViewModel() {
 
@@ -67,6 +91,37 @@ class CallViewModel @Inject constructor(
 
     private val eventChannel = Channel<CallEvent>(Channel.BUFFERED)
     val events: Flow<CallEvent> = eventChannel.receiveAsFlow()
+
+    /**
+     * The escalation the far end is waiting on, if any (Task 54).
+     *
+     * State rather than an event: the peer's re-INVITE is deferred until this is answered,
+     * so the question has to survive a rotation. An event-driven prompt would vanish and
+     * leave the far end waiting for a timeout.
+     */
+    private val pendingVideo = MutableStateFlow<PendingVideoRequest?>(null)
+
+    /**
+     * Transfer, held apart (Tasks 55, 57).
+     *
+     * A transfer is a *conversation* rather than an action — an attended one spans however
+     * long somebody spends talking to a third party — and its state machine is of no
+     * interest to the rest of this screen. Split out so the call screen's own surface stays
+     * readable; see [CallTransferController].
+     */
+    internal val transfer = CallTransferController(viewModelScope, transfers) { message ->
+        eventChannel.send(CallEvent.ActionFailed(CallAction.TRANSFER, message))
+    }
+
+    /** The consent dialog and the recording it gates (Task 58, §2.6). */
+    internal val recording = CallRecordingController(viewModelScope, recorder, clock) { message ->
+        eventChannel.send(CallEvent.ActionFailed(CallAction.RECORD, message))
+    }
+
+    init {
+        watchVideoRequests()
+        watchTransfers()
+    }
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val uiState: StateFlow<CallUiState> = watched
@@ -91,17 +146,55 @@ class CallViewModel @Inject constructor(
         watched.value = callId
     }
 
+    /** Everything the engine says, gathered so the render below is one function. */
+    private data class EngineState(
+        val calls: List<CallSnapshot>,
+        val conference: ConferenceSession?,
+        val recording: RecordingUiState,
+        val pendingVideo: PendingVideoRequest?,
+        val transfer: TransferUiState,
+    )
+
     private fun stateFor(callId: CallId): Flow<CallUiState> {
         // Local to this flow, so watching a second call starts from Loading again rather
         // than inheriting the first call's history.
         var seen = false
 
-        return combine(calls.activeCalls, ticker(), contactFor(callId)) { active, now, contact ->
-            val call = active.firstOrNull { it.callId == callId }
+        val engine = combine(
+            calls.activeCalls,
+            conferences.conferences,
+            // Combined into one source rather than read inside the block: a value only
+            // *read* during a combine does not re-run it, so a consent dialog opened that
+            // way would never appear until something else changed (Task 58).
+            recording.stateFor(callId),
+            pendingVideo,
+            transfer.state,
+        ) { active, rooms, recording, video, transfer ->
+            EngineState(
+                calls = active,
+                conference = rooms.firstOrNull { it.callId == callId },
+                recording = recording,
+                // Only this call's. A prompt for a call the screen is not showing would be
+                // answered by a user looking at somebody else's name.
+                pendingVideo = video?.takeIf { it.callId == callId },
+                transfer = transfer,
+            )
+        }
+
+        return combine(engine, ticker(), contactFor(callId)) { state, now, contact ->
+            val call = state.calls.firstOrNull { it.callId == callId }
             if (call != null) seen = true
 
             when {
-                call != null -> CallUiState.Active(call.toDisplay(now, contact))
+                call != null -> CallUiState.Active(
+                    call = call.toDisplay(now, contact),
+                    otherCalls = state.calls.filterNot { it.callId == callId }.map { it.toDisplay(now) },
+                    pendingVideoRequest = state.pendingVideo,
+                    secondCall = state.secondCallPrompt(callId, call),
+                    transfer = state.transfer,
+                    recording = state.recording,
+                    conference = state.conference?.toUiState(UNKNOWN_PARTICIPANT),
+                )
                 // Absent after it was present means the call ended. Absent before it was
                 // ever present means the engine has not published it yet, which happens
                 // for a frame when the screen is opened from a notification. Telling the
@@ -110,6 +203,28 @@ class CallViewModel @Inject constructor(
                 else -> CallUiState.Loading
             }
         }
+    }
+
+    /**
+     * A second call ringing while this one is up (Task 56).
+     *
+     * Derived rather than collected. An incoming call that is not the one on screen, while
+     * the one on screen is established, *is* call waiting — there is no extra state to
+     * keep, and keeping some would be a second place for it to be wrong.
+     */
+    private fun EngineState.secondCallPrompt(watchedId: CallId, current: CallSnapshot): SecondCallPrompt? {
+        if (!current.state.isEstablished) return null
+
+        val ringing = calls.firstOrNull {
+            it.callId != watchedId && it.state is CallState.Incoming
+        } ?: return null
+
+        return SecondCallPrompt(
+            callId = ringing.callId,
+            from = ringing.remoteDisplayName?.takeIf { it.isNotBlank() } ?: ringing.remote.render(),
+            currentCallWith = current.remoteDisplayName?.takeIf { it.isNotBlank() }
+                ?: current.remote.render(),
+        )
     }
 
     /**
@@ -128,6 +243,30 @@ class CallViewModel @Inject constructor(
         .distinctUntilChanged()
         .mapLatest { remote -> contacts.resolve(remote) }
         .onStart { emit(null) }
+
+    /** Turns each escalation into a question on screen, and waits (Task 54). */
+    private fun watchVideoRequests() {
+        viewModelScope.launch {
+            media.videoRequests.collect { request ->
+                pendingVideo.value = PendingVideoRequest(
+                    callId = request.callId,
+                    from = request.fromDisplayName?.takeIf { it.isNotBlank() } ?: request.from.render(),
+                )
+            }
+        }
+    }
+
+    /**
+     * Carries transfer progress to the controller that folds it (Task 55).
+     *
+     * The folding is [CallTransferController.onEvent]'s, so there is one place that
+     * decides what a transfer looks like on screen rather than two that can disagree.
+     */
+    private fun watchTransfers() {
+        viewModelScope.launch {
+            calls.transferEvents.collect(transfer::onEvent)
+        }
+    }
 
     /**
      * A tick a second, and one immediately.
@@ -198,6 +337,78 @@ class CallViewModel @Inject constructor(
         act(CallAction.DTMF) { calls.sendDtmf(callId, digit) }
     }
 
+    // ---------------------------------------------------------------- video
+
+    /**
+     * Adds or drops video on this call (Tasks 53, 54).
+     *
+     * The same button for both directions, and the same re-INVITE: escalating an audio
+     * call and un-muting video on a video call are the same request as far as the peer is
+     * concerned, and splitting them into two controls would ask the user to know which
+     * kind of call they are on.
+     */
+    fun setVideoEnabled(enabled: Boolean) {
+        val callId = watched.value ?: return
+        act(CallAction.VIDEO) { media.setVideoEnabled(callId, enabled) }
+    }
+
+    /** Front to back, or back to front (Task 53). */
+    fun switchCamera() {
+        val callId = watched.value ?: return
+        act(CallAction.SWITCH_CAMERA) { media.switchCamera(callId) }
+    }
+
+    /**
+     * Answers the escalation the far end asked for (Task 54).
+     *
+     * The prompt is cleared first. The engine's answer is a round trip, and leaving the
+     * dialog up until it returns invites a second tap that would answer twice.
+     */
+    fun respondToVideoRequest(accept: Boolean) {
+        val request = pendingVideo.value ?: return
+        pendingVideo.value = null
+        act(CallAction.VIDEO) { media.respondToVideoRequest(request.callId, accept) }
+    }
+
+    /**
+     * Hands the stack the views to draw into (Task 52).
+     *
+     * Called from the composable's lifecycle rather than on state change, because the
+     * lifetime that matters is the view's, not the call's.
+     */
+    fun attachVideoSurfaces(remoteView: Any?, localPreview: Any?) {
+        surfaces.attach(remoteView, localPreview)
+    }
+
+    /** Gives the views back. Must run on dispose, or the stack keeps drawing into them. */
+    fun detachVideoSurfaces() {
+        surfaces.detach()
+    }
+
+    // ---------------------------------------------------------------- call waiting
+
+    /** One of the three answers to a second call (Task 56). */
+    fun respondToSecondCall(callId: CallId, response: SecondCallResponse) {
+        act(CallAction.ANSWER) { callWaiting.respond(callId, response) }
+    }
+
+    /**
+     * Makes [callId] the live call and holds the rest (Task 56).
+     *
+     * Also re-points the screen, because after a swap the call the user is looking at
+     * should be the one they are talking to.
+     */
+    fun swapTo(callId: CallId) {
+        viewModelScope.launch {
+            when (val result = callWaiting.swapTo(callId)) {
+                is Outcome.Failure ->
+                    eventChannel.send(CallEvent.ActionFailed(CallAction.SWAP, result.error.userMessage()))
+                is Outcome.Success -> watched.value = callId
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- plumbing
     private fun act(action: CallAction, block: suspend () -> Outcome<*, SipError>) {
         viewModelScope.launch {
             val result = block()
@@ -212,5 +423,8 @@ class CallViewModel @Inject constructor(
 
         /** One second, which is the resolution a call timer is read at. */
         const val TICK_MILLIS = 1_000L
+
+        /** A participant the bridge named without saying anything about (Task 60). */
+        const val UNKNOWN_PARTICIPANT = "Unknown participant"
     }
 }

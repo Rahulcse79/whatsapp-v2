@@ -313,6 +313,276 @@ Recorded as Q9 rather than quietly dropped.
 
 ## 4. HLD
 
-Authored in **Task 67**: module graph, layer diagram, sequence diagrams (register,
-outgoing, incoming-via-push, hold, transfer), and the threading model. Left empty here
-on purpose — a stub that looks like content is worse than an honest gap (§1).
+Authored in Task 67, from the code as built rather than from the plan as written. Where
+the two differ, the code wins and the difference is called out.
+
+### 4.1 Module graph
+
+```mermaid
+graph TD
+    app[":app<br/>composition root"]
+
+    subgraph features [":feature:*"]
+        dialer[":feature:dialer"]
+        calls[":feature:calls"]
+        accounts[":feature:accounts"]
+        history[":feature:history"]
+        settings_ui[":feature:settings"]
+    end
+
+    subgraph data [":data:*"]
+        account_data[":data:account<br/>Room + Keystore"]
+        sip[":data:sip<br/>liblinphone"]
+        calllog[":data:calllog<br/>Room"]
+        contacts[":data:contacts<br/>ContactsContract"]
+        settings_data[":data:settings<br/>DataStore"]
+    end
+
+    domain[":domain<br/>pure Kotlin"]
+    designsystem[":core:designsystem"]
+    common[":core:common"]
+
+    app --> features
+    app --> data
+    app --> domain
+    app --> designsystem
+
+    features --> domain
+    features --> designsystem
+    features --> common
+
+    data --> domain
+    data --> common
+
+    domain --> common
+    designsystem --> common
+```
+
+**The two edges that are absent are the design.** No `:feature:*` depends on any
+`:data:*`, and nothing depends on `:app`. A feature that reached into a data module would
+bypass the repository interface and every test seam `:domain` exists to provide;
+architecture Rule 3 fails the build if one appears.
+
+`:domain` applies **no Android plugin at all** — it is a JVM library (DoD 2). That is not
+a stylistic preference: it is what makes the call state machine, the backoff, the call
+waiting order and the recording consent gate testable as pure functions, and it is
+asserted twice, by an architecture rule and by a CI step that tries to add an Android
+dependency to it and expects the build to fail.
+
+### 4.2 Layers, and what each may know
+
+| Layer | May depend on | Must never |
+|---|---|---|
+| `:app` | everything | be depended upon |
+| `:feature:*` | `:domain`, `:core:*` | import a `:data:*` module or a SIP type |
+| `:data:*` | `:domain`, `:core:common` | decide platform policy, or import another `:data` module |
+| `:domain` | `:core:common` | import anything from Android |
+| `:core:*` | nothing but each other | know what a SIP call is |
+
+Three ports run the other way, and they are the whole of how `:domain` reaches the
+platform without importing it:
+
+| Port (in `:domain`) | Implemented by | Because |
+|---|---|---|
+| `PlatformCallRegistry` | `:app` — Telecom | only the platform knows about the cellular call this app cannot see |
+| `CameraAvailability` | `:app` — permissions + `PackageManager` | "declined" and "no hardware" are both Android questions with one answer |
+| `VideoSurfaceController` | `:data:sip` — the stack's renderer | a surface is an Android view; it crosses the boundary opaque |
+| `SipAccountRepository`, `CallLogRepository`, `ContactRepository`, `CallRecorder` | `:data:*` | storage is an implementation detail of an interface the domain owns |
+
+### 4.3 Threading model
+
+| Work | Where it runs | Why |
+|---|---|---|
+| liblinphone callbacks | the stack's own iteration thread | published to a buffered `SharedFlow` immediately and handled elsewhere — a blocked callback stops SIP processing entirely |
+| Engine bookkeeping | `@SipStackScope` — `SupervisorJob` + `Dispatchers.IO` | everything on it is a socket or a stack callback waiting on one, never computation; `SupervisorJob` so one failed collector cannot take every account's recovery down with it |
+| Room and DataStore | their own dispatchers, inside `:data:*` | a repository that made its caller choose a dispatcher would leak its storage choice |
+| ViewModels | `viewModelScope` (main) | state assembly only; every suspending call below is main-safe by contract |
+| Domain | the caller's | pure functions and suspending seams; `:domain` starts no coroutine of its own |
+
+**Every `suspend` function on `SipEngine` is main-safe**, stated in its contract and
+honoured by moving to the engine's own dispatcher internally. Callers need no
+`withContext`, which is what keeps `viewModelScope.launch { engine.answer(...) }` correct
+rather than merely conventional.
+
+### 4.4 Registration
+
+```mermaid
+sequenceDiagram
+    participant UI as AccountsViewModel
+    participant UC as LoginUseCase
+    participant Repo as SipAccountRepository
+    participant Eng as LinphoneSipEngine
+    participant GW as RealLinphoneCoreGateway
+    participant Srv as Registrar
+
+    UI->>UC: login(accountId)
+    UC->>Repo: findById + credentialsFor
+    Repo-->>UC: SipAccount + Secret
+    UC->>Eng: register(account)
+    Eng->>Repo: credentialsFor(id)
+    Note over Eng: the password is fetched here and<br/>never stored on the engine
+    Eng->>Eng: states[id] = Registering
+    Eng->>GW: addAccount(StackAccount)
+    GW->>GW: applySecurity — TLS + SRTP policy
+    GW->>Srv: REGISTER
+    Srv-->>GW: 401 + challenge
+    GW->>Srv: REGISTER + Authorization
+    Srv-->>GW: 200 OK
+    GW-->>Eng: StackRegistrationEvent(OK)
+    Eng->>Eng: RegistrationStateMapper.toDomain
+    Eng-->>UI: registrationState[id] = Registered
+```
+
+The state is reported as `Registering` the moment the user presses save, before any
+network round trip — a screen that shows nothing until the registrar answers reads as a
+button that did nothing.
+
+### 4.5 Outgoing call
+
+```mermaid
+sequenceDiagram
+    participant UI as DialerViewModel
+    participant UC as PlaceCallUseCase
+    participant Eng as LinphoneSipEngine
+    participant Tel as TelecomCallRegistry
+    participant GW as Gateway
+    participant Far as Far end
+
+    UI->>UC: invoke("1002", account)
+    UC->>UC: DialledTarget.resolve → sip:1002@domain
+    UC->>Eng: placeCall(account, target, media)
+    Eng->>Eng: publish CallSnapshot(Outgoing.Calling)
+    Eng->>Tel: registerOutgoing(snapshot)
+    Note over Tel: asked BEFORE the INVITE:<br/>only Telecom knows about a cellular call
+    alt Telecom refuses
+        Tel-->>Eng: false
+        Eng->>Eng: withdraw the snapshot
+        Eng-->>UC: CallNotPermitted
+    else permitted
+        Tel-->>Eng: true
+        Eng->>GW: placeCall(...)
+        GW->>Far: INVITE
+        Far-->>GW: 180 Ringing
+        GW-->>Eng: OUTGOING_RINGING → CallEvent.RemoteRinging
+        Far-->>GW: 200 OK
+        GW-->>Eng: CONNECTED → CallEvent.RemoteAnswered
+        Eng->>Eng: enforceMediaEncryption — drop if SRTP required and absent
+        Eng->>Tel: onConnected(callId)
+        Eng-->>UI: activeCalls → Connected
+    end
+```
+
+### 4.6 Incoming call, woken by push
+
+```mermaid
+sequenceDiagram
+    participant Srv as SBC / push gateway
+    participant FCM
+    participant Msg as SipMessagingService
+    participant Svc as RegistrationService
+    participant Eng as Engine
+    participant Tel as Telecom
+
+    Srv->>FCM: high-priority data message
+    FCM->>Msg: onMessageReceived(payload)
+    Msg->>Msg: PushWakePolicy — is this a call, and is it fresh?
+    Msg->>Svc: start the foreground service
+    Svc->>Eng: ensure the stack is up and registered
+    Srv->>Eng: INVITE
+    Eng->>Eng: create CallSnapshot(Incoming)
+    Eng->>Tel: registerIncoming(call)
+    alt Telecom refuses
+        Tel-->>Eng: false
+        Eng->>Srv: 486 Busy Here
+        Note over Eng: nothing is shown at all —<br/>§3 forbids talking over a cellular call
+    else permitted
+        Tel-->>Eng: true
+        Eng-->>Svc: incomingCalls → CallStyle notification + full-screen intent
+    end
+```
+
+The payload carries **no credential and no caller identity** — only "wake up and
+re-register" (ADR-004). A push that carried the caller would be a caller disclosed to
+Google.
+
+### 4.7 Hold and resume
+
+```mermaid
+sequenceDiagram
+    participant UI as CallViewModel
+    participant Eng as Engine
+    participant FSM as CallStateMachine
+    participant GW as Gateway
+    participant Far as Far end
+
+    UI->>Eng: setHold(callId, held = true)
+    Eng->>FSM: transition(Connected, LocalHold)
+    FSM-->>Eng: Moved(Held(LOCAL))
+    Note over Eng: the FSM is asked, but the state is NOT applied yet
+    Eng->>GW: pauseCall
+    GW->>Far: re-INVITE, a=sendonly
+    Far-->>GW: 200 OK
+    GW-->>Eng: PAUSED
+    Eng->>FSM: transition(Connected, LocalHold)
+    Eng->>Eng: apply Held(LOCAL)
+    Eng->>Tel: onHoldChanged(callId, true)
+    Eng-->>UI: activeCalls → Held
+```
+
+**The state moves when the stack says so, not when the button is pressed.** A call shown
+as held whose re-INVITE the far end refused with a 488 is a screen lying about where the
+audio is going.
+
+### 4.8 Transfer
+
+```mermaid
+sequenceDiagram
+    participant UI as CallTransferController
+    participant UC as TransferCallUseCase
+    participant Eng as Engine
+    participant GW as Gateway
+    participant A as Caller
+    participant B as Transferee
+
+    UI->>UC: blind(callId, "1003")
+    UC->>Eng: transfer(callId, target, BLIND)
+    Eng->>Eng: FSM → Transferring
+    Eng->>GW: transferCall
+    GW->>A: REFER Refer-To: 1003
+    A-->>GW: 202 Accepted
+    GW-->>Eng: transfer OUTGOING_INIT
+    Eng-->>UI: TransferEvent.Accepted
+    Note over UI: "transferring", NOT "transferred"
+    A->>B: INVITE
+    B-->>A: 180
+    A-->>GW: NOTIFY sipfrag 180
+    GW-->>Eng: transfer OUTGOING_RINGING
+    Eng-->>UI: TransferEvent.Progressing
+    alt transferee answers
+        A-->>GW: NOTIFY sipfrag 200
+        GW-->>Eng: transfer CONNECTED
+        Eng-->>UI: TransferEvent.Succeeded
+        Eng->>Eng: release this leg locally
+    else transferee busy
+        A-->>GW: NOTIFY sipfrag 486
+        GW-->>Eng: transfer ERROR
+        Eng->>Eng: FSM → Connected
+        Eng-->>UI: TransferEvent.Failed(Busy)
+        Note over UI: the caller is still on the line,<br/>and is told why
+    end
+```
+
+An attended transfer differs in two places only: call A is held and B is consulted first,
+and the REFER carries `Replaces` naming B's dialog — which is why the gateway takes a
+*call* rather than an address for that one.
+
+### 4.9 Where each DECIDE is answered
+
+| §2 DECIDE | Answer | Section |
+|---|---|---|
+| §2.2 — conference server and model | FreeSWITCH `mod_conference`, dial-in MCU, domain shaped for SFU | ADR-003 |
+| §2.4 — which SIP stack | liblinphone (linphone-sdk) 5.5.18, GPLv3 assumed | ADR-001, ADR-002 |
+| §2.5 — push model | RFC 8599 `pn-*` client params + an ESL-driven gateway; four-field payload contract | ADR-004 |
+
+DoD 15 asks for every DECIDE to be answered here. All three are, each with a rationale and
+with what remains unresolved named as an open question rather than assumed away.

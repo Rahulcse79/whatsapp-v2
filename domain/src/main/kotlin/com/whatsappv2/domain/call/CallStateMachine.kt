@@ -90,6 +90,16 @@ object CallStateMachine {
     }
 
     private fun fromHeld(state: CallState.Held, event: CallEvent): TransitionResult = when (event) {
+        // A REFER may go out from a held call, whichever kind of transfer it is. Attended
+        // is the case that needs it — A is put on hold, B is consulted, and only then is
+        // the REFER sent (Task 57) — and rejecting it would make the one transfer that
+        // needs consultation impossible. Blind is allowed from here too: a user who parked
+        // a call and then decided to pass it on should not have to resume it first, and
+        // the protocol does not ask them to. Where the call was is remembered either way,
+        // so a failure returns it to the hold rather than to Connected.
+        is CallEvent.StartTransfer ->
+            moved(CallState.Transferring(event.type, state.controls, heldBy = state.by))
+
         // Holding again from the other side is legal and produces BOTH.
         is CallEvent.LocalHold -> holdOrReject(state, state.by.withLocal(), event)
         is CallEvent.RemoteHold -> holdOrReject(state, state.by.withRemote(), event)
@@ -132,8 +142,11 @@ object CallStateMachine {
     private fun fromTransferring(state: CallState.Transferring, event: CallEvent): TransitionResult = when (event) {
         // The transferee took the call; this leg is released locally, not by the peer.
         is CallEvent.TransferSucceeded -> moved(CallState.Terminated(HangupReason.LOCAL_HANGUP))
-        // A failed transfer must return the call, not strand it (§5.2).
-        is CallEvent.TransferFailed -> moved(CallState.Connected(state.controls))
+        // A failed transfer must return the call, not strand it (§5.2) — and return it
+        // where it was, which for an attended transfer is on hold rather than connected.
+        is CallEvent.TransferFailed -> moved(
+            state.heldBy?.let { CallState.Held(it, state.controls) } ?: CallState.Connected(state.controls),
+        )
         else -> reject(state, event)
     }
 

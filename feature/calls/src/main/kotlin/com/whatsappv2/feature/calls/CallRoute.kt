@@ -11,7 +11,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.whatsappv2.domain.model.CallId
 
 /**
- * The call screen, wired to the engine (Tasks 37 and 39).
+ * The call screen, wired to the engine (Tasks 37, 39, 52-60).
  *
  * The route is where the ViewModel is obtained and where one-shot events become snackbars;
  * [CallScreen] stays a function of its arguments so it can be previewed and driven by a
@@ -58,6 +58,27 @@ fun CallRoute(
             onToggleSpeaker = viewModel::setSpeakerOn,
             onToggleHold = viewModel::setHold,
             onDtmf = viewModel::sendDtmf,
+            onToggleVideo = viewModel::setVideoEnabled,
+            onSwitchCamera = viewModel::switchCamera,
+            onRespondToVideoRequest = viewModel::respondToVideoRequest,
+            onVideoSurfaces = viewModel::attachVideoSurfaces,
+            onReleaseVideoSurfaces = viewModel::detachVideoSurfaces,
+            // Both take the call id from the route rather than from the ViewModel's own
+            // `watched`: the screen is looking at exactly one call, and passing it here
+            // keeps the controllers free of a second idea of which one that is.
+            onStartTransfer = viewModel.transfer::start,
+            onTransferTargetChanged = viewModel.transfer::onTargetChanged,
+            onCancelTransfer = viewModel.transfer::cancel,
+            onTransferBlind = { target -> viewModel.transfer.blind(callId, target) },
+            onStartConsultation = { target -> viewModel.transfer.startConsultation(callId, target) },
+            onCompleteConsultation = viewModel.transfer::completeConsultation,
+            onCancelConsultation = viewModel.transfer::cancelConsultation,
+            onSecondCall = viewModel::respondToSecondCall,
+            onSwapTo = viewModel::swapTo,
+            onRequestRecording = viewModel.recording::request,
+            onConfirmRecording = { viewModel.recording.confirm(callId) },
+            onDismissRecordingConsent = viewModel.recording::dismiss,
+            onStopRecording = { viewModel.recording.stop(callId) },
         ),
         modifier = modifier,
     )

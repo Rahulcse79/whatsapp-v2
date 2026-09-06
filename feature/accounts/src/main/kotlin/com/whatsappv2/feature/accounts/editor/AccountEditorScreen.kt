@@ -33,6 +33,7 @@ import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
 import com.whatsappv2.core.designsystem.theme.AppTheme
+import com.whatsappv2.core.designsystem.window.SecureScreen
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
@@ -49,6 +50,12 @@ import com.whatsappv2.domain.validation.SipAccountDraft
  *
  * Errors are shown per field. `supportingText` carries the message so a screen reader
  * announces it with the field rather than leaving the user to hunt for what is wrong.
+ *
+ * The window is marked secure while this screen is up (Tasks 21, 63): it is the one place
+ * a SIP password is typed, and a screenshot or a screen recorder would carry it off the
+ * device past every other protection §7 puts around it. Scoped to this screen rather than
+ * set on the Activity, so the dialler and the call log stay screenshot-able — a user who
+ * cannot capture a call log cannot send a support request.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,6 +66,8 @@ fun AccountEditorScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    SecureScreen()
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {

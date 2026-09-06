@@ -88,7 +88,31 @@ class CallStateMachineTest {
             CallEvent.TransferFailed,
             CallState.Connected(),
         ),
-    ) + terminationTransitions() + controlTransitions()
+    ) + transfersFromHold() + terminationTransitions() + controlTransitions()
+
+    /**
+     * A REFER may go out from a held call, whichever kind of transfer it is.
+     *
+     * Attended is the case that needs it — A is held, B is consulted, and only then is the
+     * REFER sent (Task 57) — and where the call was is carried into `Transferring` so a
+     * failure can put it back there. But nothing about a blind transfer makes it illegal
+     * from hold: a user who parked a call and then decided to pass it on would otherwise
+     * have to resume it first, for no reason the protocol asks for.
+     *
+     * Generated over both types and all three hold parties rather than listed, because
+     * listing them is how the blind pairs came to be missing while the state machine
+     * accepted them.
+     */
+    private fun transfersFromHold(): List<Legal> =
+        HoldParty.entries.flatMap { by ->
+            TransferType.entries.map { type ->
+                Legal(
+                    CallState.Held(by),
+                    CallEvent.StartTransfer(type),
+                    CallState.Transferring(type, heldBy = by),
+                )
+            }
+        }
 
     /** Terminate is legal from every active state. */
     private fun terminationTransitions(): List<Legal> =
@@ -282,6 +306,37 @@ class CallStateMachineTest {
     fun `controls survive a failed transfer`() {
         val transferring = CallState.Transferring(TransferType.ATTENDED, busyControls)
         assertEquals(busyControls, move(transferring, CallEvent.TransferFailed).controlsOrNull)
+    }
+
+    @Test
+    fun `a failed attended transfer returns the call to the hold it came from`() {
+        // Task 57 starts its REFER from a held call, so Connected is the wrong place to
+        // land: the far end is still holding, and a screen saying otherwise is wrong until
+        // the stack happens to restate it.
+        val held = CallState.Held(HoldParty.LOCAL, busyControls)
+        val transferring = move(held, CallEvent.StartTransfer(TransferType.ATTENDED))
+
+        assertEquals(held, move(transferring, CallEvent.TransferFailed))
+    }
+
+    @Test
+    fun `a failed blind transfer returns the call to connected`() {
+        val transferring = move(CallState.Connected(busyControls), CallEvent.StartTransfer(TransferType.BLIND))
+
+        assertEquals(CallState.Connected(busyControls), move(transferring, CallEvent.TransferFailed))
+    }
+
+    @Test
+    fun `a successful transfer from a held call still releases the leg`() {
+        val transferring = move(
+            CallState.Held(HoldParty.LOCAL, busyControls),
+            CallEvent.StartTransfer(TransferType.ATTENDED),
+        )
+
+        assertEquals(
+            CallState.Terminated(HangupReason.LOCAL_HANGUP),
+            move(transferring, CallEvent.TransferSucceeded),
+        )
     }
 
     @Test

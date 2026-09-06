@@ -9,6 +9,8 @@ import com.whatsappv2.domain.engine.IncomingCall
 import com.whatsappv2.domain.engine.PushToken
 import com.whatsappv2.domain.engine.SipEngine
 import com.whatsappv2.domain.engine.SipError
+import com.whatsappv2.domain.engine.TransferEvent
+import com.whatsappv2.domain.engine.VideoRequest
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.DtmfDigit
@@ -53,6 +55,12 @@ class UnavailableSipEngine @Inject constructor() : SipEngine {
     /** No stack, so no call ever starts and none can end. */
     override val endedCalls: Flow<CallSnapshot> = emptyFlow()
 
+    /** Nothing can be transferred when nothing can be called. */
+    override val transferEvents: Flow<TransferEvent> = emptyFlow()
+
+    /** No call, so no peer can ask to add video to one (Task 54). */
+    override val videoRequests: Flow<VideoRequest> = emptyFlow()
+
     override val conferences: StateFlow<List<ConferenceSession>> = MutableStateFlow(emptyList())
 
     override suspend fun register(account: SipAccount) = unavailable()
@@ -93,6 +101,8 @@ class UnavailableSipEngine @Inject constructor() : SipEngine {
     override suspend fun setVideoEnabled(callId: CallId, enabled: Boolean) = unavailable()
 
     override suspend fun switchCamera(callId: CallId) = unavailable()
+
+    override suspend fun respondToVideoRequest(callId: CallId, accept: Boolean) = unavailable()
 
     override suspend fun joinConference(
         accountId: AccountId,

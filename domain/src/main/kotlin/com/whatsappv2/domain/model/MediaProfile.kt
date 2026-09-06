@@ -13,6 +13,34 @@ class MediaProfile private constructor(
     /** True when video may be negotiated, so the camera must be acquired. */
     val requiresCamera: Boolean get() = hasVideo
 
+    /**
+     * The same call without its video stream (Tasks 51, 54).
+     *
+     * Two callers, and they want the same thing for different reasons: a device with no
+     * usable camera downgrades rather than failing the call, and a de-escalation drops
+     * video from a call that keeps running. Audio-only is always a legal profile, so this
+     * never has to answer "and what if there is nothing left".
+     */
+    fun withoutVideo(): MediaProfile = if (hasVideo) AUDIO else this
+
+    /** The same call with a video stream added (Task 54's escalation). */
+    fun withVideo(): MediaProfile = if (hasVideo) this else AUDIO_VIDEO
+
+    /**
+     * This profile, or its audio-only form when the camera cannot be used (Task 51).
+     *
+     * **Downgrade, never refuse.** A user who declined the camera permission, or a device
+     * that has no camera at all, still wants the call — Task 51's second done-when says so
+     * explicitly. Failing the call instead would punish someone for a privacy choice the
+     * app told them was safe to make, and a video call that quietly becomes an audio call
+     * is the outcome they would have chosen anyway.
+     *
+     * A pure function of two values rather than a check inside the engine, so the rule is
+     * asserted once here instead of at every place a profile is built.
+     */
+    fun downgradedWhenCameraUnavailable(cameraUsable: Boolean): MediaProfile =
+        if (!cameraUsable) withoutVideo() else this
+
     override fun equals(other: Any?): Boolean =
         this === other || (other is MediaProfile && hasAudio == other.hasAudio && hasVideo == other.hasVideo)
 

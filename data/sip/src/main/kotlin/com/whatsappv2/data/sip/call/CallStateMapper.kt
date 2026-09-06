@@ -38,6 +38,10 @@ import com.whatsappv2.domain.model.HangupReason
  *   after our own resume is `ResumeConfirmed`; after the far end's, `RemoteResume`; on a
  *   call that was simply connected, nothing at all. One stack state, three meanings — so
  *   the mapper is given the current state rather than inventing one (Task 41).
+ * - **An escalation is not a state change.** `UpdatedByRemote` means the far end has
+ *   asked to add video and the stack is holding the answer. The call has not moved, and
+ *   mapping it to anything would either move it or make every consumer check that it did
+ *   not. It maps to nothing, and the engine deals with it separately (Task 54).
  * - **A hold already in force is not a new hold.** The stack repeats its paused state
  *   after a re-negotiation, and the FSM rejects a hold from a side that already holds. A
  *   repeat therefore maps to nothing, so a normal re-negotiation does not fill the log
@@ -89,6 +93,16 @@ internal object CallStateMapper {
         // The re-INVITE is on the wire. Reported so the screen can say "resuming" rather
         // than showing a held call that appears to have ignored the button.
         StackCallState.RESUMING -> resumeStartedEventFor(state)
+
+        // An escalation the far end is asking for (Task 54). No transition: the call is
+        // exactly where it was, and stays there until somebody answers the prompt. The
+        // engine handles this state by deferring the stack's answer and publishing a
+        // VideoRequest, which is a different kind of thing from a call state change.
+        StackCallState.UPDATED_BY_REMOTE -> null
+
+        // A REFER arrived for this leg. The transfer is reported on its own stream and
+        // the leg ends immediately after with ENDED, which is what the FSM acts on.
+        StackCallState.REFERRED -> null
 
         StackCallState.ENDED, StackCallState.ERROR ->
             CallEvent.Terminate(toHangupReason(event))

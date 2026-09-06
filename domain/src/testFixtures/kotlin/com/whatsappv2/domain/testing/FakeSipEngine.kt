@@ -15,9 +15,12 @@ import com.whatsappv2.domain.engine.CallSnapshot
 import com.whatsappv2.domain.engine.ConferenceParticipant
 import com.whatsappv2.domain.engine.ConferenceSession
 import com.whatsappv2.domain.engine.IncomingCall
+import com.whatsappv2.domain.engine.ParticipantId
 import com.whatsappv2.domain.engine.PushToken
 import com.whatsappv2.domain.engine.SipEngine
 import com.whatsappv2.domain.engine.SipError
+import com.whatsappv2.domain.engine.TransferEvent
+import com.whatsappv2.domain.engine.VideoRequest
 import com.whatsappv2.domain.engine.toHangupReason
 import com.whatsappv2.domain.engine.toRegistrationFailure
 import com.whatsappv2.domain.model.AccountId
@@ -88,6 +91,7 @@ class FakeSipEngine(
         SET_AUDIO_ROUTE,
         SET_VIDEO_ENABLED,
         SWITCH_CAMERA,
+        RESPOND_TO_VIDEO_REQUEST,
         SEND_DTMF,
         TRANSFER,
         JOIN_CONFERENCE,
@@ -116,6 +120,23 @@ class FakeSipEngine(
 
     private val conferenceSessions = MutableStateFlow<List<ConferenceSession>>(emptyList())
     override val conferences: StateFlow<List<ConferenceSession>> = conferenceSessions.asStateFlow()
+
+    // Buffered and unreplayed like the two above: a transfer outcome shown twice is a
+    // second alarm about a call that was resolved minutes ago (Task 55).
+    private val transfers = MutableSharedFlow<TransferEvent>(replay = 0, extraBufferCapacity = INCOMING_BUFFER)
+    override val transferEvents: Flow<TransferEvent> = transfers.asSharedFlow()
+
+    // Task 54. Unreplayed for the same reason: an escalation the user already answered
+    // must not re-prompt on the next collection, which after a rotation is immediately.
+    private val videoOffers = MutableSharedFlow<VideoRequest>(replay = 0, extraBufferCapacity = INCOMING_BUFFER)
+    override val videoRequests: Flow<VideoRequest> = videoOffers.asSharedFlow()
+
+    /** Escalations the far end has asked for and nothing has answered yet (Task 54). */
+    private val pendingVideoRequests = mutableMapOf<CallId, VideoRequest>()
+
+    /** Transfer events published, in order, so a test can assert without collecting. */
+    val transferHistory: List<TransferEvent> get() = transferLog.toList()
+    private val transferLog = mutableListOf<TransferEvent>()
 
     private val knownAccounts = mutableMapOf<AccountId, SipAccount>()
     private val oneShotFailures = mutableMapOf<Operation, ArrayDeque<SipError>>()
@@ -300,7 +321,17 @@ class FakeSipEngine(
         if (type == TransferType.ATTENDED && consultationCallId == null) {
             return failure(SipError.InvalidState("attended transfer requires a consultation call"))
         }
-        return guard(Operation.TRANSFER) { apply(callId, CallEvent.StartTransfer(type)) }
+        return guard(Operation.TRANSFER) {
+            when (val moved = apply(callId, CallEvent.StartTransfer(type))) {
+                is Outcome.Failure -> moved
+                is Outcome.Success -> {
+                    // 202 Accepted, not success: the transferee has agreed to try, and
+                    // nobody yet knows whether they answered (Task 55).
+                    publishTransfer(TransferEvent.Accepted(callId, type))
+                    moved
+                }
+            }
+        }
     }
 
     // ------------------------------------------------------------------ media
@@ -327,6 +358,28 @@ class FakeSipEngine(
     override suspend fun switchCamera(callId: CallId): Outcome<Unit, SipError> {
         record(Operation.SWITCH_CAMERA, callId.value)
         return guard(Operation.SWITCH_CAMERA) { requireEstablished(callId) }
+    }
+
+    /**
+     * Answers an escalation the far end asked for (Task 54).
+     *
+     * Declining keeps the call and changes nothing else, which is the behaviour Task 54's
+     * second done-when is about — so the fake does exactly that rather than treating a
+     * decline as a failure.
+     */
+    override suspend fun respondToVideoRequest(callId: CallId, accept: Boolean): Outcome<Unit, SipError> {
+        record(Operation.RESPOND_TO_VIDEO_REQUEST, "${callId.value}:$accept")
+        val pending = pendingVideoRequests[callId]
+            ?: return failure(SipError.InvalidState("no video request is pending on $callId"))
+
+        return guard(Operation.RESPOND_TO_VIDEO_REQUEST) {
+            pendingVideoRequests -= pending.callId
+            if (!accept) {
+                requireEstablished(callId)
+            } else {
+                apply(callId, CallEvent.SetVideoEnabled(true)) { it.copy(media = MediaProfile.AUDIO_VIDEO) }
+            }
+        }
     }
 
     // ------------------------------------------------------------------ conference
@@ -358,6 +411,7 @@ class FakeSipEngine(
     override suspend fun shutdown() {
         isShutDown = true
         ended.clear()
+        pendingVideoRequests.clear()
         calls.value = emptyList()
         conferenceSessions.value = emptyList()
         registrations.value = emptyMap()
@@ -437,11 +491,74 @@ class FakeSipEngine(
     /** The far end resumed. */
     fun simulateRemoteResume(callId: CallId) = apply { apply(callId, CallEvent.RemoteResume) }
 
-    /** The transferee accepted; this leg can be released. */
-    fun simulateTransferSucceeded(callId: CallId) = apply { apply(callId, CallEvent.TransferSucceeded) }
+    /** A NOTIFY sipfrag from the transferee — typically 180 while it rings (Task 55). */
+    fun simulateTransferProgress(callId: CallId, responseCode: Int? = null): FakeSipEngine = apply {
+        publishTransfer(TransferEvent.Progressing(callId, responseCode))
+    }
 
-    /** The transfer failed. The original call must survive (§5.2). */
-    fun simulateTransferFailed(callId: CallId) = apply { apply(callId, CallEvent.TransferFailed) }
+    /**
+     * The transferee accepted; this leg can be released.
+     *
+     * The event is published **before** the call is terminated. The other order loses it:
+     * a collector watching this call would see it vanish and then be told why, which is
+     * the wrong way round for a screen that has to decide what to say about a call that
+     * is no longer there.
+     */
+    fun simulateTransferSucceeded(callId: CallId): FakeSipEngine = apply {
+        publishTransfer(TransferEvent.Succeeded(callId))
+        apply(callId, CallEvent.TransferSucceeded)
+    }
+
+    /** The transfer failed. The original call must survive (§5.2, Task 55). */
+    fun simulateTransferFailed(
+        callId: CallId,
+        cause: SipError = SipError.Busy(BUSY_HERE),
+    ): FakeSipEngine = apply {
+        apply(callId, CallEvent.TransferFailed)
+        publishTransfer(TransferEvent.Failed(callId, cause))
+    }
+
+    /**
+     * The far end asked to add video to a running call (Task 54).
+     *
+     * Nothing changes on the call: the request is held pending an answer, exactly as the
+     * real engine defers the stack's response. A test that never answers can therefore
+     * assert that no camera was ever claimed.
+     */
+    fun simulateVideoRequest(callId: CallId): VideoRequest? {
+        val call = snapshot(callId) ?: return null
+        val request = VideoRequest(
+            callId = callId,
+            from = call.remote,
+            fromDisplayName = call.remoteDisplayName,
+            receivedAtEpochMillis = clock.nowEpochMillis(),
+        )
+        pendingVideoRequests[callId] = request
+        videoOffers.tryEmit(request)
+        return request
+    }
+
+    /** Somebody joined the conference on [callId] (Task 59). */
+    fun simulateParticipantJoined(
+        callId: CallId,
+        participant: ConferenceParticipant,
+    ): FakeSipEngine = apply {
+        mapConference(callId) { it.withParticipantJoined(participant) }
+    }
+
+    /** Somebody left (Task 59). */
+    fun simulateParticipantLeft(callId: CallId, id: ParticipantId): FakeSipEngine = apply {
+        mapConference(callId) { it.withParticipantLeft(id) }
+    }
+
+    /** The bridge muted or unmuted a participant — not our local mute (Task 59). */
+    fun simulateParticipantMuted(callId: CallId, id: ParticipantId, muted: Boolean): FakeSipEngine =
+        apply { mapConference(callId) { it.withParticipantMuted(id, muted) } }
+
+    /** The bridge named an active speaker, or none (Task 59). */
+    fun simulateActiveSpeaker(callId: CallId, id: ParticipantId?): FakeSipEngine = apply {
+        mapConference(callId) { it.withActiveSpeaker(id) }
+    }
 
     /**
      * The network went away: every registration fails and every call drops.
@@ -491,6 +608,17 @@ class FakeSipEngine(
 
     private fun record(operation: Operation, detail: String) {
         recorded += Invocation(operation, detail)
+    }
+
+    private fun publishTransfer(event: TransferEvent) {
+        transferLog += event
+        transfers.tryEmit(event)
+    }
+
+    private fun mapConference(callId: CallId, transform: (ConferenceSession) -> ConferenceSession) {
+        conferenceSessions.update { sessions ->
+            sessions.map { if (it.callId == callId) transform(it) else it }
+        }
     }
 
     private fun nextCallId(): CallId = CallId("call-${++nextCallNumber}")
@@ -562,5 +690,8 @@ class FakeSipEngine(
 
     private companion object {
         const val INCOMING_BUFFER = 64
+
+        /** The default reason a scripted transfer fails: 486, the commonest real one. */
+        const val BUSY_HERE = 486
     }
 }

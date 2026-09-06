@@ -87,6 +87,9 @@ fun sipTestTargetArguments(): Map<String, String> {
         "sip.test.extension" to "sipTestExtension",
         "sip.test.extension.secondary" to "sipTestExtensionSecondary",
         "sip.test.password" to "sipTestPassword",
+        // The conference room to dial (Tasks 60, 61). Optional: absent means 3000, which
+        // is what docs/testing.md reserves and what FreeSWITCH's stock dialplan maps.
+        "sip.test.conference" to "sipTestConference",
     )
     return keys.mapNotNull { (property, argument) ->
         val environmentName = property.uppercase().replace('.', '_')

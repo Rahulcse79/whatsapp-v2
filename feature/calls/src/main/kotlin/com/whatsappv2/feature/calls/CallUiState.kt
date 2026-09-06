@@ -88,6 +88,18 @@ data class CallControlAvailability(
     val canHold: Boolean,
     val canResume: Boolean,
     val canSendDtmf: Boolean,
+
+    /** REFER needs an established dialog, and a transfer already in flight cannot start another. */
+    val canTransfer: Boolean,
+
+    /** Adding or dropping video is a re-INVITE, so it needs the same dialog hold does. */
+    val canToggleVideo: Boolean,
+
+    /** Only while this call is actually sending video — there is nothing else to switch. */
+    val canSwitchCamera: Boolean,
+
+    /** Recording needs media to record. Consent is a separate gate and is asked for later. */
+    val canRecord: Boolean,
 ) {
     companion object {
         fun of(phase: CallPhase): CallControlAvailability = CallControlAvailability(
@@ -108,7 +120,28 @@ data class CallControlAvailability(
             // stream, and a held call's stream is paused, so a keypad offered there would
             // send tones into a media path that is not running (Task 43).
             canSendDtmf = phase == CallPhase.CONNECTED,
+            // Connected only. A REFER sent from a held call is legal SIP and a bad idea:
+            // the transferee is handed a call whose audio is paused, and whether it comes
+            // back depends on the far end (Task 55).
+            canTransfer = phase == CallPhase.CONNECTED,
+            // A re-INVITE, so the same rule as hold — and not while one is already in
+            // flight, which is what excludes RESUMING and TRANSFERRING (Tasks 53, 54).
+            canToggleVideo = phase == CallPhase.CONNECTED,
+            // Set by the caller from the call's own video state; the phase alone cannot
+            // say whether there is a camera running to switch (Task 53).
+            canSwitchCamera = false,
+            canRecord = phase.hasMedia,
         )
+
+        /**
+         * The same, refined by what this particular call is doing (Tasks 53, 58).
+         *
+         * [of] answers from the phase alone, which is all most buttons need. Two of them
+         * need more: switching cameras is meaningless unless video is actually running,
+         * and offering it on an audio call is a control that cannot work.
+         */
+        fun of(phase: CallPhase, videoEnabled: Boolean): CallControlAvailability =
+            of(phase).copy(canSwitchCamera = phase.hasMedia && videoEnabled)
     }
 }
 
@@ -160,8 +193,28 @@ data class CallDisplay(
 
     /** True when the peer offered video, so an inbound call can be answered with it. */
     val videoOffered: Boolean,
+
+    /**
+     * True when a video stream is negotiated on this call right now (Tasks 52, 54).
+     *
+     * Distinct from [videoOffered], which is about the inbound INVITE, and from
+     * `controls.isVideoEnabled`, which is whether the user is *sending*. All three differ
+     * on a video call whose camera the user has muted, and the screen renders differently
+     * for each: a remote picture with no local preview.
+     */
+    val videoActive: Boolean = false,
+
+    /** True while this call is a conference leg, so the roster is worth showing (Task 60). */
+    val isConference: Boolean = false,
 ) {
-    val availability: CallControlAvailability get() = CallControlAvailability.of(phase)
+    val availability: CallControlAvailability
+        get() = CallControlAvailability.of(phase, controls.isVideoEnabled)
+
+    /** True when there is a remote picture to draw — the far end is sending (Task 52). */
+    val showsRemoteVideo: Boolean get() = videoActive && phase.hasMedia
+
+    /** True when the local preview should be on screen: we have a camera running. */
+    val showsLocalPreview: Boolean get() = showsRemoteVideo && controls.isVideoEnabled
 }
 
 /** What the call screen is showing. */
@@ -176,7 +229,38 @@ sealed interface CallUiState {
      */
     data object Loading : CallUiState
 
-    data class Active(val call: CallDisplay) : CallUiState
+    /**
+     * A call is on screen.
+     *
+     * Everything beyond [call] arrived with Tasks 52-60 and is defaulted, so the shape a
+     * preview or a test builds for an ordinary audio call is unchanged: an audio call has
+     * no other calls, no escalation pending, no transfer in flight and no roster.
+     */
+    data class Active(
+        val call: CallDisplay,
+
+        /**
+         * Every other call this app is holding (Task 56).
+         *
+         * Held calls, almost always exactly one. Present so the screen can show who is
+         * waiting and offer a swap, which is the only way "exactly one active" is visible
+         * to the person it protects.
+         */
+        val otherCalls: List<CallDisplay> = emptyList(),
+
+        /** An escalation the far end asked for, still unanswered (Task 54). */
+        val pendingVideoRequest: PendingVideoRequest? = null,
+
+        /** A second call arriving right now, with its three answers (Task 56). */
+        val secondCall: SecondCallPrompt? = null,
+
+        val transfer: TransferUiState = TransferUiState.Idle,
+
+        val recording: RecordingUiState = RecordingUiState(),
+
+        /** The roster, when this call is a conference leg (Task 60). */
+        val conference: ConferenceUiState? = null,
+    ) : CallUiState
 
     /**
      * The call is over and the screen should close.
@@ -203,6 +287,11 @@ enum class CallAction {
     SPEAKER,
     HOLD,
     DTMF,
+    VIDEO,
+    SWITCH_CAMERA,
+    TRANSFER,
+    SWAP,
+    RECORD,
 }
 
 /**
@@ -230,6 +319,8 @@ internal fun CallSnapshot.toDisplay(nowEpochMillis: Long, contact: Contact? = nu
         controls = state.controlsOrNull ?: CallControls.DEFAULT,
         durationSeconds = durationMillis(nowEpochMillis)?.let { it / MILLIS_PER_SECOND },
         videoOffered = media.hasVideo,
+        videoActive = media.hasVideo,
+        isConference = isConference,
     )
 }
 

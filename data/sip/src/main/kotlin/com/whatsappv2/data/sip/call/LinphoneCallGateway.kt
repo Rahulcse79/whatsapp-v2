@@ -7,8 +7,13 @@ import kotlinx.coroutines.flow.Flow
  *
  * Separate from `LinphoneCoreGateway` for the same reason `SipEngine` splits into role
  * interfaces: the thing that places calls and the thing that registers accounts are used
- * by different code, and a narrow interface is a narrow fake. One class implements both,
- * because one `Core` owns both — but nothing above here has to know that.
+ * by different code, and a narrow interface is a narrow fake. One class implements them
+ * all, because one `Core` owns them all — but nothing above here has to know that.
+ *
+ * Video and recording are seams of their own, [LinphoneVideoGateway] and
+ * [LinphoneRecordingGateway], because their callers are of their own too: the recorder
+ * needs two functions and the surface controller needs five, and neither should be handed
+ * the whole of the stack's call API to get them.
  *
  * As with registration, everything decidable without the stack lives above this line.
  * The gateway reports what happened; [CallStateMapper] decides what it means.
@@ -17,6 +22,24 @@ internal interface LinphoneCallGateway {
 
     /** Call progress, as the stack reports it. */
     val callEvents: Flow<StackCallEvent>
+
+    /**
+     * Transfer progress, as the stack reports it (Task 55).
+     *
+     * A stream of its own rather than more [StackCallState] values, because a transfer's
+     * progress is *about* a call without being a state of it: while a REFER is in flight
+     * the call itself stays exactly where it was, and folding the two together would mean
+     * inventing call states for something the call is not doing.
+     */
+    val transferEvents: Flow<StackTransferEvent>
+
+    /**
+     * Conference roster changes, as the bridge publishes them (Task 60).
+     *
+     * Empty on a bridge that publishes nothing, which is a fact the UI has to state
+     * rather than paper over — hence [StackConferenceEvent.rosterAvailable].
+     */
+    val conferenceEvents: Flow<StackConferenceEvent>
 
     /**
      * Sends an INVITE.
@@ -98,4 +121,23 @@ internal interface LinphoneCallGateway {
      * sends a BYE for a call that was never answered.
      */
     fun terminateCall(callKey: String)
+
+    /**
+     * `REFER` to [destination] — a blind transfer (Task 55).
+     *
+     * Returns immediately. Whether the transferee answered arrives on [transferEvents],
+     * and cannot arrive any other way: this leg leaves the dialog as soon as the REFER is
+     * accepted.
+     */
+    fun transferCall(callKey: String, destination: String)
+
+    /**
+     * `REFER` with `Replaces`, naming the consultation call — an attended transfer
+     * (Task 57).
+     *
+     * [consultationCallKey] must be an established second call. The stack builds the
+     * `Replaces` header from its dialog identifiers, which is why this takes a call rather
+     * than an address: the address alone cannot identify the dialog to replace.
+     */
+    fun transferCallToCall(callKey: String, consultationCallKey: String)
 }

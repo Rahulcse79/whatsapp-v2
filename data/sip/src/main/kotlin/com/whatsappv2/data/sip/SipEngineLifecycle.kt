@@ -1,6 +1,8 @@
 package com.whatsappv2.data.sip
 
 import com.whatsappv2.core.common.logging.Logger
+import com.whatsappv2.data.sip.recording.LinphoneCallRecorder
+import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,6 +34,14 @@ import javax.inject.Singleton
 @Singleton
 class SipEngineLifecycle @Inject internal constructor(
     private val engine: LinphoneSipEngine,
+    /**
+     * Started beside the engine so no recording outlives the stack (Task 58).
+     *
+     * Here rather than in `:app` because the recorder is `internal` for the same reason
+     * the engine is: nothing above `:data:sip` should be able to name the thing that
+     * knows where a recording's bytes are.
+     */
+    private val recorder: LinphoneCallRecorder,
     private val logger: Logger,
 ) {
 
@@ -47,10 +57,19 @@ class SipEngineLifecycle @Inject internal constructor(
     fun start() {
         runCatching { engine.start() }
             .onFailure { logger.error(TAG, "SIP stack failed to start: ${it.javaClass.simpleName}") }
+        recorder.start()
     }
 
-    /** Releases the stack and everything it holds. */
+    /**
+     * Releases the stack and everything it holds.
+     *
+     * The recorder goes first and is waited for. Sealing a recording is a file rewrite,
+     * and a stack torn down underneath one leaves the plaintext it was about to destroy —
+     * which is the one failure mode Task 58's encryption is there to prevent.
+     */
     fun stop() {
+        runCatching { runBlocking { recorder.stop() } }
+            .onFailure { logger.error(TAG, "Recorder failed to stop: ${it.javaClass.simpleName}") }
         runCatching { engine.stop() }
             .onFailure { logger.error(TAG, "SIP stack failed to stop: ${it.javaClass.simpleName}") }
     }

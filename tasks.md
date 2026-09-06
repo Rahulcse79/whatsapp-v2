@@ -1774,11 +1774,28 @@ Build:
 - `camera` and `microphone` foreground-service types declared with matching permissions.
 
 Done when:
-- [ ] The camera is released on hangup, on error, and on process death — no
+- [x] The camera is released on hangup, on error, and on process death — no
       "camera in use" on the next call
-- [ ] Denying the camera permission downgrades to audio-only rather than failing the call
+      → `CameraPolicy` derives the owner from the **whole call list**, and the engine asks
+      it on every change to that list, so there is no path that ends a call without also
+      answering the question. Asserted for hangup, a 503 error, video mute and the stack
+      going down (`LinphoneSipEngineVideoTest`), plus every terminal state in
+      `CameraPolicyTest`. The "next call" half is a device observation and is not claimed.
+- [x] Denying the camera permission downgrades to audio-only rather than failing the call
+      → `MediaProfile.downgradedWhenCameraUnavailable`, applied wherever a profile is
+      built from a user's choice; `AndroidCameraAvailability` answers "no camera" and
+      "declined" with one boolean so no caller can nag about the second
 - [ ] The FGS types are declared and the app starts the service without a
       `ForegroundServiceTypeException` on Android 14+
+      → declared (`camera|microphone` on the service, both permissions), and
+      `ForegroundServiceTypes` picks only the subset whose permissions are held at the
+      moment `startForeground` runs — every combination table-tested. **The absence of the
+      exception itself needs an Android 14 device**, so the box stays unticked.
+
+**Status: COMPLETE in code, one box pending a device.** The design decision worth naming:
+the camera is owned by the call list, not by any one call. A `release()` beside the hangup
+button covers hangup and nothing else, and the bug Task 51 names — "camera in use" on the
+*next* call — is caused by the paths it misses.
 
 ### Task 52 — Video rendering and orientation
 **Depends on:** 51 · **Prompt refs:** §5.2, DoD 9 · **Modules:** `:feature:calls`
@@ -1789,16 +1806,38 @@ Build:
 
 Done when:
 - [ ] Bidirectional video establishes against the FreeSWITCH test target
+      → needs a device and a reachable bridge; the integration suite has never run
+      (`integration.yml` skips with no `SIP_TEST_HOST`)
 - [ ] Rotating the device keeps both streams correctly oriented at both ends
-- [ ] A remote resolution change does not stretch or crash the view
+      → `VideoLayout.orient` handles every quarter turn and normalises negative and
+      over-full rotations, but "at both ends" is a two-device observation
+- [x] A remote resolution change does not stretch or crash the view
+      → `VideoLayout.fit` letterboxes from the **current** frame rather than the first one,
+      which is the bug; asserted directly in `VideoLayoutTest`, including the
+      change-mid-call case and the unknown-size case that would otherwise collapse the view
+
+**Status: implemented, device verification pending.** `CallVideo` hands the stack two
+`TextureView`s through a `:domain` port and takes them back in `onDispose` — a surface a
+native renderer keeps after its composable has gone is a leak of every frame of the call.
 
 ### Task 53 — Camera switch and video mute
 **Depends on:** 52 · **Prompt refs:** §5.2, DoD 9 · **Modules:** `:feature:calls`
 
 Done when:
 - [ ] Front/back switch works mid-call without dropping the stream
-- [ ] Video mute stops the outbound stream while audio continues
-- [ ] Both are attributes of `Connected`, not FSM states
+      → implemented with no re-negotiation (`Core.setVideoDevice`, cycling the device
+      list), and the engine refuses it unless this call actually holds the camera. That
+      the picture does not drop is a device observation.
+- [x] Video mute stops the outbound stream while audio continues
+      → `CameraPolicy` releases the camera for a call whose `isVideoEnabled` is false while
+      the call stays `Connected`; asserted in `LinphoneSipEngineVideoTest` and
+      `CameraPolicyTest`
+- [x] Both are attributes of `Connected`, not FSM states
+      → `CallControls.isVideoEnabled`; the FSM has no video state and
+      `CallStateMachineTest` walks every state and event to prove no video event moves the
+      phase
+
+**Status: implemented, one box pending a device.**
 
 ### Task 54 — Audio ⇄ video escalation
 **Depends on:** 53 · **Prompt refs:** §5.2 · **Modules:** `:data:sip`, `:feature:calls`
@@ -1809,8 +1848,20 @@ Build:
 
 Done when:
 - [ ] Escalating an audio call to video works against the FreeSWITCH test target
-- [ ] Declining an escalation keeps the audio call alive
-- [ ] De-escalation to audio-only releases the camera
+      → needs the target; the re-INVITE path is exercised against the fake gateway
+- [x] Declining an escalation keeps the audio call alive
+      → declining answers the re-INVITE **without** video rather than refusing it: a 488
+      is legal SIP and ends the call on several peers. Asserted in
+      `LinphoneSipEngineVideoTest` and `FakeSipEngineVideoTest`.
+- [x] De-escalation to audio-only releases the camera
+      → dropping video takes the call out of `CameraPolicy`'s candidates, so the release is
+      the same one every other terminal path uses
+
+**Status: implemented, one box pending the target.** The load-bearing decision is
+`automaticallyAccept = false` on the core's video activation policy. Left on — and it is on
+by default in some builds — the stack accepts an incoming video re-INVITE by itself, and
+the first anyone knows about the escalation is their own camera light. With it off the
+stack reports `UpdatedByRemote` and waits, which is what makes §5.2's prompt possible.
 
 ---
 
@@ -1825,8 +1876,19 @@ Build:
 
 Done when:
 - [ ] A blind transfer to a third extension completes against the FreeSWITCH test target
-- [ ] Transfer progress and failure are both shown to the user
-- [ ] A failed transfer returns the call to `Connected`, not to a dead state
+      → needs the target and a third endpoint
+- [x] Transfer progress and failure are both shown to the user
+      → `TransferEvent` carries the 202, each NOTIFY sipfrag, and the outcome;
+      `TransferUiState` renders all three, and a failure names the reason
+      (`SipError.userMessage()`) and stays until dismissed — the caller is still on the
+      line and "that line is busy" is something they can act on
+- [x] A failed transfer returns the call to `Connected`, not to a dead state
+      → the FSM guarantees it, and `TransferEventMapper` never reports the 202 as success:
+      only the sipfrag saying the transferee **answered** becomes `Succeeded`. Reporting
+      the 202 as success is the classic transfer bug — the UI says "transferred", the
+      transferor hangs up, and the caller is dropped into a dead call.
+
+**Status: implemented, one box pending the target.**
 
 ### Task 56 — Call waiting and second call
 **Depends on:** 46 · **Prompt refs:** §5.2 · **Modules:** `:feature:calls`, `:app`
@@ -1837,9 +1899,21 @@ Build:
 - This is also the consultation-call machinery attended transfer needs (Task 57).
 
 Done when:
-- [ ] All three responses to a second call behave correctly
-- [ ] Swapping calls puts exactly one on hold and one active — never two active
+- [x] All three responses to a second call behave correctly
+      → `CallWaitingPolicy` produces the steps and `CallWaitingUseCase` runs them,
+      stopping at the first refusal; all three asserted end-to-end against the fake engine,
+      including the case that matters — a **failed hold does not go on to answer**
+- [x] Swapping calls puts exactly one on hold and one active — never two active
+      → the policy returns an ordered list, so the invariant is a property of the sequence
+      and is asserted as one: anything that gives up the audio path comes before anything
+      that takes it. Answering first is briefly two live microphones, and the user hears
+      both callers at once.
 - [ ] The system call UI and the app UI never disagree
+      → they cannot diverge by construction — both are driven from the same steps, and the
+      engine reports each to `PlatformCallRegistry` as it completes — but "never disagree"
+      is an observation about a system call UI, which needs a device.
+
+**Status: implemented, one box pending a device.**
 
 ### Task 57 — Attended transfer
 **Depends on:** 55, 56 · **Prompt refs:** §5.2, DoD 10 · **Modules:** `:data:sip`, `:feature:calls`
@@ -1849,8 +1923,20 @@ Build:
 
 Done when:
 - [ ] An attended transfer completes with all three parties behaving correctly
-- [ ] Cancelling the consultation returns cleanly to call A
+      → needs the target and three endpoints
+- [x] Cancelling the consultation returns cleanly to call A
+      → `TransferCallUseCase.cancelConsultation` ends B and resumes A, and **attempts the
+      resume even when the hangup fails**: the two are independent, and the failure the
+      user would notice is a call they can see and cannot hear. Asserted both ways.
 - [ ] Verified against the FreeSWITCH test target
+      → the suite has never run; `integration.yml` skips with no `SIP_TEST_HOST`
+
+**Status: implemented, two boxes pending the target.** One FSM change was needed and is
+worth naming: `StartTransfer` is now legal from `Held`, because an attended transfer sends
+its REFER from a held call. `Transferring` carries where the call came from, so a failed
+attended transfer returns it to the hold rather than to `Connected` — a screen claiming
+audio is flowing while the far end still holds is wrong until the stack happens to restate
+it.
 
 ### Task 58 — Call recording architecture
 **Depends on:** 46 · **Prompt refs:** §2.6, §7 · **Modules:** `:domain`, `:data:sip`, `:feature:calls`
@@ -1865,10 +1951,29 @@ Build:
   GDPR exposure, in `docs/security.md`.
 
 Done when:
-- [ ] Recording is **off by default** and cannot start without explicit consent
-- [ ] A visible indicator is present for the entire duration of any recording
+- [x] Recording is **off by default** and cannot start without explicit consent
+      → `RecordingConsent` is per call and starts at `None` on every one; there is no
+      setting, because a preference switched on once months ago *is* the silent recorder
+      §2.6 forbids. `CallRecorder.start` takes the consent as a parameter rather than
+      looking one up, so no implementation can find a path that skips the gate.
+- [x] A visible indicator is present for the entire duration of any recording
+      → the banner renders from `CallRecorder.active`, the recorder's own account of what
+      it is writing — state, not an event, so it survives a process restart. Marked
+      `liveRegion`: a recording that starts silently for a blind user is a silent recording.
 - [ ] Recordings are encrypted at rest and excluded from backup
-- [ ] `docs/security.md` states the legal and platform constraints plainly
+      → backup is excluded (every domain, plus `allowBackup=false`), and
+      `EncryptedRecordingStore` seals each file with AES-GCM under a Keystore key and
+      deletes the plaintext before reporting success. **The encryption round trip needs the
+      Keystore and therefore a device**, exactly like `SecretKeyProvider` in Task 16, so
+      this stays unticked until it runs there.
+- [x] `docs/security.md` states the legal and platform constraints plainly
+      → [`docs/security.md`](docs/security.md) § "Call recording": what Android will not
+      let an ordinary app capture, two-party consent and GDPR, the plaintext window and how
+      it is closed, and that the far-end announcement is **not implemented**
+
+**Status: architecture COMPLETE, one box pending a device.** As §2.6 asks, this is the
+shape and the safeguards rather than a shipped recorder: nothing calls the retention hook
+automatically, because what the retention period is belongs to whoever deploys this app.
 
 ---
 
@@ -1883,8 +1988,19 @@ Build:
   is an implementation swap, not a rewrite.
 
 Done when:
-- [ ] The model supports N > 2 participants with no dial-in-specific assumption baked in
-- [ ] Participant join/leave/mute transitions are unit-tested against `FakeSipEngine`
+- [x] The model supports N > 2 participants with no dial-in-specific assumption baked in
+      → `ConferenceSession` holds N participants with per-participant video, mute and
+      speaking state. `hasPerParticipantVideo` is false under a mixing MCU and true under
+      an SFU, and both are tested — a model exercised only against one mixed stream would
+      satisfy today's transport and nothing else (§2.2).
+- [x] Participant join/leave/mute transitions are unit-tested against `FakeSipEngine`
+      → `FakeSipEngineConferenceTest`, driven through the engine seam rather than against
+      the model alone: a transition that composes correctly but never reaches `conferences`
+      is one no screen can read
+
+**Status: COMPLETE.** The distinction the model exists to keep is between an **empty**
+roster and **no** roster — `rosterAvailable` — because a bridge that publishes nothing and
+a room nobody has joined produce the same empty list and mean opposite things (§13).
 
 ### Task 60 — Dial-in conference
 **Depends on:** 59, 32 · **Prompt refs:** §2.2, DoD 11 · **Modules:** `:data:sip`, `:feature:calls`
@@ -1896,16 +2012,45 @@ Build:
 
 Done when:
 - [ ] Three clients join one conference on the FreeSWITCH bridge and hear each other
-- [ ] The participant list reflects joins and leaves
-- [ ] If the server provides no roster, the UI says so rather than showing a fake list
+      → needs three endpoints and a person to listen. `ConferenceIntegrationTest` covers
+      the client half — join, answer, the leg recorded as a conference — and explicitly
+      does not claim the rest.
+- [x] The participant list reflects joins and leaves
+      → the roster is applied as **full state** rather than deltas, because reconciling
+      deltas against a roster that may have been missed is how a list ends up showing
+      somebody who left ten minutes ago
+- [x] If the server provides no roster, the UI says so rather than showing a fake list
+      → `ConferenceRoster` renders three different things — no roster, a roster with only
+      you, and a roster with others — because collapsing the first two turns "we cannot
+      see" into "there is nobody". `mod_conference` does not publish a conference event
+      package to a dial-in participant by default, so this is the *normal* case, not an
+      edge one.
+
+**Status: implemented, one box pending three endpoints.** Joining is dialling (ADR-003), so
+everything afterwards — hold, mute, DTMF, hangup, the call log — is the ordinary call
+machinery working on an ordinary call.
 
 ### Task 61 — Video conference
 **Depends on:** 60, 52 · **Prompt refs:** §2.2 · **Modules:** `:feature:calls`
 
 Done when:
 - [ ] A video conference renders the active-speaker or mixed stream correctly
-- [ ] Layout adapts to participant count and to rotation
-- [ ] Any limitation of the mixed-stream model is documented, not hidden
+      → needs a device and the bridge; the composition itself is the server's
+- [x] Layout adapts to participant count and to rotation
+      → `ConferenceVideoLayout` is pure integer arithmetic and `ConferenceVideoLayoutTest`
+      enumerates every count in both orientations, including the property that matters —
+      **rotation changes the shape but never the tile count**, the bug being a rotation
+      that drops somebody off the screen
+- [x] Any limitation of the mixed-stream model is documented, not hidden
+      → said on screen, not only in a document: under the MCU the bridge composes the
+      picture and chooses who is in it, and `ConferenceVideo` says so beneath the video.
+      A client-side grid over a mixed stream would be a grid of identical copies of the
+      same picture — it looks like a feature and is a lie.
+
+**Status: implemented, one box pending a device. Phase 8 checkpoint.** The design decision:
+`MixedStream` is its own case rather than a one-by-one `Grid`. A grid implies this app chose
+the arrangement, and under a mixing bridge the server did — which is the difference between
+a limitation stated and a limitation concealed.
 
 ---
 
@@ -1923,9 +2068,30 @@ Build:
 
 Done when:
 - [ ] A TLS + SRTP call succeeds against the FreeSWITCH test target
-- [ ] SRTP-Mandatory against a cleartext-only peer **fails the call** — asserted by a test
+      → **blocked on the deployment, not on this repo.** The target has
+      `internal_ssl_enable=false` and no SIP TLS certificate; running `gentls_cert` and
+      flipping the profile is Infra's — open question **Q9**
+- [x] SRTP-Mandatory against a cleartext-only peer **fails the call** — asserted by a test
+      → `LinphoneSipEngineSecurityTest`. Two gates, catching different things: the stack
+      refuses the negotiation, and the engine drops a call that reached **running media**
+      without encryption. The second is the one a test can hold without a cleartext-only
+      peer on a real network, and the drop is recorded as `MEDIA_FAILURE` rather than as a
+      hangup — a security event hidden behind an ordinary ending is a security event nobody
+      ever finds
 - [ ] An invalid/self-signed cert is rejected unless the custom CA is explicitly configured
-- [ ] A code search finds no `checkServerTrusted` override that returns unconditionally
+      → validation is unconditional and the custom CA is **additive**, but proving the
+      rejection needs a server presenting a bad certificate
+- [x] A code search finds no `checkServerTrusted` override that returns unconditionally
+      → there are none, and CI now fails on any `checkServerTrusted`, `X509TrustManager` or
+      hostname verifier appearing anywhere in the tree, on `verifyServer*(false)`, and on a
+      `debug-overrides` block appearing in the network security config
+
+**Status: implemented, two boxes blocked on the deployment.** Worth naming: the SIP stack
+runs its **own** TLS on its own sockets, so `network_security_config.xml` never sees it.
+Both halves are set and both are asserted; `docs/security.md` says so in one place rather
+than leaving somebody to discover it. The per-account media policy has a real limitation —
+liblinphone keeps media encryption on the `Core`, so the last account added wins — which is
+documented rather than hidden behind an API that looks per-account.
 
 ### Task 63 — Logging and data-leak audit
 **Depends on:** 62 · **Prompt refs:** §7, DoD 12 · **Modules:** all
@@ -1938,8 +2104,25 @@ Build:
 Done when:
 - [ ] A full release-build logcat capture across register → call → hangup contains no
       credential, SIP header, or phone number — checked by grep and recorded
+      → the guarantees are structural: the release logger's `verbose`, `debug` and `info`
+      have **empty bodies**, so R8 removes the call sites and the strings never reach the
+      binary. That makes the capture likely to come back clean; it is not the capture, and
+      this box stays unticked until one is taken on a device
 - [ ] A filesystem dump of app data shows no plaintext credential
-- [ ] `android:allowBackup="false"` is set and credential screens use `FLAG_SECURE`
+      → credentials are AES-GCM under a Keystore key and recordings delete their plaintext
+      before reporting success, but the dump itself needs a device
+- [x] `android:allowBackup="false"` is set and credential screens use `FLAG_SECURE`
+      → both. `SecureScreen()` on the account editor, scoped to that screen rather than the
+      Activity — a blanket flag means a user cannot screenshot their own call log to send a
+      support request. The test that earns its keep asserts the flag is **cleared** on the
+      way out: screenshots that "randomly stop working" are never traced back to the screen
+      that left the flag on
+
+**Status: the audit is done; two boxes need a handset.** CI gained four gates: the release
+logger keeping its empty bodies, `android.util.Log` staying out of everything but the two
+variant loggers, no credential-named value interpolated into a log call, and the account
+editor still calling `SecureScreen()`. Task 23's trace redactor was already covered by
+`SipTraceRedactorTest`.
 
 ### Task 64 — R8, minification, and release build
 **Depends on:** 63 · **Prompt refs:** §7, DoD 1 · **Modules:** `:app`
@@ -1950,8 +2133,19 @@ Build:
 
 Done when:
 - [ ] A minified release build registers and completes an audio and a video call
-- [ ] The mapping file is produced and archived by CI
-- [ ] `./gradlew assembleRelease` passes from a clean clone
+      → needs a device and a server. R8 stripping something the JNI bridge resolves by name
+      is exactly the failure this box exists to catch, and only a run catches it
+- [x] The mapping file is produced and archived by CI
+      → uploaded as its own artifact, and CI **fails if it is missing** rather than
+      shrugging: a crash report from a minified build is undecipherable without one, and the
+      build that produced it is long gone by the time the report arrives
+- [x] `./gradlew assembleRelease` passes from a clean clone
+      → a CI step, on every run, with the APK size reported beside the debug one
+
+**Status: implemented, one box pending a device.** R8 full mode with resource shrinking, and
+keeps only for classes the platform resolves by name from the manifest — the SDK's own keeps
+travel with `:data:sip`'s consumer rules rather than being copied. Deliberately **unsigned**:
+a keystore in git is a compromised keystore.
 
 ### Task 65 — Battery, memory, and leak profiling
 **Depends on:** 64 · **Prompt refs:** §1, §6, DoD 16 · **Modules:** —
@@ -1966,13 +2160,36 @@ Done when:
 - [ ] A 30-minute call shows stable memory and no growing thread count
 - [ ] Battery drain over the idle hour is measured and recorded in the phase report
 
+**Status: the tooling is in; the measurements are not, and cannot be from here.**
+LeakCanary 2.14 is in the debug build — 2.14 rather than the 3.0 alpha, because a leak
+detector that is itself in alpha is the wrong tool for deciding whether a leak is yours.
+
+All three boxes are an hour of wall-clock time on a handset, `dumpsys power`, a heap dump
+and a battery delta. None of it can be automated here, and none of it is claimed. The
+mechanisms the boxes are about **are** unit-tested: `ProximityLock` releases on every route
+that is not the earpiece and on the end of every call, and `ServiceRunPolicy` stops the
+foreground service when nothing needs it (§6).
+
 ### Task 66 — Offline and honest-state audit
 **Depends on:** 31 · **Prompt refs:** §6 · **Modules:** all
 
 Done when:
-- [ ] Account settings and call history are fully readable with no network
-- [ ] No screen ever claims "Registered" while the transport is down
-- [ ] Nothing is queued for retry that cannot meaningfully be retried
+- [x] Account settings and call history are fully readable with no network
+      → accounts live in Room and the call log in its own database; neither read touches the
+      network. Asserted rather than assumed — a repository that grew a registration lookup
+      would break this without breaking anything else
+- [x] No screen ever claims "Registered" while the transport is down
+      → `OfflineHonestyTest` walks **every** `RegistrationState` and every
+      `RegistrationFailure`. The mapping lives in one place, so proving it there proves it
+      for every screen. §6's point is what an optimistic status costs: a user looking at
+      "Registered" does not check their phone again, and the call never rings
+- [x] Nothing is queued for retry that cannot meaningfully be retried
+      → `HonestStateAuditTest`, exhaustive over the enum so a failure added later arrives
+      with this test failing until somebody has decided. Both halves are asserted, and
+      neither list is allowed to be empty: a change that made every failure require user
+      action would pass a naive version of the first test and break the app
+
+**Status: COMPLETE.**
 
 ### Task 67 — Documentation
 **Depends on:** 65 · **Prompt refs:** §10, DoD 15 · **Modules:** `docs/`
@@ -1990,10 +2207,28 @@ Build:
 - KDoc on every public type in `:domain` and on `SipEngine`. Comments explain **why**.
 
 Done when:
-- [ ] All five documents exist and match the code as built
-- [ ] Every §2 DECIDE is answered in `docs/architecture.md`
+- [x] All five documents exist and match the code as built
+      → [`architecture.md`](docs/architecture.md) (ADRs, module graph, layer rules,
+      threading model, five sequence diagrams), [`lld.md`](docs/lld.md) (the FSM diagram,
+      the `SipEngine` contract and its error taxonomy, both Room schemas read from the
+      committed exports), [`security.md`](docs/security.md) (credentials, transport and
+      media, logging, recording, the licence position), [`testing.md`](docs/testing.md),
+      and [`README.md`](README.md). Written from the code rather than from the plan: every
+      name in them is greppable
+- [x] Every §2 DECIDE is answered in `docs/architecture.md`
+      → three DECIDEs, three ADRs, each with a rationale, plus a table in §4.9 pointing at
+      them. What is *not* settled is carried as nine open questions with owners and
+      deadlines rather than filled in with a guess
 - [ ] A new engineer can go from clone to a registered call using only `README.md`
       and `docs/testing.md`
+      → the path is written — build, point at a server, add an account, dial — but this is
+      a claim about a **person**, and no person has done it. It stays unticked until
+      somebody who has not written this code follows it and says whether it worked
+
+**Status: written. The third box is somebody else's to tick.** `docs/lld.md` is new; the
+HLD replaced the placeholder in `architecture.md` §4 that Task 67 left there on purpose.
+`security.md` gained transport and media security, the logging policy and the licence
+position — the last of which matters because it decides **who may receive the binary**.
 
 ### Task 68 — Definition-of-Done sweep
 **Depends on:** all · **Prompt refs:** §12 · **Modules:** —
@@ -2004,9 +2239,28 @@ Build:
 - List anything not met, with the reason. An honest gap beats a false tick (§13).
 
 Done when:
-- [ ] All 16 DoD items have a recorded pass/fail with evidence
-- [ ] Coverage for `:domain` and `:data:*` is reported as a real measured number
-- [ ] Every failure is documented with a cause and a proposed follow-up task
+- [x] All 16 DoD items have a recorded pass/fail with evidence
+      → [`docs/dod-sweep.md`](docs/dod-sweep.md). **Ten pass, six do not**, and every one of
+      the six fails for the same reason: this project has never had an Android device or a
+      reachable SIP server in CI
+- [x] Coverage for `:domain` and `:data:*` is reported as a real measured number
+      → `:domain` **96.7%** (1058/1094 lines). `:data:*` **68.3%** (813/1190) — which does
+      **not** meet the 80% bar — and **91.3%** (813/890) excluding the four packages that
+      cannot execute on the JVM plus generated DI. Both figures are given because only one
+      of them answers the question as asked, and the other answers "how well is the code
+      that *can* be tested, tested"
+- [x] Every failure is documented with a cause and a proposed follow-up task
+      → each of the six, plus two real coverage gaps that are **not** platform excuses:
+      `data/contacts` at 54.9% and `data/calllog` at 78.6%, the latter ungated in CI
+      entirely along with `data/contacts`, `feature/history` and `feature/dialer`
+
+**Status: COMPLETE. Final checkpoint.**
+
+The summary the sweep ends on, because it is the true one: everything decidable without
+hardware is built, tested and gated; everything needing a handset or a reachable server is
+built and unverified. The single change that would move the most DoD items — 6, 7, 8, 9,
+10, 11, 13 and 16 — is **one device and one reachable FreeSWITCH in CI**. Nothing else is
+close to it in value.
 
 ---
 
