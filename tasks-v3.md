@@ -99,6 +99,10 @@ artifact — there is no `org.pjsip` group on Maven Central. Latest stable is **
 2.17** (22 April 2026), built with `./configure-android` plus SWIG bindings, needing
 **NDK r27+** for 16 KB page alignment. ADR-006 has the evidence and the three options.
 
+**And on one mechanical gate.** `workflow_dispatch` only runs a workflow that exists on the
+default branch, so `build-pjsip.yml` cannot be dispatched until this branch is merged. That
+is the single step between here and Task 83 starting.
+
 Nothing below starts until that is answered. Sizing it honestly: `:data:sip` is **4,821
 lines of production code and 3,663 lines of tests**, and nearly all of it is rewritten.
 `:domain`, `:feature:*` and `:app` are untouched — that is the `SipEngine` seam paying off
@@ -124,8 +128,12 @@ Done when:
 ### Task 85 — `PjsipSipEngine` behind the existing seam
 Done when:
 - [ ] `SipEngine` is implemented against pjsua2 with no change to its contract
-- [ ] Architecture Rule 2 is widened to keep `org.pjsip` inside `:data:sip`, as it does
-      `org.linphone` today — and a fixture proves the rule fires
+- [x] Architecture Rule 2 keeps `org.pjsip` inside `:data:sip`, as it does `org.linphone`
+      → **already true.** `ArchitectureRules.sipSdkStaysInDataSip` has filtered
+      `org.pjsip` since Task 12, `violations/app/src/SdkLeak.kt` imports
+      `org.pjsip.pjsua2.Endpoint`, and `RulesActuallyFireTest` asserts the rule fires on
+      it. The guard rail for this migration was built before the migration was asked for,
+      which is ADR-001's reversibility claim turning out to be real rather than rhetorical
 - [ ] The whole app still runs on `FakeSipEngine` (DoD 4)
 
 ### Task 86 — Registration, calling, hold, mute, DTMF
