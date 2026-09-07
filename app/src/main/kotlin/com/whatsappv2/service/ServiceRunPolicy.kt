@@ -40,6 +40,22 @@ sealed interface ServiceDecision {
 }
 
 /**
+ * The service type to go foreground with, for **any** decision — including [ServiceDecision.Stop].
+ *
+ * A `Stop` still needs one, and that is the whole point. `startForegroundService` promises
+ * that `startForeground` will be called; the promise is made by the caller and survives
+ * the service deciding there is nothing to do. Going straight to `stopSelf` without it is
+ * what killed the app with `ForegroundServiceDidNotStartInTimeException` while somebody
+ * was adding their first account — the decision then is `Stop`, because nothing is
+ * registered yet.
+ *
+ * `REGISTRATION` is the honest default: `specialUse` describes a service that is starting
+ * up to hold a registration, and it needs no runtime permission, so it cannot itself throw.
+ */
+fun ServiceDecision.foregroundReason(): ServiceReason =
+    (this as? ServiceDecision.Run)?.reason ?: ServiceReason.REGISTRATION
+
+/**
  * Decides whether the registration service should run.
  *
  * Pure, so the rule can be asserted directly rather than inferred from `dumpsys` output.

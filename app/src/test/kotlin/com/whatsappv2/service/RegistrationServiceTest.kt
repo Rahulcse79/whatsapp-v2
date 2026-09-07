@@ -40,6 +40,30 @@ class ServiceRunPolicyTest {
     }
 
     @Test
+    fun `even a Stop decision yields a foreground reason`() {
+        // The regression test for the crash a handset found on 2026-09-07:
+        // ForegroundServiceDidNotStartInTimeException, with startForegroundCount:0.
+        //
+        // startForegroundService promises that startForeground will be called. The
+        // service used to make that call only from its flow collector, and the
+        // collector's first answer while somebody adds their FIRST account is Stop -
+        // nothing is registered yet. So startForeground was never called at all and the
+        // platform killed the process five seconds later.
+        //
+        // Every decision must therefore name a type to go foreground with, Stop included.
+        assertEquals(ServiceDecision.Stop, ServiceRunPolicy.decide(emptyMap(), activeCalls = 0))
+        assertEquals(ServiceReason.REGISTRATION, ServiceDecision.Stop.foregroundReason())
+    }
+
+    @Test
+    fun `a running decision keeps its own reason`() {
+        assertEquals(
+            ServiceReason.ACTIVE_CALL,
+            ServiceDecision.Run(ServiceReason.ACTIVE_CALL).foregroundReason(),
+        )
+    }
+
+    @Test
     fun `a failed registration alone does not keep the service alive`() {
         // Retrying is scheduled elsewhere; holding a foreground service open for an
         // account that cannot register is exactly the battery drain §6 forbids.

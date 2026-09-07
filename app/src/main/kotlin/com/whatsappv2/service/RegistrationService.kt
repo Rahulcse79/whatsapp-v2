@@ -63,6 +63,10 @@ import javax.inject.Inject
  * situations, and 14+ adds per-type permission checks. Both throw. They are caught and
  * logged rather than allowed to crash: the app can still function without the service,
  * and taking the process down loses any call already in progress.
+ *
+ * Catching is not sufficient on its own, though — see [onStartCommand]. Once
+ * `startForegroundService` has been called, `startForeground` must happen whatever the
+ * service then decides, or the platform kills the process a few seconds later.
  */
 @AndroidEntryPoint
 class RegistrationService : Service() {
@@ -125,11 +129,58 @@ class RegistrationService : Service() {
         val call: CallNotification,
     )
 
+    /**
+     * Goes foreground **immediately**, before any decision is made.
+     *
+     * ## The crash this exists to stop
+     *
+     * `startForegroundService` is a promise: the service must call `startForeground`
+     * within a few seconds or the platform kills the process with
+     * `ForegroundServiceDidNotStartInTimeException`. This method used to do nothing but
+     * return, and the only caller of `startForeground` was [render] — driven by a flow
+     * collector started in [onCreate].
+     *
+     * That collector is asynchronous, and worse, its first answer is often
+     * [ServiceDecision.Stop]: [ServiceRunPolicy] returns `Stop` when nothing is registered
+     * and no call is up, which is exactly the state the app is in while somebody is
+     * **adding their first account**. `Stop` routes to `stopSelfSafely`, `startForeground`
+     * is never called at all, and five seconds later Android kills the app. On a handset
+     * that read as "the app crashes when I register an extension", with
+     * `startForegroundCount:0` in the ActivityManager log.
+     *
+     * ## Why the state can be read here
+     *
+     * `registrationState` and `activeCalls` are `StateFlow`s, so the current answer is
+     * available synchronously. There is no need to wait for an emission to know what to
+     * show — waiting was the bug.
+     *
+     * A `Stop` decision still goes foreground first and stops immediately after. That
+     * looks redundant and is not: the promise was made by the caller of
+     * `startForegroundService`, and it has to be kept even when the answer is "there is
+     * nothing to do". Stopping without keeping it is the crash.
+     *
+     * START_NOT_STICKY: if the process is killed, the app decides whether to register
+     * again on next launch. Restarting a bare service with no state would put a
+     * notification on screen with nothing behind it.
+     */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // START_NOT_STICKY: if the process is killed, the app decides whether to register
-        // again on next launch. Restarting a bare service with no state would put a
-        // notification on screen with nothing behind it.
+        val presentation = currentPresentation()
+
+        startOrUpdate(presentation.decision.foregroundReason(), presentation)
+
+        if (presentation.decision is ServiceDecision.Stop) stopSelfSafely()
         return START_NOT_STICKY
+    }
+
+    /** What the service should be showing right now, read straight from the state holders. */
+    private fun currentPresentation(): Presentation {
+        val registrations = registrar.registrationState.value
+        val active = calls.activeCalls.value
+        return Presentation(
+            decision = ServiceRunPolicy.decide(registrations, active.size),
+            summary = RegistrationSummaryFactory.summarise(registrations, active.size),
+            call = CallNotificationPolicy.decide(active),
+        )
     }
 
     override fun onDestroy() {
