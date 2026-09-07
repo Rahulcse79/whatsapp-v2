@@ -6,6 +6,7 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import com.whatsappv2.HiltTestActivity
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
 import com.whatsappv2.di.ROBOLECTRIC_SDK
@@ -102,9 +103,11 @@ class AppRootNavigationTest {
         compose.onNodeWithContentDescription("Settings and accounts").performClick()
         compose.waitForIdle()
 
-        compose.onNodeWithText("DTMF").assertIsDisplayed()
-        compose.onNodeWithText("Default media encryption").assertIsDisplayed()
-        compose.onNodeWithText("Audio route").assertIsDisplayed()
+        // Scrolled to, not merely present: the settings body is a scrolling column, so
+        // the lower two groups exist off-screen whether or not anything renders them.
+        compose.onNodeWithText("DTMF").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Default media encryption").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Audio route").performScrollTo().assertIsDisplayed()
     }
 
     @Test
