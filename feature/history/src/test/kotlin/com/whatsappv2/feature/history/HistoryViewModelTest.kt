@@ -43,7 +43,6 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalCoroutinesApi::class)
 class HistoryViewModelTest {
 
-
     /** A device that can capture, so a video request stays a video request. */
     private object CameraPresent : CameraAvailability {
         override fun isCameraUsable(): Boolean = true
