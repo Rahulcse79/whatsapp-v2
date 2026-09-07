@@ -91,7 +91,10 @@ class AppRootNavigationTest {
 
         compose.onNodeWithText("SIP accounts").performClick()
         compose.waitForIdle()
-        compose.onNodeWithText("No SIP accounts").assertIsDisplayed()
+        // The list's own back arrow, not its empty state: the accounts screen opens on
+        // Loading while the store is read, so asserting "No SIP accounts" is asserting
+        // that a database read has finished rather than that navigation worked.
+        compose.onNodeWithContentDescription("Back to settings").assertIsDisplayed()
     }
 
     @Test
