@@ -1,7 +1,7 @@
 # whatsapp-v2 — Native Android SIP Client
 
-A production-grade native Android SIP softphone. Audio and video calling, multi-account
-SIP registration, Telecom integration, and conferencing against FreeSWITCH.
+**Callisto** — a production-grade native Android SIP softphone. Audio and video calling,
+multi-account SIP registration, Telecom integration, and conferencing against FreeSWITCH.
 
 ## Documents
 

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Everything a user reads this app's name from, in one place.
+
+  It was "whatsapp-v2" - the repository's slug - hard-coded in three places: the launcher,
+  the activity, and the calling account Android shows in its own settings. A name spelled
+  separately in three files is a name that is eventually wrong in one of them.
+
+  Callisto, and deliberately not WhatsApp: that mark is Meta's, and a SIP softphone
+  shipping under it could not be distributed. The application ID, the module names and the
+  `com.whatsappv2` package keep their historical spelling, because those are identifiers
+  rather than names - changing the application ID would orphan every installed copy.
+-->
+<resources>
+    <string name="app_name">Callisto</string>
+</resources>

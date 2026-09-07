@@ -6,6 +6,7 @@ import android.net.Uri
 import android.telecom.PhoneAccount
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
+import com.whatsappv2.R
 import com.whatsappv2.core.common.logging.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -61,7 +62,7 @@ class SipPhoneAccount @Inject constructor(
             return
         }
 
-        val account = PhoneAccount.builder(handle, ACCOUNT_LABEL)
+        val account = PhoneAccount.builder(handle, context.getString(R.string.app_name))
             .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
             .addSupportedUriScheme(PhoneAccount.SCHEME_SIP)
             // Telecom rejects a self-managed account that cannot say where its calls go.
@@ -90,7 +91,9 @@ class SipPhoneAccount @Inject constructor(
 
     private companion object {
         const val TAG = "SipPhoneAccount"
+
+        // Stable, and not the app name: Telecom keys the registered account on this,
+        // so renaming it would orphan the account already on the device.
         const val ACCOUNT_ID = "whatsappv2-sip"
-        const val ACCOUNT_LABEL = "whatsapp-v2"
     }
 }
