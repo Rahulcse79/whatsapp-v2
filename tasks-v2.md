@@ -262,7 +262,7 @@ Done when:
       does not disappear before it can be read
 - [x] `SaveFailed` still keeps the user on the editor with their input intact
 - [x] A test covers all three outcomes — saved+registered, saved+registration failed, failed
-- [ ] `:feature:accounts` coverage still clears its CI gate (`.../accounts/editor` 45%,
+- [x] `:feature:accounts` coverage still clears its CI gate (`.../accounts/editor` 45%,
       `.../accounts/list` 40%)
 
 ---
@@ -338,7 +338,7 @@ Done when:
 - [x] Every row action shows a pressed state and is at least 48dp
 - [x] A row offers an audio and a video call-back, both using the entry's own account
 - [x] Every icon has a `contentDescription`; no existing one was dropped
-- [ ] Existing history UI tests pass with their tags unchanged
+- [x] Existing history UI tests pass with their tags unchanged
 - [ ] The list renders correctly in RTL and in dark theme
 
 ---
@@ -482,9 +482,30 @@ Done when:
 
 ---
 
-## Status — implemented, and what is still unticked
+## Status — implemented, CI green, and what is still unticked
 
-All ten tasks are implemented. The unticked boxes below are unticked for two reasons, and
+All ten tasks are implemented and the branch is **green on CI**: build, detekt, the
+architecture rules, the coverage thresholds and every security assertion, plus the
+meta-checks that require each gate to actually fire.
+
+Six things only CI knew, all mine, all fixed on the branch:
+
+1. `contentDescription` inside a `semantics` block resolved to the composable's own
+   parameter rather than the semantics property, so assigning to it assigned to a `val`.
+2. Six composables were over detekt's 60-line limit — two reported, four hidden behind the
+   first failure.
+3. `DtmfDigit.symbol` is a `Char`; an extracted lambda declared it `String`.
+4. Two of the new navigation assertions were wrong rather than the code: one asserted on
+   controls below the fold, the other on an empty state that is really a finished database
+   read.
+5. `AccountSavedMessage` needed its own file to satisfy `MatchingDeclarationName`.
+6. **A real regression, and the one worth reading.** Task 76's re-entry guard was keyed on
+   the action alone, so it swallowed every DTMF digit typed while the previous one was
+   still in flight — and digits are typed faster than a round trip. `sendDtmf`'s own
+   documentation says one tone per press, never a buffered sequence, and the guard quietly
+   made it fewer than one. `CallAction.isRepeatable` now exempts DTMF, which is the only
+   action here where a second press is a new instruction rather than a duplicate. An
+   existing test caught it. The unticked boxes below are unticked for two reasons, and
 neither of them is "not done yet".
 
 **Needs a device or an emulator.** This project has never had one in CI, which is the same
