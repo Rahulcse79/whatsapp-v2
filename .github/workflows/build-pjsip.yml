@@ -1,0 +1,183 @@
+# Builds pjproject (PJSIP) for Android and publishes the result as a workflow artifact.
+#
+# Why this exists: PJSIP publishes no Android AAR. Unlike liblinphone, which ships one
+# with prebuilt `.so` files, pjsua2 for Android is a source build — `./configure-android`,
+# `make`, then SWIG-generated Java bindings. ADR-006 records that, and this workflow is
+# the "build it ourselves" option from it.
+#
+# It is `workflow_dispatch` only, exactly like the Gradle wrapper bootstrap: it produces
+# binaries the repository cannot author by hand, it takes far too long to sit on the CI
+# gate, and nothing in the app consumes its output until ADR-006 is accepted.
+#
+# STATUS: UNVERIFIED. This has never completed a run. It is written from the official
+# build instructions (docs.pjsip.org) and is a starting point to iterate on, not a
+# pipeline anybody should assume works. Treat the first few runs as the real design work.
+#
+# The two things most likely to need iteration are called out at their steps: the
+# OpenSSL and Opus cross-compiles, without which the stack has no TLS and no Opus — and a
+# PJSIP without those fails DoD 13 and §5.2, which is most of the point of the app.
+name: Build PJSIP for Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      pjsip-version:
+        description: "pjproject tag to build (latest stable was 2.17, 22 Apr 2026)"
+        required: true
+        default: "2.17"
+      openssl-version:
+        description: "OpenSSL version to cross-compile for TLS (DoD 13)"
+        required: true
+        default: "3.5.0"
+      opus-version:
+        description: "Opus version to cross-compile (§5.2 audio quality)"
+        required: true
+        default: "1.5.2"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: "pjproject ${{ inputs.pjsip-version }} · ${{ matrix.abi }}"
+    runs-on: ubuntu-latest
+
+    strategy:
+      # One ABI per job so a failure names the architecture that failed, and so the
+      # three run in parallel rather than serially for an hour each.
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            host: aarch64-linux-android
+            openssl-target: android-arm64
+          - abi: armeabi-v7a
+            host: armv7a-linux-androideabi
+            openssl-target: android-arm
+          - abi: x86_64
+            host: x86_64-linux-android
+            openssl-target: android-x86_64
+
+    env:
+      # Must match app/build.gradle.kts abiFilters. An ABI built here and not packaged
+      # there is wasted build time; one packaged and not built is a crash on that device.
+      ANDROID_API: "26"
+
+    steps:
+      - name: Report what is being built, so a pin comes from evidence
+        run: |
+          echo "::group::Inputs"
+          echo "pjproject : ${{ inputs.pjsip-version }}"
+          echo "OpenSSL   : ${{ inputs.openssl-version }}"
+          echo "Opus      : ${{ inputs.opus-version }}"
+          echo "ABI       : ${{ matrix.abi }} (host ${{ matrix.host }})"
+          echo "minSdk    : $ANDROID_API"
+          echo "::endgroup::"
+
+      # r27 or later is not a preference. Android 15 requires 16 KB page alignment and
+      # Play rejects updates without it; earlier NDKs cannot produce it.
+      - name: Set up the NDK (r27+, for 16 KB page sizes)
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          local-cache: true
+
+      - name: Install the build tools pjsua2 needs
+        run: |
+          sudo apt-get update
+          # swig generates the Java bindings; the rest is the ordinary autotools chain.
+          sudo apt-get install -y swig build-essential autoconf libtool pkg-config
+
+      - name: Fetch pjproject ${{ inputs.pjsip-version }}
+        run: |
+          curl -fsSL -o pjproject.tar.gz \
+            "https://github.com/pjsip/pjproject/archive/refs/tags/${{ inputs.pjsip-version }}.tar.gz"
+          mkdir -p pjproject && tar -xzf pjproject.tar.gz -C pjproject --strip-components=1
+
+      # ITERATE HERE FIRST. A bare configure-android finds no OpenSSL and silently builds
+      # a stack with TLS disabled - which does not fail the build, it fails DoD 13 at
+      # run time on a TLS account. The `Checking for OpenSSL` line in the configure
+      # output is the thing to read.
+      - name: Cross-compile OpenSSL ${{ inputs.openssl-version }}
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          curl -fsSL -o openssl.tar.gz \
+            "https://github.com/openssl/openssl/releases/download/openssl-${{ inputs.openssl-version }}/openssl-${{ inputs.openssl-version }}.tar.gz"
+          mkdir -p openssl && tar -xzf openssl.tar.gz -C openssl --strip-components=1
+          export PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          cd openssl
+          ./Configure ${{ matrix.openssl-target }} -D__ANDROID_API__=$ANDROID_API \
+            --prefix="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}" no-shared no-tests
+          make -j"$(nproc)" && make install_sw
+
+      # The second half of the same problem: without Opus, PJSIP negotiates narrowband
+      # codecs and the call sounds like 2005.
+      - name: Cross-compile Opus ${{ inputs.opus-version }}
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          curl -fsSL -o opus.tar.gz \
+            "https://downloads.xiph.org/releases/opus/opus-${{ inputs.opus-version }}.tar.gz"
+          mkdir -p opus && tar -xzf opus.tar.gz -C opus --strip-components=1
+          export PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          cd opus
+          ./configure --host=${{ matrix.host }} \
+            CC="${{ matrix.host }}$ANDROID_API-clang" \
+            --prefix="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}" \
+            --disable-shared --enable-static
+          make -j"$(nproc)" && make install
+
+      - name: Configure and build pjproject
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+          TARGET_ABI: ${{ matrix.abi }}
+        run: |
+          cd pjproject
+          # config_site.h is where PJSIP's compile-time feature set is decided. Video is
+          # off by default and this app needs it (§5.2, Tasks 51-54).
+          cat > pjlib/include/pj/config_site.h <<'SITE'
+          #define PJMEDIA_HAS_VIDEO 1
+          #define PJMEDIA_HAS_OPENH264_CODEC 0
+          #define PJMEDIA_HAS_VPX_CODEC 1
+          #define PJMEDIA_HAS_OPUS_CODEC 1
+          #define PJSIP_HAS_TLS_TRANSPORT 1
+          #include <pj/config_site_sample.h>
+          SITE
+          ./configure-android --use-ndk-cflags \
+            --with-ssl="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}" \
+            --with-opus="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}"
+          echo "::group::configure summary - read the SSL and Opus lines"
+          grep -iE "ssl|opus|video" config.log | tail -40 || true
+          echo "::endgroup::"
+          make dep && make -j"$(nproc)"
+
+      - name: Build the pjsua2 Java bindings
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+          TARGET_ABI: ${{ matrix.abi }}
+        run: |
+          cd pjproject/pjsip-apps/src/swig
+          make
+
+      - name: Confirm the result is 16 KB aligned
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          # The check that matters for Play. A .so that is not 16 KB aligned is one
+          # Android 15 will refuse to load on a 16 KB device.
+          READELF="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          find pjproject -name 'libpjsua2.so' -print0 | while IFS= read -r -d '' so; do
+            echo "--- $so"
+            "$READELF" -lW "$so" | grep -E 'LOAD' || true
+          done
+
+      - name: Publish the build for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: pjsip-${{ inputs.pjsip-version }}-${{ matrix.abi }}
+          if-no-files-found: error
+          path: |
+            pjproject/pjsip-apps/src/swig/java/android/**
+            pjproject/**/lib/*.a

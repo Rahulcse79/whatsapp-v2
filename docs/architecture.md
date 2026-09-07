@@ -250,6 +250,60 @@ changes no application code. Revisit if CI flakiness from shared state becomes a
 
 ---
 
+### ADR-006 — Migrate the SIP stack to **PJSIP / pjsua2**, and how the binaries are sourced
+
+**Status:** Requested, **BLOCKED on a sourcing decision** · **Raised:** 2026-09-07 ·
+**Decider:** stakeholder · **Supersedes when accepted:** ADR-001
+
+**Context.** The product owner requires the calling stack to move to the latest stable
+PJSIP. ADR-001 chose liblinphone and explicitly weighed PJSIP against it; this reverses
+that, so it is recorded here rather than applied quietly.
+
+**What is verified, not assumed:**
+
+| Fact | Value | Consequence |
+|---|---|---|
+| Latest stable pjproject | **2.17**, released 22 April 2026 | This is what "latest stable" means today |
+| Official Android artifact | **None.** No `org.pjsip` group on Maven Central | The binaries must come from somewhere; see below |
+| Documented Android build | `./configure-android` + `make` + SWIG `pjsua2` bindings | An NDK cross-compile this project would own |
+| 16 KB page size | Requires **NDK r27 or later** | Mandatory for Android 15+ and for Play submissions |
+| ABIs this app packages | `arm64-v8a`, `armeabi-v7a`, `x86_64` | Three cross-compiles per release |
+
+**The blocking question — where do the `.so` files come from?** PJSIP is not consumable
+the way liblinphone is. Three options, and they are not equivalent:
+
+1. **Build pjproject 2.17 in CI from source.** The only route to genuinely *latest stable*
+   PJSIP. `.github/workflows/build-pjsip.yml` is a first cut of it. Cost: a long native
+   build, and OpenSSL and Opus must be cross-compiled too — a bare `configure-android`
+   yields a stack with **no TLS and no Opus**, which fails DoD 13 and §5.2 outright. This
+   is precisely the "assemble the media pipeline yourself" cost ADR-001 declined.
+2. **A third-party repackaged AAR** — `com.pjdroid:pjdroid`, `com.cocolove2.library:pjsip`,
+   `net.gotev:sipservice`. Fastest, and rejected on the evidence unless the stakeholder
+   overrules: none is published by Teluu, each pins its own older pjproject rather than
+   2.17, none documents 16 KB page-size support, and this is the component that holds SIP
+   credentials and carries media. Shipping an unvetted native blob contradicts §7 and the
+   "production-ready" requirement in the same breath as satisfying "use PJSIP".
+3. **Vendor prebuilt `.so` files into the repository.** Removes the CI build but puts
+   binaries in git that nobody can reproduce, and re-does the problem at every NDK bump.
+
+**Scope, so the size is not a surprise.** The `SipEngine` seam means `:domain`,
+`:feature:*` and `:app` are untouched — that is the payoff ADR-001 promised and it holds.
+`:data:sip` is **4,821 lines of production code and 3,663 lines of tests**, and
+essentially all of it is rewritten: the core gateway, registration, the call gateway,
+video, recording, conference, and every state mapper.
+
+**What this migration does *not* fix.** The four defects reported from the device on
+2026-09-07 — the retained `ConnectionService`, mute, hold, and video — were all found to
+be **above** the SIP abstraction, in `:app` and `:domain`. Every one of them would
+reproduce identically on PJSIP. They are fixed separately, and that fix is what makes
+1:1 audio and video calling work; this ADR is orthogonal to it.
+
+**Recommendation.** Land the defect fixes and confirm calling on the handset first, then
+take option 1 as its own tracked piece of work. Options 2 and 3 buy the PJSIP name
+without the properties that made it worth asking for.
+
+---
+
 ## 2. Settled inputs to the rest of the plan
 
 | Question | Answer | Affects |
@@ -581,7 +635,7 @@ and the REFER carries `Replaces` naming B's dialog — which is why the gateway 
 | §2 DECIDE | Answer | Section |
 |---|---|---|
 | §2.2 — conference server and model | FreeSWITCH `mod_conference`, dial-in MCU, domain shaped for SFU | ADR-003 |
-| §2.4 — which SIP stack | liblinphone (linphone-sdk) 5.5.18, GPLv3 assumed | ADR-001, ADR-002 |
+| §2.4 — which SIP stack | liblinphone (linphone-sdk) 5.5.18, GPLv3 assumed; a move to PJSIP 2.17 is requested and blocked on sourcing | ADR-001, ADR-002, ADR-006 |
 | §2.5 — push model | RFC 8599 `pn-*` client params + an ESL-driven gateway; four-field payload contract | ADR-004 |
 
 DoD 15 asks for every DECIDE to be answered here. All three are, each with a rationale and
