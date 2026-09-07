@@ -46,7 +46,7 @@ class FakeCallRecorderTest {
         assertTrue(recorder.active.value.isEmpty())
         // Recorded even when refused: a caller that passed no consent is what a test
         // asserting the gate needs to see.
-        assertEquals(listOf(RecordingConsent.None), recorder.consents)
+        assertEquals(listOf<RecordingConsent>(RecordingConsent.None), recorder.consents.toList())
     }
 
     @Test
@@ -128,7 +128,7 @@ class FakeCallRecorderTest {
         val removed = recorder.purgeOlderThan(CUTOFF).getOrNull()
 
         assertEquals(1, removed)
-        assertEquals(listOf(CUTOFF), recorder.purgedBefore)
+        assertEquals(listOf(CUTOFF), recorder.purgedBefore.toList())
         assertEquals(listOf(other), recorder.recordings().map { it.callId })
     }
 
