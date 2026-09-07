@@ -425,17 +425,11 @@ private fun CallControlRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
     ) {
-        CallActionButton(
-            icon = if (controls.isMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
-            contentDescription = if (controls.isMuted) "Unmute microphone" else "Mute microphone",
-            activeStateDescription = if (controls.isMuted) "Muted" else "Not muted",
-            onClick = { actions.onToggleMute(!controls.isMuted) },
+        MuteButton(
+            muted = controls.isMuted,
             enabled = availability.canMute,
-            active = controls.isMuted,
-            label = "Mute",
             pending = CallAction.MUTE in pending,
-            pendingStateDescription = if (controls.isMuted) "Unmuting" else "Muting",
-            modifier = Modifier.testTag(TAG_MUTE),
+            onToggle = actions.onToggleMute,
         )
         CallActionButton(
             icon = Icons.AutoMirrored.Filled.VolumeUp,
@@ -468,6 +462,28 @@ private fun CallControlRow(
             onToggle = onToggleKeypad,
         )
     }
+}
+
+/**
+ * The microphone.
+ *
+ * The icon shows the state the call is actually in; `pending` shows that a press was
+ * received. Never the other way round — see [CallActionButton] and Task 76.
+ */
+@Composable
+private fun MuteButton(muted: Boolean, enabled: Boolean, pending: Boolean, onToggle: (Boolean) -> Unit) {
+    CallActionButton(
+        icon = if (muted) Icons.Filled.MicOff else Icons.Filled.Mic,
+        contentDescription = if (muted) "Unmute microphone" else "Mute microphone",
+        activeStateDescription = if (muted) "Muted" else "Not muted",
+        onClick = { onToggle(!muted) },
+        enabled = enabled,
+        active = muted,
+        label = "Mute",
+        pending = pending,
+        pendingStateDescription = if (muted) "Unmuting" else "Muting",
+        modifier = Modifier.testTag(TAG_MUTE),
+    )
 }
 
 /**

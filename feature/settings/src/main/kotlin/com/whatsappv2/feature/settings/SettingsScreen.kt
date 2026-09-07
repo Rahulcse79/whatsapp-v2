@@ -151,23 +151,7 @@ private fun SettingsContent(
             onSelect = onDtmfModeChange,
         )
 
-        ChoiceGroup(
-            title = "Default media encryption",
-            description = "Applies to new accounts. Existing accounts keep their own.",
-            options = SrtpPolicy.entries,
-            selected = state.settings.defaultSrtpPolicy,
-            labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
-            onSelect = onSrtpPolicyChange,
-        )
-        if (state.settings.defaultSrtpPolicy == SrtpPolicy.MANDATORY) {
-            // The consequence is a failed call, not a warning banner, so it is stated
-            // in the same words the account editor uses (DoD 13).
-            Text(
-                text = "Calls will fail rather than connect without encryption.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        EncryptionGroup(selected = state.settings.defaultSrtpPolicy, onSelect = onSrtpPolicyChange)
 
         ChoiceGroup(
             title = "Audio route",
@@ -186,6 +170,28 @@ private fun SettingsContent(
                 onChange = onSipTraceChange,
             )
         }
+    }
+}
+
+/** The default SRTP policy, and what choosing Mandatory actually costs. */
+@Composable
+private fun EncryptionGroup(selected: SrtpPolicy, onSelect: (SrtpPolicy) -> Unit) {
+    ChoiceGroup(
+        title = "Default media encryption",
+        description = "Applies to new accounts. Existing accounts keep their own.",
+        options = SrtpPolicy.entries,
+        selected = selected,
+        labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
+        onSelect = onSelect,
+    )
+    if (selected == SrtpPolicy.MANDATORY) {
+        // The consequence is a failed call, not a warning banner, so it is stated in the
+        // same words the account editor uses (DoD 13).
+        Text(
+            text = "Calls will fail rather than connect without encryption.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

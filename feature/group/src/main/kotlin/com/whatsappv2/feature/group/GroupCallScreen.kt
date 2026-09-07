@@ -149,25 +149,7 @@ private fun Members(state: GroupCallUiState, actions: GroupCallActions) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
-                modifier = Modifier.fillMaxWidth().testTag(TAG_MEMBERS),
-            ) {
-                items(state.members) { member ->
-                    InputChip(
-                        selected = true,
-                        onClick = { actions.onRemoveMember(member) },
-                        label = { Text(member.contact.displayName) },
-                        trailingIcon = {
-                            Icon(
-                                imageVector = Icons.Filled.Close,
-                                contentDescription = "Remove ${member.contact.displayName}",
-                            )
-                        },
-                        modifier = Modifier.testTag(memberTag(member)),
-                    )
-                }
-            }
+            ChosenMembers(members = state.members, onRemove = actions.onRemoveMember)
         }
 
         OutlinedTextField(
@@ -181,25 +163,55 @@ private fun Members(state: GroupCallUiState, actions: GroupCallActions) {
         // Hidden when empty, exactly as the dialler's picker is: a user who declined
         // READ_CONTACTS is never shown a blank space where a list should be (Task 50).
         if (state.matches.isNotEmpty()) {
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
-                modifier = Modifier.fillMaxWidth().testTag(TAG_MATCHES),
-            ) {
-                items(state.matches) { match ->
-                    AssistChip(
-                        onClick = { actions.onAddMember(match) },
-                        label = { Text(match.contact.displayName) },
-                        leadingIcon = {
-                            Avatar(
-                                displayName = match.contact.displayName,
-                                photoUri = match.contact.photoUri,
-                                size = AppTheme.sizing.avatarSmall,
-                            )
-                        },
-                        modifier = Modifier.testTag(matchTag(match)),
+            MemberMatches(matches = state.matches, onAdd = actions.onAddMember)
+        }
+    }
+}
+
+/** Who is on the list, each chip removing itself. */
+@Composable
+private fun ChosenMembers(members: List<SipContact>, onRemove: (SipContact) -> Unit) {
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
+        modifier = Modifier.fillMaxWidth().testTag(TAG_MEMBERS),
+    ) {
+        items(members) { member ->
+            InputChip(
+                selected = true,
+                onClick = { onRemove(member) },
+                label = { Text(member.contact.displayName) },
+                trailingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "Remove ${member.contact.displayName}",
                     )
-                }
-            }
+                },
+                modifier = Modifier.testTag(memberTag(member)),
+            )
+        }
+    }
+}
+
+/** Contacts matching the search, each chip adding itself. */
+@Composable
+private fun MemberMatches(matches: List<SipContact>, onAdd: (SipContact) -> Unit) {
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
+        modifier = Modifier.fillMaxWidth().testTag(TAG_MATCHES),
+    ) {
+        items(matches) { match ->
+            AssistChip(
+                onClick = { onAdd(match) },
+                label = { Text(match.contact.displayName) },
+                leadingIcon = {
+                    Avatar(
+                        displayName = match.contact.displayName,
+                        photoUri = match.contact.photoUri,
+                        size = AppTheme.sizing.avatarSmall,
+                    )
+                },
+                modifier = Modifier.testTag(matchTag(match)),
+            )
         }
     }
 }
