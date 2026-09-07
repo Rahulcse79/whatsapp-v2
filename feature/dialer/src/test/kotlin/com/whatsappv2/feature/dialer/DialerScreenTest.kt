@@ -11,6 +11,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
+import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CodecPreferences
 import com.whatsappv2.domain.model.NatPolicy
@@ -126,9 +127,10 @@ class DialerScreenTest {
 
     private fun setContent() {
         val viewModel = DialerViewModel(
-            placeCall = PlaceCallUseCase(repository, engine),
+            placeCall = PlaceCallUseCase(repository, engine, NoCameraAvailable),
             recentDials = RecentDials(),
             contacts = contacts,
+            camera = NoCameraAvailable,
             repository = repository,
             registrar = engine,
         )
@@ -148,6 +150,7 @@ class DialerScreenTest {
                         onAccountSelected = viewModel::onAccountSelected,
                         onRecentSelected = viewModel::onRecentSelected,
                         onCall = viewModel::onCall,
+                        onVideoCall = viewModel::onVideoCall,
                     ),
                 )
             }

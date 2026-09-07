@@ -11,12 +11,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -26,6 +29,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -58,6 +62,7 @@ import com.whatsappv2.domain.model.CallId
 @Composable
 fun DialerScreen(
     onCallPlaced: (CallId) -> Unit,
+    onBack: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: DialerViewModel = hiltViewModel(),
 ) {
@@ -73,6 +78,8 @@ fun DialerScreen(
                 is DialerEvent.InvalidTarget ->
                     snackbarHostState.showSnackbar("\"${event.input}\" is not a number or address")
                 is DialerEvent.Refused -> snackbarHostState.showSnackbar(event.message)
+                // The call was placed; this only says which kind it turned out to be.
+                is DialerEvent.Notice -> snackbarHostState.showSnackbar(event.message)
             }
         }
     }
@@ -89,6 +96,8 @@ fun DialerScreen(
             onRecentSelected = viewModel::onRecentSelected,
             onContactSelected = viewModel::onContactSelected,
             onCall = viewModel::onCall,
+            onVideoCall = viewModel::onVideoCall,
+            onBack = onBack,
         ),
         modifier = modifier,
     )
@@ -100,6 +109,7 @@ fun DialerScreen(
  * Separated from the ViewModel-bound version so it can be previewed and driven by a UI
  * test with nothing behind it — which is what Task 36's third done-when asks for.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun DialerScreen(
     state: DialerUiState,
@@ -109,6 +119,9 @@ internal fun DialerScreen(
 ) {
     Scaffold(
         modifier = modifier,
+        // A back arrow, because the dialler is a screen opened from Calls now rather than
+        // a tab that is always there (Task 70).
+        topBar = { DialerTopBar(onBack = actions.onBack) },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Column(
@@ -154,17 +167,62 @@ internal fun DialerScreen(
 
             Keypad(onDigit = actions.onDigit, onClear = actions.onClear)
 
-            CallActionButton(
-                icon = Icons.Filled.Call,
-                contentDescription = "Place call",
-                onClick = actions.onCall,
-                style = CallActionStyle.ANSWER,
-                enabled = state.canPlaceCall,
-                modifier = Modifier
-                    .padding(top = AppTheme.spacing.large, bottom = AppTheme.spacing.large)
-                    .testTag(TAG_CALL),
-            )
+            DialerCallButtons(state = state, actions = actions)
         }
+    }
+}
+
+/** A back arrow, because the dialler is a screen opened from Calls now, not a tab (Task 70). */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DialerTopBar(onBack: () -> Unit) {
+    TopAppBar(
+        title = { Text("Dialler") },
+        navigationIcon = {
+            IconButton(onClick = onBack, modifier = Modifier.testTag(TAG_BACK)) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back to calls",
+                )
+            }
+        },
+    )
+}
+
+/**
+ * Two ways to place the same call (Task 74).
+ *
+ * Both are enabled by the same rule, because whether video is possible is not this
+ * screen's decision: a device with no usable camera places an audio call and is told,
+ * rather than being shown a dead button it cannot explain.
+ */
+@Composable
+private fun DialerCallButtons(state: DialerUiState, actions: DialerActions) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraLarge),
+        modifier = Modifier.padding(
+            top = AppTheme.spacing.large,
+            bottom = AppTheme.spacing.large,
+        ),
+    ) {
+        CallActionButton(
+            icon = Icons.Filled.Call,
+            contentDescription = "Place call",
+            onClick = actions.onCall,
+            style = CallActionStyle.ANSWER,
+            enabled = state.canPlaceCall,
+            label = "Call",
+            modifier = Modifier.testTag(TAG_CALL),
+        )
+        CallActionButton(
+            icon = Icons.Filled.Videocam,
+            contentDescription = "Place video call",
+            onClick = actions.onVideoCall,
+            style = CallActionStyle.ANSWER,
+            enabled = state.canPlaceCall,
+            label = "Video",
+            modifier = Modifier.testTag(TAG_VIDEO_CALL),
+        )
     }
 }
 
@@ -345,6 +403,8 @@ private val KEYPAD_ROWS = listOf(
 
 internal const val TAG_INPUT = "dialer-input"
 internal const val TAG_CALL = "dialer-call"
+internal const val TAG_VIDEO_CALL = "dialer-video-call"
+internal const val TAG_BACK = "dialer-back"
 internal const val TAG_BACKSPACE = "dialer-backspace"
 internal const val TAG_CLEAR = "dialer-clear"
 internal const val TAG_ACCOUNT = "dialer-account"

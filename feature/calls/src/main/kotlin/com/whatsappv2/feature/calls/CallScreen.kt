@@ -153,33 +153,66 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
 
         Spacer(Modifier.weight(1f))
 
-        if (call.availability.canAnswer) {
-            IncomingActions(call = call, actions = actions)
-        } else {
-            if (keypadShown) {
-                CallKeypad(
-                    dialled = dialled,
-                    onDigit = {
-                        dialled += it.symbol
-                        actions.onDtmf(it)
-                    },
-                    onHide = { keypadOpen = false },
-                    modifier = Modifier.padding(bottom = AppTheme.spacing.large),
-                )
-            }
-            InCallActions(
-                call = call,
-                actions = actions,
-                keypadOpen = keypadShown,
-                onToggleKeypad = { keypadOpen = !keypadShown },
-                secondaryControls = {
-                    CallSecondaryControls(call = call, recording = state.recording, actions = actions)
-                },
-            )
-        }
+        CallActionArea(
+            state = state,
+            actions = actions,
+            keypadShown = keypadShown,
+            dialled = dialled,
+            onDialled = { dialled += it },
+            onToggleKeypad = { keypadOpen = it },
+        )
     }
 
     CallDialogs(state = state, actions = actions)
+}
+
+/**
+ * Either the two answers to an incoming call, or the controls for one in progress.
+ *
+ * Split out so [ActiveCall] stays a layout: the choice between them is the call's phase,
+ * and everything below it is the same set of buttons either way.
+ */
+@Composable
+private fun CallActionArea(
+    state: CallUiState.Active,
+    actions: CallActions,
+    keypadShown: Boolean,
+    dialled: String,
+    onDialled: (Char) -> Unit,
+    onToggleKeypad: (Boolean) -> Unit,
+) {
+    val call = state.call
+    if (call.availability.canAnswer) {
+        IncomingActions(call = call, actions = actions)
+        return
+    }
+
+    if (keypadShown) {
+        CallKeypad(
+            dialled = dialled,
+            onDigit = {
+                onDialled(it.symbol)
+                actions.onDtmf(it)
+            },
+            onHide = { onToggleKeypad(false) },
+            modifier = Modifier.padding(bottom = AppTheme.spacing.large),
+        )
+    }
+    InCallActions(
+        call = call,
+        actions = actions,
+        keypadOpen = keypadShown,
+        onToggleKeypad = { onToggleKeypad(!keypadShown) },
+        pending = state.pendingActions,
+        secondaryControls = {
+            CallSecondaryControls(
+                call = call,
+                recording = state.recording,
+                actions = actions,
+                pending = state.pendingActions,
+            )
+        },
+    )
 }
 
 /**
@@ -332,6 +365,7 @@ private fun InCallActions(
     actions: CallActions,
     keypadOpen: Boolean,
     onToggleKeypad: () -> Unit,
+    pending: Set<CallAction>,
     secondaryControls: @Composable () -> Unit,
 ) {
     Column(
@@ -343,6 +377,7 @@ private fun InCallActions(
             actions = actions,
             keypadOpen = keypadOpen,
             onToggleKeypad = onToggleKeypad,
+            pending = pending,
         )
 
         // Passed in rather than called directly so this stays a layout: the second row
@@ -368,6 +403,10 @@ private fun InCallActions(
  *
  * Every `enabled` here comes from [CallControlAvailability]; there is no flag to forget to
  * set, which is Task 39's second done-when expressed as code.
+ *
+ * [pending] is the other half of that honesty (Task 76). A control the engine has not
+ * answered yet is busy, not toggled: the icon still shows the state the call is actually
+ * in, and the spinner says the press was received.
  */
 @Composable
 private fun CallControlRow(
@@ -375,6 +414,7 @@ private fun CallControlRow(
     actions: CallActions,
     keypadOpen: Boolean,
     onToggleKeypad: () -> Unit,
+    pending: Set<CallAction>,
 ) {
     val controls = call.controls
     val availability = call.availability
@@ -385,15 +425,11 @@ private fun CallControlRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
     ) {
-        CallActionButton(
-            icon = if (controls.isMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
-            contentDescription = if (controls.isMuted) "Unmute microphone" else "Mute microphone",
-            activeStateDescription = if (controls.isMuted) "Muted" else "Not muted",
-            onClick = { actions.onToggleMute(!controls.isMuted) },
+        MuteButton(
+            muted = controls.isMuted,
             enabled = availability.canMute,
-            active = controls.isMuted,
-            label = "Mute",
-            modifier = Modifier.testTag(TAG_MUTE),
+            pending = CallAction.MUTE in pending,
+            onToggle = actions.onToggleMute,
         )
         CallActionButton(
             icon = Icons.AutoMirrored.Filled.VolumeUp,
@@ -403,6 +439,8 @@ private fun CallControlRow(
             enabled = availability.canChangeRoute,
             active = speakerOn,
             label = "Speaker",
+            pending = CallAction.SPEAKER in pending,
+            pendingStateDescription = "Switching audio",
             modifier = Modifier.testTag(TAG_SPEAKER),
         )
         CallActionButton(
@@ -414,22 +452,59 @@ private fun CallControlRow(
             enabled = availability.canHold || availability.canResume,
             active = held,
             label = "Hold",
+            pending = CallAction.HOLD in pending,
+            pendingStateDescription = if (held) "Resuming" else "Holding",
             modifier = Modifier.testTag(TAG_HOLD),
         )
-        CallActionButton(
-            icon = Icons.Filled.Dialpad,
-            contentDescription = if (keypadOpen) "Hide the keypad" else "Show the keypad",
-            activeStateDescription = if (keypadOpen) "Shown" else "Hidden",
-            onClick = onToggleKeypad,
-            // A tone needs a running media path, so the phase decides this exactly as
-            // it decides hold - and a held call's keypad is disabled, not hidden, so
-            // the control does not move under the user's thumb (Task 43).
+        KeypadToggle(
+            open = keypadOpen,
             enabled = availability.canSendDtmf,
-            active = keypadOpen,
-            label = "Keypad",
-            modifier = Modifier.testTag(TAG_KEYPAD_TOGGLE),
+            onToggle = onToggleKeypad,
         )
     }
+}
+
+/**
+ * The microphone.
+ *
+ * The icon shows the state the call is actually in; `pending` shows that a press was
+ * received. Never the other way round — see [CallActionButton] and Task 76.
+ */
+@Composable
+private fun MuteButton(muted: Boolean, enabled: Boolean, pending: Boolean, onToggle: (Boolean) -> Unit) {
+    CallActionButton(
+        icon = if (muted) Icons.Filled.MicOff else Icons.Filled.Mic,
+        contentDescription = if (muted) "Unmute microphone" else "Mute microphone",
+        activeStateDescription = if (muted) "Muted" else "Not muted",
+        onClick = { onToggle(!muted) },
+        enabled = enabled,
+        active = muted,
+        label = "Mute",
+        pending = pending,
+        pendingStateDescription = if (muted) "Unmuting" else "Muting",
+        modifier = Modifier.testTag(TAG_MUTE),
+    )
+}
+
+/**
+ * Shows and hides the DTMF keypad.
+ *
+ * A tone needs a running media path, so the phase decides this exactly as it decides hold
+ * — and a held call's keypad is disabled, not hidden, so the control does not move under
+ * the user's thumb (Task 43).
+ */
+@Composable
+private fun KeypadToggle(open: Boolean, enabled: Boolean, onToggle: () -> Unit) {
+    CallActionButton(
+        icon = Icons.Filled.Dialpad,
+        contentDescription = if (open) "Hide the keypad" else "Show the keypad",
+        activeStateDescription = if (open) "Shown" else "Hidden",
+        onClick = onToggle,
+        enabled = enabled,
+        active = open,
+        label = "Keypad",
+        modifier = Modifier.testTag(TAG_KEYPAD_TOGGLE),
+    )
 }
 
 /**

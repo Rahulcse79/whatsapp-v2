@@ -43,6 +43,8 @@ class SettingsScreenTest {
                     onSrtpPolicyChange = onSrtp,
                     onAudioRouteChange = {},
                     onSipTraceChange = onTrace,
+                    onOpenAccounts = {},
+                    onBack = {},
                 )
             }
         }

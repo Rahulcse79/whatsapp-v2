@@ -7,10 +7,15 @@ import com.whatsappv2.domain.repository.CallLogFilter
 /**
  * What the history screen can do, gathered into one value.
  *
- * Eight callbacks, all the same kind of thing: something the user did. Grouping them keeps
+ * Twelve callbacks, all the same kind of thing: something the user did. Grouping them keeps
  * the screen's signature readable and means the next control adds a field here rather than
  * another argument threaded through the rows. `:feature:dialer` and `:feature:calls` group
  * their own for the same reason.
+ *
+ * The last three leave this module entirely (Tasks 69, 70, 78). Calls is the app's home
+ * screen now, so the dialler, the group-call page and settings are all reached from it —
+ * and `:feature:history` may not navigate to another feature, so it says *that the user
+ * asked* and `:app` decides what that opens.
  */
 @Stable
 data class HistoryActions(
@@ -23,4 +28,12 @@ data class HistoryActions(
     val onClearAllConfirmed: () -> Unit = {},
     /** Redial. The entry rather than the id, because the dialler needs the address. */
     val onCallBack: (CallLogEntry) -> Unit = {},
+    /** Redial with video (Task 75). Downgrades to audio when the camera cannot be used. */
+    val onVideoCallBack: (CallLogEntry) -> Unit = {},
+    /** Open the dialler, which is a floating button on this screen rather than a tab (Task 70). */
+    val onOpenDialer: () -> Unit = {},
+    /** Open the group-call page (Task 78). */
+    val onOpenGroupCall: () -> Unit = {},
+    /** Open settings, which is where the accounts list lives too (Task 69). */
+    val onOpenSettings: () -> Unit = {},
 )

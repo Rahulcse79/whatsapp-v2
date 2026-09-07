@@ -3,6 +3,8 @@ package com.whatsappv2.domain.usecase
 import com.whatsappv2.core.common.result.errorOrNull
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
+import com.whatsappv2.domain.engine.CameraAvailability
+import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CodecPreferences
@@ -31,7 +33,13 @@ class PlaceCallUseCaseTest {
     private val repository = FakeSipAccountRepository()
     private val engine = FakeSipEngine()
 
-    private fun useCase() = PlaceCallUseCase(repository, engine)
+    /** A device that can capture. Swapped for [NoCameraAvailable] to test the downgrade. */
+    private object CameraPresent : CameraAvailability {
+        override fun isCameraUsable(): Boolean = true
+    }
+
+    private fun useCase(camera: CameraAvailability = CameraPresent) =
+        PlaceCallUseCase(repository, engine, camera)
 
     private fun account(
         id: String = "acct-1",
@@ -201,5 +209,32 @@ class PlaceCallUseCaseTest {
     private companion object {
         /** 486, named so the assertion reads as intent rather than arithmetic. */
         const val BUSY_HERE = 486
+    }
+
+    // ---------------------------------------------------------------- video
+
+    @Test
+    fun `a video call is downgraded to audio when the camera cannot be used`() = runTest {
+        // Task 51's second done-when, on the path the dialler's video button uses
+        // (Task 74): placed as audio, never refused. Before Task 74 this use case was the
+        // only video entry point that skipped the check.
+        val work = account()
+        repository.save(work)
+        engine.givenRegistered(work)
+
+        useCase(NoCameraAvailable)("1001", media = MediaProfile.AUDIO_VIDEO)
+
+        assertEquals(MediaProfile.AUDIO, engine.activeCalls.value.single().media)
+    }
+
+    @Test
+    fun `a video call keeps its video when the camera is usable`() = runTest {
+        val work = account()
+        repository.save(work)
+        engine.givenRegistered(work)
+
+        useCase()("1001", media = MediaProfile.AUDIO_VIDEO)
+
+        assertEquals(MediaProfile.AUDIO_VIDEO, engine.activeCalls.value.single().media)
     }
 }

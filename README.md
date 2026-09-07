@@ -9,12 +9,14 @@ multi-account SIP registration, Telecom integration, and conferencing against Fr
 |---|---|
 | [`android-sip-app-prompt.md`](android-sip-app-prompt.md) | The requirements specification |
 | [`tasks.md`](tasks.md) | 68-task implementation plan, in dependency order |
+| [`tasks-v2.md`](tasks-v2.md) | Tasks 69–78 — the UX round, implemented; what is still unverified is listed |
 | [`docs/architecture.md`](docs/architecture.md) | HLD — decision record, module graph, layers, threading, sequence diagrams |
 | [`docs/lld.md`](docs/lld.md) | LLD — the call FSM, the `SipEngine` contract and its error taxonomy, the Room schemas |
 | [`docs/security.md`](docs/security.md) | Credentials at rest, transport and media security, logging policy, call recording |
 | [`docs/testing.md`](docs/testing.md) | Unit, instrumented and server-backed suites, and how to point them at a server |
 | [`docs/dod-sweep.md`](docs/dod-sweep.md) | Every Definition-of-Done item with its actual measured result |
 | [`docs/calling.md`](docs/calling.md) | How a call happens: the Telecom seam, notifications, audio and push |
+| [`docs/latency-sweep.md`](docs/latency-sweep.md) | Every screen classified pushed vs pulled, every timer named, six defects and their fixes |
 
 ## Build policy — CI, not laptops
 

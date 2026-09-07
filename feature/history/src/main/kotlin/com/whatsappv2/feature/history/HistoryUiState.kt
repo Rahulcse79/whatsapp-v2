@@ -49,4 +49,13 @@ sealed interface HistoryEvent {
 
     /** The redial was refused, with the sentence Task 44 gives that failure. */
     data class Refused(val message: String) : HistoryEvent
+
+    /**
+     * The call went out, but not quite as asked (Task 75).
+     *
+     * A video redial on a device whose camera cannot be used is placed as an audio call
+     * rather than refused, and saying so is the difference between a considered downgrade
+     * and a video button that appears not to work.
+     */
+    data class Notice(val message: String) : HistoryEvent
 }

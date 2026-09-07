@@ -31,7 +31,22 @@ class SharedPreferencesPermissionTracker @Inject constructor(
         preferences.edit { putBoolean(permission.name, true) }
     }
 
+    override fun hasCompletedOnboarding(): Boolean =
+        preferences.getBoolean(ONBOARDING_KEY, false)
+
+    override fun markOnboardingComplete() {
+        preferences.edit { putBoolean(ONBOARDING_KEY, true) }
+    }
+
     private companion object {
         const val FILE_NAME = "permission-requests"
+
+        /**
+         * Prefixed so it cannot collide with an [AppPermission] name (Task 72).
+         *
+         * The per-permission records are keyed by enum name in this same file, and a
+         * future permission called ONBOARDING_COMPLETE would otherwise read this flag.
+         */
+        const val ONBOARDING_KEY = "onboarding.complete"
     }
 }

@@ -97,4 +97,12 @@ sealed interface DialerEvent {
      * screen is the one line it will show.
      */
     data class Refused(val message: String) : DialerEvent
+
+    /**
+     * The call went out, but not as asked (Task 74).
+     *
+     * A video call placed where the camera cannot be used becomes an audio call rather
+     * than a failure, and the user is told which they got.
+     */
+    data class Notice(val message: String) : DialerEvent
 }

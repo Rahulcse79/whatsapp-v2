@@ -71,6 +71,7 @@ dependencies {
     implementation(project(":feature:accounts"))
     implementation(project(":feature:calls"))
     implementation(project(":feature:dialer"))
+    implementation(project(":feature:group"))
     implementation(project(":feature:history"))
     implementation(project(":feature:settings"))
     // Task 38 / ADR-004. The SDK only - the google-services PLUGIN is deliberately not

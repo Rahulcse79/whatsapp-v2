@@ -22,7 +22,10 @@ import com.whatsappv2.domain.repository.CallLogRepository
  * The key is the row offset rather than the last entry seen. A cursor would be sturdier
  * against rows being inserted mid-scroll, but the list is ordered newest first and the
  * only rows that appear are newer than everything on screen: they land above the window,
- * and [CallLogRepository.changes] invalidates the source anyway.
+ * and `HistoryViewModel` invalidates this source on [CallLogRepository.changes] anyway.
+ *
+ * That last clause was aspirational until Task 71 — the signal existed and nothing
+ * collected it. It is wired now; see `HistoryViewModel.watchStoreChanges`.
  */
 class CallLogPagingSource(
     private val repository: CallLogRepository,

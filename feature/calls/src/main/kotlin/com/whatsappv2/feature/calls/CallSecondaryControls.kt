@@ -33,6 +33,8 @@ internal fun CallSecondaryControls(
     recording: RecordingUiState,
     actions: CallActions,
     modifier: Modifier = Modifier,
+    /** Actions the engine has not answered yet, shown busy rather than toggled (Task 76). */
+    pending: Set<CallAction> = emptySet(),
 ) {
     val availability = call.availability
     val videoOn = call.controls.isVideoEnabled
@@ -49,6 +51,8 @@ internal fun CallSecondaryControls(
             enabled = availability.canToggleVideo,
             active = videoOn,
             label = "Video",
+            pending = CallAction.VIDEO in pending,
+            pendingStateDescription = if (videoOn) "Stopping video" else "Starting video",
             modifier = Modifier.testTag(TAG_VIDEO_TOGGLE),
         )
         CallActionButton(
@@ -59,6 +63,8 @@ internal fun CallSecondaryControls(
             // nothing, and a button that does nothing reads as broken (Task 53).
             enabled = availability.canSwitchCamera,
             label = "Flip",
+            pending = CallAction.SWITCH_CAMERA in pending,
+            pendingStateDescription = "Switching camera",
             modifier = Modifier.testTag(TAG_SWITCH_CAMERA),
         )
         CallActionButton(
