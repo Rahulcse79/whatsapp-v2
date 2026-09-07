@@ -88,14 +88,17 @@ object ConferenceVideoLayout {
     /**
      * The tightest grid that holds [count] tiles, in the shape the screen is.
      *
-     * Columns are the square root rounded up, which is the arrangement that wastes least
-     * space for a square-ish viewport; rows follow from the count. In landscape the two
-     * are swapped, so four people are 2×2 either way but three are 1 wide × 3 tall in
-     * portrait and 3 wide × 1 tall in landscape — which is the difference between three
-     * readable faces and three letterboxes.
+     * The shorter run is the square root rounded **down** and the longer one follows from
+     * the count, which is what makes two people one-wide-and-two-tall in portrait rather
+     * than side by side. Rounding up instead gives the short run the larger number — two
+     * people come out 2×1 — and the names stop describing the values.
+     *
+     * In landscape the two are swapped, so four people are 2×2 either way but three are
+     * 1 wide × 3 tall in portrait and 3 wide × 1 tall in landscape — the difference
+     * between three readable faces and three letterboxes.
      */
     private fun gridFor(count: Int, isLandscape: Boolean): ConferenceVideoMode.Grid {
-        val short = ceilSqrt(count)
+        val short = floorSqrt(count)
         val long = ceilDiv(count, short)
 
         // The longer run goes across the longer edge of the screen.
@@ -106,10 +109,10 @@ object ConferenceVideoLayout {
         }
     }
 
-    /** The smallest `n` with `n * n >= value`, without floating point. */
-    private fun ceilSqrt(value: Int): Int {
+    /** The largest `n` with `n * n <= value`, without floating point. */
+    private fun floorSqrt(value: Int): Int {
         var n = 1
-        while (n * n < value) n++
+        while ((n + 1) * (n + 1) <= value) n++
         return n
     }
 
