@@ -88,6 +88,10 @@ Done when:
 - [x] An outgoing video call holds the camera from the moment it is placed
 - [x] An **incoming** call still waits to be answered — the §5.2 privacy rule is kept
 - [x] Regression tests that fail on the parent commit
+- [x] The camera is asked for **in context**, when a video call is pressed — not only on
+      the first-run screen, which is skippable. Gated at all three video entry points (the
+      dialler, a history redial, a group call) and it gates the *prompt*, never the call:
+      a declined camera still places an audio call, which is `MediaProfile`'s rule
 - [ ] Bidirectional video against FreeSWITCH — **needs the device**
 
 ---

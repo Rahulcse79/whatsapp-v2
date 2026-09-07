@@ -23,6 +23,14 @@ fun GroupCallRoute(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: GroupCallViewModel = hiltViewModel(),
+    /**
+     * Runs a video call only after the camera has been asked for (Task 74).
+     *
+     * `:app` supplies the real one; the default proceeds straight through so a preview and
+     * a test need no permission machinery. It gates the *prompt*, never the call — a
+     * declined camera still places an audio call, which is `MediaProfile`'s rule.
+     */
+    videoGate: (proceed: () -> Unit) -> Unit = { it() },
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -38,7 +46,7 @@ fun GroupCallRoute(
         }
     }
 
-    val actions = remember(viewModel, onBack) {
+    val actions = remember(viewModel, onBack, videoGate) {
         GroupCallActions(
             onNameChanged = viewModel::onNameChanged,
             onAddressChanged = viewModel::onAddressChanged,
@@ -46,7 +54,7 @@ fun GroupCallRoute(
             onAddMember = viewModel::onAddMember,
             onRemoveMember = viewModel::onRemoveMember,
             onStartAudioCall = viewModel::onStartAudioCall,
-            onStartVideoCall = viewModel::onStartVideoCall,
+            onStartVideoCall = { videoGate { viewModel.onStartVideoCall() } },
             onBack = onBack,
         )
     }

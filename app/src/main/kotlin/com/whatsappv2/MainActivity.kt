@@ -14,6 +14,7 @@ import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
 import com.whatsappv2.permission.LocalPermissionCoordinator
 import com.whatsappv2.permission.PermissionCoordinator
 import com.whatsappv2.permission.PermissionOnboarding
+import com.whatsappv2.permission.rememberCameraGate
 import com.whatsappv2.ui.AppRoot
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -72,7 +73,9 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                     } else {
-                        AppRoot()
+                        // The camera is asked for when a video call is pressed, not only on
+                        // the first-run screen somebody may have skipped (Task 74).
+                        AppRoot(videoGate = rememberCameraGate())
                     }
                 }
             }

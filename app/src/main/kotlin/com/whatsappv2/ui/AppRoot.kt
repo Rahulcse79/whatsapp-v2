@@ -30,10 +30,19 @@ import com.whatsappv2.ui.navigation.AppNavHost
 fun AppRoot(
     modifier: Modifier = Modifier,
     navController: NavHostController = rememberNavController(),
+    /**
+     * Runs a video call once the camera has been asked for (Task 74).
+     *
+     * Defaulted to a pass-through so a test or a preview can render the whole app without
+     * a `PermissionCoordinator`. `MainActivity` supplies the real one, which is also the
+     * only place that provides the coordinator it needs.
+     */
+    videoGate: (proceed: () -> Unit) -> Unit = { it() },
 ) {
     AppNavHost(
         navController = navController,
         modifier = modifier.fillMaxSize(),
+        videoGate = videoGate,
     )
 }
 

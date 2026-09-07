@@ -65,6 +65,14 @@ fun DialerScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: DialerViewModel = hiltViewModel(),
+    /**
+     * Runs a video call only after the camera has been asked for (Task 74).
+     *
+     * `:app` supplies the real one; the default proceeds straight through so a preview and
+     * a test need no permission machinery. It gates the *prompt*, never the call — a
+     * declined camera still places an audio call, which is `MediaProfile`'s rule.
+     */
+    videoGate: (proceed: () -> Unit) -> Unit = { it() },
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -96,7 +104,7 @@ fun DialerScreen(
             onRecentSelected = viewModel::onRecentSelected,
             onContactSelected = viewModel::onContactSelected,
             onCall = viewModel::onCall,
-            onVideoCall = viewModel::onVideoCall,
+            onVideoCall = { videoGate { viewModel.onVideoCall() } },
             onBack = onBack,
         ),
         modifier = modifier,
