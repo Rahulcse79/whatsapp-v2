@@ -302,6 +302,19 @@ enum class CallAction {
     TRANSFER,
     SWAP,
     RECORD,
+    ;
+
+    /**
+     * True when pressing again while the last press is still in flight is a **new**
+     * instruction rather than a duplicate (Task 76).
+     *
+     * Only [DTMF], and the exception is the whole point. Every other action here is a
+     * toggle or a one-shot, where a second press mid-flight queues the opposite request
+     * and ends with the screen and the call disagreeing. A digit is neither: `1234` is
+     * four tones, they are typed faster than a round trip, and dropping the ones that
+     * arrive while the first is in flight sends an IVR a number nobody dialled.
+     */
+    val isRepeatable: Boolean get() = this == DTMF
 }
 
 /**

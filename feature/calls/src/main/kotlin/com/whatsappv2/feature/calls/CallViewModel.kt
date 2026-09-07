@@ -439,11 +439,16 @@ class CallViewModel @Inject constructor(
      * each other end with the icon and the microphone disagreeing, and whichever reply
      * lands second wins for reasons the user cannot see.
      *
+     * [CallAction.isRepeatable] is the exception, and it exists because guarding
+     * everything broke DTMF: digits are typed faster than a round trip, and each one is a
+     * new tone rather than a repeat of the last. Those are not tracked and not guarded.
+     *
      * `finally`, so a cancelled scope — the call ended, the screen went away — cannot
      * leave a control stuck as busy forever.
      */
     private fun act(action: CallAction, block: suspend () -> Outcome<*, SipError>) {
-        if (!beginAction(action)) return
+        val guarded = !action.isRepeatable
+        if (guarded && !beginAction(action)) return
         viewModelScope.launch {
             try {
                 val result = block()
@@ -451,7 +456,7 @@ class CallViewModel @Inject constructor(
                     eventChannel.send(CallEvent.ActionFailed(action, result.error.userMessage()))
                 }
             } finally {
-                inFlight.update { it - action }
+                if (guarded) inFlight.update { it - action }
             }
         }
     }
