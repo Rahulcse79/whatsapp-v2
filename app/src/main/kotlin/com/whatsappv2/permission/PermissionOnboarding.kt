@@ -87,6 +87,28 @@ fun PermissionOnboarding(
         return
     }
 
+    OnboardingStep(
+        permission = current,
+        stepNumber = index + 1,
+        stepCount = requests.size,
+        onAllow = { launcher.launch(current.manifestPermission) },
+        onSkipOne = { index += 1 },
+        onSkipAll = onFinished,
+        modifier = modifier,
+    )
+}
+
+/** One permission, explained before it is asked for. */
+@Composable
+private fun OnboardingStep(
+    permission: AppPermission,
+    stepNumber: Int,
+    stepCount: Int,
+    onAllow: () -> Unit,
+    onSkipOne: () -> Unit,
+    onSkipAll: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Scaffold(modifier = modifier.fillMaxSize()) { innerPadding ->
         Column(
             modifier = Modifier
@@ -98,7 +120,7 @@ fun PermissionOnboarding(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                text = "Step ${index + 1} of ${requests.size}",
+                text = "Step $stepNumber of $stepCount",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.fillMaxWidth().testTag(TAG_PROGRESS),
@@ -110,41 +132,32 @@ fun PermissionOnboarding(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Icon(
-                    imageVector = current.iconForSheet(),
+                    imageVector = permission.iconForSheet(),
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                 )
-                Text(current.title, style = MaterialTheme.typography.headlineSmall)
+                Text(permission.title, style = MaterialTheme.typography.headlineSmall)
             }
 
-            Text(current.rationale, style = MaterialTheme.typography.bodyMedium)
+            Text(permission.rationale, style = MaterialTheme.typography.bodyMedium)
 
             Text(
                 // Said before the choice, not after it. Somebody deciding whether to
                 // decline is entitled to know what declining costs.
-                text = "If you say no: ${current.deniedExplanation}",
+                text = "If you say no: ${permission.deniedExplanation}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            Button(
-                onClick = { launcher.launch(current.manifestPermission) },
-                modifier = Modifier.fillMaxWidth().testTag(TAG_ALLOW),
-            ) {
+            Button(onClick = onAllow, modifier = Modifier.fillMaxWidth().testTag(TAG_ALLOW)) {
                 Text("Continue")
             }
 
-            TextButton(
-                onClick = { index += 1 },
-                modifier = Modifier.testTag(TAG_SKIP),
-            ) {
+            TextButton(onClick = onSkipOne, modifier = Modifier.testTag(TAG_SKIP)) {
                 Text("Not now")
             }
 
-            TextButton(
-                onClick = onFinished,
-                modifier = Modifier.testTag(TAG_SKIP_ALL),
-            ) {
+            TextButton(onClick = onSkipAll, modifier = Modifier.testTag(TAG_SKIP_ALL)) {
                 Text("Skip all and go to the app")
             }
         }

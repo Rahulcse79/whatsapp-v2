@@ -153,39 +153,66 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
 
         Spacer(Modifier.weight(1f))
 
-        if (call.availability.canAnswer) {
-            IncomingActions(call = call, actions = actions)
-        } else {
-            if (keypadShown) {
-                CallKeypad(
-                    dialled = dialled,
-                    onDigit = {
-                        dialled += it.symbol
-                        actions.onDtmf(it)
-                    },
-                    onHide = { keypadOpen = false },
-                    modifier = Modifier.padding(bottom = AppTheme.spacing.large),
-                )
-            }
-            InCallActions(
-                call = call,
-                actions = actions,
-                keypadOpen = keypadShown,
-                onToggleKeypad = { keypadOpen = !keypadShown },
-                pending = state.pendingActions,
-                secondaryControls = {
-                    CallSecondaryControls(
-                        call = call,
-                        recording = state.recording,
-                        actions = actions,
-                        pending = state.pendingActions,
-                    )
-                },
-            )
-        }
+        CallActionArea(
+            state = state,
+            actions = actions,
+            keypadShown = keypadShown,
+            dialled = dialled,
+            onDialled = { dialled += it },
+            onToggleKeypad = { keypadOpen = it },
+        )
     }
 
     CallDialogs(state = state, actions = actions)
+}
+
+/**
+ * Either the two answers to an incoming call, or the controls for one in progress.
+ *
+ * Split out so [ActiveCall] stays a layout: the choice between them is the call's phase,
+ * and everything below it is the same set of buttons either way.
+ */
+@Composable
+private fun CallActionArea(
+    state: CallUiState.Active,
+    actions: CallActions,
+    keypadShown: Boolean,
+    dialled: String,
+    onDialled: (String) -> Unit,
+    onToggleKeypad: (Boolean) -> Unit,
+) {
+    val call = state.call
+    if (call.availability.canAnswer) {
+        IncomingActions(call = call, actions = actions)
+        return
+    }
+
+    if (keypadShown) {
+        CallKeypad(
+            dialled = dialled,
+            onDigit = {
+                onDialled(it.symbol)
+                actions.onDtmf(it)
+            },
+            onHide = { onToggleKeypad(false) },
+            modifier = Modifier.padding(bottom = AppTheme.spacing.large),
+        )
+    }
+    InCallActions(
+        call = call,
+        actions = actions,
+        keypadOpen = keypadShown,
+        onToggleKeypad = { onToggleKeypad(!keypadShown) },
+        pending = state.pendingActions,
+        secondaryControls = {
+            CallSecondaryControls(
+                call = call,
+                recording = state.recording,
+                actions = actions,
+                pending = state.pendingActions,
+            )
+        },
+    )
 }
 
 /**
@@ -435,20 +462,33 @@ private fun CallControlRow(
             pendingStateDescription = if (held) "Resuming" else "Holding",
             modifier = Modifier.testTag(TAG_HOLD),
         )
-        CallActionButton(
-            icon = Icons.Filled.Dialpad,
-            contentDescription = if (keypadOpen) "Hide the keypad" else "Show the keypad",
-            activeStateDescription = if (keypadOpen) "Shown" else "Hidden",
-            onClick = onToggleKeypad,
-            // A tone needs a running media path, so the phase decides this exactly as
-            // it decides hold - and a held call's keypad is disabled, not hidden, so
-            // the control does not move under the user's thumb (Task 43).
+        KeypadToggle(
+            open = keypadOpen,
             enabled = availability.canSendDtmf,
-            active = keypadOpen,
-            label = "Keypad",
-            modifier = Modifier.testTag(TAG_KEYPAD_TOGGLE),
+            onToggle = onToggleKeypad,
         )
     }
+}
+
+/**
+ * Shows and hides the DTMF keypad.
+ *
+ * A tone needs a running media path, so the phase decides this exactly as it decides hold
+ * — and a held call's keypad is disabled, not hidden, so the control does not move under
+ * the user's thumb (Task 43).
+ */
+@Composable
+private fun KeypadToggle(open: Boolean, enabled: Boolean, onToggle: () -> Unit) {
+    CallActionButton(
+        icon = Icons.Filled.Dialpad,
+        contentDescription = if (open) "Hide the keypad" else "Show the keypad",
+        activeStateDescription = if (open) "Shown" else "Hidden",
+        onClick = onToggle,
+        enabled = enabled,
+        active = open,
+        label = "Keypad",
+        modifier = Modifier.testTag(TAG_KEYPAD_TOGGLE),
+    )
 }
 
 /**

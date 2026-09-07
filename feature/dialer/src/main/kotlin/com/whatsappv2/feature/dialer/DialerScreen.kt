@@ -121,19 +121,7 @@ internal fun DialerScreen(
         modifier = modifier,
         // A back arrow, because the dialler is a screen opened from Calls now rather than
         // a tab that is always there (Task 70).
-        topBar = {
-            TopAppBar(
-                title = { Text("Dialler") },
-                navigationIcon = {
-                    IconButton(onClick = actions.onBack, modifier = Modifier.testTag(TAG_BACK)) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back to calls",
-                        )
-                    }
-                },
-            )
-        },
+        topBar = { DialerTopBar(onBack = actions.onBack) },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Column(
@@ -179,37 +167,62 @@ internal fun DialerScreen(
 
             Keypad(onDigit = actions.onDigit, onClear = actions.onClear)
 
-            // Two ways to place the same call (Task 74). Both are enabled by the same
-            // rule, because whether video is possible is not this screen's decision: a
-            // device with no usable camera places an audio call and is told, rather than
-            // being shown a dead button it cannot explain.
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraLarge),
-                modifier = Modifier.padding(
-                    top = AppTheme.spacing.large,
-                    bottom = AppTheme.spacing.large,
-                ),
-            ) {
-                CallActionButton(
-                    icon = Icons.Filled.Call,
-                    contentDescription = "Place call",
-                    onClick = actions.onCall,
-                    style = CallActionStyle.ANSWER,
-                    enabled = state.canPlaceCall,
-                    label = "Call",
-                    modifier = Modifier.testTag(TAG_CALL),
-                )
-                CallActionButton(
-                    icon = Icons.Filled.Videocam,
-                    contentDescription = "Place video call",
-                    onClick = actions.onVideoCall,
-                    style = CallActionStyle.ANSWER,
-                    enabled = state.canPlaceCall,
-                    label = "Video",
-                    modifier = Modifier.testTag(TAG_VIDEO_CALL),
+            DialerCallButtons(state = state, actions = actions)
+        }
+    }
+}
+
+/** A back arrow, because the dialler is a screen opened from Calls now, not a tab (Task 70). */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DialerTopBar(onBack: () -> Unit) {
+    TopAppBar(
+        title = { Text("Dialler") },
+        navigationIcon = {
+            IconButton(onClick = onBack, modifier = Modifier.testTag(TAG_BACK)) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back to calls",
                 )
             }
-        }
+        },
+    )
+}
+
+/**
+ * Two ways to place the same call (Task 74).
+ *
+ * Both are enabled by the same rule, because whether video is possible is not this
+ * screen's decision: a device with no usable camera places an audio call and is told,
+ * rather than being shown a dead button it cannot explain.
+ */
+@Composable
+private fun DialerCallButtons(state: DialerUiState, actions: DialerActions) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraLarge),
+        modifier = Modifier.padding(
+            top = AppTheme.spacing.large,
+            bottom = AppTheme.spacing.large,
+        ),
+    ) {
+        CallActionButton(
+            icon = Icons.Filled.Call,
+            contentDescription = "Place call",
+            onClick = actions.onCall,
+            style = CallActionStyle.ANSWER,
+            enabled = state.canPlaceCall,
+            label = "Call",
+            modifier = Modifier.testTag(TAG_CALL),
+        )
+        CallActionButton(
+            icon = Icons.Filled.Videocam,
+            contentDescription = "Place video call",
+            onClick = actions.onVideoCall,
+            style = CallActionStyle.ANSWER,
+            enabled = state.canPlaceCall,
+            label = "Video",
+            modifier = Modifier.testTag(TAG_VIDEO_CALL),
+        )
     }
 }
 

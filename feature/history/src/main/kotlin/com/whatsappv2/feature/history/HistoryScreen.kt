@@ -87,27 +87,7 @@ fun HistoryScreen(
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        topBar = {
-            TopAppBar(
-                title = { Text("Calls") },
-                actions = {
-                    IconButton(
-                        onClick = actions.onClearAllRequested,
-                        modifier = Modifier.testTag(TAG_CLEAR_ALL),
-                    ) {
-                        Icon(Icons.Filled.Delete, contentDescription = "Clear call history")
-                    }
-                    // Task 69: the one way into settings, and into the account list behind
-                    // it, now that neither is a tab.
-                    IconButton(
-                        onClick = actions.onOpenSettings,
-                        modifier = Modifier.testTag(TAG_SETTINGS),
-                    ) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Settings and accounts")
-                    }
-                },
-            )
-        },
+        topBar = { HistoryTopBar(actions = actions) },
         floatingActionButton = { HistoryFabs(actions = actions) },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
@@ -127,27 +107,7 @@ fun HistoryScreen(
                 return@Column
             }
 
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().testTag(TAG_LIST),
-                // Room for the floating buttons, so the newest call is not the one row
-                // the user can never fully read (Task 70).
-                contentPadding = PaddingValues(
-                    bottom = AppTheme.spacing.huge + AppTheme.sizing.callActionButton,
-                ),
-            ) {
-                items(
-                    count = rows.itemCount,
-                    // Keyed by row identity so deleting one animates that row out rather than
-                    // re-drawing everything below it.
-                    key = { index -> rows.peek(index)?.key() ?: index },
-                ) { index ->
-                    when (val row = rows[index]) {
-                        is HistoryRow.DayHeader -> DayHeading(row.epochDay)
-                        is HistoryRow.Call -> CallRow(row.entry, actions, zone)
-                        null -> Unit
-                    }
-                }
-            }
+            CallList(rows = rows, actions = actions, zone = zone)
         }
     }
 
@@ -165,6 +125,58 @@ fun HistoryScreen(
             destructive = true,
             modifier = Modifier.testTag(TAG_CONFIRM_CLEAR),
         )
+    }
+}
+
+/** Clearing the log, and the one way into settings now that it is not a tab (Task 69). */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HistoryTopBar(actions: HistoryActions) {
+    TopAppBar(
+        title = { Text("Calls") },
+        actions = {
+            IconButton(
+                onClick = actions.onClearAllRequested,
+                modifier = Modifier.testTag(TAG_CLEAR_ALL),
+            ) {
+                Icon(Icons.Filled.Delete, contentDescription = "Clear call history")
+            }
+            IconButton(
+                onClick = actions.onOpenSettings,
+                modifier = Modifier.testTag(TAG_SETTINGS),
+            ) {
+                Icon(Icons.Filled.Settings, contentDescription = "Settings and accounts")
+            }
+        },
+    )
+}
+
+@Composable
+private fun CallList(
+    rows: LazyPagingItems<HistoryRow>,
+    actions: HistoryActions,
+    zone: ZoneId,
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().testTag(TAG_LIST),
+        // Room for the floating buttons, so the newest call is not the one row the user
+        // can never fully read (Task 70).
+        contentPadding = PaddingValues(
+            bottom = AppTheme.spacing.huge + AppTheme.sizing.callActionButton,
+        ),
+    ) {
+        items(
+            count = rows.itemCount,
+            // Keyed by row identity so deleting one animates that row out rather than
+            // re-drawing everything below it.
+            key = { index -> rows.peek(index)?.key() ?: index },
+        ) { index ->
+            when (val row = rows[index]) {
+                is HistoryRow.DayHeader -> DayHeading(row.epochDay)
+                is HistoryRow.Call -> CallRow(row.entry, actions, zone)
+                null -> Unit
+            }
+        }
     }
 }
 

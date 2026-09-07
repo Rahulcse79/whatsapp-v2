@@ -23,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -67,20 +68,7 @@ fun CallActionButton(
     pending: Boolean = false,
     pendingStateDescription: String = "Working",
 ) {
-    val callColors = AppTheme.callColors
-    val background = when {
-        style == CallActionStyle.ANSWER -> callColors.answer
-        style == CallActionStyle.HANG_UP -> callColors.hangUp
-        active -> callColors.activeControl
-        else -> MaterialTheme.colorScheme.surfaceVariant
-    }
-    val foreground = when {
-        style == CallActionStyle.ANSWER -> callColors.onAnswer
-        style == CallActionStyle.HANG_UP -> callColors.onHangUp
-        active -> callColors.onActiveControl
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    val accessibilityLabel = contentDescription
+    val colors = callActionColors(style, active)
     val diameter = if (style == CallActionStyle.TOGGLE) {
         AppTheme.sizing.callActionButton
     } else {
@@ -96,39 +84,26 @@ fun CallActionButton(
         IconButton(
             onClick = onClick,
             enabled = enabled && !pending,
-            colors = IconButtonDefaults.iconButtonColors(contentColor = foreground),
+            colors = IconButtonDefaults.iconButtonColors(contentColor = colors.foreground),
             modifier = Modifier
                 .size(diameter)
                 .clip(CircleShape)
-                .background(if (enabled) background else background.copy(alpha = DISABLED_ALPHA))
+                .background(
+                    if (enabled) colors.background else colors.background.copy(alpha = DISABLED_ALPHA),
+                )
                 .semantics {
                     role = Role.Button
                     // While the engine is answering, that is the state worth announcing:
                     // a screen reader saying "not muted" during a mute is telling the
                     // user the press did nothing.
-                    if (pending) {
-                        stateDescription = pendingStateDescription
-                    } else if (style == CallActionStyle.TOGGLE && activeStateDescription != null) {
-                        stateDescription = activeStateDescription
+                    when {
+                        pending -> stateDescription = pendingStateDescription
+                        style == CallActionStyle.TOGGLE && activeStateDescription != null ->
+                            stateDescription = activeStateDescription
                     }
                 },
         ) {
-            if (pending) {
-                // The content description stays on the spinner, so the control keeps its
-                // name while it works rather than becoming an unlabelled busy circle.
-                CircularProgressIndicator(
-                    color = foreground,
-                    modifier = Modifier
-                        .size(AppTheme.sizing.callActionIcon)
-                        .semantics { contentDescription = accessibilityLabel },
-                )
-            } else {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = contentDescription,
-                    modifier = Modifier.size(AppTheme.sizing.callActionIcon),
-                )
-            }
+            CallActionContent(icon = icon, label = contentDescription, pending = pending, tint = colors.foreground)
         }
         if (label != null) {
             Text(
@@ -139,6 +114,44 @@ fun CallActionButton(
                 modifier = Modifier.padding(top = AppTheme.spacing.extraSmall),
             )
         }
+    }
+}
+
+/** The glyph, or a spinner while the engine is answering (Task 76). */
+@Composable
+private fun CallActionContent(icon: ImageVector, label: String, pending: Boolean, tint: Color) {
+    if (pending) {
+        // The description stays on the spinner, so the control keeps its name while it
+        // works rather than becoming an unlabelled busy circle.
+        CircularProgressIndicator(
+            color = tint,
+            modifier = Modifier
+                .size(AppTheme.sizing.callActionIcon)
+                .semantics { this.contentDescription = label },
+        )
+    } else {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            modifier = Modifier.size(AppTheme.sizing.callActionIcon),
+        )
+    }
+}
+
+/** What a control is painted in. Answer and hang-up never take dynamic colour. */
+private data class CallActionColors(val background: Color, val foreground: Color)
+
+@Composable
+private fun callActionColors(style: CallActionStyle, active: Boolean): CallActionColors {
+    val callColors = AppTheme.callColors
+    return when {
+        style == CallActionStyle.ANSWER -> CallActionColors(callColors.answer, callColors.onAnswer)
+        style == CallActionStyle.HANG_UP -> CallActionColors(callColors.hangUp, callColors.onHangUp)
+        active -> CallActionColors(callColors.activeControl, callColors.onActiveControl)
+        else -> CallActionColors(
+            MaterialTheme.colorScheme.surfaceVariant,
+            MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

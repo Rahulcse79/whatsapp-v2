@@ -6,6 +6,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavBackStackEntry
+import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -58,95 +59,106 @@ fun AppNavHost(
         startDestination = AppDestination.START.route,
         modifier = modifier,
     ) {
-        composable(AppDestination.HISTORY.route) {
-            HistoryRoute(
-                onCallPlaced = openCall,
-                onOpenDialer = { navController.navigate(AppDestination.DIALER.route) },
-                onOpenGroupCall = { navController.navigate(AppDestination.GROUP.route) },
-                onOpenSettings = { navController.navigate(AppDestination.SETTINGS.route) },
-            )
-        }
+        callRoutes(navController, openCall)
+        accountRoutes(navController)
+    }
+}
 
-        composable(AppDestination.DIALER.route) {
-            DialerScreen(
-                onCallPlaced = openCall,
-                onBack = { navController.popBackStack() },
-            )
-        }
+/** Calls, and the three screens reached from it (Tasks 69, 70, 78). */
+private fun NavGraphBuilder.callRoutes(
+    navController: NavHostController,
+    openCall: (CallId) -> Unit,
+) {
+    composable(AppDestination.HISTORY.route) {
+        HistoryRoute(
+            onCallPlaced = openCall,
+            onOpenDialer = { navController.navigate(AppDestination.DIALER.route) },
+            onOpenGroupCall = { navController.navigate(AppDestination.GROUP.route) },
+            onOpenSettings = { navController.navigate(AppDestination.SETTINGS.route) },
+        )
+    }
 
-        // Task 78. A local group plus a dial-in address; the conference machinery behind
-        // the join is Tasks 60 and 61's and is untouched by this route.
-        composable(AppDestination.GROUP.route) {
-            GroupCallRoute(
-                onCallPlaced = openCall,
-                onBack = { navController.popBackStack() },
-            )
-        }
+    composable(AppDestination.DIALER.route) {
+        DialerScreen(
+            onCallPlaced = openCall,
+            onBack = { navController.popBackStack() },
+        )
+    }
 
-        composable(AppDestination.SETTINGS.route) {
-            SettingsScreen(
-                onOpenAccounts = { navController.navigate(AppDestination.ACCOUNTS.route) },
-                onBack = { navController.popBackStack() },
-            )
-        }
+    // Task 78. A local group plus a dial-in address; the conference machinery behind
+    // the join is Tasks 60 and 61's and is untouched by this route.
+    composable(AppDestination.GROUP.route) {
+        GroupCallRoute(
+            onCallPlaced = openCall,
+            onBack = { navController.popBackStack() },
+        )
+    }
 
-        composable(AppDestination.ACCOUNTS.route) { entry ->
-            // Task 73: the editor pops on a successful save, so the confirmation is
-            // delivered here, to the screen that outlives it. Cleared once shown, so a
-            // rotation does not announce the same save twice.
-            val text by entry.savedStateHandle
-                .getStateFlow<String?>(SAVED_TEXT, null)
-                .collectAsState()
-            val isWarning by entry.savedStateHandle
-                .getStateFlow(SAVED_IS_WARNING, false)
-                .collectAsState()
-            val saved = text?.let { AccountSavedMessage(it, isWarning) }
+    composable(AppDestination.SETTINGS.route) {
+        SettingsScreen(
+            onOpenAccounts = { navController.navigate(AppDestination.ACCOUNTS.route) },
+            onBack = { navController.popBackStack() },
+        )
+    }
+}
 
-            AccountsRoute(
-                onAddAccount = { navController.navigate(ACCOUNT_EDITOR_NEW) },
-                onOpenAccount = { id -> navController.navigate("$ACCOUNT_DETAIL_BASE/${id.value}") },
-                onBack = { navController.popBackStack() },
-                savedMessage = saved,
-                onSavedMessageShown = { entry.clearSavedMessage() },
-            )
-        }
+/** The account list, its editor and its registration detail — all behind settings now. */
+private fun NavGraphBuilder.accountRoutes(navController: NavHostController) {
+    composable(AppDestination.ACCOUNTS.route) { entry ->
+        // Task 73: the editor pops on a successful save, so the confirmation is
+        // delivered here, to the screen that outlives it. Cleared once shown, so a
+        // rotation does not announce the same save twice.
+        val text by entry.savedStateHandle
+            .getStateFlow<String?>(SAVED_TEXT, null)
+            .collectAsState()
+        val isWarning by entry.savedStateHandle
+            .getStateFlow(SAVED_IS_WARNING, false)
+            .collectAsState()
 
-        // Adding and editing share one destination: the editor differs only in whether
-        // it loads an existing account, and two routes would mean two copies of the form.
-        composable(ACCOUNT_EDITOR_NEW) {
-            AccountEditorRoute(
-                accountId = null,
-                onSaved = { navController.reportSaved(it) },
-                onBack = { navController.popBackStack() },
-            )
-        }
-        composable(
-            route = "$ACCOUNT_EDITOR_BASE/{$ACCOUNT_ID_ARG}",
-            arguments = listOf(navArgument(ACCOUNT_ID_ARG) { type = NavType.StringType }),
-        ) { entry ->
-            val id = entry.arguments?.getString(ACCOUNT_ID_ARG)?.let(::AccountId)
-            AccountEditorRoute(
+        AccountsRoute(
+            onAddAccount = { navController.navigate(ACCOUNT_EDITOR_NEW) },
+            onOpenAccount = { id -> navController.navigate("$ACCOUNT_DETAIL_BASE/${id.value}") },
+            onBack = { navController.popBackStack() },
+            savedMessage = text?.let { AccountSavedMessage(it, isWarning) },
+            onSavedMessageShown = { entry.clearSavedMessage() },
+        )
+    }
+
+    // Adding and editing share one destination: the editor differs only in whether
+    // it loads an existing account, and two routes would mean two copies of the form.
+    composable(ACCOUNT_EDITOR_NEW) {
+        AccountEditorRoute(
+            accountId = null,
+            onSaved = { navController.reportSaved(it) },
+            onBack = { navController.popBackStack() },
+        )
+    }
+    composable(
+        route = "$ACCOUNT_EDITOR_BASE/{$ACCOUNT_ID_ARG}",
+        arguments = listOf(navArgument(ACCOUNT_ID_ARG) { type = NavType.StringType }),
+    ) { entry ->
+        val id = entry.arguments?.getString(ACCOUNT_ID_ARG)?.let(::AccountId)
+        AccountEditorRoute(
+            accountId = id,
+            onSaved = { navController.reportSaved(it) },
+            onBack = { navController.popBackStack() },
+        )
+    }
+    // Registration detail (Task 31): what the account's state actually is, why it is
+    // that, and the one action - register now - that can change it from here.
+    composable(
+        route = "$ACCOUNT_DETAIL_BASE/{$ACCOUNT_ID_ARG}",
+        arguments = listOf(navArgument(ACCOUNT_ID_ARG) { type = NavType.StringType }),
+    ) { entry ->
+        val id = entry.arguments?.getString(ACCOUNT_ID_ARG)?.let(::AccountId)
+        if (id == null) {
+            navController.popBackStack()
+        } else {
+            AccountDetailRoute(
                 accountId = id,
-                onSaved = { navController.reportSaved(it) },
+                onEditAccount = { navController.navigate("$ACCOUNT_EDITOR_BASE/${it.value}") },
                 onBack = { navController.popBackStack() },
             )
-        }
-        // Registration detail (Task 31): what the account's state actually is, why it is
-        // that, and the one action - register now - that can change it from here.
-        composable(
-            route = "$ACCOUNT_DETAIL_BASE/{$ACCOUNT_ID_ARG}",
-            arguments = listOf(navArgument(ACCOUNT_ID_ARG) { type = NavType.StringType }),
-        ) { entry ->
-            val id = entry.arguments?.getString(ACCOUNT_ID_ARG)?.let(::AccountId)
-            if (id == null) {
-                navController.popBackStack()
-            } else {
-                AccountDetailRoute(
-                    accountId = id,
-                    onEditAccount = { navController.navigate("$ACCOUNT_EDITOR_BASE/${it.value}") },
-                    onBack = { navController.popBackStack() },
-                )
-            }
         }
     }
 }

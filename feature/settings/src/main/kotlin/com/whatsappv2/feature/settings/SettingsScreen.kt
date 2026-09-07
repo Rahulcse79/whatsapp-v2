@@ -101,69 +101,90 @@ fun SettingsScreen(
             )
         },
     ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
-                .padding(AppTheme.spacing.large),
-            verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.large),
-        ) {
-            // First, because it is the one thing here without which the app cannot do
-            // anything at all — and because it is what the Calls screen's settings icon
-            // is most often pressed to reach (Task 69).
-            onOpenAccounts?.let { open ->
-                AccountsRow(onClick = open)
-                HorizontalDivider()
-            }
+        SettingsContent(
+            state = state,
+            onDtmfModeChange = onDtmfModeChange,
+            onSrtpPolicyChange = onSrtpPolicyChange,
+            onAudioRouteChange = onAudioRouteChange,
+            onSipTraceChange = onSipTraceChange,
+            onOpenAccounts = onOpenAccounts,
+            modifier = Modifier.padding(innerPadding),
+        )
+    }
+}
 
-            Text("App settings", style = MaterialTheme.typography.titleLarge)
+/** The scrolling body, split out so the screen above it stays a layout. */
+@Composable
+private fun SettingsContent(
+    state: SettingsUiState,
+    onDtmfModeChange: (DtmfMode) -> Unit,
+    onSrtpPolicyChange: (SrtpPolicy) -> Unit,
+    onAudioRouteChange: (PreferredAudioRoute) -> Unit,
+    onSipTraceChange: (Boolean) -> Unit,
+    onOpenAccounts: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(AppTheme.spacing.large),
+        verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.large),
+    ) {
+        // First, because it is the one thing here without which the app cannot do
+        // anything at all — and because it is what the Calls screen's settings icon
+        // is most often pressed to reach (Task 69).
+        onOpenAccounts?.let { open ->
+            AccountsRow(onClick = open)
+            HorizontalDivider()
+        }
 
-            ChoiceGroup(
-                title = "DTMF",
-                description = "RFC 4733 sends digits in the media stream and survives " +
-                    "transcoding. SIP INFO is a fallback for gateways that cannot.",
-                options = DtmfMode.entries,
-                selected = state.settings.dtmfMode,
-                labelOf = { if (it == DtmfMode.RFC_4733) "RFC 4733" else "SIP INFO" },
-                onSelect = onDtmfModeChange,
+        Text("App settings", style = MaterialTheme.typography.titleLarge)
+
+        ChoiceGroup(
+            title = "DTMF",
+            description = "RFC 4733 sends digits in the media stream and survives " +
+                "transcoding. SIP INFO is a fallback for gateways that cannot.",
+            options = DtmfMode.entries,
+            selected = state.settings.dtmfMode,
+            labelOf = { if (it == DtmfMode.RFC_4733) "RFC 4733" else "SIP INFO" },
+            onSelect = onDtmfModeChange,
+        )
+
+        ChoiceGroup(
+            title = "Default media encryption",
+            description = "Applies to new accounts. Existing accounts keep their own.",
+            options = SrtpPolicy.entries,
+            selected = state.settings.defaultSrtpPolicy,
+            labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
+            onSelect = onSrtpPolicyChange,
+        )
+        if (state.settings.defaultSrtpPolicy == SrtpPolicy.MANDATORY) {
+            // The consequence is a failed call, not a warning banner, so it is stated
+            // in the same words the account editor uses (DoD 13).
+            Text(
+                text = "Calls will fail rather than connect without encryption.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
 
-            ChoiceGroup(
-                title = "Default media encryption",
-                description = "Applies to new accounts. Existing accounts keep their own.",
-                options = SrtpPolicy.entries,
-                selected = state.settings.defaultSrtpPolicy,
-                labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
-                onSelect = onSrtpPolicyChange,
+        ChoiceGroup(
+            title = "Audio route",
+            description = "Where calls start. Automatic follows a connected headset.",
+            options = PreferredAudioRoute.entries,
+            selected = state.settings.preferredAudioRoute,
+            labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
+            onSelect = onAudioRouteChange,
+        )
+
+        // Absent in release builds rather than disabled: a disabled control invites
+        // someone to make it enableable.
+        if (state.traceToggleAvailable) {
+            SipTraceToggle(
+                enabled = state.settings.sipTraceEnabled,
+                onChange = onSipTraceChange,
             )
-            if (state.settings.defaultSrtpPolicy == SrtpPolicy.MANDATORY) {
-                // The consequence is a failed call, not a warning banner, so it is stated
-                // in the same words the account editor uses (DoD 13).
-                Text(
-                    text = "Calls will fail rather than connect without encryption.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            ChoiceGroup(
-                title = "Audio route",
-                description = "Where calls start. Automatic follows a connected headset.",
-                options = PreferredAudioRoute.entries,
-                selected = state.settings.preferredAudioRoute,
-                labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
-                onSelect = onAudioRouteChange,
-            )
-
-            // Absent in release builds rather than disabled: a disabled control invites
-            // someone to make it enableable.
-            if (state.traceToggleAvailable) {
-                SipTraceToggle(
-                    enabled = state.settings.sipTraceEnabled,
-                    onChange = onSipTraceChange,
-                )
-            }
         }
     }
 }
