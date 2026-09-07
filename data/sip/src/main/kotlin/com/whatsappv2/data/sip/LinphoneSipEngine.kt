@@ -9,16 +9,16 @@ import com.whatsappv2.core.common.time.Clock
 import com.whatsappv2.core.common.time.SystemClock
 import com.whatsappv2.data.sip.call.CallStateMapper
 import com.whatsappv2.data.sip.call.ConferenceMapper
-import com.whatsappv2.data.sip.call.LinphoneCallGateway
-import com.whatsappv2.data.sip.call.LinphoneVideoGateway
+import com.whatsappv2.data.sip.call.SipCallGateway
+import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.TransferEventMapper
 import com.whatsappv2.data.sip.di.SipStackScope
 import com.whatsappv2.data.sip.network.NetworkMonitor
 import com.whatsappv2.data.sip.network.RegistrationRecoveryCoordinator
-import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.RegistrationStateMapper
+import com.whatsappv2.data.sip.registration.SipCoreGateway
 import com.whatsappv2.data.sip.registration.StackAccount
 import com.whatsappv2.data.sip.registration.StackMediaEncryption
 import com.whatsappv2.data.sip.registration.StackPushParameters
@@ -93,7 +93,7 @@ import javax.inject.Singleton
  *
  * Everything decidable without the stack is kept out of here: backoff and refresh timing
  * in `:domain`, state translation in [RegistrationStateMapper], and the SDK itself behind
- * [LinphoneCoreGateway]. What remains is bookkeeping — which accounts exist, what their
+ * [SipCoreGateway]. What remains is bookkeeping — which accounts exist, what their
  * last known state was — and that is what the tests exercise.
  *
  * ## Network changes
@@ -120,9 +120,9 @@ import javax.inject.Singleton
  */
 @Singleton
 internal class LinphoneSipEngine @Inject constructor(
-    private val gateway: LinphoneCoreGateway,
-    private val callGateway: LinphoneCallGateway,
-    private val videoGateway: LinphoneVideoGateway,
+    private val gateway: SipCoreGateway,
+    private val callGateway: SipCallGateway,
+    private val videoGateway: SipVideoGateway,
     private val accounts: SipAccountRepository,
     /**
      * App-wide preferences, read for the DTMF transport (Task 43, §5.1).

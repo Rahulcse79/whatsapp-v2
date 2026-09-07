@@ -10,7 +10,7 @@ package com.whatsappv2.data.sip.call
  * The stack writes plaintext to the path it is given; sealing it is the store's job, above
  * this line (§7, DoD 12).
  */
-internal interface LinphoneRecordingGateway {
+internal interface SipRecordingGateway {
 
     /**
      * Starts writing this call's media to [filePath] (Task 58).

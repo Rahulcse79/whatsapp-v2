@@ -118,7 +118,7 @@ class TelecomCallRegistry @Inject constructor(
      * It set the platform's **device-wide** microphone mute flag — which mutes the
      * microphone for every app on the phone, not this call — and that is not what mutes a
      * SIP call anyway: the stack's own per-call
-     * `LinphoneCallGateway.setMicrophoneMuted` is, and the engine has already called it by
+     * `SipCallGateway.setMicrophoneMuted` is, and the engine has already called it by
      * the time this runs. So the flag bought nothing and cost the rest of the device its
      * microphone until the call ended.
      *

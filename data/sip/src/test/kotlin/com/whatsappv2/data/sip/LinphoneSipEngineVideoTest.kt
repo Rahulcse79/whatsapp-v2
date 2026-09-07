@@ -21,7 +21,7 @@ import kotlin.test.assertTrue
 /**
  * Video, the camera lifecycle, and escalation, in the real engine (Tasks 51, 53, 54).
  *
- * The camera assertions read [FakeLinphoneCoreGateway.cameraCaptureChanges] as an ordered
+ * The camera assertions read [FakeSipCoreGateway.cameraCaptureChanges] as an ordered
  * log rather than a flag, because the property being asserted is a sequence: acquired when
  * a call needs it, released when it does not — and "released" is only distinguishable from
  * "never acquired" if the order is visible.

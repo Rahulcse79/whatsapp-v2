@@ -103,10 +103,13 @@ artifact — there is no `org.pjsip` group on Maven Central. Latest stable is **
 default branch, so `build-pjsip.yml` cannot be dispatched until this branch is merged. That
 is the single step between here and Task 83 starting.
 
-Nothing below starts until that is answered. Sizing it honestly: `:data:sip` is **4,821
-lines of production code and 3,663 lines of tests**, and nearly all of it is rewritten.
-`:domain`, `:feature:*` and `:app` are untouched — that is the `SipEngine` seam paying off
-exactly as ADR-001 said it would.
+Nothing below starts until that is answered. **Sizing, corrected:** the first estimate here
+said 4,821 production lines and nearly all of it rewritten. That was wrong by about five
+times. Only `RealLinphoneCoreGateway.kt` (933 lines) and `SipStackInfo.kt` (52) import the
+SDK — ≈**985 lines behind a 342-line contract**. The engine, the state mappers, the
+conference, recording and network-recovery code are already SDK-free and are reused
+unchanged, and so are their tests, which drive the gateway contract through
+`FakeSipCoreGateway` rather than through liblinphone. ADR-006 has the file-by-file table.
 
 ### Task 83 — Answer ADR-006 and prove the build
 Build pjproject 2.17 for all three ABIs and confirm the two things a naive build silently
@@ -125,9 +128,18 @@ Done when:
 - [ ] The pin comes from the build's own output, never from memory
 - [ ] The OSV job still passes
 
-### Task 85 — `PjsipSipEngine` behind the existing seam
+### Task 85 — `RealPjsipCoreGateway` behind the existing seam
+
+Renamed from "`PjsipSipEngine`", because measuring it showed there is no second engine to
+write. `LinphoneSipEngine` never touched the SDK; what PJSIP needs is one **gateway**
+implementation satisfying the same four interfaces `RealLinphoneCoreGateway` does.
+
 Done when:
-- [ ] `SipEngine` is implemented against pjsua2 with no change to its contract
+- [ ] `RealPjsipCoreGateway` implements `SipCoreGateway`, `SipCallGateway`,
+      `SipVideoGateway` and `SipRecordingGateway` with no change to those contracts
+- [x] The contracts are named for the seam rather than for liblinphone
+      → renamed `Linphone*Gateway` → `Sip*Gateway`; `RealLinphoneCoreGateway` keeps its
+      name because it genuinely is the liblinphone one
 - [x] Architecture Rule 2 keeps `org.pjsip` inside `:data:sip`, as it does `org.linphone`
       → **already true.** `ArchitectureRules.sipSdkStaysInDataSip` has filtered
       `org.pjsip` since Task 12, `violations/app/src/SdkLeak.kt` imports

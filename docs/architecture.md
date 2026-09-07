@@ -286,11 +286,30 @@ the way liblinphone is. Three options, and they are not equivalent:
 3. **Vendor prebuilt `.so` files into the repository.** Removes the CI build but puts
    binaries in git that nobody can reproduce, and re-does the problem at every NDK bump.
 
-**Scope, so the size is not a surprise.** The `SipEngine` seam means `:domain`,
-`:feature:*` and `:app` are untouched — that is the payoff ADR-001 promised and it holds.
-`:data:sip` is **4,821 lines of production code and 3,663 lines of tests**, and
-essentially all of it is rewritten: the core gateway, registration, the call gateway,
-video, recording, conference, and every state mapper.
+**Scope — and this was measured wrongly the first time.** The initial draft of this ADR
+said `:data:sip` is 4,821 production lines and that essentially all of it is rewritten.
+That is wrong by about five times, and the correction changes the decision, so it is
+recorded rather than quietly edited.
+
+Only **three files import the SDK at all**, and one of those mentions it in a comment:
+
+| File | Lines | Rewritten for PJSIP? |
+|---|---|---|
+| `registration/stack/RealLinphoneCoreGateway.kt` | 933 | **Yes** — this is the whole adapter |
+| `stack/SipStackInfo.kt` | 52 | **Yes**, but it is one `Factory` call for a version string |
+| `registration/StackRegistrationEvent.kt` | 53 | **No** — a deliberate SDK-free copy of the SDK enum; the only `org.linphone` in it is prose |
+
+So the real surface is **≈985 lines behind a 342-line contract**
+(`SipCoreGateway`, `SipCallGateway`, `SipVideoGateway`, `SipRecordingGateway` — renamed
+from `Linphone*` in preparation, since a seam named after one stack is not a seam). The
+other ~3,800 lines of `:data:sip` — the engine, the state mappers, the conference and
+recording logic, the network recovery coordinator — are already SDK-free and are reused
+as they are. Their 3,663 lines of tests are reused too: they drive the gateway contract
+through `FakeSipCoreGateway`, not through liblinphone.
+
+That is a materially smaller and lower-risk job than the first estimate, and it is the
+`SipEngine`/gateway layering from ADR-001 doing exactly what it was built for. It does not
+change the **blocking** question, which is still where the binaries come from.
 
 **What this migration does *not* fix.** The four defects reported from the device on
 2026-09-07 — the retained `ConnectionService`, mute, hold, and video — were all found to
