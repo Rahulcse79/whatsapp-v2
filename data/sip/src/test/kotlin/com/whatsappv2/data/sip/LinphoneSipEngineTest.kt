@@ -118,6 +118,18 @@ open class LinphoneSipEngineFixture {
      */
     internal val camera = FakeCameraAvailability()
 
+    /**
+     * An engine whose collectors die with the test body.
+     *
+     * `backgroundScope`, not the test scope itself. `start()` launches four collectors and
+     * `stop()` is what cancels them, so an engine built on the test scope leaves `runTest`
+     * waiting out its full timeout for any test that forgets to stop it — which is what
+     * every test in three of these suites did, for a minute each.
+     *
+     * An `@After` cannot fix that: `runTest` fails at the end of the body, before any
+     * teardown runs. Making the scope one that `runTest` cancels for us is the only place
+     * the guarantee can live that does not depend on every test remembering.
+     */
     internal fun engine(scope: TestScope) =
         // The same fake three times: one object implements every half of the seam, exactly
         // as the real gateway does, because one `Core` owns registration, calls and video
@@ -129,7 +141,7 @@ open class LinphoneSipEngineFixture {
             repository,
             settings,
             networkMonitor,
-            scope,
+            scope.backgroundScope,
             NoOpLogger,
             clock,
             platform,
