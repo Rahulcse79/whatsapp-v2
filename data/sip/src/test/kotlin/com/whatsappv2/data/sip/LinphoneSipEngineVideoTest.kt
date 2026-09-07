@@ -21,7 +21,7 @@ import kotlin.test.assertTrue
 /**
  * Video, the camera lifecycle, and escalation, in the real engine (Tasks 51, 53, 54).
  *
- * The camera assertions read [FakeLinphoneCoreGateway.cameraCaptureChanges] as an ordered
+ * The camera assertions read [FakeSipCoreGateway.cameraCaptureChanges] as an ordered
  * log rather than a flag, because the property being asserted is a sequence: acquired when
  * a call needs it, released when it does not — and "released" is only distinguishable from
  * "never acquired" if the order is visible.
@@ -54,6 +54,53 @@ class LinphoneSipEngineVideoTest : LinphoneSipEngineFixture() {
 
         // Released on the hangup, and the log proves it was held first.
         assertEquals(false, gateway.cameraCaptureChanges.last())
+    }
+
+    @Test
+    fun `a video call placed as one sends video without anybody toggling it`() = runTest {
+        // The regression test for "video calling is not working", and it fails on the
+        // parent commit. `CallControls.isVideoEnabled` defaults to false and, until
+        // `adoptNegotiatedVideo` existed, the only thing that ever set it was the in-call
+        // video button. So a call placed *as* a video call connected with video negotiated
+        // and its own controls saying video was off — and CameraPolicy, which reads those
+        // controls, never claimed the camera. Note that nothing below calls
+        // setVideoEnabled: that call is what used to paper over this.
+        val engine = registeredEngine()
+        val callId = requireNotNull(
+            engine.placeCall(account.id, TARGET, MediaProfile.AUDIO_VIDEO).getOrNull(),
+        )
+        runCurrent()
+        gateway.emitCall(callId.value, StackCallState.CONNECTED, videoActive = true)
+        runCurrent()
+
+        val call = engine.activeCalls.value.single()
+        assertEquals(true, call.state.controlsOrNull?.isVideoEnabled)
+        assertTrue(gateway.cameraCaptureChanges.contains(true))
+    }
+
+    @Test
+    fun `the camera is capturing before the INVITE, so the offer can send`() = runTest {
+        // liblinphone writes the SDP offer when the INVITE goes out. With capture off it
+        // can only offer recvonly, and no later change re-negotiates it — which is why
+        // waiting for the call to be established was too late.
+        val engine = registeredEngine()
+        gateway.cameraCaptureChanges.clear()
+
+        engine.placeCall(account.id, TARGET, MediaProfile.AUDIO_VIDEO)
+        runCurrent()
+
+        assertEquals(listOf(true), gateway.cameraCaptureChanges)
+    }
+
+    @Test
+    fun `an audio call still claims no camera when it is placed`() = runTest {
+        val engine = registeredEngine()
+        gateway.cameraCaptureChanges.clear()
+
+        engine.placeCall(account.id, TARGET, MediaProfile.AUDIO)
+        runCurrent()
+
+        assertTrue(gateway.cameraCaptureChanges.none { it })
     }
 
     @Test

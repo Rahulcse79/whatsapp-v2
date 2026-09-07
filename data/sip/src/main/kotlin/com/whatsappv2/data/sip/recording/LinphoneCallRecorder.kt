@@ -5,7 +5,7 @@ import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.failure
 import com.whatsappv2.core.common.result.success
 import com.whatsappv2.core.common.time.Clock
-import com.whatsappv2.data.sip.call.LinphoneRecordingGateway
+import com.whatsappv2.data.sip.call.SipRecordingGateway
 import com.whatsappv2.data.sip.di.SipStackScope
 import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.model.CallId
@@ -53,7 +53,7 @@ import javax.inject.Singleton
  */
 @Singleton
 internal class LinphoneCallRecorder @Inject constructor(
-    private val gateway: LinphoneRecordingGateway,
+    private val gateway: SipRecordingGateway,
     private val calls: SipCallController,
     private val store: RecordingStore,
     private val clock: Clock,

@@ -5,20 +5,20 @@ import kotlinx.coroutines.flow.Flow
 /**
  * The call half of the SDK seam (Task 35).
  *
- * Separate from `LinphoneCoreGateway` for the same reason `SipEngine` splits into role
+ * Separate from `SipCoreGateway` for the same reason `SipEngine` splits into role
  * interfaces: the thing that places calls and the thing that registers accounts are used
  * by different code, and a narrow interface is a narrow fake. One class implements them
  * all, because one `Core` owns them all — but nothing above here has to know that.
  *
- * Video and recording are seams of their own, [LinphoneVideoGateway] and
- * [LinphoneRecordingGateway], because their callers are of their own too: the recorder
+ * Video and recording are seams of their own, [SipVideoGateway] and
+ * [SipRecordingGateway], because their callers are of their own too: the recorder
  * needs two functions and the surface controller needs five, and neither should be handed
  * the whole of the stack's call API to get them.
  *
  * As with registration, everything decidable without the stack lives above this line.
  * The gateway reports what happened; [CallStateMapper] decides what it means.
  */
-internal interface LinphoneCallGateway {
+internal interface SipCallGateway {
 
     /** Call progress, as the stack reports it. */
     val callEvents: Flow<StackCallEvent>

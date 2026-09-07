@@ -9,16 +9,16 @@ import com.whatsappv2.core.common.time.Clock
 import com.whatsappv2.core.common.time.SystemClock
 import com.whatsappv2.data.sip.call.CallStateMapper
 import com.whatsappv2.data.sip.call.ConferenceMapper
-import com.whatsappv2.data.sip.call.LinphoneCallGateway
-import com.whatsappv2.data.sip.call.LinphoneVideoGateway
+import com.whatsappv2.data.sip.call.SipCallGateway
+import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.TransferEventMapper
 import com.whatsappv2.data.sip.di.SipStackScope
 import com.whatsappv2.data.sip.network.NetworkMonitor
 import com.whatsappv2.data.sip.network.RegistrationRecoveryCoordinator
-import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
 import com.whatsappv2.data.sip.registration.RegistrationStateMapper
+import com.whatsappv2.data.sip.registration.SipCoreGateway
 import com.whatsappv2.data.sip.registration.StackAccount
 import com.whatsappv2.data.sip.registration.StackMediaEncryption
 import com.whatsappv2.data.sip.registration.StackPushParameters
@@ -93,7 +93,7 @@ import javax.inject.Singleton
  *
  * Everything decidable without the stack is kept out of here: backoff and refresh timing
  * in `:domain`, state translation in [RegistrationStateMapper], and the SDK itself behind
- * [LinphoneCoreGateway]. What remains is bookkeeping — which accounts exist, what their
+ * [SipCoreGateway]. What remains is bookkeeping — which accounts exist, what their
  * last known state was — and that is what the tests exercise.
  *
  * ## Network changes
@@ -120,9 +120,9 @@ import javax.inject.Singleton
  */
 @Singleton
 internal class LinphoneSipEngine @Inject constructor(
-    private val gateway: LinphoneCoreGateway,
-    private val callGateway: LinphoneCallGateway,
-    private val videoGateway: LinphoneVideoGateway,
+    private val gateway: SipCoreGateway,
+    private val callGateway: SipCallGateway,
+    private val videoGateway: SipVideoGateway,
     private val accounts: SipAccountRepository,
     /**
      * App-wide preferences, read for the DTMF transport (Task 43, §5.1).
@@ -529,6 +529,34 @@ internal class LinphoneSipEngine @Inject constructor(
             CallStateMapper.isConnected(event.state)
         reportToPlatform(id, current, next, justConnected)
         store(id, current, next, event, justConnected)
+        if (justConnected) adoptNegotiatedVideo(id)
+    }
+
+    /**
+     * Makes the controls agree with the video that was actually negotiated.
+     *
+     * ## The bug this fixes
+     *
+     * [CallControls.isVideoEnabled] defaults to `false` and, until this existed, the only
+     * thing that ever set it was the user pressing the in-call video button. A call placed
+     * *as* a video call therefore connected with video negotiated and running while its
+     * controls still said video was off — and two things read that flag:
+     * [com.whatsappv2.domain.call.CameraPolicy], which then never claimed the camera, and
+     * the call screen, which then never drew the local preview. Video calling did not work,
+     * and nothing in the SIP layer was wrong.
+     *
+     * ## Only at connect
+     *
+     * Once, on the transition where media starts running — the same moment
+     * [negotiatedMedia] reads the stack's params for the same reason. Re-applying it on
+     * every later event would undo a deliberate video mute, whose whole shape is
+     * `isVideoEnabled = false` while a stream is still negotiated (Task 53).
+     */
+    private fun adoptNegotiatedVideo(id: CallId) {
+        val call = calls.value[id] ?: return
+        if (!call.media.hasVideo) return
+        if (call.state.controlsOrNull?.isVideoEnabled == true) return
+        applyControl(id, CallEvent.SetVideoEnabled(true))
     }
 
     /**

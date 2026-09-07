@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.Flow
  * What network the device is on, as a stream.
  *
  * The seam that keeps `ConnectivityManager` out of everything above it — the same trick
- * as [com.whatsappv2.data.sip.registration.LinphoneCoreGateway], and for the same reason:
+ * as [com.whatsappv2.data.sip.registration.SipCoreGateway], and for the same reason:
  * a recovery rule that can only be exercised by toggling airplane mode on a real handset
  * is a rule that gets exercised once, by hand, and never again.
  *

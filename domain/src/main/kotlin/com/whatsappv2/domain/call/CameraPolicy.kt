@@ -59,11 +59,30 @@ object CameraPolicy {
     /**
      * True when this call is asking for the camera.
      *
-     * `isEstablished` rather than `isActive`: video needs a negotiated stream, and the
-     * states that have one are exactly the states that carry [CallControls].
+     * ## An outgoing video call needs the camera *before* it is established
+     *
+     * This used to require [CallState.isEstablished], and that was the bug behind "video
+     * calling does not work". The SDP offer is built at INVITE time, and liblinphone can
+     * only offer to **send** video if the capture device is already running — with capture
+     * off it offers `recvonly`, the far end never receives a picture, and no later change
+     * re-negotiates it. By the time the call was established and this returned true, the
+     * offer had been out for seconds.
+     *
+     * So an outgoing call that asked for video claims the camera from the moment it is
+     * placed. [CallState.Outgoing] and nothing else: an **incoming** call still waits to be
+     * answered, because lighting somebody's camera for a call they have not accepted is the
+     * privacy surprise §5.2 puts the preview on the call for.
+     *
+     * ## Established calls still answer to the user
+     *
+     * Once there is a negotiated stream, [CallControls.isVideoEnabled] is the user's own
+     * answer — a video-muted call keeps its stream while sending nothing, and releases the
+     * camera (Task 53).
      */
     private val CallSnapshot.wantsCamera: Boolean
-        get() = state.isEstablished &&
-            media.hasVideo &&
-            state.controlsOrNull?.isVideoEnabled == true
+        get() = media.hasVideo && when (state) {
+            // Placed by this user, with video, and the offer is being built right now.
+            is CallState.Outgoing -> true
+            else -> state.isEstablished && state.controlsOrNull?.isVideoEnabled == true
+        }
 }

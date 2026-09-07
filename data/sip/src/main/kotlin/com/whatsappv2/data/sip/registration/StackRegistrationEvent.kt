@@ -8,7 +8,7 @@ package com.whatsappv2.data.sip.registration
  * type in scope, which is what keeps the "no `org.linphone` import outside `:data:sip`"
  * rule (DoD 3) from being merely aspirational.
  *
- * If the SDK adds a state, [LinphoneCoreGateway] must map it here. That is a compile
+ * If the SDK adds a state, [SipCoreGateway] must map it here. That is a compile
  * error in one file rather than a silent behaviour change everywhere.
  */
 internal enum class StackRegistrationState {

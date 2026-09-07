@@ -69,14 +69,30 @@ class CameraPolicyTest {
     }
 
     @Test
-    fun `a ringing call does not open the camera before anybody answers`() {
+    fun `an outgoing video call holds the camera before it is answered`() {
+        // This assertion used to be the opposite, and the opposite was the bug behind
+        // "video calling does not work". liblinphone builds the SDP offer at INVITE time
+        // and can only offer to *send* video if the capture device is already running;
+        // with the camera released until the call was established, every outgoing video
+        // call went out `recvonly` and no later change re-negotiated it.
         val calls = listOf(call(state = CallState.Outgoing.Ringing))
+
+        assertEquals(CallId("call-1"), CameraPolicy.ownerOf(calls))
+    }
+
+    @Test
+    fun `an outgoing audio call never opens the camera, ringing or not`() {
+        // The profile still decides. Placing an ordinary call must not turn a camera on.
+        val calls = listOf(call(state = CallState.Outgoing.Ringing, media = MediaProfile.AUDIO))
 
         assertNull(CameraPolicy.ownerOf(calls))
     }
 
     @Test
     fun `an incoming video call does not open the camera while it rings`() {
+        // The asymmetry with an outgoing call is deliberate. Somebody who pressed "video
+        // call" expects their camera on; somebody whose phone is ringing has agreed to
+        // nothing, and §5.2 puts the preview on the call rather than on the alert.
         val calls = listOf(call(state = CallState.Incoming(remote)))
 
         assertNull(CameraPolicy.ownerOf(calls))

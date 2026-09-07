@@ -167,10 +167,33 @@ class RegistrationService : Service() {
         } catch (e: IllegalStateException) {
             // Android 12+ background-start restriction.
             logger.error(TAG, "Foreground start refused: ${e.javaClass.simpleName}")
+            abandonForegroundStart()
         } catch (e: SecurityException) {
             // Android 14+ missing the per-type permission.
             logger.error(TAG, "Foreground type not permitted: ${e.javaClass.simpleName}")
+            abandonForegroundStart()
         }
+    }
+
+    /**
+     * Gives the service up when it could not become a foreground one.
+     *
+     * ## Catching the exception was not enough, and made things worse
+     *
+     * `startForegroundService` puts the service under a promise: it **must** call
+     * `startForeground` within a few seconds or the platform kills the process with
+     * `ForegroundServiceDidNotStartInTimeException`. Logging the failure and returning
+     * kept that promise unfulfilled, so the catch that existed to prevent a crash
+     * converted an immediate, well-labelled one into a delayed kill with a completely
+     * unrelated-looking stack trace a few seconds later.
+     *
+     * Stopping is the honest response. The registration is not held, the user is told
+     * nothing that is untrue, and `ServiceLauncher` starts the service again the next time
+     * the app is in a state that permits it.
+     */
+    private fun abandonForegroundStart() {
+        isForeground = false
+        stopSelf()
     }
 
     /**
@@ -253,9 +276,24 @@ class RegistrationService : Service() {
         private const val CHANNEL_ID = "sip-registration"
         private const val NOTIFICATION_ID = 1
 
-        /** Starts the service. Safe to call when it is already running. */
+        /**
+         * Starts the service. Safe to call when it is already running — and safe to call
+         * from the background, which is the part that was not true.
+         *
+         * `startForegroundService` throws `ForegroundServiceStartNotAllowedException` in
+         * the **caller's** process when Android 12+ will not permit a background start.
+         * `ServiceLauncher` wrapped its own call; `SipMessagingService` did not, and that
+         * is the push path, which is background by definition. Guarding here covers every
+         * caller rather than the ones somebody remembered.
+         *
+         * A refusal is not an error to escalate: it means the app may not hold a
+         * registration right now, which is the platform's decision to make. The next
+         * foreground moment starts it.
+         */
         fun start(context: Context) {
-            context.startForegroundService(Intent(context, RegistrationService::class.java))
+            runCatching {
+                context.startForegroundService(Intent(context, RegistrationService::class.java))
+            }
         }
 
         fun stop(context: Context) {

@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.Flow
  * The interface is deliberately small. Anything that can be decided without the stack -
  * backoff, refresh timing, error classification - belongs above it, where it is testable.
  */
-internal interface LinphoneCoreGateway : TransportRebinder {
+internal interface SipCoreGateway : TransportRebinder {
 
     /** Registration state changes, as the stack reports them. */
     val registrationEvents: Flow<StackRegistrationEvent>

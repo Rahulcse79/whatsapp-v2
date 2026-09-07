@@ -44,6 +44,15 @@ import com.whatsappv2.feature.settings.SettingsScreen
 fun AppNavHost(
     navController: NavHostController,
     modifier: Modifier = Modifier,
+    /**
+     * Runs a video call once the camera has been asked for (Task 74).
+     *
+     * Passed in rather than built here. `rememberCameraGate` reads
+     * `LocalPermissionCoordinator`, which only `MainActivity` provides — building it in
+     * this graph would make every test and preview that renders `AppRoot` need permission
+     * machinery to draw a screen that has nothing to do with permissions.
+     */
+    videoGate: (proceed: () -> Unit) -> Unit = { it() },
 ) {
     val context = LocalContext.current
 
@@ -59,7 +68,7 @@ fun AppNavHost(
         startDestination = AppDestination.START.route,
         modifier = modifier,
     ) {
-        callRoutes(navController, openCall)
+        callRoutes(navController, openCall, videoGate)
         accountRoutes(navController)
     }
 }
@@ -68,13 +77,17 @@ fun AppNavHost(
 private fun NavGraphBuilder.callRoutes(
     navController: NavHostController,
     openCall: (CallId) -> Unit,
+    videoGate: (proceed: () -> Unit) -> Unit,
 ) {
+    // All three routes that can start a video call share one gate. One launcher is
+    // enough: only one destination is on screen to press it.
     composable(AppDestination.HISTORY.route) {
         HistoryRoute(
             onCallPlaced = openCall,
             onOpenDialer = { navController.navigate(AppDestination.DIALER.route) },
             onOpenGroupCall = { navController.navigate(AppDestination.GROUP.route) },
             onOpenSettings = { navController.navigate(AppDestination.SETTINGS.route) },
+            videoGate = videoGate,
         )
     }
 
@@ -82,6 +95,7 @@ private fun NavGraphBuilder.callRoutes(
         DialerScreen(
             onCallPlaced = openCall,
             onBack = { navController.popBackStack() },
+            videoGate = videoGate,
         )
     }
 
@@ -91,6 +105,7 @@ private fun NavGraphBuilder.callRoutes(
         GroupCallRoute(
             onCallPlaced = openCall,
             onBack = { navController.popBackStack() },
+            videoGate = videoGate,
         )
     }
 

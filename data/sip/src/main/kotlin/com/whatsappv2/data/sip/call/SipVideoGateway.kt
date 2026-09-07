@@ -3,14 +3,14 @@ package com.whatsappv2.data.sip.call
 /**
  * The video half of the SDK seam (Tasks 51 to 54).
  *
- * Its own interface rather than more of [LinphoneCallGateway], because its callers are
+ * Its own interface rather than more of [SipCallGateway], because its callers are
  * their own: `StackVideoSurfaceController` needs the windows and the camera and nothing
  * else, and handing it the ability to place and terminate calls to get them is exactly
  * the coupling the seam exists to prevent.
  *
- * One class implements this and [LinphoneCallGateway] both, because one `Core` owns both.
+ * One class implements this and [SipCallGateway] both, because one `Core` owns both.
  */
-internal interface LinphoneVideoGateway {
+internal interface SipVideoGateway {
 
     /**
      * Adds or drops the video stream by re-INVITE (Tasks 53, 54).

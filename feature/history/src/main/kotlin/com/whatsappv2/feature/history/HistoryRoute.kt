@@ -31,6 +31,14 @@ fun HistoryRoute(
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: HistoryViewModel = hiltViewModel(),
+    /**
+     * Runs a video call only after the camera has been asked for (Task 74).
+     *
+     * `:app` supplies the real one; the default proceeds straight through so a preview and
+     * a test need no permission machinery. It gates the *prompt*, never the call — a
+     * declined camera still places an audio call, which is `MediaProfile`'s rule.
+     */
+    videoGate: (proceed: () -> Unit) -> Unit = { it() },
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val rows = viewModel.rows.collectAsLazyPagingItems()
@@ -56,7 +64,7 @@ fun HistoryRoute(
         }
     }
 
-    val actions = remember(viewModel, onOpenDialer, onOpenGroupCall, onOpenSettings) {
+    val actions = remember(viewModel, onOpenDialer, onOpenGroupCall, onOpenSettings, videoGate) {
         HistoryActions(
             onFilterChanged = viewModel::onFilterChanged,
             onEntryOpened = viewModel::onEntryOpened,
@@ -66,7 +74,7 @@ fun HistoryRoute(
             onClearAllDismissed = viewModel::onClearAllDismissed,
             onClearAllConfirmed = viewModel::onClearAllConfirmed,
             onCallBack = viewModel::onCallBack,
-            onVideoCallBack = viewModel::onVideoCallBack,
+            onVideoCallBack = { entry -> videoGate { viewModel.onVideoCallBack(entry) } },
             onOpenDialer = onOpenDialer,
             onOpenGroupCall = onOpenGroupCall,
             onOpenSettings = onOpenSettings,

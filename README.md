@@ -10,6 +10,7 @@ multi-account SIP registration, Telecom integration, and conferencing against Fr
 | [`android-sip-app-prompt.md`](android-sip-app-prompt.md) | The requirements specification |
 | [`tasks.md`](tasks.md) | 68-task implementation plan, in dependency order |
 | [`tasks-v2.md`](tasks-v2.md) | Tasks 69–78 — the UX round, implemented; what is still unverified is listed |
+| [`tasks-v3.md`](tasks-v3.md) | Tasks 79–88 — the defects a handset found, and the PJSIP migration (blocked, ADR-006) |
 | [`docs/architecture.md`](docs/architecture.md) | HLD — decision record, module graph, layers, threading, sequence diagrams |
 | [`docs/lld.md`](docs/lld.md) | LLD — the call FSM, the `SipEngine` contract and its error taxonomy, the Room schemas |
 | [`docs/security.md`](docs/security.md) | Credentials at rest, transport and media security, logging policy, call recording |

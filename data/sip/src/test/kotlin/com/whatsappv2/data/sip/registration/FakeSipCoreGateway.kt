@@ -1,8 +1,8 @@
 package com.whatsappv2.data.sip.registration
 
-import com.whatsappv2.data.sip.call.LinphoneCallGateway
-import com.whatsappv2.data.sip.call.LinphoneRecordingGateway
-import com.whatsappv2.data.sip.call.LinphoneVideoGateway
+import com.whatsappv2.data.sip.call.SipCallGateway
+import com.whatsappv2.data.sip.call.SipRecordingGateway
+import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.StackConferenceEvent
@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 
 /**
- * A [LinphoneCoreGateway] with no SIP stack behind it.
+ * A [SipCoreGateway] with no SIP stack behind it.
  *
  * Exists so the callback-to-Flow mapping can be exercised on the JVM. liblinphone cannot
  * run there, so without this the mapping could only be tested on a device - which is the
@@ -30,11 +30,11 @@ import kotlinx.coroutines.flow.asSharedFlow
  * the second: "no decrypted password remains after logout" is a question about what is
  * still held, and an append-only log could never answer it.
  */
-internal class FakeLinphoneCoreGateway :
-    LinphoneCoreGateway,
-    LinphoneCallGateway,
-    LinphoneVideoGateway,
-    LinphoneRecordingGateway {
+internal class FakeSipCoreGateway :
+    SipCoreGateway,
+    SipCallGateway,
+    SipVideoGateway,
+    SipRecordingGateway {
 
     private val events = MutableSharedFlow<StackRegistrationEvent>(
         replay = 0,

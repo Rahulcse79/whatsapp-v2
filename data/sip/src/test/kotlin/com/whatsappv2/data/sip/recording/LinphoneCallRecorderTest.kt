@@ -9,7 +9,7 @@ import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.result.success
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.core.common.time.MutableClock
-import com.whatsappv2.data.sip.registration.FakeLinphoneCoreGateway
+import com.whatsappv2.data.sip.registration.FakeSipCoreGateway
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.CodecPreferences
@@ -69,7 +69,7 @@ class LinphoneCallRecorderTest {
 
     private val bob = requireNotNull(SipUri.parse("sip:bob@example.com").getOrNull())
 
-    private val gateway = FakeLinphoneCoreGateway()
+    private val gateway = FakeSipCoreGateway()
     private val engine = FakeSipEngine().givenRegistered(account)
     private val store = FakeRecordingStore()
     private val clock = MutableClock().set(NOW)

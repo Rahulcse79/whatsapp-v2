@@ -11,9 +11,9 @@ import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.core.common.time.MutableClock
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.network.FakeNetworkMonitor
-import com.whatsappv2.data.sip.registration.FakeLinphoneCoreGateway
-import com.whatsappv2.data.sip.registration.LinphoneCoreGateway
+import com.whatsappv2.data.sip.registration.FakeSipCoreGateway
 import com.whatsappv2.data.sip.registration.RegistrationStateMapper
+import com.whatsappv2.data.sip.registration.SipCoreGateway
 import com.whatsappv2.data.sip.registration.StackPushParameters
 import com.whatsappv2.data.sip.registration.StackRegistrationEvent
 import com.whatsappv2.data.sip.registration.StackRegistrationState
@@ -62,7 +62,7 @@ import kotlin.test.assertTrue
  * The fake stack, the account, and the states the engine tests start from.
  *
  * Task 27's done-when is only reachable because the SDK sits behind
- * [com.whatsappv2.data.sip.registration.LinphoneCoreGateway]: liblinphone cannot run
+ * [com.whatsappv2.data.sip.registration.SipCoreGateway]: liblinphone cannot run
  * here, so without that seam none of this could be tested before a device.
  *
  * The cases themselves are split by subject below. One class held all of them and had
@@ -74,7 +74,7 @@ import kotlin.test.assertTrue
  */
 open class LinphoneSipEngineFixture {
 
-    internal val gateway = FakeLinphoneCoreGateway()
+    internal val gateway = FakeSipCoreGateway()
     internal val repository = FakeSipAccountRepository()
 
     internal val account = SipAccount(
@@ -237,7 +237,7 @@ class LinphoneSipEngineCallTest : LinphoneSipEngineFixture() {
         assertEquals(NOW, snapshot.startedAtEpochMillis)
         assertEquals(null, snapshot.connectedAtEpochMillis, "nothing has been answered yet")
         assertEquals(
-            FakeLinphoneCoreGateway.PlacedCall(
+            FakeSipCoreGateway.PlacedCall(
                 callKey = callId.value,
                 accountKey = account.id.value,
                 destination = TARGET.render(),
@@ -714,7 +714,7 @@ class LinphoneSipEngineMediaTest : LinphoneSipEngineFixture() {
         assertTrue(engine.sendDtmf(callId, DtmfDigit.FIVE) is Outcome.Success)
 
         assertEquals(
-            FakeLinphoneCoreGateway.SentDtmf(callId.value, '5', useInfo = false),
+            FakeSipCoreGateway.SentDtmf(callId.value, '5', useInfo = false),
             gateway.sentDtmf.single(),
         )
         engine.stop()
@@ -1133,7 +1133,7 @@ class RegistrationStateMapperTest {
 /**
  * Every string reachable from an object's own bookkeeping.
  *
- * Deliberately does **not** follow [LinphoneCoreGateway] or [SipAccountRepository]. Those
+ * Deliberately does **not** follow [SipCoreGateway] or [SipAccountRepository]. Those
  * two are supposed to hold a credential — the stack while an account is registered, the
  * store always and encrypted — and each is asserted separately. What this measures is
  * everything else, which is where a cached password would hide.
@@ -1157,7 +1157,7 @@ private class StringWalk {
                 value.values.forEach(::visit)
             }
             value is Iterable<*> -> value.forEach(::visit)
-            value is LinphoneCoreGateway || value is SipAccountRepository -> Unit
+            value is SipCoreGateway || value is SipAccountRepository -> Unit
             value.javaClass.name.startsWith(PROJECT_PACKAGE) -> visitFields(value)
         }
     }

@@ -1,7 +1,6 @@
 package com.whatsappv2.telecom
 
 import android.content.Context
-import android.media.AudioManager
 import android.net.Uri
 import android.os.Bundle
 import android.telecom.PhoneAccount
@@ -51,15 +50,6 @@ class TelecomCallRegistry @Inject constructor(
     private val phoneAccount: SipPhoneAccount,
     private val logger: Logger,
 ) : PlatformCallRegistry {
-
-    /**
-     * The call this registry muted the device's microphone for, if any.
-     *
-     * Volatile because the two writers do not share a thread: mute arrives on a coroutine
-     * from the engine, and the end of a call arrives on the SIP stack's own thread.
-     */
-    @Volatile
-    private var mutedCall: CallId? = null
 
     override suspend fun registerOutgoing(call: CallSnapshot): Boolean {
         val telecom = telecomManager() ?: return permitWithoutPlatform()
@@ -121,31 +111,32 @@ class TelecomCallRegistry @Inject constructor(
         SipConnectionService.reportHeld(callId, held)
 
     /**
-     * Mutes the device's microphone alongside the stack's own mute (Task 42).
+     * Records the mute, rather than performing a second one (Task 42).
      *
-     * **Telecom has no public setter for this.** `Connection.setMuteState` is package
-     * private and `requestCallEndpointChange` (API 34) covers routing only, so a
-     * self-managed connection cannot report that it muted itself. What is left is the
-     * platform microphone flag — the same one the system's mute control writes — which is
-     * why setting it here is the app and the platform agreeing rather than two mutes.
+     * ## What this used to do, and why it was wrong
      *
-     * The mute is the call's, not the device's, so [onEnded] releases it. A microphone
-     * left muted after the call that muted it is a device-wide mute with nothing on screen
-     * to explain it, and the next app to record hears silence.
+     * It set the platform's **device-wide** microphone mute flag — which mutes the
+     * microphone for every app on the phone, not this call — and that is not what mutes a
+     * SIP call anyway: the stack's own per-call
+     * `SipCallGateway.setMicrophoneMuted` is, and the engine has already called it by
+     * the time this runs. So the flag bought nothing and cost the rest of the device its
+     * microphone until the call ended.
+     *
+     * ## What it does now
+     *
+     * **Telecom has no public setter a self-managed connection can use to say "I muted
+     * myself".** `Connection.setMuteState` is package private and `requestCallEndpointChange`
+     * (API 34) covers routing only. So Telecom's own `CallAudioState.isMuted` stays `false`
+     * through an app-side mute and it repeats that value on every audio event — which is
+     * exactly how a mute got undone by the next route change. Seeding the connection with
+     * what actually happened is what makes the two agree.
      */
     override fun setMuted(callId: CallId, muted: Boolean) {
-        val audio = context.getSystemService(AudioManager::class.java) ?: run {
-            logger.warn(TAG, "No AudioManager; the platform microphone was not muted")
-            return
-        }
-        audio.isMicrophoneMute = muted
-        mutedCall = callId.takeIf { muted }
+        SipConnectionService.syncMuted(callId, muted)
     }
 
-    override fun onEnded(callId: CallId, reason: HangupReason) {
-        if (mutedCall == callId) setMuted(callId, muted = false)
+    override fun onEnded(callId: CallId, reason: HangupReason) =
         SipConnectionService.reportEnded(callId, reason)
-    }
 
     override suspend fun requestAudioRoute(callId: CallId, route: AudioRoute): Boolean =
         SipConnectionService.requestAudioRoute(callId, TelecomPolicy.routeMaskOf(route))

@@ -41,6 +41,16 @@ internal class SipConnection(
         fun onMuteChanged(callId: CallId, muted: Boolean)
     }
 
+    /**
+     * The mute state Telecom last told us about, or that we last told Telecom about.
+     *
+     * Seeded `false` because that is what a connection starts as, and because the first
+     * `onCallAudioStateChanged` after a call is set up reports exactly that. Without the
+     * seed the first callback would look like a change and un-mute a call the user muted
+     * during setup.
+     */
+    private var platformMuted = false
+
     init {
         // Self-managed: this app draws its own in-call UI and Telecom must not hand the
         // call to the system dialer.
@@ -71,14 +81,22 @@ internal class SipConnection(
         destroy()
     }
 
+    /**
+     * Telecom asked for a hold.
+     *
+     * The request is forwarded and **nothing here moves Telecom's own state**. It used to
+     * call `setOnHold()` immediately, which is the same optimism `LinphoneSipEngine.setHold`
+     * refuses for the app's own UI: the re-INVITE may be rejected, and a platform that
+     * believes a running call is held offers a resume button that resumes nothing. The
+     * state moves when the stack says so — the engine reports it back through
+     * [reportHeld], for a hold from any source.
+     */
     override fun onHold() {
         listener.onHoldChanged(callId, held = true)
-        setOnHold()
     }
 
     override fun onUnhold() {
         listener.onHoldChanged(callId, held = false)
-        setActive()
     }
 
     /**
@@ -100,10 +118,30 @@ internal class SipConnection(
     override fun onCallAudioStateChanged(state: CallAudioState?) {
         val current = state ?: return
         listener.onAudioRouteChanged(callId, TelecomPolicy.audioRouteOf(current.route))
-        // One callback carries both, and the mute half matters as much: a headset's own
-        // mute button reaches this app through here and nowhere else, so dropping it
-        // would leave the microphone live while the platform believes it is muted.
-        listener.onMuteChanged(callId, current.isMuted)
+
+        // One callback carries both, and the mute half matters: a headset's own mute
+        // button reaches this app through here and nowhere else.
+        //
+        // Only on a real change, though, and that is the fix for "mute does not work".
+        // Telecom reports its own mute state on every audio event, including a plain route
+        // change — and a self-managed connection has no public way to tell Telecom it
+        // muted itself, so that state sits at `false` however many times the user presses
+        // mute. Forwarding it unconditionally meant the next audio event un-muted the call.
+        if (platformMuted != current.isMuted) {
+            platformMuted = current.isMuted
+            listener.onMuteChanged(callId, current.isMuted)
+        }
+    }
+
+    /**
+     * Records a mute the **app** performed, so the platform's stale value cannot undo it.
+     *
+     * Called when the engine mutes or unmutes. After this, Telecom repeating its own
+     * unchanged `isMuted` is correctly read as "nothing happened" rather than as an
+     * instruction to un-mute.
+     */
+    fun syncPlatformMute(muted: Boolean) {
+        platformMuted = muted
     }
 
     /** The far end is ringing. Telecom shows this as an outgoing call in progress. */
