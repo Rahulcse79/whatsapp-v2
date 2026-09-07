@@ -178,7 +178,7 @@ private fun CallActionArea(
     actions: CallActions,
     keypadShown: Boolean,
     dialled: String,
-    onDialled: (String) -> Unit,
+    onDialled: (Char) -> Unit,
     onToggleKeypad: (Boolean) -> Unit,
 ) {
     val call = state.call
