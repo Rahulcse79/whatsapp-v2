@@ -338,10 +338,18 @@ jobs:
           }
           # A debug-overrides block is how a permissive trust configuration reaches
           # production: added to unblock an afternoon's testing, never removed.
-          if grep -q 'debug-overrides' "$config"; then
-            echo "::error::$config contains a debug-overrides block. See its own comment for why not."
-            exit 1
-          fi
+          #
+          # Read the markup with XML comments stripped. The config's own header names the
+          # element in order to explain why it is absent, so a plain grep fails on the
+          # documentation of the very rule it is enforcing.
+          python3 - "$config" <<'PY'
+          import re, sys
+          path = sys.argv[1]
+          markup = re.sub(r"<!--.*?-->", "", open(path, encoding="utf-8").read(), flags=re.S)
+          if "debug-overrides" in markup:
+              print(f"::error::{path} contains a debug-overrides block. See its own comment for why not.")
+              sys.exit(1)
+          PY
           echo "Cleartext is refused in every build, with no debug override."
 
       - name: Coverage
