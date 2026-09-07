@@ -51,7 +51,8 @@ class ServiceRunPolicyTest {
         // platform killed the process five seconds later.
         //
         // Every decision must therefore name a type to go foreground with, Stop included.
-        assertEquals(ServiceDecision.Stop, ServiceRunPolicy.decide(emptyMap(), activeCalls = 0))
+        val nothing = emptyMap<AccountId, RegistrationState>()
+        assertEquals(ServiceDecision.Stop, ServiceRunPolicy.decide(nothing, activeCalls = 0))
         assertEquals(ServiceReason.REGISTRATION, ServiceDecision.Stop.foregroundReason())
     }
 
