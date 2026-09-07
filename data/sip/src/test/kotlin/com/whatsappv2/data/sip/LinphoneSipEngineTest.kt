@@ -42,7 +42,9 @@ import com.whatsappv2.domain.repository.SipAccountRepository
 import com.whatsappv2.domain.testing.FakeAppSettingsRepository
 import com.whatsappv2.domain.testing.FakePlatformCallRegistry
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -119,17 +121,22 @@ open class LinphoneSipEngineFixture {
     internal val camera = FakeCameraAvailability()
 
     /**
-     * An engine whose collectors die with the test body.
+     * The scope the engine's collectors live in.
      *
-     * `backgroundScope`, not the test scope itself. `start()` launches four collectors and
-     * `stop()` is what cancels them, so an engine built on the test scope leaves `runTest`
-     * waiting out its full timeout for any test that forgets to stop it — which is what
-     * every test in three of these suites did, for a minute each.
+     * The test's own dispatcher — so `runCurrent` and `advanceUntilIdle` drive the
+     * collectors exactly as before — but a [Job] of its own rather than the test's.
      *
-     * An `@After` cannot fix that: `runTest` fails at the end of the body, before any
-     * teardown runs. Making the scope one that `runTest` cancels for us is the only place
-     * the guarantee can live that does not depend on every test remembering.
+     * That distinction is the whole point. `start()` launches four collectors and `stop()`
+     * is what cancels them, so an engine parented to the test's job leaves `runTest`
+     * waiting out its full minute for any test that does not stop it, which is every test
+     * in three of these four suites. A job of its own is not a child, so `runTest` does not
+     * wait for it, and nothing about how the tests pump the scheduler changes.
+     *
+     * An `@After` cannot do this: `runTest` fails at the end of the body, before any
+     * teardown runs.
      */
+    private fun engineScope(scope: TestScope) = CoroutineScope(scope.coroutineContext + Job())
+
     internal fun engine(scope: TestScope) =
         // The same fake three times: one object implements every half of the seam, exactly
         // as the real gateway does, because one `Core` owns registration, calls and video
@@ -141,7 +148,7 @@ open class LinphoneSipEngineFixture {
             repository,
             settings,
             networkMonitor,
-            scope.backgroundScope,
+            engineScope(scope),
             NoOpLogger,
             clock,
             platform,
