@@ -529,6 +529,34 @@ internal class LinphoneSipEngine @Inject constructor(
             CallStateMapper.isConnected(event.state)
         reportToPlatform(id, current, next, justConnected)
         store(id, current, next, event, justConnected)
+        if (justConnected) adoptNegotiatedVideo(id)
+    }
+
+    /**
+     * Makes the controls agree with the video that was actually negotiated.
+     *
+     * ## The bug this fixes
+     *
+     * [CallControls.isVideoEnabled] defaults to `false` and, until this existed, the only
+     * thing that ever set it was the user pressing the in-call video button. A call placed
+     * *as* a video call therefore connected with video negotiated and running while its
+     * controls still said video was off — and two things read that flag:
+     * [com.whatsappv2.domain.call.CameraPolicy], which then never claimed the camera, and
+     * the call screen, which then never drew the local preview. Video calling did not work,
+     * and nothing in the SIP layer was wrong.
+     *
+     * ## Only at connect
+     *
+     * Once, on the transition where media starts running — the same moment
+     * [negotiatedMedia] reads the stack's params for the same reason. Re-applying it on
+     * every later event would undo a deliberate video mute, whose whole shape is
+     * `isVideoEnabled = false` while a stream is still negotiated (Task 53).
+     */
+    private fun adoptNegotiatedVideo(id: CallId) {
+        val call = calls.value[id] ?: return
+        if (!call.media.hasVideo) return
+        if (call.state.controlsOrNull?.isVideoEnabled == true) return
+        applyControl(id, CallEvent.SetVideoEnabled(true))
     }
 
     /**

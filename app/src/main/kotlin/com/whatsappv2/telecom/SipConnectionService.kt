@@ -6,17 +6,10 @@ import android.telecom.ConnectionService
 import android.telecom.DisconnectCause
 import android.telecom.PhoneAccountHandle
 import com.whatsappv2.core.common.logging.Logger
-import com.whatsappv2.domain.call.AudioRoute
-import com.whatsappv2.domain.engine.SipCallController
-import com.whatsappv2.domain.engine.SipMediaController
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.HangupReason
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 
@@ -31,10 +24,17 @@ import javax.inject.Inject
  *
  * ## Internal, and named in the manifest
  *
- * Nothing outside this module has any business holding a `Connection`, and Kotlin agrees:
- * a public class may not implement [SipConnection.Listener], which is internal because
- * `SipConnection` is. The manifest names the class by string and the JVM sees it as
- * public, so Telecom binds it exactly as before.
+ * Nothing outside this module has any business holding a `Connection`. The manifest names
+ * the class by string and the JVM sees it as public, so Telecom binds it exactly as before.
+ *
+ * ## It is not the listener, and that is a leak fix
+ *
+ * This service used to implement [SipConnection.Listener] and hand itself to every
+ * connection it created. Connections live in a **static** map below, so a destroyed
+ * service stayed reachable from a GC root for as long as one of its connections did —
+ * which LeakCanary reported as retained `ConnectionService$1` instances, the framework's
+ * own binder being what holds `this$0`. [TelecomCallBridge] is a `@Singleton` and takes
+ * that role now; nothing here outlives its binding.
  *
  * ## Registry, not state
  *
@@ -51,30 +51,19 @@ import javax.inject.Inject
  * until the call controller existed; it does now.
  */
 @AndroidEntryPoint
-internal class SipConnectionService : ConnectionService(), SipConnection.Listener {
+internal class SipConnectionService : ConnectionService() {
 
     @Inject
     lateinit var logger: Logger
 
-    @Inject
-    lateinit var calls: SipCallController
-
-    @Inject
-    lateinit var media: SipMediaController
-
     /**
-     * Where the forwarded callbacks run.
+     * Where Telecom's callbacks go.
      *
-     * The engine's operations suspend and Telecom's callbacks do not, so there has to be
-     * somewhere to put the work. Cancelled with the service: a callback still running for
-     * a service Telecom has torn down is acting on a call nothing is showing.
+     * A `@Singleton`, not this service: see the class documentation. Connections hold it
+     * for their whole lifetime, and it must not be something Telecom can destroy.
      */
-    private val scope = CoroutineScope(SupervisorJob())
-
-    override fun onDestroy() {
-        scope.cancel()
-        super.onDestroy()
-    }
+    @Inject
+    lateinit var bridge: TelecomCallBridge
 
     override fun onCreateOutgoingConnection(
         connectionManagerPhoneAccount: PhoneAccountHandle?,
@@ -132,47 +121,8 @@ internal class SipConnectionService : ConnectionService(), SipConnection.Listene
     }
 
     private fun newConnection(callId: CallId): SipConnection =
-        SipConnection(callId, listener = this, logger = logger)
+        SipConnection(callId, listener = bridge, logger = logger)
             .also { connections[callId] = it }
-
-    // ---------------------------------------------------------------- SipConnection.Listener
-
-    override fun onAnswered(callId: CallId) {
-        logger.info(TAG, "Telecom answered $callId")
-        // Audio, because Telecom's answer button has no way to say "with video" — a video
-        // answer is offered by this app's own incoming screen (Task 54).
-        scope.launch { calls.answer(callId, TelecomPolicy.telecomAnswerMedia) }
-    }
-
-    override fun onRejected(callId: CallId, reason: HangupReason) {
-        logger.info(TAG, "Telecom rejected $callId ($reason)")
-        connections.remove(callId)
-        scope.launch { calls.reject(callId, reason) }
-    }
-
-    override fun onDisconnected(callId: CallId, reason: HangupReason) {
-        logger.info(TAG, "Telecom disconnected $callId ($reason)")
-        connections.remove(callId)
-        scope.launch { calls.hangup(callId, reason) }
-    }
-
-    override fun onHoldChanged(callId: CallId, held: Boolean) {
-        logger.info(TAG, "Hold changed for $callId: $held")
-        scope.launch { calls.setHold(callId, held) }
-    }
-
-    override fun onAudioRouteChanged(callId: CallId, route: AudioRoute) {
-        logger.info(TAG, "Audio route for $callId: $route")
-        // Reported back through the same call the UI uses, so the in-call screen shows
-        // where audio actually is. Asking the platform for the route it just announced is
-        // a no-op there, which is why one path can serve both directions.
-        scope.launch { media.setAudioRoute(callId, route) }
-    }
-
-    override fun onMuteChanged(callId: CallId, muted: Boolean) {
-        logger.info(TAG, "Mute changed for $callId: $muted")
-        scope.launch { media.setMuted(callId, muted) }
-    }
 
     companion object {
         private const val TAG = "SipConnectionService"
@@ -221,6 +171,30 @@ internal class SipConnectionService : ConnectionService(), SipConnection.Listene
 
         private fun settle(callId: CallId, created: Boolean) {
             pending.remove(callId)?.complete(created)
+        }
+
+        /**
+         * Drops a connection from the registry without telling Telecom anything.
+         *
+         * For the callbacks that arrive *from* Telecom — it already knows the call is over,
+         * and this only stops the map holding the connection afterwards.
+         */
+        fun release(callId: CallId) {
+            connections.remove(callId)
+        }
+
+        /**
+         * Records the mute state Telecom last reported, so the app and the platform stop
+         * contradicting each other (Task 42).
+         *
+         * Telecom has no public setter a self-managed connection can use to say "I muted
+         * myself", so its own `CallAudioState.isMuted` never reflects an app-side mute. It
+         * then repeats that stale `false` on every audio change. Seeding the connection's
+         * idea of the platform state here is what stops the next route change undoing the
+         * user's mute.
+         */
+        fun syncMuted(callId: CallId, muted: Boolean) {
+            connections[callId]?.syncPlatformMute(muted)
         }
 
         /** Tells Telecom a call ended for a reason Telecom did not cause. */
