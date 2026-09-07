@@ -61,6 +61,7 @@ include(":data:calllog")
 include(":data:contacts")
 
 include(":feature:dialer")
+include(":feature:group")
 include(":feature:calls")
 include(":feature:accounts")
 include(":feature:history")

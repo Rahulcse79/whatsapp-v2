@@ -38,6 +38,7 @@ import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 
@@ -216,6 +217,53 @@ class CallViewModelTest {
             runCurrent()
 
             awaitDisplay { it.controls.isMuted }
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `a second press while the first is in flight is dropped, not queued`() = runTest {
+        // Task 76. Two mutes racing each other end with the icon and the microphone
+        // disagreeing, and whichever reply lands second wins for reasons the user cannot
+        // see. The action is claimed synchronously on the press, so the second one here —
+        // issued before the scheduler has run the first — finds MUTE already in flight.
+        val callId = placeCall()
+        engine.simulateRemoteAnswer(callId)
+        val viewModel = viewModel().also { it.watch(callId) }
+        engine.clearInvocations()
+
+        viewModel.setMuted(true)
+        viewModel.setMuted(false)
+        runCurrent()
+
+        val mutes = engine.invocations.count { it.operation == FakeSipEngine.Operation.SET_MUTED }
+        assertEquals(1, mutes, "the opposite request was queued behind the one in flight")
+    }
+
+    @Test
+    fun `a refused mute leaves the control usable and the microphone honest`() = runTest {
+        // The reason Task 76 acknowledges the press but never the outcome: an optimistic
+        // icon would read "Muted" over a live microphone whenever the engine refused.
+        val callId = placeCall()
+        engine.simulateRemoteAnswer(callId)
+        engine.failNext(FakeSipEngine.Operation.SET_MUTED, SipError.EngineUnavailable)
+        val viewModel = viewModel().also { it.watch(callId) }
+
+        // Subscribed for the duration, so uiState is live rather than parked on its
+        // initial value - WhileSubscribed does not run the upstream for a bare read.
+        viewModel.uiState.test {
+            skipItems(1)
+
+            viewModel.events.test {
+                viewModel.setMuted(true)
+                runCurrent()
+                assertIs<CallEvent.ActionFailed>(awaitItem())
+            }
+
+            val state = viewModel.uiState.value
+            assertIs<CallUiState.Active>(state)
+            assertFalse(state.call.controls.isMuted, "a refused mute was shown as muted")
+            assertFalse(CallAction.MUTE in state.pendingActions, "the control was left stuck busy")
             cancelAndIgnoreRemainingEvents()
         }
     }

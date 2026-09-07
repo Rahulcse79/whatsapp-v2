@@ -37,11 +37,13 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -100,6 +102,24 @@ class CallViewModel @Inject constructor(
      * leave the far end waiting for a timeout.
      */
     private val pendingVideo = MutableStateFlow<PendingVideoRequest?>(null)
+
+    /**
+     * Actions the engine is still answering (Task 76).
+     *
+     * ## Why the button waits rather than lying
+     *
+     * Mute, hold, speaker and video all move the on-screen state only when the engine says
+     * so, which is correct and is what made the mute button feel dead: nothing at all
+     * happened between the press and the round trip completing. The fix is to acknowledge
+     * the *press* immediately without claiming the *outcome* — an optimistic icon would
+     * show "Muted" over a live microphone whenever the engine refused, which is the bug
+     * `LinphoneSipEngine.setHold` already refuses to ship for hold.
+     *
+     * It also guards the double press: a second tap while the first is in flight would
+     * otherwise queue the opposite request and leave the icon and the microphone
+     * disagreeing.
+     */
+    private val inFlight = MutableStateFlow<Set<CallAction>>(emptySet())
 
     /**
      * Transfer, held apart (Tasks 55, 57).
@@ -181,7 +201,7 @@ class CallViewModel @Inject constructor(
             )
         }
 
-        return combine(engine, ticker(), contactFor(callId)) { state, now, contact ->
+        return combine(engine, ticker(), contactFor(callId), inFlight) { state, now, contact, busy ->
             val call = state.calls.firstOrNull { it.callId == callId }
             if (call != null) seen = true
 
@@ -194,6 +214,7 @@ class CallViewModel @Inject constructor(
                     transfer = state.transfer,
                     recording = state.recording,
                     conference = state.conference?.toUiState(UNKNOWN_PARTICIPANT),
+                    pendingActions = busy,
                 )
                 // Absent after it was present means the call ended. Absent before it was
                 // ever present means the engine has not published it yet, which happens
@@ -409,14 +430,35 @@ class CallViewModel @Inject constructor(
     }
 
     // ---------------------------------------------------------------- plumbing
+    /**
+     * Runs one engine action, showing that it is running (Task 76).
+     *
+     * The action is marked in flight **before** the coroutine starts, so the press is
+     * reflected on the next frame rather than after the round trip. A press arriving while
+     * the same action is already running is dropped rather than queued: two mutes racing
+     * each other end with the icon and the microphone disagreeing, and whichever reply
+     * lands second wins for reasons the user cannot see.
+     *
+     * `finally`, so a cancelled scope — the call ended, the screen went away — cannot
+     * leave a control stuck as busy forever.
+     */
     private fun act(action: CallAction, block: suspend () -> Outcome<*, SipError>) {
+        if (!beginAction(action)) return
         viewModelScope.launch {
-            val result = block()
-            if (result is Outcome.Failure) {
-                eventChannel.send(CallEvent.ActionFailed(action, result.error.userMessage()))
+            try {
+                val result = block()
+                if (result is Outcome.Failure) {
+                    eventChannel.send(CallEvent.ActionFailed(action, result.error.userMessage()))
+                }
+            } finally {
+                inFlight.update { it - action }
             }
         }
     }
+
+    /** Claims [action], or reports that it was already claimed. Atomic, so two presses race safely. */
+    private fun beginAction(action: CallAction): Boolean =
+        action !in inFlight.getAndUpdate { it + action }
 
     private companion object {
         const val SUBSCRIPTION_TIMEOUT_MILLIS = 5_000L

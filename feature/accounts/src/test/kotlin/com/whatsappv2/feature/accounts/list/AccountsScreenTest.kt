@@ -71,6 +71,7 @@ class AccountsScreenTest {
                     onDelete = onDelete,
                     onLogIn = onLogIn,
                     onLogOut = onLogOut,
+                    onBack = {},
                 )
             }
         }

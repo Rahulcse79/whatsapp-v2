@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
@@ -26,6 +27,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -35,6 +38,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -52,6 +56,8 @@ import com.whatsappv2.domain.model.AccountId
 fun AccountsScreen(
     onAddAccount: () -> Unit,
     onEditAccount: (AccountId) -> Unit,
+    onBack: () -> Unit,
+    snackbarHostState: SnackbarHostState,
     modifier: Modifier = Modifier,
     viewModel: AccountsViewModel = hiltViewModel(),
 ) {
@@ -65,6 +71,8 @@ fun AccountsScreen(
         onDelete = viewModel::deleteAccount,
         onLogIn = viewModel::logIn,
         onLogOut = viewModel::logOut,
+        onBack = onBack,
+        snackbarHostState = snackbarHostState,
         modifier = modifier,
     )
 }
@@ -86,6 +94,10 @@ fun AccountsScreen(
     onLogIn: (AccountId, String) -> Unit,
     onLogOut: (AccountId, String) -> Unit,
     modifier: Modifier = Modifier,
+    /** Back to settings. The list is a screen reached from there now, not a tab (Task 69). */
+    onBack: (() -> Unit)? = null,
+    /** Where a save, a delete and a login outcome are announced (Task 73). */
+    snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
 ) {
     // The two destructive actions are confirmed, so the row that is waiting on an answer
     // has to outlive the click. Held here, above the list, so scrolling the pending row
@@ -95,7 +107,23 @@ fun AccountsScreen(
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        topBar = { TopAppBar(title = { Text("SIP accounts") }) },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        topBar = {
+            TopAppBar(
+                title = { Text("SIP accounts") },
+                navigationIcon = {
+                    // Absent in a preview, where there is nowhere to go back to.
+                    onBack?.let { back ->
+                        IconButton(onClick = back, modifier = Modifier.testTag(TAG_BACK)) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back to settings",
+                            )
+                        }
+                    }
+                },
+            )
+        },
         floatingActionButton = {
             FloatingActionButton(onClick = onAddAccount) {
                 Icon(Icons.Filled.Add, contentDescription = "Add account")
@@ -337,6 +365,8 @@ private fun StatusIcon(status: AccountStatus) {
             .semantics { contentDescription = status.label() },
     )
 }
+
+internal const val TAG_BACK = "accounts-back"
 
 /** Wording lives here so the list and the detail view cannot describe a state differently. */
 internal fun AccountStatus.label(): String = when (this) {

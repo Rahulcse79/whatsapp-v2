@@ -46,6 +46,11 @@ class PermissionCoordinator @Inject constructor(
 
     fun markRequested(permission: AppPermission) = tracker.markRequested(permission)
 
+    /** Whether the first-run permission screen still has to be shown (Task 72). */
+    fun needsOnboarding(): Boolean = !tracker.hasCompletedOnboarding()
+
+    fun markOnboardingComplete() = tracker.markOnboardingComplete()
+
     /**
      * The intent that opens this app's settings page.
      *

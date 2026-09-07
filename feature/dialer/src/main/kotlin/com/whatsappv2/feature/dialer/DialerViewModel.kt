@@ -6,10 +6,12 @@ import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.domain.call.userMessage
 import com.whatsappv2.domain.contacts.ContactRepository
 import com.whatsappv2.domain.contacts.SipContact
+import com.whatsappv2.domain.engine.CameraAvailability
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.SipRegistrar
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
+import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.repository.SipAccountRepository
 import com.whatsappv2.domain.usecase.PlaceCallError
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
@@ -49,6 +51,14 @@ class DialerViewModel @Inject constructor(
     private val placeCall: PlaceCallUseCase,
     private val recentDials: RecentDials,
     private val contacts: ContactRepository,
+    /**
+     * Read only to *describe* a video call, never to decide one (Task 74).
+     *
+     * [PlaceCallUseCase] owns the downgrade rule and is the only place that may; asking
+     * here as well is purely so the snackbar can say the call went out as audio. Two
+     * copies of the decision would be one that drifts.
+     */
+    private val camera: CameraAvailability,
     repository: SipAccountRepository,
     registrar: SipRegistrar,
 ) : ViewModel() {
@@ -167,7 +177,19 @@ class DialerViewModel @Inject constructor(
     fun onCall() {
         val state = uiState.value
         if (!state.canPlaceCall) return
-        place(state.input)
+        place(state.input, MediaProfile.AUDIO)
+    }
+
+    /**
+     * Places the call with video (Task 74).
+     *
+     * Same guard, same path, one different profile. A device that cannot capture places an
+     * audio call instead — the use case decides that, and [place] says so afterwards.
+     */
+    fun onVideoCall() {
+        val state = uiState.value
+        if (!state.canPlaceCall) return
+        place(state.input, MediaProfile.AUDIO_VIDEO)
     }
 
     /**
@@ -181,11 +203,12 @@ class DialerViewModel @Inject constructor(
     fun onContactSelected(contact: SipContact) {
         val target = contact.address.render()
         entry.update { it.copy(input = target) }
-        place(target)
+        place(target, MediaProfile.AUDIO)
     }
 
-    private fun place(target: String) {
+    private fun place(target: String, media: MediaProfile) {
         val state = uiState.value
+        val downgraded = media.hasVideo && !camera.isCameraUsable()
         entry.update { it.copy(placing = true) }
         viewModelScope.launch {
             try {
@@ -197,8 +220,14 @@ class DialerViewModel @Inject constructor(
                     // than fail for want of a default the user never set.
                     accountOverride = state.selectedAccount?.id.takeIf { !state.selectionIsDefault },
                     input = target,
+                    media = media,
                 )
                 eventChannel.send(result.toEvent(target))
+                // Said after the call is on its way, not instead of it: the call still
+                // happened, and the notice explains which kind it turned out to be.
+                if (result is Outcome.Success && downgraded) {
+                    eventChannel.send(DialerEvent.Notice(NO_CAMERA))
+                }
                 // Cleared only on success: a call that was refused leaves what was typed
                 // on screen, because the user is about to correct it or try again.
                 if (result is Outcome.Success) entry.value = Entry()
@@ -228,7 +257,7 @@ class DialerViewModel @Inject constructor(
      */
     private fun SipError.toEvent(): DialerEvent = DialerEvent.Refused(userMessage())
 
-    private companion object {
+    internal companion object {
         const val SUBSCRIPTION_TIMEOUT_MILLIS = 5_000L
 
         /**
@@ -238,5 +267,8 @@ class DialerViewModel @Inject constructor(
          * as "give me the address book" (§7, §11).
          */
         const val CONTACT_RESULTS = 20
+
+        /** Worded exactly as `:feature:history` words it, so one downgrade reads one way. */
+        const val NO_CAMERA = "No camera available, so the call went out as audio"
     }
 }

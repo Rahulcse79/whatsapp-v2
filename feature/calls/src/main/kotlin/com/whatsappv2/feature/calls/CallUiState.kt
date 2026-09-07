@@ -260,6 +260,16 @@ sealed interface CallUiState {
 
         /** The roster, when this call is a conference leg (Task 60). */
         val conference: ConferenceUiState? = null,
+
+        /**
+         * Actions asked of the engine that it has not answered yet (Task 76).
+         *
+         * The screen shows these as busy and refuses a second press. It deliberately does
+         * **not** show the action's result early: a mute that the engine later refuses
+         * would leave the button reading "Muted" over a live microphone, which is the same
+         * class of lie as a call drawn as held whose re-INVITE the far end rejected.
+         */
+        val pendingActions: Set<CallAction> = emptySet(),
     ) : CallUiState
 
     /**

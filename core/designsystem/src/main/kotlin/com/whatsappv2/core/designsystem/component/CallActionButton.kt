@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -24,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -44,6 +46,12 @@ import com.whatsappv2.core.designsystem.theme.AppTheme
  *    "muted" rather than leaving the user to infer it from a tint they cannot see.
  *  - `enabled` is driven by call state, never by an ad-hoc boolean: the state machine
  *    already knows whether hold is legal right now (§4.4).
+ *
+ * [pending] is the fourth (Task 76). A control whose engine round trip is still running
+ * shows a spinner in place of its icon and refuses a second press. It is deliberately not
+ * the same thing as showing the new state early: this button must never say "muted" over
+ * a live microphone, so the press is acknowledged and the *state* still waits for the
+ * engine's answer.
  */
 @Composable
 fun CallActionButton(
@@ -56,6 +64,8 @@ fun CallActionButton(
     active: Boolean = false,
     activeStateDescription: String? = null,
     label: String? = null,
+    pending: Boolean = false,
+    pendingStateDescription: String = "Working",
 ) {
     val callColors = AppTheme.callColors
     val background = when {
@@ -70,6 +80,7 @@ fun CallActionButton(
         active -> callColors.onActiveControl
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
+    val accessibilityLabel = contentDescription
     val diameter = if (style == CallActionStyle.TOGGLE) {
         AppTheme.sizing.callActionButton
     } else {
@@ -77,12 +88,14 @@ fun CallActionButton(
     }
 
     Column(
-        modifier = modifier.enabledState(enabled),
+        // Pending counts as unpressable: anything asking this node must be told the
+        // control cannot be used right now, not merely that it looks busy.
+        modifier = modifier.enabledState(enabled && !pending),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         IconButton(
             onClick = onClick,
-            enabled = enabled,
+            enabled = enabled && !pending,
             colors = IconButtonDefaults.iconButtonColors(contentColor = foreground),
             modifier = Modifier
                 .size(diameter)
@@ -90,16 +103,32 @@ fun CallActionButton(
                 .background(if (enabled) background else background.copy(alpha = DISABLED_ALPHA))
                 .semantics {
                     role = Role.Button
-                    if (style == CallActionStyle.TOGGLE && activeStateDescription != null) {
+                    // While the engine is answering, that is the state worth announcing:
+                    // a screen reader saying "not muted" during a mute is telling the
+                    // user the press did nothing.
+                    if (pending) {
+                        stateDescription = pendingStateDescription
+                    } else if (style == CallActionStyle.TOGGLE && activeStateDescription != null) {
                         stateDescription = activeStateDescription
                     }
                 },
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = contentDescription,
-                modifier = Modifier.size(AppTheme.sizing.callActionIcon),
-            )
+            if (pending) {
+                // The content description stays on the spinner, so the control keeps its
+                // name while it works rather than becoming an unlabelled busy circle.
+                CircularProgressIndicator(
+                    color = foreground,
+                    modifier = Modifier
+                        .size(AppTheme.sizing.callActionIcon)
+                        .semantics { contentDescription = accessibilityLabel },
+                )
+            } else {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = contentDescription,
+                    modifier = Modifier.size(AppTheme.sizing.callActionIcon),
+                )
+            }
         }
         if (label != null) {
             Text(
@@ -154,6 +183,14 @@ private fun CallActionButtonRowPreview() = PreviewSurface {
             onClick = {},
             enabled = false,
             label = "Hold",
+        )
+        CallActionButton(
+            icon = Icons.Filled.Mic,
+            contentDescription = "Mute microphone",
+            onClick = {},
+            label = "Mute",
+            pending = true,
+            pendingStateDescription = "Muting",
         )
     }
 }

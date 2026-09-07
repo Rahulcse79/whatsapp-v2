@@ -21,10 +21,13 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
@@ -65,11 +68,20 @@ fun AccountEditorScreen(
     onSave: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * Where a *failed* save is reported (Task 73).
+     *
+     * A success is announced on the account list instead, because this screen pops the
+     * moment one arrives. A failure keeps the user here with their input, so it is
+     * reported here.
+     */
+    snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
 ) {
     SecureScreen()
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text(if (state.isNewAccount) "Add account" else "Edit account") },

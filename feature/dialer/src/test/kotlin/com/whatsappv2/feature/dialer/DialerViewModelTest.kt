@@ -5,9 +5,12 @@ import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.contacts.Contact
 import com.whatsappv2.domain.contacts.SipContact
+import com.whatsappv2.domain.engine.CameraAvailability
+import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CodecPreferences
+import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.NatPolicy
 import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SipUri
@@ -47,6 +50,12 @@ class DialerViewModelTest {
     private val repository = FakeSipAccountRepository()
     private val engine = FakeSipEngine()
     private val recents = RecentDials()
+
+    /** A device that can capture, so a video request stays a video request. */
+    private object CameraPresent : CameraAvailability {
+        override fun isCameraUsable(): Boolean = true
+    }
+
     private val contacts = FakeContactRepository()
     private val dispatcher = StandardTestDispatcher()
 
@@ -56,10 +65,11 @@ class DialerViewModelTest {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
-    private fun viewModel() = DialerViewModel(
-        placeCall = PlaceCallUseCase(repository, engine),
+    private fun viewModel(camera: CameraAvailability = CameraPresent) = DialerViewModel(
+        placeCall = PlaceCallUseCase(repository, engine, camera),
         recentDials = recents,
         contacts = contacts,
+        camera = camera,
         repository = repository,
         registrar = engine,
     )
@@ -79,6 +89,42 @@ class DialerViewModelTest {
         runCurrent()
 
         assertEquals("sip:1001@sip.example.com", lastDialled())
+    }
+
+    @Test
+    fun `the video button places a video call`() = runTest {
+        // Task 74. The same call, one different profile — the button is not a separate
+        // path, which is what keeps account resolution and target resolution shared.
+        given(work)
+        val viewModel = ready(viewModel())
+
+        viewModel.onInputChanged("1001")
+        runCurrent()
+        viewModel.onVideoCall()
+        runCurrent()
+
+        assertEquals(MediaProfile.AUDIO_VIDEO, engine.activeCalls.value.single().media)
+    }
+
+    @Test
+    fun `a video call with no usable camera is placed as audio and said so`() = runTest {
+        // Downgrade, never refuse (Task 51's second done-when). The notice matters as much
+        // as the downgrade: silently placing a different kind of call than the one asked
+        // for is how a working button comes to look broken.
+        given(work)
+        val viewModel = ready(viewModel(camera = NoCameraAvailable))
+
+        viewModel.events.test {
+            viewModel.onInputChanged("1001")
+            runCurrent()
+            viewModel.onVideoCall()
+            runCurrent()
+
+            assertIs<DialerEvent.CallPlaced>(awaitItem())
+            assertEquals(DialerViewModel.NO_CAMERA, (awaitItem() as DialerEvent.Notice).message)
+        }
+
+        assertEquals(MediaProfile.AUDIO, engine.activeCalls.value.single().media)
     }
 
     @Test

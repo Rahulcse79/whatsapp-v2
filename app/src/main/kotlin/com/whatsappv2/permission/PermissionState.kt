@@ -32,4 +32,15 @@ sealed interface PermissionStatus {
 interface PermissionRequestTracker {
     fun hasBeenRequested(permission: AppPermission): Boolean
     fun markRequested(permission: AppPermission)
+
+    /**
+     * True once the first-run permission screen has been through (Task 72).
+     *
+     * Its own flag rather than "have we asked for anything yet": a user who skipped every
+     * step has been asked for nothing, and inferring from the per-permission record would
+     * show them the same screen on every launch for ever.
+     */
+    fun hasCompletedOnboarding(): Boolean
+
+    fun markOnboardingComplete()
 }

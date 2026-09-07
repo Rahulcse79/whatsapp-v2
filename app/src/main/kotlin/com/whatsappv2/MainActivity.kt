@@ -5,10 +5,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
 import com.whatsappv2.permission.LocalPermissionCoordinator
 import com.whatsappv2.permission.PermissionCoordinator
+import com.whatsappv2.permission.PermissionOnboarding
 import com.whatsappv2.ui.AppRoot
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -23,6 +28,14 @@ import javax.inject.Inject
  *
  * Navigation and the real screens arrive in Task 15; this hosts the placeholder that
  * proves the theme, insets and design system work on a device.
+ *
+ * ## The first-run gate (Task 72)
+ *
+ * The permission screen is decided here rather than inside [AppRoot], because this is the
+ * one place with the injected [PermissionCoordinator] — which keeps `AppRoot` renderable
+ * from a test and a preview with no permission state at all. The flag is read once into
+ * `rememberSaveable`, so finishing the screen moves on without a second read and a
+ * rotation mid-flow does not restart it.
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -46,7 +59,21 @@ class MainActivity : ComponentActivity() {
                 CompositionLocalProvider(
                     LocalPermissionCoordinator provides permissionCoordinator,
                 ) {
-                    AppRoot()
+                    var onboarding by rememberSaveable {
+                        mutableStateOf(permissionCoordinator.needsOnboarding())
+                    }
+
+                    if (onboarding) {
+                        PermissionOnboarding(
+                            coordinator = permissionCoordinator,
+                            onFinished = {
+                                permissionCoordinator.markOnboardingComplete()
+                                onboarding = false
+                            },
+                        )
+                    } else {
+                        AppRoot()
+                    }
                 }
             }
         }

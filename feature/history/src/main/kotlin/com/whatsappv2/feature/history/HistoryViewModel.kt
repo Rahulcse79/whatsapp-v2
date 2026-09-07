@@ -10,8 +10,10 @@ import androidx.paging.insertSeparators
 import androidx.paging.map
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.domain.call.userMessage
+import com.whatsappv2.domain.engine.CameraAvailability
 import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.model.CallLogId
+import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.repository.CallLogFilter
 import com.whatsappv2.domain.repository.CallLogRepository
 import com.whatsappv2.domain.usecase.PlaceCallError
@@ -43,16 +45,31 @@ import javax.inject.Inject
  * [uiState]. Deriving it from the filter alone rather than from the whole state is the
  * point: opening a detail sheet must not send the list back to the newest call.
  *
- * ## Nothing here refreshes the list
+ * ## What refreshes the list
  *
- * Deleting an entry and clearing the log both go to the store and stop. The store's
- * change signal invalidates the paging source, so a row leaves for the same reason a new
- * call arrives — which is also what makes the list update live while the screen is open.
+ * [CallLogRepository.changes] is the store's own signal — Room re-runs it on every write
+ * to the table, including one that leaves the row count alone — and [watchStoreChanges]
+ * collects it and invalidates the live [CallLogPagingSource]. That is what makes a call
+ * appear while the screen is open, and it is the same path a delete and a clear take, so
+ * a row leaves for exactly the reason a new one arrives.
+ *
+ * Until Task 71 this collection did not exist. The signal was implemented in `:data:calllog`,
+ * documented here and in [CallLogPagingSource] as though it were wired, and read by nothing —
+ * so the list only changed when something else happened to rebuild it. The regression test is
+ * `HistoryViewModelTest.a call recorded while the screen is open reaches the list`.
  */
 @HiltViewModel
 class HistoryViewModel @Inject constructor(
     private val repository: CallLogRepository,
     private val placeCall: PlaceCallUseCase,
+    /**
+     * Read only to *describe* a video redial, never to decide one (Task 75).
+     *
+     * [PlaceCallUseCase] makes the downgrade decision, and it is the only place that may:
+     * a second copy of the rule here would be one that drifts. This asks the same question
+     * purely so the snackbar can say the call went out as audio.
+     */
+    private val camera: CameraAvailability,
 ) : ViewModel() {
 
     private val state = MutableStateFlow(HistoryUiState())
@@ -64,6 +81,20 @@ class HistoryViewModel @Inject constructor(
     /** The device's zone, read once: a call's day must not change while the list is open. */
     private val zone: ZoneId = ZoneId.systemDefault()
 
+    /**
+     * The source currently feeding the list, so a store change has something to invalidate.
+     *
+     * Paging builds a fresh source after every invalidation, so this is rewritten each time
+     * and always points at the live one. `@Volatile` because the factory runs on Paging's
+     * dispatcher while [watchStoreChanges] reads it from the ViewModel's scope.
+     */
+    @Volatile
+    private var liveSource: CallLogPagingSource? = null
+
+    init {
+        watchStoreChanges()
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class)
     val rows: Flow<PagingData<HistoryRow>> = state
         .map { it.filter }
@@ -72,6 +103,31 @@ class HistoryViewModel @Inject constructor(
         // Re-reads the cache rather than the database after a configuration change, which
         // is what keeps the position instead of snapping back to the top.
         .cachedIn(viewModelScope)
+
+    /**
+     * Reloads the list from the store on the store's own signal (Task 71).
+     *
+     * An invalidation rather than a rebuilt pager: `Pager` would restart the list at the
+     * top, and [CallLogPagingSource.getRefreshKey] anchors a reload on the row the user is
+     * looking at. Somebody reading last week's calls when a new one arrives keeps their
+     * place.
+     */
+    private fun watchStoreChanges() {
+        viewModelScope.launch {
+            repository.changes().collect { liveSource?.invalidate() }
+        }
+    }
+
+    /**
+     * Reloads because the screen came back (Task 71).
+     *
+     * Driven by the screen's lifecycle, not a timer. Returning from a call must show that
+     * call: the write happened while this ViewModel's collector was stopped, so the signal
+     * that would have invalidated the source was never delivered.
+     */
+    fun refresh() {
+        liveSource?.invalidate()
+    }
 
     fun onFilterChanged(filter: CallLogFilter) = state.update { it.copy(filter = filter) }
 
@@ -109,11 +165,24 @@ class HistoryViewModel @Inject constructor(
      * and leave the user looking at a dialler they did not ask for. The account is the
      * one the original call used, so a call back goes out the way the call came in.
      */
-    fun onCallBack(entry: CallLogEntry) {
+    fun onCallBack(entry: CallLogEntry) = callBack(entry, MediaProfile.AUDIO)
+
+    /**
+     * Redials with video (Task 75).
+     *
+     * Downgrades rather than refuses when the camera cannot be used — the use case does
+     * that — and says so, because a video button that silently places an audio call is one
+     * the user will press again expecting something different.
+     */
+    fun onVideoCallBack(entry: CallLogEntry) = callBack(entry, MediaProfile.AUDIO_VIDEO)
+
+    private fun callBack(entry: CallLogEntry, media: MediaProfile) {
+        val downgraded = media.hasVideo && !camera.isCameraUsable()
         viewModelScope.launch {
             val result = placeCall(
                 input = entry.remote.render(),
                 accountOverride = entry.accountId,
+                media = media,
             )
             eventChannel.send(
                 when (result) {
@@ -121,6 +190,9 @@ class HistoryViewModel @Inject constructor(
                     is Outcome.Failure -> HistoryEvent.Refused(result.error.describe())
                 },
             )
+            if (result is Outcome.Success && downgraded) {
+                eventChannel.send(HistoryEvent.Notice(NO_CAMERA))
+            }
         }
     }
 
@@ -135,7 +207,7 @@ class HistoryViewModel @Inject constructor(
     private fun pagerFor(filter: CallLogFilter): Flow<PagingData<HistoryRow>> =
         Pager(
             config = PagingConfig(pageSize = PAGE_SIZE, enablePlaceholders = false),
-            pagingSourceFactory = { CallLogPagingSource(repository, filter) },
+            pagingSourceFactory = { CallLogPagingSource(repository, filter).also { liveSource = it } },
         ).flow.map { page ->
             page.map<CallLogEntry, HistoryRow> { HistoryRow.Call(it) }
                 .insertSeparators { before, after ->
@@ -152,5 +224,8 @@ class HistoryViewModel @Inject constructor(
          * cheap query rather than a visible pause.
          */
         const val PAGE_SIZE = 40
+
+        /** Said once, here, so this screen and the dialler word the downgrade alike. */
+        const val NO_CAMERA = "No camera available, so the call went out as audio"
     }
 }

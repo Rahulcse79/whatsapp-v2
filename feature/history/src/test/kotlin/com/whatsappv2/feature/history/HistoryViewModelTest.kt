@@ -1,7 +1,9 @@
 package com.whatsappv2.feature.history
 
+import androidx.paging.PagingData
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.domain.engine.CallDirection
+import com.whatsappv2.domain.engine.CameraAvailability
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.model.CallLogId
@@ -15,7 +17,11 @@ import com.whatsappv2.domain.testing.FakeSipEngine
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -37,6 +43,12 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalCoroutinesApi::class)
 class HistoryViewModelTest {
 
+
+    /** A device that can capture, so a video request stays a video request. */
+    private object CameraPresent : CameraAvailability {
+        override fun isCameraUsable(): Boolean = true
+    }
+
     private val repository = FakeCallLogRepository()
     private val accounts = FakeSipAccountRepository()
     private val engine = FakeSipEngine()
@@ -48,7 +60,8 @@ class HistoryViewModelTest {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
-    private fun viewModel() = HistoryViewModel(repository, PlaceCallUseCase(accounts, engine))
+    private fun viewModel(camera: CameraAvailability = CameraPresent) =
+        HistoryViewModel(repository, PlaceCallUseCase(accounts, engine, camera), camera)
 
     @Test
     fun `the filter starts on everything, because that is what a log is for`() = runTest {
@@ -138,6 +151,53 @@ class HistoryViewModelTest {
 
         assertFalse(viewModel.uiState.value.confirmingClearAll)
         assertFalse(repository.recorded.isEmpty())
+    }
+
+    // ------------------------------------------------------------- refreshing
+
+    @Test
+    fun `a call recorded while the screen is open reaches the list`() = runTest {
+        // The regression test for Task 71, and it fails on the parent commit.
+        //
+        // `CallLogRepository.changes()` was implemented in :data:calllog, documented here
+        // and in CallLogPagingSource as the thing that keeps this list live, and collected
+        // by nothing at all — so a call that ended while the screen was open never showed
+        // up. A new PagingData is what a reload looks like from outside the ViewModel.
+        val viewModel = viewModel()
+
+        val reloads = mutableListOf<PagingData<HistoryRow>>()
+        val collector = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.rows.toList(reloads)
+        }
+        advanceUntilIdle()
+        val before = reloads.size
+
+        repository.record(entry())
+        advanceUntilIdle()
+
+        assertTrue(reloads.size > before, "the list did not reload when the call log changed")
+        collector.cancel()
+    }
+
+    @Test
+    fun `returning to the screen reloads the list`() = runTest {
+        // The other half of Task 71: the write happened while this ViewModel's collector
+        // was stopped, so the signal that would have invalidated the source was never
+        // delivered. Coming back has to ask.
+        val viewModel = viewModel()
+
+        val reloads = mutableListOf<PagingData<HistoryRow>>()
+        val collector = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.rows.toList(reloads)
+        }
+        advanceUntilIdle()
+        val before = reloads.size
+
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        assertTrue(reloads.size > before, "refresh() did not reload the list")
+        collector.cancel()
     }
 
     private fun entry() = CallLogEntry(

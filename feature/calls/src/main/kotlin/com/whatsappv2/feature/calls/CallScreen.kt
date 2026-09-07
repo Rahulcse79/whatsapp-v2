@@ -172,8 +172,14 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
                 actions = actions,
                 keypadOpen = keypadShown,
                 onToggleKeypad = { keypadOpen = !keypadShown },
+                pending = state.pendingActions,
                 secondaryControls = {
-                    CallSecondaryControls(call = call, recording = state.recording, actions = actions)
+                    CallSecondaryControls(
+                        call = call,
+                        recording = state.recording,
+                        actions = actions,
+                        pending = state.pendingActions,
+                    )
                 },
             )
         }
@@ -332,6 +338,7 @@ private fun InCallActions(
     actions: CallActions,
     keypadOpen: Boolean,
     onToggleKeypad: () -> Unit,
+    pending: Set<CallAction>,
     secondaryControls: @Composable () -> Unit,
 ) {
     Column(
@@ -343,6 +350,7 @@ private fun InCallActions(
             actions = actions,
             keypadOpen = keypadOpen,
             onToggleKeypad = onToggleKeypad,
+            pending = pending,
         )
 
         // Passed in rather than called directly so this stays a layout: the second row
@@ -368,6 +376,10 @@ private fun InCallActions(
  *
  * Every `enabled` here comes from [CallControlAvailability]; there is no flag to forget to
  * set, which is Task 39's second done-when expressed as code.
+ *
+ * [pending] is the other half of that honesty (Task 76). A control the engine has not
+ * answered yet is busy, not toggled: the icon still shows the state the call is actually
+ * in, and the spinner says the press was received.
  */
 @Composable
 private fun CallControlRow(
@@ -375,6 +387,7 @@ private fun CallControlRow(
     actions: CallActions,
     keypadOpen: Boolean,
     onToggleKeypad: () -> Unit,
+    pending: Set<CallAction>,
 ) {
     val controls = call.controls
     val availability = call.availability
@@ -393,6 +406,8 @@ private fun CallControlRow(
             enabled = availability.canMute,
             active = controls.isMuted,
             label = "Mute",
+            pending = CallAction.MUTE in pending,
+            pendingStateDescription = if (controls.isMuted) "Unmuting" else "Muting",
             modifier = Modifier.testTag(TAG_MUTE),
         )
         CallActionButton(
@@ -403,6 +418,8 @@ private fun CallControlRow(
             enabled = availability.canChangeRoute,
             active = speakerOn,
             label = "Speaker",
+            pending = CallAction.SPEAKER in pending,
+            pendingStateDescription = "Switching audio",
             modifier = Modifier.testTag(TAG_SPEAKER),
         )
         CallActionButton(
@@ -414,6 +431,8 @@ private fun CallControlRow(
             enabled = availability.canHold || availability.canResume,
             active = held,
             label = "Hold",
+            pending = CallAction.HOLD in pending,
+            pendingStateDescription = if (held) "Resuming" else "Holding",
             modifier = Modifier.testTag(TAG_HOLD),
         )
         CallActionButton(
