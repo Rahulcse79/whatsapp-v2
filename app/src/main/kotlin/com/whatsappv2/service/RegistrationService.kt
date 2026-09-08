@@ -23,6 +23,7 @@ import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.engine.SipRegistrar
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
@@ -64,9 +65,10 @@ import javax.inject.Inject
  * logged rather than allowed to crash: the app can still function without the service,
  * and taking the process down loses any call already in progress.
  *
- * Catching is not sufficient on its own, though — see [onStartCommand]. Once
- * `startForegroundService` has been called, `startForeground` must happen whatever the
- * service then decides, or the platform kills the process a few seconds later.
+ * Catching is not sufficient on its own, though — see [onStartCommand] and
+ * [stopSelfSafely]. Once `startForegroundService` has been called, `startForeground` must
+ * happen whatever the service then decides, and before anything stops the service, or the
+ * platform kills the process.
  */
 @AndroidEntryPoint
 class RegistrationService : Service() {
@@ -96,7 +98,15 @@ class RegistrationService : Service() {
     @Inject
     lateinit var ringer: Ringer
 
-    private val scope = CoroutineScope(SupervisorJob())
+    /**
+     * The main thread, deliberately.
+     *
+     * `CoroutineScope(SupervisorJob())` supplies `Dispatchers.Default`, which put [render]
+     * on a background thread racing [onStartCommand] on the main one — see [stopSelfSafely]
+     * for what that race cost. Serialising them also makes [isForeground] a field one
+     * thread owns rather than two threads write.
+     */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var isForeground = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -205,46 +215,62 @@ class RegistrationService : Service() {
     }
 
     private fun startOrUpdate(reason: ServiceReason, presentation: Presentation) {
-        val notification = notificationFor(presentation)
-
         if (isForeground) {
-            notificationManager().notify(NOTIFICATION_ID, notification)
+            notificationManager().notify(NOTIFICATION_ID, notificationFor(presentation))
             return
         }
 
-        try {
-            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, serviceTypesFor(reason))
-            isForeground = true
-        } catch (e: IllegalStateException) {
-            // Android 12+ background-start restriction.
-            logger.error(TAG, "Foreground start refused: ${e.javaClass.simpleName}")
-            abandonForegroundStart()
-        } catch (e: SecurityException) {
-            // Android 14+ missing the per-type permission.
-            logger.error(TAG, "Foreground type not permitted: ${e.javaClass.simpleName}")
-            abandonForegroundStart()
-        }
+        enterForeground(reason, presentation)
     }
 
     /**
-     * Gives the service up when it could not become a foreground one.
+     * Goes foreground, and does not give up on the first refusal.
      *
-     * ## Catching the exception was not enough, and made things worse
+     * ## Why giving up was worse than trying again
      *
-     * `startForegroundService` puts the service under a promise: it **must** call
-     * `startForeground` within a few seconds or the platform kills the process with
-     * `ForegroundServiceDidNotStartInTimeException`. Logging the failure and returning
-     * kept that promise unfulfilled, so the catch that existed to prevent a crash
-     * converted an immediate, well-labelled one into a delayed kill with a completely
-     * unrelated-looking stack trace a few seconds later.
+     * This used to log the refusal and call `stopSelf`, reasoning that a service which
+     * cannot go foreground should not pretend otherwise. The platform disagrees. Once
+     * `startForegroundService` has been called, stopping without `startForeground` is
+     * reported by ActivityManager as *"Bringing down service while still waiting for start
+     * foreground"* and the process is killed there and then. The honest response was the
+     * crash it was written to avoid.
      *
-     * Stopping is the honest response. The registration is not held, the user is told
-     * nothing that is untrue, and `ServiceLauncher` starts the service again the next time
-     * the app is in a state that permits it.
+     * A refusal is therefore answered with the one type that cannot be refused for want of
+     * a runtime permission — `specialUse`, which [ServiceReason.REGISTRATION] maps to. The
+     * per-type checks Android 14 added are what make `phoneCall`, `microphone` and `camera`
+     * throw, and none of them applies to merely holding a registration.
+     *
+     * If even that is refused the service stays up rather than stopping. It is not a
+     * foreground service and the platform may yet kill it, but [ServiceLauncher] starts it
+     * again on the next state change, and any `onStartCommand` that succeeds keeps the
+     * promise and saves the process. Stopping would remove that chance.
      */
-    private fun abandonForegroundStart() {
-        isForeground = false
-        stopSelf()
+    private fun enterForeground(reason: ServiceReason, presentation: Presentation) {
+        if (isForeground || goForeground(reason, presentation)) return
+
+        if (reason != ServiceReason.REGISTRATION) {
+            goForeground(ServiceReason.REGISTRATION, presentation)
+        }
+    }
+
+    /** One attempt. `true` when the service is a foreground one afterwards. */
+    private fun goForeground(reason: ServiceReason, presentation: Presentation): Boolean = try {
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            notificationFor(presentation),
+            serviceTypesFor(reason),
+        )
+        isForeground = true
+        true
+    } catch (e: IllegalStateException) {
+        // Android 12+ background-start restriction.
+        logger.error(TAG, "Foreground start refused: ${e.javaClass.simpleName}")
+        false
+    } catch (e: SecurityException) {
+        // Android 14+ missing the per-type permission.
+        logger.error(TAG, "Foreground type not permitted: ${e.javaClass.simpleName}")
+        false
     }
 
     /**
@@ -260,11 +286,41 @@ class RegistrationService : Service() {
             is CallNotification.None -> buildNotification(presentation.summary)
         }
 
+    /**
+     * Stops the service, keeping the `startForegroundService` promise on the way out.
+     *
+     * ## The crash that outlived the last fix
+     *
+     * [onStartCommand] was made to go foreground before deciding anything, which fixed the
+     * service being started and never calling `startForeground` at all. It did not fix
+     * this, because `onStartCommand` is not the only path to `stopSelf`.
+     *
+     * [render] is driven by a collector launched in [onCreate], and `onCreate` and
+     * `onStartCommand` arrive as two separate messages. The collector's first answer while
+     * somebody is adding their first account is [ServiceDecision.Stop] — nothing is
+     * registered yet — so it can reach here and stop the service in the gap **before
+     * `onStartCommand` has run at all**. ActivityManager then logs *"Bringing down service
+     * while still waiting for start foreground"* and kills the process immediately, with
+     * `startForegroundCount:0`. It is a race, which is why a handset survived eleven of
+     * these starts in a row and died on the twelfth.
+     *
+     * Going foreground here costs a notification posted and removed in the same breath.
+     * That is the price of a promise somebody else made, and it is cheaper than the crash.
+     */
     private fun stopSelfSafely() {
-        if (isForeground) {
-            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-            isForeground = false
+        if (!isForeground) {
+            val presentation = currentPresentation()
+            enterForeground(presentation.decision.foregroundReason(), presentation)
         }
+
+        // Still not foreground means the promise could not be kept at all, and stopping
+        // now is precisely the crash. Staying up costs nothing — there is no notification
+        // and no wake lock behind a service that never became one — and it leaves the next
+        // onStartCommand able to keep the promise instead. See [enterForeground].
+        if (!isForeground) return
+
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        isForeground = false
         stopSelf()
     }
 
