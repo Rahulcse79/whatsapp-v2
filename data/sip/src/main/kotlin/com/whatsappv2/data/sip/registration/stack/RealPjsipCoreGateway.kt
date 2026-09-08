@@ -381,16 +381,28 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // Accounts first: each one unregisters and drops the credential PJSIP holds
             // for it, which is what Task 29 requires of a logout. libDestroy would take
             // them with it, but not cleanly and not with an `Expires: 0` on the wire.
+            // Recorders first, and while the endpoint is still alive: each one holds an
+            // open file, and `clear()` only drops the Kotlin reference - the file stays
+            // open until a finalizer happens to run, which for a recording the user asked
+            // to keep is a truncated file. After libDestroy the native port is already
+            // gone and deleting it would be worse than not.
+            recorders.values.forEach { runCatching { it.delete() } }
+            recorders.clear()
+
             accounts.values.forEach { account ->
                 runCatching { account.setRegistration(false) }
                 runCatching { account.shutdown() }
             }
             accounts.clear()
             calls.clear()
-            recorders.clear()
             transports.clear()
 
             running.libDestroy()
+            // libDestroy tears the library down; it does not free the Java object's own
+            // native peer. This pairing - destroy, then delete, then drop - is the one the
+            // pjsua2 Android sample uses, and without the middle step every start/stop
+            // cycle leaves an Endpoint behind for a finalizer to find later.
+            runCatching { running.delete() }
             endpoint = null
             logger.info(TAG, "SIP core stopped")
         }
