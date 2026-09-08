@@ -64,6 +64,15 @@ class CallAudioCoordinator @Inject constructor(
     /** The last route this coordinator asked for, to tell its own choices from the user's. */
     private var lastApplied: AudioRoute? = null
 
+    /**
+     * Whether the call being followed has video.
+     *
+     * Kept beside the route because the proximity decision needs both, and because video
+     * changes without the route changing — an escalation the far end asked for arrives as
+     * a new `MediaProfile` on a call whose audio is going exactly where it was.
+     */
+    private var callHasVideo = false
+
     private var focusRequest: AudioFocusRequest? = null
 
     private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
@@ -125,13 +134,18 @@ class CallAudioCoordinator @Inject constructor(
      */
     private fun follow(call: CallSnapshot) {
         val current = call.state.controlsOrNull?.audioRoute ?: return
-        if (current == lastApplied) return
+
+        // Video is read first and on every emission, because it moves on its own. An
+        // escalation turns a voice call into a video call without touching the audio
+        // route, so a version that returned early on an unchanged route left the screen
+        // blanking through the video the user had just accepted.
+        val hadVideo = callHasVideo
+        callHasVideo = call.hasVideo
+        if (current == lastApplied && callHasVideo == hadVideo) return
 
         chosenRoute = current
         lastApplied = current
-        // The earpiece is the only route where a phone is at an ear, and so the only one
-        // where the screen should go dark.
-        if (current == AudioRoute.EARPIECE) proximity.acquire() else proximity.release()
+        applyProximity(current)
     }
 
     private fun begin(call: CallSnapshot) {
@@ -151,6 +165,8 @@ class CallAudioCoordinator @Inject constructor(
         chosenRoute = call.state.controlsOrNull?.audioRoute
         lastApplied = null
         mutedByFocusLoss = false
+        // Before `applyRoute`, which reads it to decide the proximity lock.
+        callHasVideo = call.hasVideo
 
         requestFocus()
         audioManager()?.registerAudioDeviceCallback(deviceCallback, handler)
@@ -172,6 +188,7 @@ class CallAudioCoordinator @Inject constructor(
         chosenRoute = null
         lastApplied = null
         mutedByFocusLoss = false
+        callHasVideo = false
         logger.info(TAG, "Call audio released")
     }
 
@@ -184,9 +201,34 @@ class CallAudioCoordinator @Inject constructor(
             // Asked of the engine rather than set on AudioManager: Telecom owns routing,
             // and two things setting it would fight over the SCO link.
             media.setAudioRoute(callId, route)
-            if (route == AudioRoute.EARPIECE) proximity.acquire() else proximity.release()
+            applyProximity(route)
         }
     }
+
+    /**
+     * Holds or drops the proximity lock for [route] and the call's current media.
+     *
+     * One place, so the two callers cannot drift: [AudioRoutePolicy.screenMayBlank] is the
+     * rule and this is the only thing that acts on it.
+     */
+    private fun applyProximity(route: AudioRoute) {
+        if (AudioRoutePolicy.screenMayBlank(route, callHasVideo)) {
+            proximity.acquire()
+        } else {
+            proximity.release()
+        }
+    }
+
+    /**
+     * True when this call has video, negotiated or asked for.
+     *
+     * Either half is enough to keep the screen on. `media` is what the two ends agreed and
+     * `isVideoEnabled` is what the user asked for, and there is a window between the two
+     * where the camera is live and the negotiation has not come back — blanking the screen
+     * in that window is the same bug arriving a second later.
+     */
+    private val CallSnapshot.hasVideo: Boolean
+        get() = media.hasVideo || state.controlsOrNull?.isVideoEnabled == true
 
     private fun onFocusChanged(change: Int) {
         val callId = activeCall ?: return

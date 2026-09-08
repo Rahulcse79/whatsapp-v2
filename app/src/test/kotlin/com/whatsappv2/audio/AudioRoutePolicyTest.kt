@@ -113,4 +113,23 @@ class AudioRoutePolicyTest {
             AudioRoutePolicy.actionFor(AudioRoutePolicy.FOCUS_LOSS_TRANSIENT_CAN_DUCK),
         )
     }
+
+    @Test
+    fun `only an earpiece voice call may blank the screen`() {
+        // The earpiece is the one route where a phone is against a face.
+        assertTrue(AudioRoutePolicy.screenMayBlank(AudioRoute.EARPIECE, hasVideo = false))
+
+        assertTrue(!AudioRoutePolicy.screenMayBlank(AudioRoute.SPEAKER, hasVideo = false))
+        assertTrue(!AudioRoutePolicy.screenMayBlank(AudioRoute.BLUETOOTH, hasVideo = false))
+        assertTrue(!AudioRoutePolicy.screenMayBlank(AudioRoute.WIRED_HEADSET, hasVideo = false))
+    }
+
+    @Test
+    fun `video vetoes the proximity blank on every route, earpiece included`() {
+        // The reported bug: a video call routed to the earpiece is held in front of a face,
+        // not against one, and the sensor sits at the top of the handset where a hand
+        // passes over it. The screen went black over the picture being watched.
+        assertTrue(!AudioRoutePolicy.screenMayBlank(AudioRoute.EARPIECE, hasVideo = true))
+        assertTrue(!AudioRoutePolicy.screenMayBlank(AudioRoute.SPEAKER, hasVideo = true))
+    }
 }

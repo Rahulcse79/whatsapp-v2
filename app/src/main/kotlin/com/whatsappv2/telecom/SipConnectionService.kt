@@ -124,6 +124,35 @@ internal class SipConnectionService : ConnectionService() {
         SipConnection(callId, listener = bridge, logger = logger)
             .also { connections[callId] = it }
 
+    /**
+     * Empties the static registry, because it does not die with this instance.
+     *
+     * Telecom destroys this service when it holds no more connections, so in the ordinary
+     * case both maps are already empty and this is a no-op. What it exists for is the case
+     * where they are not: entries left behind are `Connection`s the platform has already
+     * torn its side of, and they would sit in a **static** map for the life of the process
+     * — answering [liveCallIds] with calls that do not exist, which is precisely the
+     * question a rebuilt screen asks after a process death.
+     *
+     * They are not `destroy()`ed on the way out. Telecom has unbound by the time this runs
+     * and the binder behind each one is gone; the call's real state lives in the FSM and
+     * the SIP stack, which is where it was always the source of truth.
+     *
+     * Waiters are released rather than dropped. A caller suspended in
+     * `TelecomCallRegistry.awaitDecision` would otherwise sit until its own timeout for an
+     * answer that can no longer come.
+     */
+    override fun onDestroy() {
+        val orphans = connections.keys.toList()
+        if (orphans.isNotEmpty()) {
+            logger.warn(TAG, "Telecom destroyed the service holding ${orphans.size} connection(s)")
+        }
+        connections.clear()
+
+        pending.keys.toList().forEach { callId -> pending.remove(callId)?.complete(false) }
+        super.onDestroy()
+    }
+
     companion object {
         private const val TAG = "SipConnectionService"
 
