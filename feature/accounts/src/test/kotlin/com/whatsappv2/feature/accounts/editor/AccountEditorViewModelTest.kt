@@ -155,8 +155,29 @@ class AccountEditorViewModelTest {
         assertNotNull(state.errorFor(AccountField.LABEL))
         assertNotNull(state.errorFor(AccountField.USERNAME))
         assertNotNull(state.errorFor(AccountField.DOMAIN))
-        assertNotNull(state.errorFor(AccountField.PASSWORD))
+
+        // NOT the password, and that is the point of the default. A new draft starts on
+        // DEFAULT_PASSWORD, so the field is already populated and there is nothing to
+        // complain about - marking it red would be telling the user to fix a field the
+        // app filled in for them. The test below covers what happens when they clear it.
+        assertNull(state.errorFor(AccountField.PASSWORD), "the default password is valid")
+
         assertTrue(!state.isSaving)
+    }
+
+    @Test
+    fun `clearing the password marks it like any other required field`() = runTest(dispatcher) {
+        // The default is "a starting point and not a policy": editable, and validated the
+        // same as everything else. Worth a test of its own, because the two behaviours
+        // pull in opposite directions and it would be easy to keep only the convenient one.
+        val model = viewModel()
+        model.load(null)
+
+        model.update { it.copy(password = Secret.EMPTY) }
+        model.save()
+        advanceUntilIdle()
+
+        assertNotNull(model.uiState.value.errorFor(AccountField.PASSWORD))
     }
 
     @Test
