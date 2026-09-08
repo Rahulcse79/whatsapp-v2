@@ -407,7 +407,7 @@ registered, so what is written down is a configuration, not a result.
 **Done when:** a valid certificate registers, one the device does not trust is refused, on
 hardware; and docs/security.md states which of the two halves owns which check.
 
-### P-9 · H264, or stop advertising it  🔴 **outstanding — a decision, not a defect**
+### P-9 · Codecs the binary does not have  🔴 **outstanding — decisions, not defects**
 
 `CodecPreferences.DEFAULT` names H264. The native build sets
 `PJMEDIA_HAS_OPENH264_CODEC 0`. The two have disagreed since ADR-006, and the disagreement
@@ -427,6 +427,41 @@ engineering one.
 
 **Done when:** either OpenH264 is in the build and an H264 call connects, or H264 leaves
 `CodecPreferences.DEFAULT` and the docs say why.
+
+**Lyra is the same shape, handled the other way round.** `AudioCodec.LYRA` was added on
+2026-09-08 so the account editor lists it — the editor offers `AudioCodec.entries`, so a
+codec absent from the enum cannot be chosen at all. It is deliberately **not** in
+`CodecPreferences.DEFAULT`, which is the difference from H264: selectable, never offered
+until the binary can honour it, and a test asserts exactly that so the distinction is not
+lost in a later edit.
+
+Worth having. Lyra carries intelligible wideband speech at **3.2, 6 or 9.2 kbps** — an
+order of magnitude under Opus — which on a congested mobile uplink is the difference
+between a call and no call.
+
+Two things are still missing, both native:
+
+  - `PJMEDIA_HAS_LYRA_CODEC` defaults to `0` (`pjmedia/include/pjmedia-codec/config.h`).
+    Enabling it means cross-compiling Google's Lyra, which brings Bazel and TensorFlow
+    Lite into a build that has not yet completed a single run — the same reason OpenH264
+    is not being added today.
+  - The four model files (`lyra_config.binarypb`, `lyragan.tflite`, `quantizer.tflite`,
+    `soundstream_encoder.tflite`) have to ship on the device, with
+    `CodecLyraConfig.modelPath` pointed at them. Without them the codec registers and then
+    fails when a stream opens, which is worse than not having it.
+
+The payload name is lowercase `lyra`, matching `pjmedia/src/pjmedia-codec/lyra.cpp`. The
+stack matches preferences to codec ids by prefix, so `LYRA` would match `lyra/16000/1`
+never — silently. A test pins the spelling.
+
+**And a third party has to agree.** §3 already records that the deployed FreeSWITCH cannot
+negotiate Lyra. A codec is a contract between two endpoints: even with the native build and
+the model files done, a call to this registrar would still fall back. Lyra is therefore
+only worth finishing alongside a server that offers it, or for direct calls that never
+touch the MCU — which is a product decision, not a build one.
+
+**Done when:** the native build registers `lyra/16000/1`, the model files ship, the server
+offers it, and a call negotiates it — or Lyra leaves the enum and the docs say why.
 
 ---
 

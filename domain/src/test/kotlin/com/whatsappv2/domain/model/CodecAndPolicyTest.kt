@@ -57,9 +57,28 @@ class CodecPreferencesTest {
     }
 
     @Test
+    fun `lyra is spelled the way pjproject registers it`() {
+        // Case matters more here than anywhere else in this file. The stack matches a
+        // preference to a codec id by prefix, and pjproject registers `lyra` in lower
+        // case (pjmedia/src/pjmedia-codec/lyra.cpp). "LYRA" would match `lyra/16000/1`
+        // never, and the failure is a codec that is simply absent from the offer.
+        assertEquals("lyra", AudioCodec.LYRA.payloadName)
+    }
+
+    @Test
     fun `only the wideband codecs are marked wideband`() {
         val wideband = AudioCodec.entries.filter { it.isWideband }.toSet()
-        assertEquals(setOf(AudioCodec.OPUS, AudioCodec.G722), wideband)
+        assertEquals(setOf(AudioCodec.OPUS, AudioCodec.LYRA, AudioCodec.G722), wideband)
+    }
+
+    @Test
+    fun `lyra is offerable but not offered by default`() {
+        // It is in the enum so the account editor lists it, and out of DEFAULT because
+        // the native library is not built with PJMEDIA_HAS_LYRA_CODEC yet. Advertising a
+        // codec the binary cannot provide is the H264 defect, and this is the assertion
+        // that stops it being repeated by accident.
+        assertTrue(AudioCodec.LYRA in AudioCodec.entries)
+        assertTrue(AudioCodec.LYRA !in CodecPreferences.DEFAULT.audio)
     }
 }
 
