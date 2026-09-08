@@ -18,9 +18,20 @@
  *
  * `libs/pjsua2.aar` is a ~30 MB native binary that changes with every pjproject or NDK
  * bump. It is `.gitignore`d and fetched from the workflow's artifact instead —
- * `docs/pjsip-migration.md` P-2 says how. A checkout without it fails at configuration
- * time with the message below rather than at link time with an `UnsatisfiedLinkError`,
- * which is the difference between a five-second diagnosis and an hour of one.
+ * `docs/pjsip-migration.md` P-2 says how.
+ *
+ * ## Without it, the tree still compiles — and still cannot run
+ *
+ * The Java classes in that AAR are SWIG output, and SWIG needs none of the native
+ * toolchain to produce them, so they are checked in as `:pjsip:api` and `:data:sip`
+ * falls back to them. That is what keeps the CI gate meaningful while P-1 is still
+ * being brought up: the adapter is compiled and checked against the real PJSIP API
+ * rather than not compiled at all.
+ *
+ * What the fallback cannot supply is `libpjsua2.so`. An APK built without this AAR
+ * installs and then raises an `UnsatisfiedLinkError` on the first SIP call, so the
+ * warning below says that in as many words — a five-second diagnosis instead of an
+ * hour of one.
  */
 configurations.maybeCreate("default")
 
@@ -30,12 +41,16 @@ if (aar.exists()) {
     artifacts.add("default", aar)
 } else {
     // Deliberately not a hard failure at configuration time: `./gradlew :domain:test` and
-    // every other module that does not touch SIP must still run on a fresh clone. The
-    // build that actually needs the binary is the one that fails, and it says why.
+    // every other module that does not touch SIP must still run on a fresh clone, and
+    // `./gradlew build` has to stay green so the rest of the gate is worth something.
     logger.warn(
-        "\n:pjsip — libs/pjsua2.aar is missing, so anything depending on it will not compile." +
-            "\n  Download it from the 'Build PJSIP for Android' workflow (artifact" +
-            " 'pjsua2-aar-<version>') and put it at pjsip/libs/pjsua2.aar." +
-            "\n  See docs/pjsip-migration.md P-2.\n",
+        "\n:pjsip — libs/pjsua2.aar is missing." +
+            "\n  :data:sip is compiling against :pjsip:api instead, which is the same Java" +
+            " API without the native library." +
+            "\n  The build will succeed and the app will NOT run: the first SIP call raises" +
+            " UnsatisfiedLinkError on libpjsua2.so." +
+            "\n  For an APK that runs, take 'pjsua2-aar-<version>' from the 'Build PJSIP for" +
+            " Android' workflow and put it at pjsip/libs/pjsua2.aar." +
+            "\n  See docs/pjsip-migration.md P-1 and P-2.\n",
     )
 }

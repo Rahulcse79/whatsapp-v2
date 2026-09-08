@@ -53,6 +53,10 @@ include(":data:sip")
 
 // The PJSIP binaries, wrapped (ADR-006). Not a source module — see pjsip/build.gradle.kts.
 include(":pjsip")
+
+// The Java half of that AAR, as source, so the tree still compiles when the binary is
+// absent. Used only then; the AAR wins whenever it exists. See pjsip/api/build.gradle.kts.
+include(":pjsip:api")
 include(":data:calllog")
 include(":data:contacts")
 

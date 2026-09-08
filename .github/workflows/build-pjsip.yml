@@ -94,7 +94,7 @@ jobs:
           SITE
           sed -i 's/^          //' pjlib/include/pj/config_site.h
 
-          mkdir -p "$GITHUB_WORKSPACE/bindings/org/pjsip/pjsua2" gen
+          mkdir -p "$GITHUB_WORKSPACE/bindings/org/pjsip/pjsua2" "$GITHUB_WORKSPACE/gen"
           cd pjsip-apps/src/swig/java
 
           swig -I../../../../pjlib/include -I../../../../pjlib-util/include \
@@ -108,6 +108,21 @@ jobs:
           count="$(find bindings -name '*.java' | wc -l)"
           echo "generated $count Java files"
           [ "$count" -gt 0 ] || { echo "::error::SWIG produced nothing"; exit 1; }
+
+          # SWIG covers `org.pjsip.pjsua2` and nothing else. The `org.pjsip` classes
+          # are hand-written Java that pjproject ships next to the C it calls through
+          # JNI - the camera and audio device shims. The AAR carries them, so an API
+          # that leaves them out is not the AAR's API: `org.pjsip.PjCameraInfo2`,
+          # which the adapter calls before it can enumerate a capture device, would
+          # not resolve. Copied, not regenerated - there is nothing to generate.
+          for j in pjproject/pjmedia/src/pjmedia-videodev/android/*.java \
+                   pjproject/pjmedia/src/pjmedia-audiodev/android/*.java; do
+            [ -f "$j" ] || { echo "::error::missing $j"; exit 1; }
+            cp "$j" bindings/org/pjsip/
+          done
+          helpers="$(find bindings/org/pjsip -maxdepth 1 -name '*.java' | wc -l)"
+          echo "copied $helpers hand-written org.pjsip helpers"
+          [ "$helpers" -ge 5 ] || { echo "::error::expected 5 helpers, got $helpers"; exit 1; }
 
           # The signatures the migration plan has to agree with, printed into the
           # log so a reviewer can diff §3 without downloading anything.
@@ -174,6 +189,35 @@ jobs:
           ndk-version: r27c
           local-cache: true
 
+      # nttld/setup-ndk promises no particular layout, and OpenSSL depends on one: its
+      # android targets resolve the compiler with `which("clang")` and require the result
+      # to sit INSIDE $ANDROID_NDK_ROOT (Configurations/15-android.conf). When the
+      # hardcoded `toolchains/llvm/prebuilt/linux-x86_64/bin` did not exist, `clang`
+      # resolved to /usr/bin/clang, that match failed, and Configure fell back to a gcc
+      # the NDK has not shipped since r18 - "no NDK aarch64-linux-android-gcc on $PATH",
+      # which is what all three ABIs died of on 2026-09-08.
+      #
+      # So locate the toolchain rather than assume it, export the root it actually
+      # belongs to, and fail here, with the layout printed, rather than four steps later.
+      - name: Locate the NDK toolchain
+        run: |
+          set -euo pipefail
+          root="${{ steps.ndk.outputs.ndk-path }}"
+          clang="$(find "$root" -type f -path '*/toolchains/llvm/prebuilt/*/bin/clang' | head -1)"
+          if [ -z "$clang" ]; then
+            echo "::error::no NDK clang anywhere under $root"
+            find "$root" -maxdepth 3 -type d | head -40
+            exit 1
+          fi
+          bin="$(dirname "$clang")"
+          # bin -> <host> -> prebuilt -> llvm -> toolchains -> the NDK root itself
+          ndk="$(cd "$bin/../../../../.." && pwd)"
+          echo "NDK root      : $ndk"
+          echo "toolchain bin : $bin"
+          echo "ANDROID_NDK_ROOT=$ndk" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          echo "$bin" >> "$GITHUB_PATH"
+
       - name: Install the build tools pjsua2 needs
         run: |
           sudo apt-get update
@@ -191,13 +235,10 @@ jobs:
       # run time on a TLS account. The `Checking for OpenSSL` line in the configure
       # output is the thing to read.
       - name: Cross-compile OpenSSL ${{ inputs.openssl-version }}
-        env:
-          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
         run: |
           curl -fsSL -o openssl.tar.gz \
             "https://github.com/openssl/openssl/releases/download/openssl-${{ inputs.openssl-version }}/openssl-${{ inputs.openssl-version }}.tar.gz"
           mkdir -p openssl && tar -xzf openssl.tar.gz -C openssl --strip-components=1
-          export PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           cd openssl
           ./Configure ${{ matrix.openssl-target }} -D__ANDROID_API__=$ANDROID_API \
             --prefix="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}" no-shared no-tests
@@ -206,13 +247,10 @@ jobs:
       # The second half of the same problem: without Opus, PJSIP negotiates narrowband
       # codecs and the call sounds like 2005.
       - name: Cross-compile Opus ${{ inputs.opus-version }}
-        env:
-          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
         run: |
           curl -fsSL -o opus.tar.gz \
             "https://downloads.xiph.org/releases/opus/opus-${{ inputs.opus-version }}.tar.gz"
           mkdir -p opus && tar -xzf opus.tar.gz -C opus --strip-components=1
-          export PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           cd opus
           # AR/RANLIB/NM/STRIP are passed explicitly because the NDK removed the
           # triple-prefixed binutils. Left to itself, autotools looks for
@@ -229,7 +267,6 @@ jobs:
 
       - name: Configure and build pjproject
         env:
-          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
           TARGET_ABI: ${{ matrix.abi }}
         run: |
           cd pjproject
@@ -276,19 +313,17 @@ jobs:
 
       - name: Build the pjsua2 Java bindings
         env:
-          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
           TARGET_ABI: ${{ matrix.abi }}
         run: |
           cd pjproject/pjsip-apps/src/swig
           make
 
       - name: Confirm the result is 16 KB aligned
-        env:
-          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
         run: |
           # The check that matters for Play. A .so that is not 16 KB aligned is one
           # Android 15 will refuse to load on a 16 KB device.
-          READELF="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          READELF="$(command -v llvm-readelf)"
+          [ -n "$READELF" ] || { echo "::error::llvm-readelf is not on \$PATH"; exit 1; }
 
           # This used to print the LOAD headers and stop, which is a check that cannot
           # fail. It now asserts every loadable segment is aligned to at least 16 KB
