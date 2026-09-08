@@ -194,6 +194,12 @@ object ArchitectureRules {
      * Not stylistic. Mixing LiveData and Flow puts two lifecycle models in one screen;
      * `AsyncTask` has been removed from the platform; and a raw `Thread` in an app that
      * holds a long-lived registration is how leaks and wake-lock bugs start.
+     *
+     * **The forbidden imports have no exceptions.** The raw-`Thread` clause has exactly
+     * one, and it is [THREAD_EXEMPT] rather than a suppression: the rule is scoped, the
+     * way rule 2 scopes `org.pjsip` to `:data:sip`, instead of the finding being hidden.
+     * The difference matters — a scope is one line a reviewer reads in the rule, and a
+     * baseline is a file that grows on its own.
      */
     fun forbiddenConcurrencyApis(files: List<SourceFile>): List<Violation> = buildList {
         for (file in files) {
@@ -201,7 +207,7 @@ object ArchitectureRules {
                 .filter { import -> FORBIDDEN_IMPORTS.any { import.startsWith(it) } }
                 .forEach { add(Violation(file.relativePath, "uses $it, which is forbidden (§3)")) }
 
-            if (RAW_THREAD.containsMatchIn(file.code)) {
+            if (RAW_THREAD.containsMatchIn(file.code) && file.relativePath !in THREAD_EXEMPT) {
                 add(Violation(file.relativePath, "constructs a raw Thread; use coroutines (§3)"))
             }
         }
@@ -289,6 +295,26 @@ object ArchitectureRules {
         Regex("""^\s*(?:public\s+)?interface\s+\w*Repository\b""", RegexOption.MULTILINE)
     private val REPOSITORY_IMPL =
         Regex("""^\s*(?:\w+\s+)*class\s+\w+Repository(?:Impl|Implementation)\b""", RegexOption.MULTILINE)
+
+    /**
+     * The one file allowed to construct a thread, and why.
+     *
+     * pjsua2 requires every thread that calls into it to be registered first, and
+     * `Endpoint::libRegisterThread` allocates a descriptor **freed only when the library
+     * is destroyed**. Posting to `Dispatchers.IO` - a pool of up to 64 threads that come
+     * and go - would therefore leak one descriptor per thread for the life of the process,
+     * and calling in unregistered is undefined behaviour that surfaces as a native crash.
+     * One dedicated, named, daemon thread is what the native library's threading contract
+     * demands; it is not hand-rolled concurrency, which is what this rule is actually for.
+     *
+     * Deliberately a path and not a package: the exemption should stop applying the moment
+     * this file is renamed or moved, so a stale carve-out cannot quietly widen the rule.
+     * `rule 5 exempts one file, and it still exists` is what enforces that.
+     */
+    val THREAD_EXEMPT = setOf(
+        "data/sip/src/main/kotlin/com/whatsappv2/data/sip/registration/stack/RealPjsipCoreGateway.kt",
+    )
+
     private val RAW_THREAD = Regex("""\bThread\s*\(""")
     private val VIEW_MODEL = Regex(""":\s*ViewModel\s*\(""")
     private val PUBLIC_MUTABLE_FLOW = Regex(
