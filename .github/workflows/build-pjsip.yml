@@ -192,7 +192,12 @@ jobs:
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r27c
-          local-cache: true
+          # NOT cached. With local-cache: true the action restored a tree that had
+          # `toolchains/llvm/prebuilt` and nothing inside it - an NDK with no compiler,
+          # which is worse than no NDK because every later step still looks like it
+          # should work. A fresh download costs a couple of minutes on a job that takes
+          # an hour.
+          local-cache: false
 
       # nttld/setup-ndk promises no particular layout, and OpenSSL depends on one: its
       # android targets resolve the compiler with `which("clang")` and require the result
@@ -207,11 +212,30 @@ jobs:
       - name: Locate the NDK toolchain
         run: |
           set -euo pipefail
-          root="${{ steps.ndk.outputs.ndk-path }}"
-          clang="$(find "$root" -type f -path '*/toolchains/llvm/prebuilt/*/bin/clang' | head -1)"
+          # Candidates in order of preference: what setup-ndk reports, then the NDKs the
+          # runner image already carries. Any of them will do provided it has a compiler.
+          clang=""
+          for root in "${{ steps.ndk.outputs.ndk-path }}" \
+                      "${ANDROID_NDK_LATEST_HOME:-}" \
+                      "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/ndk/*; do
+            [ -n "$root" ] && [ -d "$root" ] || continue
+            # No -type f: `clang` is a symlink in some NDK layouts, and a symlink to a
+            # working compiler is a working compiler.
+            found="$(find "$root" -path '*/toolchains/llvm/prebuilt/*/bin/clang' 2>/dev/null | head -1)"
+            if [ -n "$found" ]; then
+              echo "using NDK at $root"
+              clang="$found"
+              break
+            fi
+            echo "skipping $root - no clang under toolchains/llvm/prebuilt"
+          done
           if [ -z "$clang" ]; then
-            echo "::error::no NDK clang anywhere under $root"
-            find "$root" -maxdepth 3 -type d | head -40
+            echo "::error::no NDK with a usable clang on this runner"
+            for root in "${{ steps.ndk.outputs.ndk-path }}" "${ANDROID_NDK_LATEST_HOME:-}"; do
+              [ -d "$root" ] || continue
+              echo "--- $root"
+              ls -la "$root/toolchains/llvm/prebuilt" 2>&1 | head -10
+            done
             exit 1
           fi
           bin="$(dirname "$clang")"
