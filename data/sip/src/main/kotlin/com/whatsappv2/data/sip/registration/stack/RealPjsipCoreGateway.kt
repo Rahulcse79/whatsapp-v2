@@ -35,6 +35,7 @@ import org.pjsip.pjsua2.CallSetting
 import org.pjsip.pjsua2.CallVidSetStreamParam
 import org.pjsip.pjsua2.Endpoint
 import org.pjsip.pjsua2.EpConfig
+import org.pjsip.pjsua2.IpChangeParam
 import org.pjsip.pjsua2.OnCallMediaStateParam
 import org.pjsip.pjsua2.OnCallRxReinviteParam
 import org.pjsip.pjsua2.OnCallStateParam
@@ -46,6 +47,7 @@ import org.pjsip.pjsua2.VideoWindowHandle
 import org.pjsip.pjsua2.pjmedia_dir
 import org.pjsip.pjsua2.pjmedia_srtp_use
 import org.pjsip.pjsua2.pjmedia_type
+import org.pjsip.pjsua2.pjmedia_vid_stream_rc_method
 import org.pjsip.pjsua2.pjsip_inv_state
 import org.pjsip.pjsua2.pjsip_status_code
 import org.pjsip.pjsua2.pjsip_transport_type_e
@@ -173,6 +175,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
     /** Recorders by call key, so [stopRecording] can find and release the right one. */
     private val recorders = ConcurrentHashMap<String, AudioMediaRecorder>()
 
+    /**
+     * Whether a `setNetworkReachable(false)` has arrived since the last IP change was
+     * handled. Read and written only on the [pjsip] executor thread, so it needs no
+     * synchronisation of its own.
+     */
+    private var linkDownSeen = false
+
     // ------------------------------------------------------------------ lifecycle
 
     override fun start() {
@@ -188,7 +197,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // The one registration this process makes. Every later call into PJSIP is
             // posted to this same thread, so no second one is ever needed.
             created.libRegisterThread(PJSIP_THREAD)
-            created.libInit(EpConfig())
+            created.libInit(endpointConfig())
+
+            // After libInit and before libStart, and both halves of that matter. libInit
+            // is what registers the codecs, so there is nothing to configure before it;
+            // a stream created after libStart has already taken its parameters, so
+            // configuring later changes nothing until the next call.
+            created.tuneOpus()
+            created.tuneVideoCodecs()
 
             // All three, once, at startup. PJSIP binds an account to a transport by id,
             // so the transport an account needs has to exist before the account does —
@@ -204,6 +220,117 @@ internal class RealPjsipCoreGateway @Inject constructor(
             created.libStart()
             endpoint = created
             logger.info(TAG, "SIP core started (PJSIP)")
+        }
+    }
+
+    /**
+     * The endpoint configuration (§5.2).
+     *
+     * This used to be `EpConfig()`, which is every default PJSIP ships, and the defaults
+     * are chosen for a desktop softphone on an unknown machine rather than for this app.
+     * Four of them cost audio quality directly:
+     *
+     *  - **`clockRate` was 16000.** That is the rate the conference bridge mixes at, so
+     *    Opus - negotiated at 48 kHz, and the only wideband codec in the default
+     *    preference list - was being resampled down to 16 kHz and back up on the way out.
+     *    Paying for a full-band codec and then throwing two thirds of the band away.
+     *  - **`quality` was 8.** The resampler quality, 1..10. At 48 kHz there is more to
+     *    lose in a bad resample, so this goes to the top.
+     *  - **VAD was on.** Silence suppression saves bandwidth by not sending during
+     *    silence, and pays for it by clipping the first syllable after every pause. On a
+     *    wideband codec that is the most audible artefact left.
+     *  - **`ecTailLen` was implicit.** Stated now, because an echo canceller whose tail
+     *    is shorter than the device's acoustic path cancels nothing.
+     *
+     * The echo canceller **algorithm** is deliberately left at pjmedia's default rather
+     * than forced to `PJMEDIA_ECHO_WEBRTC_AEC3`. AEC3 has to be compiled into the native
+     * library to exist, the native build has never completed a run, and an `ecOptions`
+     * naming an algorithm that is not there is worse than the default - it is no echo
+     * cancellation at all. That is a change to make once P-1 is green and the build's
+     * feature flags can be read rather than assumed.
+     *
+     * These are principled starting points, not measured ones. P-7 is where they get
+     * checked against a real handset and a real link; nothing here has been heard yet.
+     */
+    private fun endpointConfig(): EpConfig = EpConfig().apply {
+        uaConfig.userAgent = USER_AGENT
+        uaConfig.maxCalls = MAX_CALLS
+
+        medConfig.apply {
+            clockRate = CORE_CLOCK_RATE
+            channelCount = MONO
+            quality = RESAMPLE_QUALITY
+            ecTailLen = EC_TAIL_MS
+            // `noVad` reads backwards: true disables voice activity detection.
+            noVad = true
+            // Adaptive, but bounded. An unbounded jitter buffer trades a defect the user
+            // hears for one they hear later, and half a second of delay is already a
+            // conversation people talk over.
+            jbMax = JITTER_BUFFER_MAX_MS
+        }
+    }
+
+    /**
+     * Opus, configured rather than left at whatever the codec defaults to (§5.2).
+     *
+     * Opus is the only wideband codec in the default preference list, so its settings are
+     * most of what "audio quality" means here.
+     *
+     *  - `sample_rate` matches the bridge, so nothing resamples on the way in or out.
+     *  - `bit_rate` is well above the 16-24 kbps that narrowband deployments settle for;
+     *    at 48 kHz mono this is transparent for speech.
+     *  - `complexity` is the encoder's own quality/CPU dial, 0..10.
+     *  - `packet_loss` is not a measurement, it is a *hint*: it tells the encoder how much
+     *    FEC to carry. Zero means no redundancy, and the first lost packet is a hole.
+     *  - CBR off, because VBR spends the bits where the speech is.
+     */
+    private fun Endpoint.tuneOpus() {
+        runCatching {
+            val opus = codecOpusConfig
+            opus.sample_rate = CORE_CLOCK_RATE
+            opus.channel_cnt = MONO
+            opus.bit_rate = OPUS_BITRATE
+            opus.complexity = OPUS_COMPLEXITY
+            opus.packet_loss = OPUS_EXPECTED_LOSS_PCT
+            opus.cbr = false
+            codecOpusConfig = opus
+        }.onFailure {
+            // Not fatal: a build without Opus still registers PCMU and G722, and a call
+            // on those is worth more than no call. Loud, because it means the native
+            // library was built without PJMEDIA_HAS_OPUS_CODEC and §5.2 is not being met.
+            logger.error(TAG, "Opus not configured - is it compiled in? ${it.message}")
+        }
+    }
+
+    /**
+     * Video encoder parameters, per codec (§5.2).
+     *
+     * PJSIP's defaults here are conservative enough to look like a fault: a small frame at
+     * a low bitrate, which on a modern handset reads as a broken camera rather than a
+     * bandwidth choice. Every registered codec gets the same ceiling, because the codec
+     * that ends up negotiated is the far end's decision, not ours.
+     *
+     * A ceiling, not a target - `rateControlBandwidth` on the account is what actually
+     * holds the stream to it, and PJSIP drops below it on its own when the link cannot
+     * carry it. Applied per codec inside `runCatching` so one codec rejecting a format
+     * does not cost the others theirs.
+     */
+    private fun Endpoint.tuneVideoCodecs() {
+        videoCodecEnum2().forEach { info ->
+            runCatching {
+                val param = getVideoCodecParam(info.codecId)
+                param.encFmt.apply {
+                    width = VIDEO_WIDTH
+                    height = VIDEO_HEIGHT
+                    fpsNum = VIDEO_FPS
+                    fpsDenum = 1
+                    avgBps = VIDEO_AVG_BPS
+                    maxBps = VIDEO_MAX_BPS
+                }
+                setVideoCodecParam(info.codecId, param)
+            }.onFailure {
+                logger.warn(TAG, "Video codec ${info.codecId} kept its defaults: ${it.message}")
+            }
         }
     }
 
@@ -226,6 +353,59 @@ internal class RealPjsipCoreGateway @Inject constructor(
             running.libDestroy()
             endpoint = null
             logger.info(TAG, "SIP core stopped")
+        }
+    }
+
+    // ------------------------------------------------------------------ network
+
+    /**
+     * The link underneath the transports changed (Task 30, DoD 6).
+     *
+     * [com.whatsappv2.data.sip.network.TransportRebinder] signals a change as `false` then
+     * `true`, and the two halves are not symmetric.
+     *
+     * **`false` does not touch the stack.** There is no address to bind to while the link
+     * is down, so tearing transports down here would buy nothing and would race the
+     * platform's own teardown. It is recorded, and that is all.
+     *
+     * **`true` is where the work is**, and PJSIP has one call for exactly this:
+     * `handleIpChange` shuts the transports down, stands the listeners back up on the
+     * address the device now holds, and re-registers every account - in that order, which
+     * is the order that matters. A REGISTER sent before the rebind leaves from an
+     * interface that no longer exists and never reaches the wire, which is the defect the
+     * recovery coordinator was written to avoid.
+     *
+     * Guarded on [linkDownSeen] so a `true` with no preceding `false` is a no-op: at
+     * startup, and on a spurious callback, the transports are already correct and
+     * restarting them would drop calls that are working.
+     */
+    override fun setNetworkReachable(reachable: Boolean) {
+        onPjsip("setNetworkReachable") {
+            val running = endpoint ?: return@onPjsip
+
+            if (!reachable) {
+                linkDownSeen = true
+                logger.info(TAG, "Link down; transports left alone until one returns")
+                return@onPjsip
+            }
+
+            if (!linkDownSeen) {
+                logger.debug(TAG, "Link reported up without a down; nothing to rebind")
+                return@onPjsip
+            }
+            linkDownSeen = false
+
+            running.handleIpChange(
+                IpChangeParam().apply {
+                    // Both, explicitly. Shutting the transport down without restarting the
+                    // listener leaves the stack with nothing to send from; restarting the
+                    // listener without the shutdown leaves the old socket bound to an
+                    // address the device has given up.
+                    shutdownTransport = true
+                    restartListener = true
+                },
+            )
+            logger.info(TAG, "Link up; transports rebound and accounts re-registered")
         }
     }
 
@@ -331,6 +511,20 @@ internal class RealPjsipCoreGateway @Inject constructor(
         // because the far end asking for video is a question, not an instruction.
         videoConfig.autoShowIncoming = false
         videoConfig.autoTransmitOutgoing = false
+
+        // The ceiling the encoder parameters are allowed to reach, and the thing that
+        // actually holds them there. Without rate control PJSIP encodes at the format's
+        // bitrate whatever the link is doing, and a 2.5 Mbit stream on a cell connection
+        // does not degrade - it stalls, because the packets it needs are the ones being
+        // dropped.
+        videoConfig.rateControlMethod =
+            pjmedia_vid_stream_rc_method.PJMEDIA_VID_STREAM_RC_SIMPLE_BLOCKING
+        videoConfig.rateControlBandwidth = VIDEO_MAX_BPS
+
+        // A few keyframes up front. The first frame a decoder can actually show is a
+        // keyframe, and one every two seconds means up to two seconds of grey.
+        videoConfig.startKeyframeCount = VIDEO_START_KEYFRAMES
+        videoConfig.startKeyframeInterval = VIDEO_START_KEYFRAME_INTERVAL_MS
     }
 
     /**
@@ -916,6 +1110,50 @@ internal class RealPjsipCoreGateway @Inject constructor(
         const val TRANSPORT_UDP = "UDP"
         const val TRANSPORT_TCP = "TCP"
         const val TRANSPORT_TLS = "TLS"
+
+        /**
+         * Media tuning (§5.2). Starting points chosen from PJSIP's own guidance, not
+         * measurements - P-7 is where they meet a handset.
+         */
+        const val USER_AGENT = "whatsapp-v2 (PJSIP)"
+
+        /** Simultaneous calls the stack will hold: one active, one held, room to transfer. */
+        const val MAX_CALLS = 4L
+
+        const val MONO = 1L
+
+        /**
+         * The conference bridge's mixing rate, and Opus's native one. PJSIP defaults to
+         * 16000; at 48000 nothing resamples a wideband call. It costs CPU in the bridge,
+         * and this is the one line to change if a low-end device cannot carry it.
+         */
+        const val CORE_CLOCK_RATE = 48_000L
+
+        /** Resampler quality, 1..10. PJSIP defaults to 8. */
+        const val RESAMPLE_QUALITY = 10L
+
+        /** Echo tail, ms. Shorter than the device's acoustic path cancels nothing. */
+        const val EC_TAIL_MS = 200L
+
+        /** Jitter buffer ceiling, ms. Beyond this, delay is the worse defect. */
+        const val JITTER_BUFFER_MAX_MS = 500
+
+        /** Transparent for speech at 48 kHz mono; well above narrowband practice. */
+        const val OPUS_BITRATE = 32_000L
+
+        /** Encoder quality/CPU dial, 0..10. */
+        const val OPUS_COMPLEXITY = 8L
+
+        /** An FEC hint, not a measurement: how much redundancy to carry. */
+        const val OPUS_EXPECTED_LOSS_PCT = 5L
+
+        const val VIDEO_WIDTH = 1280L
+        const val VIDEO_HEIGHT = 720L
+        const val VIDEO_FPS = 30
+        const val VIDEO_AVG_BPS = 1_500_000L
+        const val VIDEO_MAX_BPS = 2_500_000L
+        const val VIDEO_START_KEYFRAMES = 3L
+        const val VIDEO_START_KEYFRAME_INTERVAL_MS = 1_000L
 
         /** PJSIP priorities run 0 (disabled) to 255 (first choice). */
         const val CODEC_TOP = 255
