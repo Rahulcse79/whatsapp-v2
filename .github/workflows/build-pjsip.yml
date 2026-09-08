@@ -47,6 +47,88 @@ permissions:
   contents: read
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # The Java API, without building anything native.
+  #
+  # SWIG generates the bindings from the pjsua2 headers alone - no NDK, no
+  # OpenSSL, no Opus, no cross-compile. That takes about a minute against the
+  # hour the matrix below needs, and it answers the question that actually blocks
+  # writing the adapter: what do the generated Java classes look like?
+  #
+  # It is a separate job with no `needs:` precisely so it lands first and can be
+  # read while the native build is still running. `docs/pjsip-migration.md` §3 is
+  # written from the C++ headers; this is what it gets checked against, because
+  # SWIG's mapping is faithful but not literal - enums become classes of static
+  # ints, std::vector becomes a typed vector class, and overloads collapse.
+  # ---------------------------------------------------------------------------
+  bindings:
+    name: "Generate the pjsua2 Java API"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install SWIG
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y swig
+
+      - name: Fetch pjproject ${{ inputs.pjsip-version }}
+        run: |
+          curl -fsSL -o pjproject.tar.gz \
+            "https://github.com/pjsip/pjproject/archive/refs/tags/${{ inputs.pjsip-version }}.tar.gz"
+          mkdir -p pjproject && tar -xzf pjproject.tar.gz -C pjproject --strip-components=1
+
+      - name: Generate
+        run: |
+          set -euo pipefail
+          cd pjproject
+
+          # SWIG parses this. It is normally written by configure, and the feature
+          # flags must match the ones the native build below uses or the generated
+          # API describes a library nobody is shipping.
+          cat > pjlib/include/pj/config_site.h <<'SITE'
+          #define PJMEDIA_HAS_VIDEO 1
+          #define PJMEDIA_HAS_OPENH264_CODEC 0
+          #define PJMEDIA_HAS_VPX_CODEC 1
+          #define PJMEDIA_HAS_OPUS_CODEC 1
+          #define PJSIP_HAS_TLS_TRANSPORT 1
+          SITE
+          sed -i 's/^          //' pjlib/include/pj/config_site.h
+
+          mkdir -p "$GITHUB_WORKSPACE/bindings/org/pjsip/pjsua2" gen
+          cd pjsip-apps/src/swig/java
+
+          swig -I../../../../pjlib/include -I../../../../pjlib-util/include \
+               -I../../../../pjmedia/include -I../../../../pjsip/include \
+               -I../../../../pjnath/include \
+               -c++ -D__ANDROID__ -java -package org.pjsip.pjsua2 \
+               -outdir "$GITHUB_WORKSPACE/bindings/org/pjsip/pjsua2" \
+               -o "$GITHUB_WORKSPACE/gen/pjsua2_wrap.cpp" ../pjsua2.i
+
+          cd "$GITHUB_WORKSPACE"
+          count="$(find bindings -name '*.java' | wc -l)"
+          echo "generated $count Java files"
+          [ "$count" -gt 0 ] || { echo "::error::SWIG produced nothing"; exit 1; }
+
+          # The signatures the migration plan has to agree with, printed into the
+          # log so a reviewer can diff §3 without downloading anything.
+          echo "::group::Public API of the classes the adapter uses"
+          for c in Endpoint Account Call AccountConfig CallOpParam CallSetting \
+                   CallInfo CallMediaInfo VideoWindow VideoWindowHandle \
+                   AudDevManager VidDevManager AuthCredInfo TransportConfig; do
+            f="bindings/org/pjsip/pjsua2/$c.java"
+            [ -f "$f" ] || { echo "  -- $c: NOT GENERATED"; continue; }
+            echo "  ---- $c ----"
+            grep -oE '^\s+public [^{;]+' "$f" | sed 's/^\s*/    /'
+          done
+          echo "::endgroup::"
+
+      - name: Publish the generated API
+        uses: actions/upload-artifact@v4
+        with:
+          name: pjsua2-java-api-${{ inputs.pjsip-version }}
+          if-no-files-found: error
+          path: bindings/**
+
   build:
     name: "pjproject ${{ inputs.pjsip-version }} · ${{ matrix.abi }}"
     runs-on: ubuntu-latest
@@ -270,3 +352,89 @@ jobs:
           path: |
             staging/**
             pjproject/**/lib/*.a
+
+  # ---------------------------------------------------------------------------
+  # The three per-ABI builds above produce parts. Nothing in Gradle can consume
+  # parts, so this is the step that turns them into one artifact a module can
+  # depend on. It runs once, after all three ABIs, and fails if any is missing —
+  # an AAR with two of three ABIs is a crash on the device that has the third.
+  # ---------------------------------------------------------------------------
+  aar:
+    name: "Assemble pjsua2.aar"
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Collect every ABI's build
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pjsip-${{ inputs.pjsip-version }}-*
+          path: parts
+
+      - name: Set up a JDK to compile the bindings with
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Assemble
+        env:
+          PJ_VERSION: ${{ inputs.pjsip-version }}
+        run: |
+          set -euo pipefail
+
+          # Every ABI packaged by :app must be present. A missing one is not a
+          # smaller AAR, it is an UnsatisfiedLinkError on that architecture.
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            so="$(find parts -path "*/jni/$abi/libpjsua2.so" -print -quit)"
+            if [ -z "$so" ]; then
+              echo "::error::No libpjsua2.so for $abi - that ABI's build did not produce one"
+              exit 1
+            fi
+            mkdir -p "aar/jni/$abi"
+            cp "$so" "aar/jni/$abi/"
+            echo "  $abi <- $so"
+          done
+
+          # The SWIG bindings are identical across ABIs; take the first and say so.
+          srcroot="$(find parts -type d -name org -path '*/java/*' -print -quit)"
+          if [ -z "$srcroot" ]; then
+            echo "::error::No generated org/ source root in any artifact"
+            exit 1
+          fi
+
+          # android.jar is on the classpath because the generated bindings reference
+          # Android types directly - PjCameraInfo2 takes a CameraManager, and the
+          # video handle takes a Surface. Without it javac fails on the first import.
+          ANDROID_JAR="$(find "$ANDROID_HOME/platforms" -name android.jar | sort -V | tail -1)"
+          echo "compiling against $ANDROID_JAR"
+
+          mkdir -p classes
+          find "$srcroot" -name '*.java' > sources.txt
+          echo "  $(wc -l < sources.txt) generated source files"
+          javac -nowarn -source 8 -target 8 -bootclasspath "$ANDROID_JAR" \
+                -d classes @sources.txt
+
+          (cd classes && jar cf ../aar/classes.jar .)
+
+          # A prebuilt AAR still declares its package here; AGP reads it from the
+          # manifest rather than from a namespace it has no build file for.
+          cat > aar/AndroidManifest.xml <<'MANIFEST'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="org.pjsip.pjsua2" />
+          MANIFEST
+          sed -i 's/^          //' aar/AndroidManifest.xml
+
+          (cd aar && zip -qr "../pjsua2-${PJ_VERSION}.aar" .)
+
+          echo "::group::AAR contents"
+          unzip -l "pjsua2-${PJ_VERSION}.aar"
+          echo "::endgroup::"
+
+      - name: Publish the AAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: pjsua2-aar-${{ inputs.pjsip-version }}
+          if-no-files-found: error
+          path: pjsua2-*.aar
