@@ -183,20 +183,6 @@ internal class SipConnectionService : ConnectionService() {
             connections.remove(callId)
         }
 
-        /**
-         * Records the mute state Telecom last reported, so the app and the platform stop
-         * contradicting each other (Task 42).
-         *
-         * Telecom has no public setter a self-managed connection can use to say "I muted
-         * myself", so its own `CallAudioState.isMuted` never reflects an app-side mute. It
-         * then repeats that stale `false` on every audio change. Seeding the connection's
-         * idea of the platform state here is what stops the next route change undoing the
-         * user's mute.
-         */
-        fun syncMuted(callId: CallId, muted: Boolean) {
-            connections[callId]?.syncPlatformMute(muted)
-        }
-
         /** Tells Telecom a call ended for a reason Telecom did not cause. */
         fun reportEnded(callId: CallId, reason: HangupReason) {
             connections.remove(callId)?.reportEnded(reason)

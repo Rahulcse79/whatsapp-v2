@@ -3,8 +3,10 @@ package com.whatsappv2.domain.usecase
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.failure
 import com.whatsappv2.core.common.result.success
+import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.SipRegistrar
+import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.repository.AccountRepositoryError
 import com.whatsappv2.domain.repository.SipAccountRepository
@@ -117,7 +119,7 @@ class SaveAccountUseCase @Inject constructor(
             registrar.registrationState.first()[existing.id]?.isUsable == true
         val mustUnregister = existing != null &&
             wasRegistered &&
-            existing.affectsRegistration(validated.account)
+            existing.affectsRegistration(validated.account, storedPasswordOf(existing.id))
 
         if (mustUnregister) {
             // Release the old binding BEFORE storing the new identity, so a failure here
@@ -148,8 +150,9 @@ class SaveAccountUseCase @Inject constructor(
      * Registers the account as it is now stored.
      *
      * Goes through [LoginUseCase] rather than calling the registrar with the validated
-     * draft: the stored copy carries an empty password, so the plaintext the user just
-     * typed does not travel any further than the repository that encrypts it.
+     * draft: the login re-reads the account by id and fetches its credential itself, so
+     * the plaintext the user just typed does not travel any further than the repository
+     * that encrypts it.
      */
     private suspend fun register(account: SipAccount): RegistrationAttempt =
         when (val result = login(account.id)) {
@@ -169,7 +172,10 @@ class SaveAccountUseCase @Inject constructor(
      * Deliberately narrow. Re-registering on every edit would drop a working binding
      * because someone corrected a display name.
      */
-    private fun SipAccount.affectsRegistration(updated: SipAccount): Boolean =
+    private fun SipAccount.affectsRegistration(
+        updated: SipAccount,
+        storedPassword: Secret?,
+    ): Boolean =
         username != updated.username ||
             domain != updated.domain ||
             effectiveAuthUsername != updated.effectiveAuthUsername ||
@@ -177,10 +183,40 @@ class SaveAccountUseCase @Inject constructor(
             effectivePort != updated.effectivePort ||
             effectiveRegistrar != updated.effectiveRegistrar ||
             registrationExpirySeconds != updated.registrationExpirySeconds ||
-            // A password change cannot be compared directly - an observed account carries
-            // an empty one - so a non-empty password on the update means the user typed a
-            // new value, which must be re-authenticated.
-            updated.password.length > 0
+            passwordChanged(updated.password, storedPassword)
+
+    /**
+     * Whether the password on the update is a different one.
+     *
+     * ## Why this compares rather than counts
+     *
+     * It used to be `updated.password.length > 0`, on the premise that an observed account
+     * always carries an empty password, so any value at all had to be newly typed. That
+     * premise no longer holds: the editor opens with the stored password filled in, so the
+     * user re-submits it unchanged on every save. Left as a length check, a corrected
+     * display name would drop a working registration and take out a new one — the very
+     * thing the narrowness of this list exists to prevent.
+     *
+     * Comparing against what is actually stored keeps both readings true: an untouched
+     * field is not a change, and a genuinely edited one still re-authenticates.
+     *
+     * A blank offer still means "unchanged" — [AccountValidator] rejects an empty password
+     * before this is reached, so it can only arrive from a caller that never had one.
+     * A [storedPassword] of null means the old value could not be decrypted, and a
+     * credential nobody can read is one worth re-authenticating.
+     */
+    private fun passwordChanged(offered: Secret, storedPassword: Secret?): Boolean = when {
+        offered.isEmpty -> false
+        storedPassword == null -> true
+        else -> offered != storedPassword
+    }
+
+    /** The password currently stored for [id], or null when it cannot be decrypted. */
+    private suspend fun storedPasswordOf(id: AccountId): Secret? =
+        when (val credentials = repository.credentialsFor(id)) {
+            is Outcome.Success -> credentials.value.password
+            is Outcome.Failure -> null
+        }
 
     private fun AccountRepositoryError.toSaveError(): SaveAccountError = when (this) {
         is AccountRepositoryError.DuplicateIdentity -> SaveAccountError.DuplicateIdentity(username, domain)

@@ -141,14 +141,26 @@ class CallAudioCoordinator @Inject constructor(
         if (activeCall != null) end()
 
         activeCall = call.callId
-        chosenRoute = null
+        // Seeded from the call rather than cleared, and that is the fix for "the speaker
+        // button does nothing". Audio starts following a call the moment it has audio to
+        // route — on answer, or on early media — but the speaker button is on screen from
+        // the first ring, and a route chosen in that window is already on the call by the
+        // time this runs. Clearing it here threw that choice away and then re-derived a
+        // route from the devices alone, which is the earpiece: the user pressed Speaker
+        // while it rang, the call connected, and the audio snapped back to their ear.
+        chosenRoute = call.state.controlsOrNull?.audioRoute
         lastApplied = null
         mutedByFocusLoss = false
 
         requestFocus()
         audioManager()?.registerAudioDeviceCallback(deviceCallback, handler)
+        // Takes the proximity lock too, for the route it actually settles on. It used to be
+        // followed by an unconditional `proximity.acquire()` here, which raced it:
+        // `applyRoute` decides on a coroutine and releases the lock for a speaker or
+        // headset route, while the bare acquire ran synchronously straight afterwards.
+        // Whichever landed last won, so a speakerphone call could blank the screen against
+        // the user's cheek-free ear and stay blanked.
         applyRoute(arrived = null)
-        proximity.acquire()
         logger.info(TAG, "Call audio started for ${call.callId}")
     }
 

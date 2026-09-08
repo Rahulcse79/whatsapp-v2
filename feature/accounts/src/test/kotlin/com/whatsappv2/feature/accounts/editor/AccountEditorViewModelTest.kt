@@ -104,16 +104,44 @@ class AccountEditorViewModelTest {
     }
 
     @Test
-    fun `loading never brings the password back`() = runTest(dispatcher) {
-        // A decrypted credential must not sit in a ViewModel for the life of a screen.
-        // A blank field therefore means "unchanged", not "empty".
+    fun `loading brings the stored password back`() = runTest(dispatcher) {
+        // It used to be deliberately blank, so a decrypted credential would not sit in a
+        // ViewModel for the life of a screen. The price was paid on every edit: an empty
+        // password fails validation, so changing a label meant retyping a credential the
+        // user had no reason to remember - "the password is cleared every time".
         repository.given(account())
 
         val model = viewModel()
         model.load(AccountId("acct-1"))
         advanceUntilIdle()
 
+        assertEquals(Secret("hunter22"), model.uiState.value.draft.password)
+    }
+
+    @Test
+    fun `an unreadable credential leaves the field empty rather than failing`() = runTest(dispatcher) {
+        // The Keystore key can be gone. Asking for the password again is the honest
+        // response; refusing to open the screen is not.
+        repository.given(account())
+        repository.nextFailure = AccountRepositoryError.CredentialsUnrecoverable
+
+        val model = viewModel()
+        model.load(AccountId("acct-1"))
+        advanceUntilIdle()
+
         assertEquals(0, model.uiState.value.draft.password.length)
+        assertTrue(!model.uiState.value.isNewAccount, "the account still loaded")
+    }
+
+    @Test
+    fun `a new account starts with the default password`() = runTest(dispatcher) {
+        // The deployment provisions extensions with 1234, so a blank field made every
+        // first run a retype of a value the server already knew.
+        val model = viewModel()
+        model.load(null)
+        advanceUntilIdle()
+
+        assertEquals(Secret("1234"), model.uiState.value.draft.password)
     }
 
     @Test

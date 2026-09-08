@@ -111,28 +111,38 @@ class TelecomCallRegistry @Inject constructor(
         SipConnectionService.reportHeld(callId, held)
 
     /**
-     * Records the mute, rather than performing a second one (Task 42).
+     * Nothing reaches Telecom, and that is the whole of it (Task 42).
      *
-     * ## What this used to do, and why it was wrong
+     * ## What this must not do
      *
-     * It set the platform's **device-wide** microphone mute flag — which mutes the
-     * microphone for every app on the phone, not this call — and that is not what mutes a
-     * SIP call anyway: the stack's own per-call
-     * `SipCallGateway.setMicrophoneMuted` is, and the engine has already called it by
-     * the time this runs. So the flag bought nothing and cost the rest of the device its
-     * microphone until the call ended.
+     * **Set the device-wide microphone mute.** That mutes the microphone for every app on
+     * the phone rather than this call, and it is not what mutes a SIP call anyway — the
+     * stack's own per-call `SipCallGateway.setMicrophoneMuted` is, and the engine has
+     * already called it by the time this runs.
+     *
+     * **Seed the connection's view of the platform's mute.** That was the later attempt
+     * and it caused the bug it meant to fix. Telecom has no public setter a self-managed
+     * connection can use to say "I muted myself" — `Connection.setMuteState` is package
+     * private and `requestCallEndpointChange` (API 34) covers routing only — so its
+     * `CallAudioState.isMuted` stays `false` through an app-side mute. Writing `true` into
+     * the connection's mirror made the next audio event look like a `true -> false`
+     * transition, and the connection dutifully forwarded it as an unmute. The microphone
+     * came back on by itself.
      *
      * ## What it does now
      *
-     * **Telecom has no public setter a self-managed connection can use to say "I muted
-     * myself".** `Connection.setMuteState` is package private and `requestCallEndpointChange`
-     * (API 34) covers routing only. So Telecom's own `CallAudioState.isMuted` stays `false`
-     * through an app-side mute and it repeats that value on every audio event — which is
-     * exactly how a mute got undone by the next route change. Seeding the connection with
-     * what actually happened is what makes the two agree.
+     * Nothing. The mute lives where it takes effect — in the stack, and in the FSM the
+     * in-call screen renders. `SipConnection.platformMuted` stays a pure mirror of what
+     * Telecom reports, which is what makes a headset's mute button work in both directions
+     * without anything to un-do the user's own press.
+     *
+     * Kept as an override rather than removed from [PlatformCallRegistry]: the engine
+     * reports every mute through this seam, and a platform that *can* accept one — a
+     * future `androidx.core:core-telecom` adoption, where `CallControlScope` has a real
+     * setter — implements it here without the engine changing.
      */
     override fun setMuted(callId: CallId, muted: Boolean) {
-        SipConnectionService.syncMuted(callId, muted)
+        logger.debug(TAG, "Mute for $callId is $muted; Telecom has no setter to carry it")
     }
 
     override fun onEnded(callId: CallId, reason: HangupReason) =

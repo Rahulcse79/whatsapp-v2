@@ -1313,6 +1313,13 @@ internal class LinphoneSipEngine @Inject constructor(
         proxyUri = outboundProxy?.let { "sip:${it.render()}" },
         transport = transport.token,
         expirySeconds = registrationExpirySeconds,
+        // §5.1 and §5.2. These were modelled, validated, persisted and then dropped on the
+        // floor: nothing below this seam had ever read them, so every account offered
+        // whatever liblinphone's built-in defaults happened to be and the codec editor
+        // changed nothing at all. The stack takes RTP mime types, which is what
+        // `payloadName` is.
+        audioCodecs = codecs.audio.map { it.payloadName },
+        videoCodecs = codecs.video.map { it.payloadName },
         // §7, DoD 13. MANDATORY becomes `setMediaEncryptionMandatory(true)` on the stack,
         // which is what makes it fail a call it cannot encrypt rather than downgrade.
         mediaEncryption = when (srtpPolicy) {

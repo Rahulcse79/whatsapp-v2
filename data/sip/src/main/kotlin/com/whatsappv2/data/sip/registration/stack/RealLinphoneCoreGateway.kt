@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import org.linphone.core.Account
 import org.linphone.core.AuthInfo
 import org.linphone.core.Call
+import org.linphone.core.CodecPriorityPolicy
 import org.linphone.core.Conference
 import org.linphone.core.ConferenceListenerStub
 import org.linphone.core.Core
@@ -32,10 +33,12 @@ import org.linphone.core.Factory
 import org.linphone.core.MediaEncryption
 import org.linphone.core.Participant
 import org.linphone.core.ParticipantDevice
+import org.linphone.core.PayloadType
 import org.linphone.core.Reason
 import org.linphone.core.RegistrationState
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -63,6 +66,19 @@ import javax.inject.Singleton
  * liblinphone's callbacks arrive on the thread that iterates the core. Events are
  * published to a buffered [MutableSharedFlow] rather than handled inline, so nothing this
  * module does can block that iteration — a blocked core stops processing SIP entirely.
+ *
+ * **The maps below are touched from both sides, so they are all concurrent.** The core's
+ * thread writes them from `onCallStateChanged` and `onAccountRegistrationStateChanged`;
+ * every gateway method — `placeCall`, `terminateCall`, `setVideoEnabled`, `addAccount` —
+ * reads and writes them from whichever `Dispatchers.IO` thread the engine's scope handed
+ * out, and `Dispatchers.IO` is a pool rather than a single thread. They used to be plain
+ * `mutableMapOf`, which is a `LinkedHashMap`: unsynchronised concurrent mutation loses
+ * entries, throws `ConcurrentModificationException` from the iteration in
+ * `onCallStateChanged`, and in the worst case spins forever inside a resize. A lost entry
+ * here is a call that cannot be hung up.
+ *
+ * `ConcurrentHashMap` makes each operation atomic, which is all this needs — no method
+ * reads one map and writes another as a unit.
  */
 @Singleton
 internal class RealLinphoneCoreGateway @Inject constructor(
@@ -107,15 +123,15 @@ internal class RealLinphoneCoreGateway @Inject constructor(
      * conference on every subsequent call state change, and attaching again would publish
      * the roster once per listener per change.
      */
-    private val watchedConferences = mutableMapOf<String, Conference>()
+    private val watchedConferences = ConcurrentHashMap<String, Conference>()
 
     /** Our call key to the stack's call, so terminate can find the right one. */
-    private val callsByKey = mutableMapOf<String, Call>()
+    private val callsByKey = ConcurrentHashMap<String, Call>()
 
     private var core: Core? = null
 
     /** Our account key to the stack's account, so a re-register can replace in place. */
-    private val accountsByKey = mutableMapOf<String, Account>()
+    private val accountsByKey = ConcurrentHashMap<String, Account>()
 
     /**
      * Our account key to the credential the core is holding for it.
@@ -124,7 +140,7 @@ internal class RealLinphoneCoreGateway @Inject constructor(
      * our account keys, and `removeAccount` alone leaves the password sitting in it for
      * the life of the process - which is exactly what Task 29 forbids after a logout.
      */
-    private val authInfoByKey = mutableMapOf<String, AuthInfo>()
+    private val authInfoByKey = ConcurrentHashMap<String, AuthInfo>()
 
     private val listener = object : CoreListenerStub() {
         override fun onAccountRegistrationStateChanged(
@@ -715,6 +731,84 @@ internal class RealLinphoneCoreGateway @Inject constructor(
     }
 
     /**
+     * The account's codec preferences, as the SDP offer (§5.1, §5.2).
+     *
+     * ## This is new behaviour, not a refactor
+     *
+     * `CodecPreferences` was modelled in `:domain`, validated, stored in its own two
+     * columns and edited on a screen — and never read below this seam. Every account
+     * therefore offered whatever liblinphone was built with, in whatever order it chose,
+     * and the codec editor was a control wired to nothing. Both halves of that were
+     * invisible: an SDP offer is not something the app displays.
+     *
+     * ## Enable and order, rather than replace
+     *
+     * The array handed back to the core keeps **every** payload type the stack knows, with
+     * the preferred ones enabled and moved to the front and the rest disabled behind them.
+     * Passing only the chosen ones would be shorter and is wrong: the array is the core's
+     * whole payload-type table, and dropping an entry loses it until the core is rebuilt —
+     * including entries this app never chooses but the stack still needs.
+     *
+     * [PayloadType.isSignalling] is the specific case that would have bitten. RFC 4733
+     * `telephone-event` sits in the audio payload types and is not an audio codec; it is
+     * how DTMF travels. Disabling it because it is absent from an account's codec list
+     * would have left Task 43's keypad silently unable to reach an IVR.
+     *
+     * ## Core-wide, from a per-account setting
+     *
+     * The same limitation [applySecurity] carries and for the same reason: liblinphone
+     * keeps payload types on the `Core`, not on `AccountParams`, so with two accounts
+     * configured differently the last one added wins. Recorded here rather than hidden
+     * behind an API that pretends otherwise.
+     */
+    private fun Core.applyCodecs(account: StackAccount) {
+        // Before the video ordering, and the ordering does not survive without it.
+        // `CodecPriorityPolicy.Auto` is the default and it re-sorts the video payload
+        // types itself, by what the handset can encode in hardware. That is a reasonable
+        // default for an app with no opinion, and silently overrules one that has: the
+        // account's video preference would be written and then reordered underneath it,
+        // with nothing to show the difference short of reading an SDP offer off the wire.
+        // `Basic` is what makes the list below the answer.
+        videoCodecPriorityPolicy = CodecPriorityPolicy.Basic
+
+        audioPayloadTypes = audioPayloadTypes.prioritised(account.audioCodecs)
+        videoPayloadTypes = videoPayloadTypes.prioritised(account.videoCodecs)
+        logger.info(
+            TAG,
+            "Codecs for ${account.key}: audio=${account.audioCodecs} video=${account.videoCodecs}",
+        )
+    }
+
+    /**
+     * The same payload types, with [preferred] enabled and in front.
+     *
+     * Matching is case-insensitive because the two sides spell them differently: the domain
+     * writes `opus` and `G722` as they appear in an `a=rtpmap` line, and the stack reports
+     * whatever its own table holds.
+     *
+     * The sort is stable, so payload types that share a rank — every disabled one — keep
+     * the order the stack gave them. Nothing here depends on that; it just means two runs
+     * over an unchanged preference list produce an identical table.
+     */
+    private fun Array<PayloadType>.prioritised(preferred: List<String>): Array<PayloadType> {
+        val rank = preferred.withIndex().associate { (index, name) -> name.lowercase() to index }
+        forEach { payload ->
+            payload.enable(payload.isSignalling || payload.mimeType.lowercase() in rank)
+        }
+        return sortedBy { rank[it.mimeType.lowercase()] ?: Int.MAX_VALUE }.toTypedArray()
+    }
+
+    /**
+     * True for a payload type that carries signalling rather than media.
+     *
+     * `telephone-event` is RFC 4733 DTMF. It is listed among the audio payload types and is
+     * not an audio codec, so it must survive a codec preference that does not name it —
+     * see [applyCodecs].
+     */
+    private val PayloadType.isSignalling: Boolean
+        get() = mimeType.equals(TELEPHONE_EVENT, ignoreCase = true)
+
+    /**
      * The video defaults this app needs (Tasks 51, 54).
      *
      * ## Nothing is automatic
@@ -742,6 +836,30 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         }
         isVideoCaptureEnabled = false
         isVideoDisplayEnabled = true
+
+        // Capture is bounded rather than left at the stack's default, which negotiates the
+        // best definition the camera and the link appear to allow. On a video call between
+        // two handsets that produced an allocation rate the collector could not keep up
+        // with: logcat showed back-to-back young collections freeing 109 MB and then
+        // 171 MB, and a `WaitForGcToComplete blocked Alloc` of 75 ms — an allocating
+        // thread stopped dead, mid-call, waiting for the heap.
+        //
+        // VGA at 24 fps is the compromise. It is the definition VP8 software-encodes
+        // comfortably on a mid-range phone, and VP8 is what actually gets negotiated here:
+        // the SDK ships no ffmpeg and no OpenH264 plugin, so H.264 has no encoder to
+        // reach, whatever the codec list says.
+        //
+        // Named constants because these are the numbers to move first when the target
+        // changes, and because a bare `640` in a media path says nothing about why.
+        setPreferredVideoDefinition(
+            Factory.instance().createVideoDefinition(CAPTURE_WIDTH, CAPTURE_HEIGHT),
+        )
+        preferredFramerate = CAPTURE_FRAMERATE
+
+        // The other half: with a bounded capture, adaptive rate control is what walks the
+        // bitrate down a congested link instead of holding the resolution and dropping the
+        // frames that carry it.
+        isAdaptiveRateControlEnabled = true
     }
 
     override fun addAccount(account: StackAccount) {
@@ -781,8 +899,10 @@ internal class RealLinphoneCoreGateway @Inject constructor(
         core.addAuthInfo(authInfo)
         authInfoByKey[account.key] = authInfo
 
-        // Applied before the account is added, so the first REGISTER already carries them.
+        // Applied before the account is added, so the first REGISTER already carries them,
+        // and so the first INVITE offers the codecs this account actually asked for.
         core.applySecurity(account)
+        core.applyCodecs(account)
 
         val params = core.createAccountParams().apply {
             identityAddress = identity
@@ -926,6 +1046,19 @@ internal class RealLinphoneCoreGateway @Inject constructor(
 
         /** What liblinphone returns from a request it accepted; anything else is -1. */
         const val OK = 0
+
+        /** Capture definition and rate; see `configureVideo` for why they are bounded. */
+        const val CAPTURE_WIDTH = 640
+        const val CAPTURE_HEIGHT = 480
+        const val CAPTURE_FRAMERATE = 24f
+
+        /**
+         * RFC 4733 DTMF, which lives among the audio payload types without being a codec.
+         *
+         * Named so a codec preference that does not mention it cannot switch it off. See
+         * `applyCodecs`.
+         */
+        const val TELEPHONE_EVENT = "telephone-event"
 
         /** The stack reports a participant's join time in seconds; the app works in millis. */
         const val MILLIS_PER_SECOND = 1_000L

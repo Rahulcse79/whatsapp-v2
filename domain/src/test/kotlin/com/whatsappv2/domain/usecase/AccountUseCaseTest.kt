@@ -213,20 +213,34 @@ class SaveAccountUseCaseTest {
         engine.givenRegistered(existing)
         engine.clearInvocations()
 
-        // The stored account carries an empty password, and the draft leaves it empty
-        // too, so nothing that affects the binding has changed.
-        val renamed = draft(label = "Home").copy(password = Secret.EMPTY)
-        val result = save(renamed).getOrNull()
+        // The editor now opens with the stored password filled in, so a rename re-submits
+        // it unchanged. That is the case this has to survive: while the rule was "any
+        // non-empty password is a new one", this same edit dropped a live binding.
+        val renamed = draft(label = "Home")
+        val result = save(renamed).getOrNull() ?: fail("save failed")
 
-        // An empty password fails validation, which is correct - but it proves the point
-        // differently, so assert on the registration instead.
-        if (result != null) {
-            assertTrue(!result.unregisteredFirst, "a label change must not unregister")
-        }
+        assertTrue(!result.unregisteredFirst, "a label change must not unregister")
+        assertEquals(RegistrationAttempt.NotAttempted, result.registration)
         assertTrue(
             engine.invocations.none { it.operation == FakeSipEngine.Operation.UNREGISTER },
             "a label change must not unregister",
         )
+    }
+
+    @Test
+    fun `a genuinely changed password re-authenticates`() = runTest {
+        // The other half of the same rule. Comparing against the stored value has to keep
+        // saying yes when the value really did change, or a corrected password would sit
+        // unused behind a registration still holding the old one.
+        val existing = storedAccount()
+        repository.given(existing)
+        engine.givenRegistered(existing)
+        engine.clearInvocations()
+
+        val result = save(draft(password = "hunter23")).getOrNull() ?: fail("save failed")
+
+        assertTrue(result.unregisteredFirst, "a new password must re-authenticate")
+        assertEquals(RegistrationAttempt.Succeeded, result.registration)
     }
 
     @Test
