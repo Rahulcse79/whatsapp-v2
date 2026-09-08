@@ -307,22 +307,46 @@ jobs:
           fi
           echo "No TrustManager override anywhere in the tree."
 
-      - name: Assert certificate validation is never switched off (Task 62)
+      - name: Assert certificate validation is never switched off (Task 62, P-8)
         run: |
           # The SIP stack runs its own TLS, so `network_security_config.xml` never sees it.
-          # These two calls are the equivalent, and they must be unconditional.
-          gateway=data/sip/src/main/kotlin/com/whatsappv2/data/sip/registration/stack/RealLinphoneCoreGateway.kt
-          for call in 'verifyServerCertificates(true)' 'verifyServerCn(true)'; do
-            grep -qF "$call" "$gateway" || {
-              echo "::error::$gateway no longer calls $call"
+          # `TlsConfig.verifyServer` is the equivalent, and it must be unconditional.
+          #
+          # Until 2026-09-08 this named RealLinphoneCoreGateway.kt - a file ADR-006
+          # deleted. It never failed, because `./gradlew build` compiles before these
+          # steps run and the compile had failed since the migration. A security gate
+          # pointing at a file that does not exist is not a lenient gate, it is an absent
+          # one, so the first thing it now checks is that its own targets are real.
+          gateway=data/sip/src/main/kotlin/com/whatsappv2/data/sip/registration/stack/RealPjsipCoreGateway.kt
+          store=data/sip/src/main/kotlin/com/whatsappv2/data/sip/registration/stack/PjsipTrustStore.kt
+
+          for f in "$gateway" "$store"; do
+            [ -f "$f" ] || {
+              echo "::error::$f does not exist, so this assertion is checking nothing."
               exit 1
             }
           done
-          if grep -nE 'verifyServer(Certificates|Cn)\(false\)' "$gateway"; then
-            echo "::error::Certificate validation is disabled somewhere in the SIP gateway."
+
+          grep -qF 'verifyServer = true' "$gateway" || {
+            echo "::error::$gateway no longer turns TLS server verification on."
+            exit 1
+          }
+
+          # Both halves, because either alone is useless. OpenSSL is built here with no
+          # default CA store, so verifyServer without a caListFile rejects every
+          # certificate rather than accepting them - which reads as "TLS is broken" and
+          # gets fixed by turning verification back off.
+          grep -qF 'caListFile' "$gateway" || {
+            echo "::error::$gateway verifies certificates but supplies no CA list."
+            exit 1
+          }
+
+          if grep -rnE 'verifyServer\s*=\s*false' data/sip/src/main; then
+            echo "::error::TLS server verification is switched off somewhere in :data:sip."
             exit 1
           fi
-          echo "The SIP stack validates certificates unconditionally."
+
+          echo "The SIP stack validates certificates unconditionally, against a CA bundle."
 
       - name: Assert cleartext traffic is refused (Task 62)
         run: |
