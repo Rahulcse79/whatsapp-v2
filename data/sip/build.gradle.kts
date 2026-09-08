@@ -36,7 +36,7 @@ android {
 
     packaging {
         jniLibs {
-            // liblinphone needs its .so files on disk to dlopen them.
+            // PJSIP's .so files must be on disk for System.loadLibrary to find them.
             useLegacyPackaging = false
         }
     }
@@ -47,9 +47,9 @@ dependencies {
     implementation(project(":domain"))
     implementation(libs.kotlinx.coroutines.android)
 
-    // ADR-001. Served from Belledonne's Maven repository, which settings.gradle.kts
-    // scopes to org.linphone so it cannot answer for anything else.
-    implementation(libs.linphone.sdk)
+    // ADR-006. PJSIP publishes no Android artifact, so the binaries are built from
+    // source in CI and wrapped by :pjsip rather than resolved from a repository.
+    implementation(project(":pjsip"))
 
     testImplementation(testFixtures(project(":domain")))
     testImplementation(libs.kotlinx.coroutines.test)

@@ -34,12 +34,12 @@ import kotlin.test.assertTrue
  *
  * Both gates exist and they catch different things. This is the one a test can hold.
  */
-class LinphoneSipEngineSecurityTest : LinphoneSipEngineFixture() {
+class PjsipSipEngineSecurityTest : PjsipSipEngineFixture() {
 
     /** The account, with its media policy replaced. */
     private fun accountWith(policy: SrtpPolicy) = account.copy(srtpPolicy = policy)
 
-    private suspend fun TestScope.registered(policy: SrtpPolicy): LinphoneSipEngine {
+    private suspend fun TestScope.registered(policy: SrtpPolicy): PjsipSipEngine {
         val engine = engine(this)
         engine.start()
         engine.register(accountWith(policy))

@@ -17,7 +17,7 @@ import kotlin.test.assertTrue
 /**
  * The call translation, asserted on the JVM (Task 35).
  *
- * liblinphone does not run here, so this mapping could otherwise only be exercised on a
+ * PJSIP does not run here, so this mapping could otherwise only be exercised on a
  * device — which in practice means not exercised. Same arrangement as
  * `RegistrationStateMapperTest`, and it exists for the same reason.
  */

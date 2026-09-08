@@ -1,52 +1,59 @@
 package com.whatsappv2.data.sip.stack
 
 import com.whatsappv2.core.common.logging.Logger
-import org.linphone.core.Factory
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Reports the embedded SIP stack.
+ * Whether the native SIP stack is present and usable (ADR-006).
  *
- * Task 25's done-when: a debug build must initialise the stack and log its version. That
- * is a smaller check than it sounds - it proves the AAR resolved, the native libraries
- * loaded for this device's ABI, and the JNI bridge works. All three fail in ways that are
- * confusing to diagnose later, so they are confirmed once at startup.
+ * ## What "loaded" means for PJSIP
  *
- * This is the ONLY class outside the engine implementation that touches the SDK, and it
- * is still inside :data:sip, so the architecture rule that keeps `org.linphone` out of
- * every other module holds.
+ * PJSIP has no factory and no lazy loader. `libpjsua2.so` is loaded by an explicit
+ * `System.loadLibrary`, and if that fails nothing else in the stack can run — there is no
+ * later point at which it recovers.
+ *
+ * So this loads it here, once, and reports what happened. Doing it in a class the
+ * application asks at startup — rather than in a `companion object` somewhere down the
+ * call path — is what turns "the app crashes on the first call" into "the app says the
+ * stack is unavailable", which is the difference between a bug report and a diagnosis.
  */
 @Singleton
 class SipStackInfo @Inject constructor(
     private val logger: Logger,
 ) {
 
-    /**
-     * True when the native stack loaded.
-     *
-     * Obtaining a [Factory] is the whole check: it is the SDK's entry point, and reaching
-     * it means the AAR resolved, the `.so` files for this device's ABI were found, and the
-     * JNI bridge initialised. Each of those fails in a way that is confusing to diagnose
-     * later, which is why they are confirmed once at startup.
-     *
-     * Returns false rather than throwing: a missing or mis-built `.so` should surface as a
-     * clear log line and a degraded app, not a crash before anything is on screen.
-     */
-    fun isLoaded(): Boolean = runCatching { Factory.instance() }
-        .onFailure { logger.error(TAG, "SIP stack failed to load: ${it.javaClass.simpleName}") }
-        .isSuccess
+    fun isLoaded(): Boolean = loaded
 
-    /** Logs whether the stack is available, once, at startup. */
     fun logStatus() {
-        if (isLoaded()) {
-            logger.info(TAG, "SIP stack loaded")
+        if (loaded) {
+            logger.info(TAG, "SIP stack loaded (PJSIP)")
         } else {
-            logger.error(TAG, "SIP stack unavailable")
+            logger.error(TAG, "SIP stack unavailable: $failure")
         }
     }
 
     private companion object {
         const val TAG = "SipStack"
+
+        /** The SWIG wrapper, which links pjsua2 and the whole of PJSIP behind it. */
+        const val LIBRARY = "pjsua2"
+
+        private var failure: String? = null
+
+        /**
+         * Loaded once for the process, in a static initialiser.
+         *
+         * `UnsatisfiedLinkError` is an `Error` rather than an `Exception`, so it is caught
+         * by name: a missing ABI must leave the app reporting an unavailable stack, not
+         * take the process down at class-load time.
+         */
+        private val loaded: Boolean = try {
+            System.loadLibrary(LIBRARY)
+            true
+        } catch (e: UnsatisfiedLinkError) {
+            failure = e.message ?: e.javaClass.simpleName
+            false
+        }
     }
 }

@@ -3,7 +3,7 @@ package com.whatsappv2.data.sip.registration
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.whatsappv2.core.common.logging.NoOpLogger
-import com.whatsappv2.data.sip.registration.stack.RealLinphoneCoreGateway
+import com.whatsappv2.data.sip.registration.stack.RealPjsipCoreGateway
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.runBlocking
@@ -24,8 +24,8 @@ import kotlin.test.assertTrue
  *
  * Everything decidable without a server is already asserted on the JVM, at 100% of
  * `data/sip/registration`, against a fake gateway. This suite exists for the one thing
- * that cannot be: whether [RealLinphoneCoreGateway] — the class that actually talks to
- * liblinphone — does what the fake pretends it does. Task 27 said explicitly that the
+ * that cannot be: whether [RealPjsipCoreGateway] — the class that actually talks to
+ * PJSIP — does what the fake pretends it does. Task 27 said explicitly that the
  * SDK-touching classes are "verified on-device from Task 33". This is that.
  *
  * So the assertions here are deliberately coarse. There is no attempt to re-test the
@@ -42,12 +42,12 @@ import kotlin.test.assertTrue
 class RegistrationIntegrationTest {
 
     private lateinit var target: TestTarget
-    private lateinit var gateway: RealLinphoneCoreGateway
+    private lateinit var gateway: RealPjsipCoreGateway
 
     @Before
     fun setUp() {
         target = TestTarget.requireConfigured()
-        gateway = RealLinphoneCoreGateway(
+        gateway = RealPjsipCoreGateway(
             context = InstrumentationRegistry.getInstrumentation().targetContext,
             // NoOpLogger, not the Android one: this run carries a real credential and
             // the stack is chatty (§7, DoD 12).

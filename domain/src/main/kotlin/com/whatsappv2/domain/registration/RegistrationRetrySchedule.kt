@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
  * ## Why this is not part of [com.whatsappv2.domain.model.RegistrationState]
  *
  * That type answers "what happened", and it is produced by the engine, which deliberately
- * knows nothing about retries — `LinphoneSipEngine` sets `retryScheduled = false` and says
+ * knows nothing about retries — `PjsipSipEngine` sets `retryScheduled = false` and says
  * in a comment that scheduling belongs to whoever owns the backoff. Folding a time into it
  * would put a field on every state that only one state can populate, and would make the
  * engine responsible for a decision it does not make.

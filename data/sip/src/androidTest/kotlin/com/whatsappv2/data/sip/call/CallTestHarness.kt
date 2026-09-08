@@ -3,10 +3,10 @@ package com.whatsappv2.data.sip.call
 import android.content.Context
 import com.whatsappv2.core.common.logging.NoOpLogger
 import com.whatsappv2.core.common.secret.Secret
-import com.whatsappv2.data.sip.LinphoneSipEngine
+import com.whatsappv2.data.sip.PjsipSipEngine
 import com.whatsappv2.data.sip.network.NetworkMonitor
 import com.whatsappv2.data.sip.registration.TestTarget
-import com.whatsappv2.data.sip.registration.stack.RealLinphoneCoreGateway
+import com.whatsappv2.data.sip.registration.stack.RealPjsipCoreGateway
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CodecPreferences
 import com.whatsappv2.domain.model.NatPolicy
@@ -29,7 +29,7 @@ import kotlinx.coroutines.flow.flowOf
  *
  * ## Why one engine and not two
  *
- * A call needs a caller and a callee. Two `LinphoneSipEngine`s would mean two liblinphone
+ * A call needs a caller and a callee. Two `PjsipSipEngine`s would mean two native
  * `Core`s in one process, which is not a configuration this app ever ships and not one
  * worth discovering the limits of in a test. The engine already holds many accounts —
  * `registrationState` is keyed by account — so registering both extensions on one engine
@@ -52,7 +52,7 @@ internal class CallTestHarness(context: Context, private val target: TestTarget)
     val platform = FakePlatformCallRegistry()
 
     private val accounts = FakeSipAccountRepository()
-    private val gateway = RealLinphoneCoreGateway(
+    private val gateway = RealPjsipCoreGateway(
         context = context,
         // NoOpLogger, not the Android one: this run carries a real credential and the
         // stack is chatty (§7, DoD 12).
@@ -60,7 +60,7 @@ internal class CallTestHarness(context: Context, private val target: TestTarget)
     )
     private val scope = CoroutineScope(SupervisorJob())
 
-    val engine = LinphoneSipEngine(
+    val engine = PjsipSipEngine(
         gateway = gateway,
         callGateway = gateway,
         videoGateway = gateway,

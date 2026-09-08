@@ -26,7 +26,7 @@ import kotlin.test.assertTrue
  * a call needs it, released when it does not — and "released" is only distinguishable from
  * "never acquired" if the order is visible.
  */
-class LinphoneSipEngineVideoTest : LinphoneSipEngineFixture() {
+class PjsipSipEngineVideoTest : PjsipSipEngineFixture() {
 
     // ================================================================ Task 51
 
@@ -80,7 +80,7 @@ class LinphoneSipEngineVideoTest : LinphoneSipEngineFixture() {
 
     @Test
     fun `the camera is capturing before the INVITE, so the offer can send`() = runTest {
-        // liblinphone writes the SDP offer when the INVITE goes out. With capture off it
+        // The stack writes the SDP offer when the INVITE goes out. With capture off it
         // can only offer recvonly, and no later change re-negotiates it — which is why
         // waiting for the call to be established was too late.
         val engine = registeredEngine()
@@ -275,7 +275,7 @@ class LinphoneSipEngineVideoTest : LinphoneSipEngineFixture() {
     // ================================================================ helpers
 
     /** A connected call with video negotiated and sending. */
-    private suspend fun TestScope.videoCall(): LinphoneSipEngine {
+    private suspend fun TestScope.videoCall(): PjsipSipEngine {
         val engine = registeredEngine()
         val callId = requireNotNull(
             engine.placeCall(account.id, TARGET, MediaProfile.AUDIO_VIDEO).getOrNull(),
@@ -287,5 +287,5 @@ class LinphoneSipEngineVideoTest : LinphoneSipEngineFixture() {
         return engine
     }
 
-    private fun activeCallId(engine: LinphoneSipEngine) = engine.activeCalls.value.single().callId
+    private fun activeCallId(engine: PjsipSipEngine) = engine.activeCalls.value.single().callId
 }

@@ -119,7 +119,7 @@ import javax.inject.Singleton
  * than the life of a registration.
  */
 @Singleton
-internal class LinphoneSipEngine @Inject constructor(
+internal class PjsipSipEngine @Inject constructor(
     private val gateway: SipCoreGateway,
     private val callGateway: SipCallGateway,
     private val videoGateway: SipVideoGateway,
@@ -639,7 +639,7 @@ internal class LinphoneSipEngine @Inject constructor(
      *
      * ## Why this exists when the stack already refuses
      *
-     * `setMediaEncryptionMandatory(true)` makes liblinphone fail the *negotiation*. This
+     * `AccountConfig.mediaConfig.srtpUse = MANDATORY` makes the stack fail the *negotiation*. This
      * catches the case after it: a call that negotiated encryption and then arrived at
      * running media without any. The two are not the same event, and the second is the one
      * that would otherwise be a cleartext call on an account whose whole point is that it
@@ -1315,7 +1315,7 @@ internal class LinphoneSipEngine @Inject constructor(
         expirySeconds = registrationExpirySeconds,
         // §5.1 and §5.2. These were modelled, validated, persisted and then dropped on the
         // floor: nothing below this seam had ever read them, so every account offered
-        // whatever liblinphone's built-in defaults happened to be and the codec editor
+        // whatever the stack's built-in defaults happened to be and the codec editor
         // changed nothing at all. The stack takes RTP mime types, which is what
         // `payloadName` is.
         audioCodecs = codecs.audio.map { it.payloadName },
@@ -1339,7 +1339,7 @@ internal class LinphoneSipEngine @Inject constructor(
         get() = this == null || this == RegistrationState.Unregistered
 
     private companion object {
-        const val TAG = "LinphoneSipEngine"
+        const val TAG = "PjsipSipEngine"
         const val DEFAULT_EXPIRY_SECONDS = 3_600
 
         /**

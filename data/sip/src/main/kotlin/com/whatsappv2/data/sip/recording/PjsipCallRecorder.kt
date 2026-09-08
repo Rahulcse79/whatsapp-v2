@@ -52,7 +52,7 @@ import javax.inject.Singleton
  * instead of a device.
  */
 @Singleton
-internal class LinphoneCallRecorder @Inject constructor(
+internal class PjsipCallRecorder @Inject constructor(
     private val gateway: SipRecordingGateway,
     private val calls: SipCallController,
     private val store: RecordingStore,

@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 /**
  * A [SipCoreGateway] with no SIP stack behind it.
  *
- * Exists so the callback-to-Flow mapping can be exercised on the JVM. liblinphone cannot
+ * Exists so the callback-to-Flow mapping can be exercised on the JVM. PJSIP cannot
  * run there, so without this the mapping could only be tested on a device - which is the
  * same as untested.
  *

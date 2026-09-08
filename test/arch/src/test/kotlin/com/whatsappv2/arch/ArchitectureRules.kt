@@ -120,18 +120,41 @@ object ArchitectureRules {
             }
 
     /**
-     * **Rule 2 — no SIP SDK type outside `:data:sip` (DoD 3).**
+     * **Rule 2 — no SIP SDK type outside `:data:sip`, and no liblinphone anywhere (DoD 3).**
      *
-     * This is what keeps ADR-001 reversible: swapping liblinphone for PJSIP must be a
-     * rewrite of one module, not of the application.
+     * Two clauses, because the migration in ADR-006 made them different questions.
+     *
+     * **PJSIP outside `:data:sip`** is the original rule and the reason the seam survived
+     * a stack swap at all: replacing liblinphone with PJSIP was a rewrite of one file
+     * behind four interfaces, not of the application. Letting `org.pjsip` leak upward
+     * would spend that.
+     *
+     * **liblinphone anywhere at all** is the migration's guard rail. It is gone — the
+     * dependency, the repository and the adapter were all deleted — and the way a removed
+     * stack comes back is one import at a time, in a hurry, because something was easier
+     * to reach for. Listing it here is not a reference to liblinphone; it is what stops
+     * one being added.
      */
+    /** The SIP SDK in use (ADR-006). Confined to `:data:sip`. */
+    private const val SIP_SDK = "org.pjsip"
+
+    /** The stack ADR-006 removed. Permitted nowhere. */
+    private const val REMOVED_SDK = "org.linphone"
+
     fun sipSdkStaysInDataSip(files: List<SourceFile>): List<Violation> =
-        files.filterNot { it.isUnder("data/sip") }
-            .flatMap { file ->
-                file.imports
-                    .filter { it.startsWith("org.linphone") || it.startsWith("org.pjsip") }
-                    .map { Violation(file.relativePath, "imports $it outside :data:sip") }
+        files.flatMap { file ->
+            file.imports.mapNotNull { imported ->
+                when {
+                    imported.startsWith(REMOVED_SDK) ->
+                        Violation(file.relativePath, "imports $imported; liblinphone was removed in ADR-006")
+
+                    imported.startsWith(SIP_SDK) && !file.isUnder("data/sip") ->
+                        Violation(file.relativePath, "imports $imported outside :data:sip")
+
+                    else -> null
+                }
             }
+        }
 
     /**
      * **Rule 3 — `:feature:*` depends on `:domain`, never on `:data:*`.**

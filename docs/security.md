@@ -247,13 +247,23 @@ Two gates enforce Mandatory, and they catch different things:
 A call dropped by the second gate is recorded as `MEDIA_FAILURE`, not as a hangup. "Remote
 hangup" for a call this app refused would hide a security event behind an ordinary ending.
 
-### Known limitation: media encryption is core-wide
+### Resolved: media encryption is per account (ADR-006)
 
-liblinphone keeps media encryption on the `Core`, not on `AccountParams`. With two accounts
-configured differently, **the last one added wins**. That is a limitation of this stack
-rather than a design choice, and it is written here rather than hidden behind an API that
-looks per-account. A deployment that needs genuinely per-account media policy needs either
-a second `Core` or a different stack.
+This section used to record a limitation. The old stack kept media encryption on the
+`Core` rather than on the account, so with two accounts configured differently **the last
+one added won** — and a deployment needing genuinely per-account media policy needed a
+second core or a different stack.
+
+The stack move settled it. PJSIP carries SRTP on `AccountConfig.mediaConfig.srtpUse`, so
+an internal PBX that mandates SRTP and a carrier trunk that cannot do it are now two
+accounts with two policies, which is what §5.1 asked for in the first place.
+`MANDATORY` maps to `PJMEDIA_SRTP_MANDATORY` and PJSIP fails the negotiation rather than
+downgrading; `srtpSecureSignaling` is set alongside it so the requirement covers the
+signalling path too.
+
+**Codec preference is still core-wide**, and that one is real: PJSIP sets codec priority
+on the endpoint, so the last account added decides the offer order for every account.
+Recorded here rather than hidden behind an API that looks per-account.
 
 ---
 

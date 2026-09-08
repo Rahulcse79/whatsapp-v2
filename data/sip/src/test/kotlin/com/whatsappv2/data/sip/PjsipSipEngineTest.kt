@@ -62,7 +62,7 @@ import kotlin.test.assertTrue
  * The fake stack, the account, and the states the engine tests start from.
  *
  * Task 27's done-when is only reachable because the SDK sits behind
- * [com.whatsappv2.data.sip.registration.SipCoreGateway]: liblinphone cannot run
+ * [com.whatsappv2.data.sip.registration.SipCoreGateway]: PJSIP cannot run
  * here, so without that seam none of this could be tested before a device.
  *
  * The cases themselves are split by subject below. One class held all of them and had
@@ -72,7 +72,7 @@ import kotlin.test.assertTrue
  * `internal` to this module, and a `protected` member of a public class may not expose
  * one. The subclasses are in this module, so `internal` reaches them just as well.
  */
-open class LinphoneSipEngineFixture {
+open class PjsipSipEngineFixture {
 
     internal val gateway = FakeSipCoreGateway()
     internal val repository = FakeSipAccountRepository()
@@ -141,7 +141,7 @@ open class LinphoneSipEngineFixture {
         // The same fake three times: one object implements every half of the seam, exactly
         // as the real gateway does, because one `Core` owns registration, calls and video
         // alike.
-        LinphoneSipEngine(
+        PjsipSipEngine(
             gateway,
             gateway,
             gateway,
@@ -156,7 +156,7 @@ open class LinphoneSipEngineFixture {
         ).also { repository.given(account) }
 
     /** Registered and ready to place a call. */
-    internal suspend fun TestScope.registeredEngine(): LinphoneSipEngine {
+    internal suspend fun TestScope.registeredEngine(): PjsipSipEngine {
         val engine = engine(this)
         engine.start()
         engine.register(account)
@@ -171,7 +171,7 @@ open class LinphoneSipEngineFixture {
     }
 
     /** A call that has been placed and answered, ready for hold, mute or a DTMF digit. */
-    internal suspend fun TestScope.connectedCall(): LinphoneSipEngine {
+    internal suspend fun TestScope.connectedCall(): PjsipSipEngine {
         val engine = registeredEngine()
         val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
         runCurrent()
@@ -181,7 +181,7 @@ open class LinphoneSipEngineFixture {
     }
 
     /** A connected call this end has put on hold, with the stack's acceptance in. */
-    internal suspend fun TestScope.heldCall(): LinphoneSipEngine {
+    internal suspend fun TestScope.heldCall(): PjsipSipEngine {
         val engine = connectedCall()
         val callId = engine.activeCalls.value.single().callId
         engine.setHold(callId, held = true)
@@ -202,7 +202,7 @@ open class LinphoneSipEngineFixture {
 }
 
 /** Placing a call, and what the far end does to it (Tasks 35 and 37). */
-class LinphoneSipEngineCallTest : LinphoneSipEngineFixture() {
+class PjsipSipEngineCallTest : PjsipSipEngineFixture() {
 
     // ---------------------------------------------------------------- calls (Task 35)
 
@@ -481,7 +481,7 @@ class LinphoneSipEngineCallTest : LinphoneSipEngineFixture() {
 }
 
 /** Audio routing, hold, mute and DTMF (Tasks 40 to 43). */
-class LinphoneSipEngineMediaTest : LinphoneSipEngineFixture() {
+class PjsipSipEngineMediaTest : PjsipSipEngineFixture() {
 
     // ---------------------------------------------------------------- media (Task 40)
 
@@ -657,7 +657,7 @@ class LinphoneSipEngineMediaTest : LinphoneSipEngineFixture() {
 
     @Test
     fun `a paused state repeated by the stack does not disturb a call already held`() = runTest {
-        // liblinphone re-reports Paused after a re-negotiation. The call must stay exactly
+        // The stack re-reports Paused after a re-negotiation. The call must stay exactly
         // where it is, and Telecom must not be told about a hold it already knows about.
         val engine = heldCall()
         val callId = engine.activeCalls.value.single().callId
@@ -785,7 +785,7 @@ class LinphoneSipEngineMediaTest : LinphoneSipEngineFixture() {
  * Task 27's done-when asks for exactly this — what the stack reports arriving as a Flow
  * the app can collect, asserted with no device in the room.
  */
-class LinphoneSipEngineTest : LinphoneSipEngineFixture() {
+class PjsipSipEngineTest : PjsipSipEngineFixture() {
 
     // ---------------------------------------------------------------- push (Task 38)
 

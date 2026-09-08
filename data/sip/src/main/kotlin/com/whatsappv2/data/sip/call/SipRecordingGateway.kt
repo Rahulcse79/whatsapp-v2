@@ -3,7 +3,7 @@ package com.whatsappv2.data.sip.call
 /**
  * The recording half of the SDK seam (Task 58).
  *
- * Two functions, and its own interface for that reason: `LinphoneCallRecorder` needs to
+ * Two functions, and its own interface for that reason: `PjsipCallRecorder` needs to
  * start and stop a recording, and nothing about that job should come with the ability to
  * hang up a call. A narrow interface is also a narrow fake.
  *

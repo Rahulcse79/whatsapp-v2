@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.Flow
  * Everything above it - the engine, the state mapping, the tests - is written against
  * these types, none of which come from the SDK. That is what makes Task 27's done-when
  * ("callback to Flow mapping is unit-tested with a stubbed SDK seam") achievable at all:
- * liblinphone cannot run on the JVM, so without this seam the mapping could only be
+ * PJSIP cannot run on the JVM, so without this seam the mapping could only be
  * exercised on a device, which in practice means not exercised.
  *
  * The interface is deliberately small. Anything that can be decided without the stack -

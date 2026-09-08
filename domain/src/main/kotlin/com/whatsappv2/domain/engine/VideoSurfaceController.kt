@@ -12,7 +12,7 @@ package com.whatsappv2.domain.engine
  * So the surface crosses this boundary opaque. Nothing in `:domain` or `:feature:calls`
  * does anything with it except pass it along, which is exactly what an opaque handle is
  * for — and `:data:sip`, the one module allowed to know what the stack wants, casts it
- * back. liblinphone's own API takes `Object` here for the same reason.
+ * back. PJSIP's own API takes `Object` here for the same reason.
  *
  * ## Detaching is the part that matters
  *

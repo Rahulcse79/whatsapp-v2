@@ -16,6 +16,11 @@ captures/
 .cxx/
 output.json
 
+# PJSIP binaries (ADR-006). Built by .github/workflows/build-pjsip.yml and fetched from
+# its artifact; ~30 MB of native code that changes with every pjproject or NDK bump, and
+# not something git should be carrying. See docs/pjsip-migration.md P-2.
+pjsip/libs/*.aar
+
 # Keystores & secrets — never commit (ADR-005 / §7)
 *.jks
 *.keystore

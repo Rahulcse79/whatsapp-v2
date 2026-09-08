@@ -60,7 +60,7 @@ import kotlin.time.Duration.Companion.seconds
  *
  * ## Lifetime
  *
- * Owned by [com.whatsappv2.data.sip.LinphoneSipEngine] and started and stopped with it,
+ * Owned by [com.whatsappv2.data.sip.PjsipSipEngine] and started and stopped with it,
  * rather than injected and started from `:app`. That is not incidental: it must outlive
  * the foreground service, because the case it exists for — no network, so nothing
  * registered, so the service stops itself (§6) — is exactly when the service is gone.

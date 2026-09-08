@@ -1,6 +1,6 @@
 package com.whatsappv2.data.sip.di
 
-import com.whatsappv2.data.sip.LinphoneSipEngine
+import com.whatsappv2.data.sip.PjsipSipEngine
 import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.engine.SipEngine
@@ -20,7 +20,7 @@ import javax.inject.Singleton
  * needs - the account list wants [SipRegistrar], not the power to place calls - while all
  * of them resolve to the same singleton.
  *
- * Bound to [LinphoneSipEngine], the real stack. It was written and unit-tested in Task 27
+ * Bound to [PjsipSipEngine], the real stack. It was written and unit-tested in Task 27
  * but this binding was never moved off `UnavailableSipEngine`, so the running app had no
  * SIP stack at all and every account read Offline whatever the user configured.
  *
@@ -29,7 +29,7 @@ import javax.inject.Singleton
  * nothing is delegated to `UnavailableSipEngine` any more. That class remains as the
  * honest answer for a graph with no stack at all, not as a partial stand-in for this one.
  *
- * The module is `internal` because [LinphoneSipEngine] is: a binding may not be more
+ * The module is `internal` because [PjsipSipEngine] is: a binding may not be more
  * visible than the type it names.
  */
 @Module
@@ -38,7 +38,7 @@ internal abstract class SipEngineModule {
 
     @Binds
     @Singleton
-    abstract fun bindSipEngine(engine: LinphoneSipEngine): SipEngine
+    abstract fun bindSipEngine(engine: PjsipSipEngine): SipEngine
 
     @Binds
     abstract fun bindRegistrar(engine: SipEngine): SipRegistrar
@@ -58,5 +58,5 @@ internal abstract class SipEngineModule {
      * decides what happens next. Same singleton either way.
      */
     @Binds
-    abstract fun bindRetrySchedule(engine: LinphoneSipEngine): RegistrationRetrySchedule
+    abstract fun bindRetrySchedule(engine: PjsipSipEngine): RegistrationRetrySchedule
 }

@@ -31,10 +31,10 @@ import kotlin.test.assertTrue
  * that was resolved minutes ago — so a test has to be listening when it happens, exactly
  * as the screen is.
  */
-class LinphoneSipEngineTransferTest : LinphoneSipEngineFixture() {
+class PjsipSipEngineTransferTest : PjsipSipEngineFixture() {
 
-    /** Starts collecting [LinphoneSipEngine.transferEvents] before anything can emit. */
-    private fun TestScope.collectTransfers(engine: LinphoneSipEngine): List<TransferEvent> {
+    /** Starts collecting [PjsipSipEngine.transferEvents] before anything can emit. */
+    private fun TestScope.collectTransfers(engine: PjsipSipEngine): List<TransferEvent> {
         val seen = mutableListOf<TransferEvent>()
         backgroundScope.launch { engine.transferEvents.collect { seen += it } }
         runCurrent()

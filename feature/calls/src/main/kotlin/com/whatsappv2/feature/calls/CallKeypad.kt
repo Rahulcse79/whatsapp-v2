@@ -34,7 +34,7 @@ import com.whatsappv2.domain.model.DtmfDigit
  *
  * ## The tone the caller hears is the stack's
  *
- * liblinphone plays the digit locally as it sends it, which is what its `sendDtmf`
+ * The stack plays the digit locally as it sends it, which is what its `sendDtmf`
  * contract promises. A second tone generated here would double every keypress, so this
  * screen's own feedback is visual: [dialled] shows what has been sent, which is also the
  * only record of it — the digits are deliberately not logged, because a DTMF sequence is a

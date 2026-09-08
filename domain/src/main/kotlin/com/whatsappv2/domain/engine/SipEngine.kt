@@ -18,15 +18,15 @@ import kotlinx.coroutines.flow.StateFlow
  * The single most important interface in the codebase (§4.3).
  *
  * It is the seam between the application and whichever SIP stack is embedded
- * (liblinphone, per ADR-001). Everything above it — use cases, ViewModels, UI — is
+ * (PJSIP/pjsua2, per ADR-006). Everything above it — use cases, ViewModels, UI — is
  * written against these types and can therefore be built, run and tested with no SIP
  * server, no network, and no device, by substituting `FakeSipEngine` (Task 11).
  *
  * ## Contract
  *
- * **Types.** Only `:domain` types appear in these signatures. No `org.linphone.*` or
- * `org.pjsip.*` type may cross this boundary, enforced by an architecture test
- * (Task 12, DoD 3). SIP response codes are mapped to [SipError] inside `:data:sip`.
+ * **Types.** Only `:domain` types appear in these signatures. No `org.pjsip.*` type may
+ * cross this boundary, enforced by an architecture test (Task 12, DoD 3). SIP response
+ * codes are mapped to [SipError] inside `:data:sip`.
  *
  * **Threading.** Every `suspend` function is main-safe: implementations move to their
  * own dispatcher internally, so callers need no `withContext`. Flows emit on an

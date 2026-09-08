@@ -13,7 +13,7 @@ import com.whatsappv2.domain.model.HangupReason
  * Turns a stack call event into something the FSM understands.
  *
  * Pure, and the only place the translation happens — the same arrangement as
- * `RegistrationStateMapper`, and for the same reason: liblinphone does not run on the JVM,
+ * `RegistrationStateMapper`, and for the same reason: PJSIP does not run on the JVM,
  * so a mapping that lived inside the gateway could only be exercised on a device, which in
  * practice means not exercised.
  *

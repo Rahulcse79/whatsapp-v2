@@ -43,7 +43,7 @@ import kotlin.test.assertTrue
  * whether a recording can outlive its call. The encryption itself lives in
  * `EncryptedRecordingStore`, which needs the Keystore and is verified on a device.
  */
-class LinphoneCallRecorderTest {
+class PjsipCallRecorderTest {
 
     private val account = SipAccount(
         id = AccountId("acct-1"),
@@ -75,7 +75,7 @@ class LinphoneCallRecorderTest {
     private val clock = MutableClock().set(NOW)
 
     private fun recorder(scope: TestScope) =
-        LinphoneCallRecorder(gateway, engine, store, clock, NoOpLogger, scope.backgroundScope)
+        PjsipCallRecorder(gateway, engine, store, clock, NoOpLogger, scope.backgroundScope)
 
     private suspend fun connectedCall(): CallId =
         engine.simulateIncomingCall(account.id, bob).callId

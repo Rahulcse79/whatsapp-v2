@@ -97,7 +97,7 @@ internal class SipConnection(
      * Telecom asked for a hold.
      *
      * The request is forwarded and **nothing here moves Telecom's own state**. It used to
-     * call `setOnHold()` immediately, which is the same optimism `LinphoneSipEngine.setHold`
+     * call `setOnHold()` immediately, which is the same optimism `PjsipSipEngine.setHold`
      * refuses for the app's own UI: the re-INVITE may be rejected, and a platform that
      * believes a running call is held offers a resume button that resumes nothing. The
      * state moves when the stack says so — the engine reports it back through
