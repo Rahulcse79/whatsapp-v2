@@ -252,8 +252,16 @@ changes no application code. Revisit if CI flakiness from shared state becomes a
 
 ### ADR-006 — Migrate the SIP stack to **PJSIP / pjsua2**, and how the binaries are sourced
 
-**Status:** Requested, **BLOCKED on a sourcing decision** · **Raised:** 2026-09-07 ·
-**Decider:** stakeholder · **Supersedes when accepted:** ADR-001
+**Status:** **ACCEPTED** · **Raised:** 2026-09-07 · **Decided:** 2026-09-08 ·
+**Decider:** stakeholder · **Supersedes:** ADR-001
+
+**The decision.** liblinphone is removed entirely and the stack becomes PJSIP. The
+sourcing question that blocked this is answered by **option 1 — build pjproject in CI from
+source.** Options 2 and 3 are ruled out by the decision itself rather than on preference:
+a third-party AAR pins somebody else's older pjproject, so it does not deliver "latest
+PJSIP", and vendored blobs are not reproducible. See "Sequencing" below — the binaries
+come first, and nothing in `:data:sip` can be written against a stack that has not been
+built yet.
 
 **Context.** The product owner requires the calling stack to move to the latest stable
 PJSIP. ADR-001 chose liblinphone and explicitly weighed PJSIP against it; this reverses
@@ -317,9 +325,36 @@ be **above** the SIP abstraction, in `:app` and `:domain`. Every one of them wou
 reproduce identically on PJSIP. They are fixed separately, and that fix is what makes
 1:1 audio and video calling work; this ADR is orthogonal to it.
 
-**Recommendation.** Land the defect fixes and confirm calling on the handset first, then
-take option 1 as its own tracked piece of work. Options 2 and 3 buy the PJSIP name
-without the properties that made it worth asking for.
+**Sequencing — the binaries gate everything else.** The order is forced, not preferred:
+
+1. **Produce a PJSIP artifact.** `.github/workflows/build-pjsip.yml` has still never
+   completed a run. Until it does there is no `libpjsua2.so` and no generated
+   `org.pjsip.pjsua2` bindings, so the adapter below cannot be written against a real API
+   — only guessed at, which is how an unbuildable branch gets made. Three defects in that
+   workflow were fixed on 2026-09-08 (host `ar` leaking into the Opus build; a configure
+   that accepted "no TLS, no Opus" silently; a 16 KB check that could not fail), but
+   fixing what can be read is not the same as a green run.
+2. **Rewrite the adapter** — `RealLinphoneCoreGateway` (933 lines) and `SipStackInfo`
+   (52), against the four gateway interfaces, once `javap` on the produced bindings can
+   answer what the API actually is.
+3. **Flip the guard rails** — `ArchitectureRules` already allows both `org.linphone` and
+   `org.pjsip`; narrow it to `org.pjsip` so a stray liblinphone import fails the build.
+   Then drop the Belledonne repository from `settings.gradle.kts` and the
+   `linphone-sdk` entry from the version catalog. Doing this *last* is what keeps the app
+   buildable throughout.
+4. **Re-verify on the handset.** Registration, audio, video, DTMF, hold, transfer and
+   conference all cross this seam and none of their tests exercise a real stack.
+
+**What this migration does not carry over.** The video surface. liblinphone takes a
+`TextureView` through `nativeVideoWindowId`; pjsua2 renders into a `Surface` via
+`VideoWindow`/`VideoWindowHandle`. `CallVideo.kt` and `StackVideoSurfaceController` change
+with it, and that is UI work outside the 985 lines counted above.
+
+**Codec configuration changes shape too.** The payload-type array work landed on
+2026-09-08 (`Core.setAudioPayloadTypes` plus `CodecPriorityPolicy.Basic`) has no PJSIP
+equivalent — pjsua2 uses `Endpoint.codecSetPriority()` per codec id. The
+`StackAccount.audioCodecs` / `videoCodecs` contract survives; only the implementation
+behind it is rewritten, which is the seam working as intended.
 
 ---
 
@@ -327,7 +362,7 @@ without the properties that made it worth asking for.
 
 | Question | Answer | Affects |
 |---|---|---|
-| SIP stack | liblinphone (linphone-sdk), version pinned in Task 25 | Tasks 25, 27 |
+| SIP stack | **PJSIP 2.17** (ADR-006, accepted 2026-09-08). liblinphone 5.5.18 remains in place until the CI build produces a usable artifact | Tasks 25, 27 |
 | Licence | GPLv3 assumed; commercial licence **unresolved** | Task 64, release |
 | Conference server | FreeSWITCH `mod_conference` | Tasks 59, 60, 61 |
 | Conference model | Dial-in MCU; domain shaped for SFU | Tasks 59, 60 |
@@ -654,7 +689,7 @@ and the REFER carries `Replaces` naming B's dialog — which is why the gateway 
 | §2 DECIDE | Answer | Section |
 |---|---|---|
 | §2.2 — conference server and model | FreeSWITCH `mod_conference`, dial-in MCU, domain shaped for SFU | ADR-003 |
-| §2.4 — which SIP stack | liblinphone (linphone-sdk) 5.5.18, GPLv3 assumed; a move to PJSIP 2.17 is requested and blocked on sourcing | ADR-001, ADR-002, ADR-006 |
+| §2.4 — which SIP stack | **PJSIP 2.17**, accepted 2026-09-08, built from source in CI; liblinphone 5.5.18 still shipping until that build is green | ADR-001, ADR-002, ADR-006 |
 | §2.5 — push model | RFC 8599 `pn-*` client params + an ESL-driven gateway; four-field payload contract | ADR-004 |
 
 DoD 15 asks for every DECIDE to be answered here. All three are, each with a rationale and

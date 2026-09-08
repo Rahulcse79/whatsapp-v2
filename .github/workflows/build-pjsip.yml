@@ -9,13 +9,22 @@
 # binaries the repository cannot author by hand, it takes far too long to sit on the CI
 # gate, and nothing in the app consumes its output until ADR-006 is accepted.
 #
-# STATUS: UNVERIFIED. This has never completed a run. It is written from the official
-# build instructions (docs.pjsip.org) and is a starting point to iterate on, not a
-# pipeline anybody should assume works. Treat the first few runs as the real design work.
+# STATUS: UNVERIFIED. This has still never completed a run, and nothing below changes
+# that — it is written from the official build instructions (docs.pjsip.org). Treat the
+# first few runs as the real design work.
 #
-# The two things most likely to need iteration are called out at their steps: the
-# OpenSSL and Opus cross-compiles, without which the stack has no TLS and no Opus — and a
-# PJSIP without those fails DoD 13 and §5.2, which is most of the point of the app.
+# What has changed is that the failure modes are now loud. Three things this build could
+# previously do quietly, and no longer can:
+#
+#   1. Build Opus with the HOST `ar`, because the NDK stopped shipping triple-prefixed
+#      binutils and autotools fell back. AR/RANLIB/NM/STRIP are named explicitly.
+#   2. Configure with no TLS and no Opus and carry on regardless. `configure-android`
+#      does not fail on a missing --with-ssl; the build now does. A PJSIP without those
+#      fails DoD 13 and §5.2, which is most of the point of the app.
+#   3. "Check" 16 KB alignment by printing the LOAD headers. It asserts now.
+#
+# It also gathers its output into a layout an AAR can be assembled from, rather than
+# uploading the SWIG sample-app tree and leaving that to whoever consumes it.
 name: Build PJSIP for Android
 
 on:
@@ -123,8 +132,15 @@ jobs:
           mkdir -p opus && tar -xzf opus.tar.gz -C opus --strip-components=1
           export PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           cd opus
+          # AR/RANLIB/NM/STRIP are passed explicitly because the NDK removed the
+          # triple-prefixed binutils. Left to itself, autotools looks for
+          # `aarch64-linux-android-ar`, does not find it, and falls back to the HOST `ar`
+          # - which produces an x86_64 archive that then fails to link into an arm64 .so,
+          # or worse, links and misbehaves. Every LLVM tool is multi-target, so the
+          # unprefixed name is the correct one.
           ./configure --host=${{ matrix.host }} \
             CC="${{ matrix.host }}$ANDROID_API-clang" \
+            AR=llvm-ar RANLIB=llvm-ranlib NM=llvm-nm STRIP=llvm-strip \
             --prefix="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}" \
             --disable-shared --enable-static
           make -j"$(nproc)" && make install
@@ -145,13 +161,36 @@ jobs:
           #define PJSIP_HAS_TLS_TRANSPORT 1
           #include <pj/config_site_sample.h>
           SITE
+          # 16 KB pages: r27 links its own output aligned, but pjproject drives its link
+          # line itself, so the flag is stated rather than assumed. An unaligned .so is one
+          # Android 15 refuses to load on a 16 KB device.
+          export LDFLAGS="${LDFLAGS} -Wl,-z,max-page-size=16384"
+
           ./configure-android --use-ndk-cflags \
             --with-ssl="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}" \
             --with-opus="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}"
-          echo "::group::configure summary - read the SSL and Opus lines"
+
+          echo "::group::configure summary - the SSL and Opus lines"
           grep -iE "ssl|opus|video" config.log | tail -40 || true
           echo "::endgroup::"
-          make dep && make -j"$(nproc)"
+
+          # The whole point of the two cross-compiles above, asserted rather than eyeballed.
+          # `configure-android` does NOT fail when it cannot find OpenSSL or Opus - it
+          # quietly builds a stack without TLS and without wideband audio, and the first
+          # anybody knows is a TLS account failing on a handset (DoD 13) or a call that
+          # sounds like 2005 (§5.2). A build that silently drops them is worse than no
+          # build, so this stops here instead.
+          if ! grep -qE '^#define PJ_HAS_SSL_SOCK[[:space:]]+1' pjlib/include/pj/compat/os_auto.h 2>/dev/null \
+             && ! grep -qiE 'ssl.*(enabled|found)' config.log; then
+            echo "::error::TLS is NOT enabled - configure did not find OpenSSL. See --with-ssl."
+            exit 1
+          fi
+          if ! grep -qiE 'opus.*(enabled|found)|found opus' config.log; then
+            echo "::error::Opus is NOT enabled - configure did not find it. See --with-opus."
+            exit 1
+          fi
+
+          make dep && make clean && make -j"$(nproc)"
 
       - name: Build the pjsua2 Java bindings
         env:
@@ -168,10 +207,60 @@ jobs:
           # The check that matters for Play. A .so that is not 16 KB aligned is one
           # Android 15 will refuse to load on a 16 KB device.
           READELF="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
-          find pjproject -name 'libpjsua2.so' -print0 | while IFS= read -r -d '' so; do
+
+          # This used to print the LOAD headers and stop, which is a check that cannot
+          # fail. It now asserts every loadable segment is aligned to at least 16 KB
+          # (0x4000) and exits non-zero otherwise - the alignment is the reason the step
+          # exists, and Play rejects the upload rather than warning about it.
+          found=0
+          status=0
+          while IFS= read -r -d '' so; do
+            found=1
             echo "--- $so"
-            "$READELF" -lW "$so" | grep -E 'LOAD' || true
-          done
+            "$READELF" -lW "$so" | awk '$1 == "LOAD"'
+            if "$READELF" -lW "$so" | awk '$1 == "LOAD" { print $NF }' \
+                 | grep -qvE '^0x(4000|8000|10000)$'; then
+              echo "::error::$so has a LOAD segment aligned under 16 KB"
+              status=1
+            fi
+          done < <(find pjproject -name 'libpjsua2.so' -print0)
+
+          if [ "$found" -eq 0 ]; then
+            echo "::error::No libpjsua2.so was produced - the SWIG step did not build it"
+            exit 1
+          fi
+          exit "$status"
+
+      # Nothing downstream can consume `pjsip-apps/src/swig/java/android/**` as it lies -
+      # it is a sample app tree. An AAR needs the .so under `jni/<abi>/` and the generated
+      # bindings as a flat Java source root, so they are gathered into that shape here
+      # while the paths are still known, rather than re-derived by whoever assembles it.
+      - name: Gather the pieces into a consumable layout
+        env:
+          ABI: ${{ matrix.abi }}
+        run: |
+          set -euo pipefail
+          mkdir -p "staging/jni/$ABI" staging/java
+
+          find pjproject -name 'libpjsua2.so' -exec cp -v {} "staging/jni/$ABI/" \;
+
+          # The SWIG-generated bindings. Same for every ABI, and harmless to carry three
+          # times: whoever assembles the AAR takes one copy, and the three must agree anyway.
+          #
+          # `-print -quit` rather than `| head -1`: under `set -o pipefail`, head closing
+          # the pipe early hands find a SIGPIPE, and the step fails on a search that
+          # succeeded. Stopping find itself has no pipe to break.
+          srcroot="$(find pjproject/pjsip-apps/src/swig -type d -path '*/org/pjsip' -print -quit)"
+          if [ -z "$srcroot" ]; then
+            echo "::error::SWIG produced no org/pjsip bindings"
+            exit 1
+          fi
+          # Copy the `org` root, so the tree keeps the package layout javac expects.
+          cp -r "$(dirname "$srcroot")" staging/java/
+
+          echo "::group::staged"
+          find staging -type f | sed 's/^/  /'
+          echo "::endgroup::"
 
       - name: Publish the build for inspection
         uses: actions/upload-artifact@v4
@@ -179,5 +268,5 @@ jobs:
           name: pjsip-${{ inputs.pjsip-version }}-${{ matrix.abi }}
           if-no-files-found: error
           path: |
-            pjproject/pjsip-apps/src/swig/java/android/**
+            staging/**
             pjproject/**/lib/*.a
