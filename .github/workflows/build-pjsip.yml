@@ -70,6 +70,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y swig
+          # Printed, and not merely installed. `pjsip/api` is this job's output checked
+          # into the repository, and the .so exports JNI symbols named after the Java
+          # SWIG generated beside it - so a runner-image bump that changes this version
+          # silently invalidates both. See pjsip/api/build.gradle.kts.
+          swig -version
 
       - name: Fetch pjproject ${{ inputs.pjsip-version }}
         run: |
