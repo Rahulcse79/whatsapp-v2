@@ -5,7 +5,7 @@ diagram, sequence diagrams, threading model — are authored in **Task 67** and 
 deliberately absent here rather than stubbed with placeholder content.
 
 **Source of requirements:** [`../android-sip-app-prompt.md`](../android-sip-app-prompt.md)
-**Task plan:** [`../tasks.md`](../tasks.md)
+**Task plan:** kept outside the repository as working notes.
 
 ---
 

@@ -36,6 +36,13 @@ Thumbs.db
 
 # Logs / reports
 *.log
+log.txt
 *.hprof
 lint-results*.html
 lint-results*.xml
+
+# Task plans — working notes, kept on the machine and out of the repository.
+# The `Done when` detail they carry is the author's scratch record, not a contract
+# anybody clones this repository to read; docs/ holds what an outside reader needs.
+tasks.md
+tasks-v*.md

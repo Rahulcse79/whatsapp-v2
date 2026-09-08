@@ -175,7 +175,8 @@ than as busy. The 486 path is implemented and used; it is simply used where it i
 Everything below the seams above. In particular: that all four audio routes are audible,
 that a headset switches the route mid-call, that the full-screen intent shows on a locked
 screen, and that a push wakes a force-stopped app. Each is recorded against its task in
-`tasks.md` rather than ticked from a passing unit test.
+the task plan — which is kept outside this repository — rather than ticked from a passing
+unit test.
 
 Hold, mute and DTMF add three more of the same kind, and they need the FreeSWITCH target
 rather than only a handset: that a local hold puts `a=sendonly` on the wire and stops media

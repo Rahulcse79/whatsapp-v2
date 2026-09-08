@@ -8,9 +8,6 @@ multi-account SIP registration, Telecom integration, and conferencing against Fr
 | Document | Purpose |
 |---|---|
 | [`android-sip-app-prompt.md`](android-sip-app-prompt.md) | The requirements specification |
-| [`tasks.md`](tasks.md) | 68-task implementation plan, in dependency order |
-| [`tasks-v2.md`](tasks-v2.md) | Tasks 69–78 — the UX round, implemented; what is still unverified is listed |
-| [`tasks-v3.md`](tasks-v3.md) | Tasks 79–88 — the defects a handset found, and the PJSIP migration (blocked, ADR-006) |
 | [`docs/architecture.md`](docs/architecture.md) | HLD — decision record, module graph, layers, threading, sequence diagrams |
 | [`docs/lld.md`](docs/lld.md) | LLD — the call FSM, the `SipEngine` contract and its error taxonomy, the Room schemas |
 | [`docs/security.md`](docs/security.md) | Credentials at rest, transport and media security, logging policy, call recording |
@@ -54,7 +51,8 @@ Every version lives in the version catalog. No version literal belongs in a
 All 68 tasks implemented. What is **verified** is narrower than what is built, and the
 difference is written down rather than smoothed over: see
 [`docs/dod-sweep.md`](docs/dod-sweep.md) for every Definition-of-Done item with its actual
-result, and the `Done when` boxes in [`tasks.md`](tasks.md) for the per-task detail.
+result. The per-task `Done when` detail lives in the task plans, which are kept out of
+this repository as working notes.
 
 The short version: everything decidable without hardware is covered by the JVM suite and
 gated in CI. Everything that needs a handset or a reachable SIP server — video on a real
