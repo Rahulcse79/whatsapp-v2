@@ -368,7 +368,7 @@ IVR, hold/resume, blind and attended transfer, SRTP mandatory refusing a clearte
 **Done when:** each is recorded with its result. None of these are covered by the JVM suite
 — they all cross the seam being replaced, and the tests deliberately do not.
 
-### P-8 · Restore TLS certificate verification  🔴 **outstanding — a behaviour change, not a gap in the plan**
+### P-8 · Restore TLS certificate verification  🟡 **implemented; unverified on hardware**
 
 The stack that was removed verified the server certificate and its CN on every TLS
 connection, unconditionally, in `RealLinphoneCoreGateway.applySecurity`. The replacement
@@ -382,14 +382,51 @@ This was found while correcting the two comments that still described the old st
 both told the reader that certificate validation was set in a class ADR-006 deleted. The
 comments are now accurate; the behaviour they describe is not yet restored.
 
-**Deliberately not fixed in the same change that made the tree compile.** Turning
-verification on is a functional change to a security path, on a stack that has never
-completed a call, and it belongs with P-7's hardware run where a rejected certificate can
-actually be observed rather than assumed.
+**Now implemented.** `RealPjsipCoreGateway.tlsTransportConfig()` sets `verifyServer`, and
+`PjsipTrustStore` supplies what it verifies against. Both halves were required:
+`verifyServer` alone verifies nothing, because OpenSSL is built here with no default CA
+store, and a `TlsConfig` with no `caListFile` rejects every certificate rather than
+accepting them.
 
-**Done when:** `verifyServer` is set on the TLS transport, a certificate the device does
-not trust is refused on hardware, and docs/security.md states which of the two halves owns
-which check.
+**Where trust comes from.** The device's own store, read through `AndroidCAStore` rather
+than `/system/etc/security/cacerts` — the filesystem layout moved into an APEX module and
+the `KeyStore` API did not. A free, publicly-signed certificate (Let's Encrypt) therefore
+verifies with no configuration at all, which is the intended production setup. A
+self-signed lab server is handled by dropping a PEM into
+`data/sip/src/debug/assets/sip-ca/`; that directory is declared in the **debug source set
+only**, so a lab certificate cannot be packaged into a release build — the file is absent
+rather than ignored, which a runtime flag could not guarantee.
+
+**Fail closed.** If no bundle can be assembled, `verifyServer` stays on and TLS fails. A
+fallback to "verify nothing" would turn a broken trust store into a silent downgrade, and
+that is precisely the failure verification exists to catch.
+
+**Still outstanding:** none of this has met a real server. A TLS account has never
+registered, so what is written down is a configuration, not a result.
+
+**Done when:** a valid certificate registers, one the device does not trust is refused, on
+hardware; and docs/security.md states which of the two halves owns which check.
+
+### P-9 · H264, or stop advertising it  🔴 **outstanding — a decision, not a defect**
+
+`CodecPreferences.DEFAULT` names H264. The native build sets
+`PJMEDIA_HAS_OPENH264_CODEC 0`. The two have disagreed since ADR-006, and the disagreement
+is silent: `applyPriorities` only ever touches codecs PJSIP actually registered, so an
+absent H264 is skipped rather than failing. Nothing breaks; an H264-only peer simply gets
+no video, which on most IMS endpoints and every iOS device is most of the peers there are.
+
+**Made visible, not fixed.** `applyPriorities` now logs any preferred codec the build
+cannot honour, once per account. That turns a capability gap into something a log answers
+instead of a call that half worked.
+
+**Not fixed here, deliberately.** Enabling it means cross-compiling OpenH264 alongside
+OpenSSL and Opus, and adding a fourth native dependency to a build that has never
+completed a single run multiplies the unknowns in P-1 rather than resolving any. It also
+carries Cisco's OpenH264 licensing terms, which is a product decision and not an
+engineering one.
+
+**Done when:** either OpenH264 is in the build and an H264 call connects, or H264 leaves
+`CodecPreferences.DEFAULT` and the docs say why.
 
 ---
 

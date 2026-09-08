@@ -42,13 +42,16 @@ import org.pjsip.pjsua2.OnCallStateParam
 import org.pjsip.pjsua2.OnCallTransferStatusParam
 import org.pjsip.pjsua2.OnIncomingCallParam
 import org.pjsip.pjsua2.OnRegStateParam
+import org.pjsip.pjsua2.TlsConfig
 import org.pjsip.pjsua2.TransportConfig
 import org.pjsip.pjsua2.VideoWindowHandle
+import org.pjsip.pjsua2.pj_ssl_sock_proto
 import org.pjsip.pjsua2.pjmedia_dir
 import org.pjsip.pjsua2.pjmedia_srtp_use
 import org.pjsip.pjsua2.pjmedia_type
 import org.pjsip.pjsua2.pjmedia_vid_stream_rc_method
 import org.pjsip.pjsua2.pjsip_inv_state
+import org.pjsip.pjsua2.pjsip_ssl_method
 import org.pjsip.pjsua2.pjsip_status_code
 import org.pjsip.pjsua2.pjsip_transport_type_e
 import org.pjsip.pjsua2.pjsua_call_flag
@@ -98,6 +101,7 @@ import javax.inject.Singleton
 @Singleton
 internal class RealPjsipCoreGateway @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val trustStore: PjsipTrustStore,
     private val logger: Logger,
 ) : SipCoreGateway, SipCallGateway, SipVideoGateway, SipRecordingGateway {
 
@@ -215,7 +219,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             transports[TRANSPORT_TCP] =
                 created.transportCreate(pjsip_transport_type_e.PJSIP_TRANSPORT_TCP, TransportConfig())
             transports[TRANSPORT_TLS] =
-                created.transportCreate(pjsip_transport_type_e.PJSIP_TRANSPORT_TLS, TransportConfig())
+                created.transportCreate(pjsip_transport_type_e.PJSIP_TRANSPORT_TLS, tlsTransportConfig())
 
             created.libStart()
             endpoint = created
@@ -267,6 +271,42 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // hears for one they hear later, and half a second of delay is already a
             // conversation people talk over.
             jbMax = JITTER_BUFFER_MAX_MS
+        }
+    }
+
+    /**
+     * The TLS transport's configuration (P-8, §7).
+     *
+     * The stack ADR-006 removed verified the server certificate and its common name on
+     * every connection. The replacement shipped with a bare `TransportConfig()`, and
+     * pjsua2 defaults `verifyServer` to **off** — so for the length of the migration this
+     * app negotiated TLS and then accepted whatever certificate arrived, which is
+     * encryption without authentication and stops no attacker who can reach the path.
+     *
+     * Two halves, and neither works alone:
+     *
+     *  - **`verifyServer`** turns the check on. Set unconditionally, including when
+     *    [PjsipTrustStore] could not produce a bundle — TLS then fails, loudly, rather
+     *    than falling back to trusting anything. See that class for why failing closed is
+     *    the whole point.
+     *  - **`caListFile`** is what it checks against. OpenSSL is built here with no default
+     *    CA store, so without this every certificate is rejected rather than accepted.
+     *
+     * `method` picks the handshake and `proto` masks what that handshake may settle on.
+     * Both are needed: SSLv23 means "negotiate the highest available", and without the
+     * mask that includes TLS 1.0 and 1.1, which is how a client written in 2026 still ends
+     * up on a deprecated cipher suite because the far end offered one.
+     */
+    private fun tlsTransportConfig(): TransportConfig = TransportConfig().apply {
+        tlsConfig = TlsConfig().apply {
+            verifyServer = true
+            trustStore.caBundle()?.let { bundle -> caListFile = bundle.absolutePath }
+
+            method = pjsip_ssl_method.PJSIP_SSLV23_METHOD
+            proto = (
+                pj_ssl_sock_proto.PJ_SSL_SOCK_PROTO_TLS1_2 or
+                    pj_ssl_sock_proto.PJ_SSL_SOCK_PROTO_TLS1_3
+                ).toLong()
         }
     }
 
@@ -541,11 +581,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
      */
     private fun Endpoint.applyCodecs(account: StackAccount) {
         applyPriorities(
+            kind = "Audio",
             available = codecEnum2().map { it.codecId },
             preferred = account.audioCodecs,
         ) { id, priority -> codecSetPriority(id, priority) }
 
         applyPriorities(
+            kind = "Video",
             available = videoCodecEnum2().map { it.codecId },
             preferred = account.videoCodecs,
         ) { id, priority -> videoCodecSetPriority(id, priority) }
@@ -557,6 +599,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
     }
 
     private inline fun applyPriorities(
+        kind: String,
         available: List<String>,
         preferred: List<String>,
         set: (String, Short) -> Unit,
@@ -567,6 +610,19 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // everything unnamed is disabled rather than left at whatever PJSIP chose.
             val priority = if (rank < 0) CODEC_DISABLED else (CODEC_TOP - rank).toShort()
             runCatching { set(codecId, priority) }
+        }
+
+        // A preference the build cannot honour is not an error - the call still connects
+        // on whatever else was offered - but it is never what the author meant, and until
+        // now it was invisible. `CodecPreferences.DEFAULT` names H264 while the native
+        // build sets PJMEDIA_HAS_OPENH264_CODEC to 0, so H264 is silently never
+        // negotiated and an H264-only peer gets no video at all. Said out loud, once per
+        // account, rather than discovered on a call that half worked.
+        val missing = preferred.filter { name ->
+            available.none { it.startsWith(name, ignoreCase = true) }
+        }
+        if (missing.isNotEmpty()) {
+            logger.warn(TAG, "$kind codecs preferred but not in this build: $missing")
         }
     }
 

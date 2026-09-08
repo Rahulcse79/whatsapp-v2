@@ -17,12 +17,12 @@
 
   It does NOT cover SIP over TLS: PJSIP opens its own sockets and runs its own TLS
   through OpenSSL, so `network_security_config.xml` never sees them. The equivalent
-  settings for that path belong to the TLS transport RealPjsipCoreGateway creates, and
-  ADR-006 replaced the stack that used to carry them - `TransportConfig.tlsConfig` is
-  currently left at its defaults, which is recorded as an open item in
-  docs/pjsip-migration.md P-8 rather than implied to be settled here. Both halves are
-  needed and neither substitutes for the other; docs/security.md says so in one place
-  rather than leaving somebody to discover it.
+  settings for that path belong to the TLS transport RealPjsipCoreGateway creates, which
+  verifies the server certificate against the bundle PjsipTrustStore assembles from the
+  device's own trust store. Both halves are needed and neither substitutes for the other;
+  docs/security.md says so in one place rather than leaving somebody to discover it. What
+  has not happened yet is a TLS registration against a real server - docs/pjsip-migration.md
+  P-8 is where that is tracked.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false">
