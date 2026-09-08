@@ -3,9 +3,9 @@ package com.whatsappv2.data.sip.registration
 /**
  * Registration states, mirrored from the SIP stack into this module's own vocabulary.
  *
- * A deliberate copy of `org.linphone.core.RegistrationState`, and the copy is the point:
+ * A deliberate copy of the stack's registration status`, and the copy is the point:
  * it lets every layer above the gateway - including the tests - be written without an SDK
- * type in scope, which is what keeps the "no `org.linphone` import outside `:data:sip`"
+ * type in scope, which is what keeps the "no SIP SDK import outside `:data:sip`"
  * rule (DoD 3) from being merely aspirational.
  *
  * If the SDK adds a state, [SipCoreGateway] must map it here. That is a compile

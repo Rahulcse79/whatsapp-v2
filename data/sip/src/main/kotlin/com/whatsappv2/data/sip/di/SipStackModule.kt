@@ -6,7 +6,7 @@ import com.whatsappv2.data.sip.call.SipRecordingGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackVideoSurfaceController
 import com.whatsappv2.data.sip.registration.SipCoreGateway
-import com.whatsappv2.data.sip.registration.stack.RealLinphoneCoreGateway
+import com.whatsappv2.data.sip.registration.stack.RealPjsipCoreGateway
 import com.whatsappv2.domain.engine.VideoSurfaceController
 import dagger.Binds
 import dagger.Module
@@ -29,14 +29,14 @@ import javax.inject.Singleton
 @Retention(AnnotationRetention.BINARY)
 internal annotation class SipStackScope
 
-/** Binds the SDK seam. The implementation is the only class allowed to name liblinphone. */
+/** Binds the SDK seam. The implementation is the only class allowed to name the SDK. */
 @Module
 @InstallIn(SingletonComponent::class)
 internal abstract class SipStackModule {
 
     @Binds
     @Singleton
-    abstract fun bindGateway(gateway: RealLinphoneCoreGateway): SipCoreGateway
+    abstract fun bindGateway(gateway: RealPjsipCoreGateway): SipCoreGateway
 
     /**
      * The same object, bound again under its call role.
@@ -47,13 +47,13 @@ internal abstract class SipStackModule {
      */
     @Binds
     @Singleton
-    abstract fun bindCallGateway(gateway: RealLinphoneCoreGateway): SipCallGateway
+    abstract fun bindCallGateway(gateway: RealPjsipCoreGateway): SipCallGateway
 
     @Binds
-    abstract fun bindVideoGateway(gateway: RealLinphoneCoreGateway): SipVideoGateway
+    abstract fun bindVideoGateway(gateway: RealPjsipCoreGateway): SipVideoGateway
 
     @Binds
-    abstract fun bindRecordingGateway(gateway: RealLinphoneCoreGateway): SipRecordingGateway
+    abstract fun bindRecordingGateway(gateway: RealPjsipCoreGateway): SipRecordingGateway
 
     /**
      * Where video is drawn (Task 52).

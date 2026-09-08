@@ -71,7 +71,7 @@ class CameraPolicyTest {
     @Test
     fun `an outgoing video call holds the camera before it is answered`() {
         // This assertion used to be the opposite, and the opposite was the bug behind
-        // "video calling does not work". liblinphone builds the SDP offer at INVITE time
+        // "video calling does not work". The stack builds the SDP offer at INVITE time
         // and can only offer to *send* video if the capture device is already running;
         // with the camera released until the call was established, every outgoing video
         // call went out `recvonly` and no later change re-negotiated it.

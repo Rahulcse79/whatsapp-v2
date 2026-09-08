@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.Flow
  * Everything above it - the engine, the state mapping, the tests - is written against
  * these types, none of which come from the SDK. That is what makes Task 27's done-when
  * ("callback to Flow mapping is unit-tested with a stubbed SDK seam") achievable at all:
- * liblinphone cannot run on the JVM, so without this seam the mapping could only be
+ * PJSIP cannot run on the JVM, so without this seam the mapping could only be
  * exercised on a device, which in practice means not exercised.
  *
  * The interface is deliberately small. Anything that can be decided without the stack -
@@ -108,6 +108,26 @@ internal data class StackAccount(
      * is a carrier trunk that cannot do it at all.
      */
     val mediaEncryption: StackMediaEncryption = StackMediaEncryption.OPTIONAL,
+
+    /**
+     * The audio codecs this account offers, most preferred first (§5.1).
+     *
+     * RTP mime types — `opus`, `PCMU` — rather than the domain's enum, for the same reason
+     * every other field here is flattened: the gateway is handed strings an SDK
+     * understands and never learns what a `CodecPreferences` is.
+     *
+     * Order is the whole point. It is the order the SDP offer lists, and therefore what
+     * decides which codec a peer that supports several of them picks.
+     */
+    val audioCodecs: List<String> = emptyList(),
+
+    /**
+     * The video codecs this account offers, most preferred first (§5.2).
+     *
+     * Empty means an audio-only account: every video payload type is disabled, so no video
+     * is offered and an escalation the far end asks for has nothing to negotiate with.
+     */
+    val videoCodecs: List<String> = emptyList(),
 
     /**
      * A PEM bundle to trust **in addition to** the system store, or null for system only.

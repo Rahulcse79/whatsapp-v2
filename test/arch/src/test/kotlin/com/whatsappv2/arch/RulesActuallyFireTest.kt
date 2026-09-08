@@ -46,8 +46,8 @@ class RulesActuallyFireTest {
     fun `rule 2 fires on both SIP SDKs outside data sip`() {
         val violations = ArchitectureRules.sipSdkStaysInDataSip(fixtures)
         assertFires("Rule 2", violations)
-        assertTrue(violations.any { "org.linphone" in it.detail }, "liblinphone not detected")
-        assertTrue(violations.any { "org.pjsip" in it.detail }, "PJSIP not detected")
+        assertTrue(violations.any { "org.linphone" in it.detail }, "the removed liblinphone SDK was not rejected")
+        assertTrue(violations.any { "org.pjsip" in it.detail }, "PJSIP outside :data:sip was not rejected")
     }
 
     @Test

@@ -59,9 +59,11 @@ Proven twice, because one of the two can be defeated.
 `:domain` applies no Android plugin at all — it is a JVM library, asserted by a third CI
 step that greps its build file.
 
-## 3. No `org.linphone.*` import outside `:data:sip` — **PASS**
+## 3. No SIP SDK import outside `:data:sip` — **PASS**
 
-Architecture Rule 2, plus a CI grep. `RealLinphoneCoreGateway` and
+Architecture Rule 2, plus a CI grep. Since ADR-006 the rule has two clauses: `org.pjsip`
+is confined to `:data:sip`, and `org.linphone` is rejected **anywhere** — a removed stack
+comes back one import at a time, and the rule is what stops it. `RealPjsipCoreGateway` and
 `EncryptedRecordingStore` are the only classes that name the SDK, and both live in `stack`
 packages precisely so their untestability is visible in the path.
 
@@ -188,7 +190,7 @@ and attach the result here.
 
 **Passes.** SRTP-Mandatory is enforced twice — the stack refuses the negotiation, and the
 engine drops a call that reached running media without encryption — and the second is
-asserted by `LinphoneSipEngineSecurityTest`, including that the drop is recorded as
+asserted by `PjsipSipEngineSecurityTest`, including that the drop is recorded as
 `MEDIA_FAILURE` rather than as an ordinary hangup. Certificate validation is unconditional
 and CI fails on any `checkServerTrusted` in the tree, on `verifyServer*(false)`, and on a
 `debug-overrides` block appearing in the network security config.
@@ -198,9 +200,11 @@ deployed FreeSWITCH has `internal_ssl_enable=false` and no SIP TLS certificate. 
 change to the deployment and is Infra's to make — tracked as open question **Q9** in
 `architecture.md`, not quietly dropped.
 
-**Known limitation.** liblinphone keeps media encryption on the `Core`, not per account, so
-with two accounts configured differently the last one added wins. Documented in
-`security.md` rather than hidden behind an API that looks per-account.
+**Resolved by ADR-006.** This used to record that media encryption was core-wide, so with
+two accounts configured differently the last one added won. PJSIP carries SRTP on
+`AccountConfig.mediaConfig.srtpUse`, so it is genuinely per account now. **Codec priority
+is still endpoint-wide** and `security.md` says so — the limitation moved rather than
+disappearing.
 
 ## 14. Coverage ≥ 80% in `:domain` and `:data:*` — **PARTIAL**
 
@@ -230,10 +234,10 @@ DI modules:
 
 | Package | Covered | Total | Why it is zero |
 |---|---|---|---|
-| `data/sip/registration/stack` | 0 | 184 | liblinphone; needs a device |
+| `data/sip/registration/stack` | 0 | ~800 | PJSIP; needs a device |
 | `data/sip/network/platform` | 0 | 27 | `ConnectivityManager` |
 | `data/account/crypto/keystore` | 0 | 20 | Android Keystore |
-| `data/sip/stack` | 0 | 8 | liblinphone |
+| `data/sip/stack` | 0 | ~30 | PJSIP `System.loadLibrary` |
 | all `*/di` | 0 | 61 | Hilt modules; generated bindings |
 
 **Excluding those, `:data:*` measures 91.3% (813 / 890).** Both figures are given because
@@ -275,7 +279,7 @@ Three DECIDEs, three ADRs, each with a rationale:
 | DECIDE | Answer |
 |---|---|
 | §2.2 conference server and model | FreeSWITCH `mod_conference`, dial-in MCU, domain shaped for SFU (ADR-003) |
-| §2.4 SIP stack | liblinphone 5.5.18; GPLv3, commercial licence unresolved (ADR-001, ADR-002) |
+| §2.4 SIP stack | PJSIP 2.17 (pjsua2), built from source in CI; GPLv2, commercial licence unresolved (ADR-006, ADR-002) |
 | §2.5 push model | RFC 8599 `pn-*` params plus an ESL gateway, with a four-field payload contract (ADR-004) |
 
 What is *not* settled is named as an open question with an owner and a deadline rather than

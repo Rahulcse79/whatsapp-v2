@@ -42,12 +42,24 @@ internal class SipConnection(
     }
 
     /**
-     * The mute state Telecom last told us about, or that we last told Telecom about.
+     * The mute state Telecom last **reported**. A mirror of the platform, and nothing else.
      *
-     * Seeded `false` because that is what a connection starts as, and because the first
-     * `onCallAudioStateChanged` after a call is set up reports exactly that. Without the
-     * seed the first callback would look like a change and un-mute a call the user muted
-     * during setup.
+     * ## Why nothing else may write here
+     *
+     * A self-managed connection has no public way to tell Telecom "I muted myself" —
+     * `Connection.setMuteState` is package private and `requestCallEndpointChange` (API 34)
+     * covers routing only. So Telecom's own `CallAudioState.isMuted` stays `false` through
+     * an app-side mute, and it repeats that `false` on every audio event.
+     *
+     * That is survivable as long as this field means one thing. It used to be seeded with
+     * the *app's* mute as well, which is what broke the mute button: muting set this to
+     * `true` while Telecom still said `false`, so the very next audio event — any route
+     * change, a device appearing — read as a genuine `true -> false` transition and
+     * un-muted a live microphone. The bug was the seed, not the comparison.
+     *
+     * Left as a pure mirror, the comparison is right in every direction: an app-side mute
+     * moves neither side and raises nothing, a headset's mute button moves Telecom's value
+     * and is forwarded, and so is the same button unmuting again.
      */
     private var platformMuted = false
 
@@ -85,7 +97,7 @@ internal class SipConnection(
      * Telecom asked for a hold.
      *
      * The request is forwarded and **nothing here moves Telecom's own state**. It used to
-     * call `setOnHold()` immediately, which is the same optimism `LinphoneSipEngine.setHold`
+     * call `setOnHold()` immediately, which is the same optimism `PjsipSipEngine.setHold`
      * refuses for the app's own UI: the re-INVITE may be rejected, and a platform that
      * believes a running call is held offers a resume button that resumes nothing. The
      * state moves when the stack says so — the engine reports it back through
@@ -122,26 +134,15 @@ internal class SipConnection(
         // One callback carries both, and the mute half matters: a headset's own mute
         // button reaches this app through here and nowhere else.
         //
-        // Only on a real change, though, and that is the fix for "mute does not work".
-        // Telecom reports its own mute state on every audio event, including a plain route
-        // change — and a self-managed connection has no public way to tell Telecom it
-        // muted itself, so that state sits at `false` however many times the user presses
-        // mute. Forwarding it unconditionally meant the next audio event un-muted the call.
+        // Only when Telecom's own value actually moved. It repeats that value on every
+        // audio event, including a plain route change, so forwarding it unconditionally
+        // would re-assert a mute state nobody touched — and because the platform's value
+        // is `false` throughout an app-side mute, what it would re-assert is "unmuted".
+        // See [platformMuted] for why this is the only thing that may write to it.
         if (platformMuted != current.isMuted) {
             platformMuted = current.isMuted
             listener.onMuteChanged(callId, current.isMuted)
         }
-    }
-
-    /**
-     * Records a mute the **app** performed, so the platform's stale value cannot undo it.
-     *
-     * Called when the engine mutes or unmutes. After this, Telecom repeating its own
-     * unchanged `isMuted` is correctly read as "nothing happened" rather than as an
-     * instruction to un-mute.
-     */
-    fun syncPlatformMute(muted: Boolean) {
-        platformMuted = muted
     }
 
     /** The far end is ringing. Telecom shows this as an outgoing call in progress. */

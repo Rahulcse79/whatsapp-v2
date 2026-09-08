@@ -62,7 +62,7 @@ object CameraPolicy {
      * ## An outgoing video call needs the camera *before* it is established
      *
      * This used to require [CallState.isEstablished], and that was the bug behind "video
-     * calling does not work". The SDP offer is built at INVITE time, and liblinphone can
+     * calling does not work". The SDP offer is built at INVITE time, and the stachone can
      * only offer to **send** video if the capture device is already running — with capture
      * off it offers `recvonly`, the far end never receives a picture, and no later change
      * re-negotiates it. By the time the call was established and this returned true, the

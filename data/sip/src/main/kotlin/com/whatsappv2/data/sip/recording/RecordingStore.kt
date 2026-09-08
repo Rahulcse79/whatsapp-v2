@@ -24,7 +24,7 @@ import com.whatsappv2.domain.recording.RecordingId
  * ## Seam, not indirection
  *
  * The Android Keystore does not run on the JVM. Behind this interface the real store
- * encrypts; in tests a fake one does not, so [LinphoneCallRecorder]'s consent gate,
+ * encrypts; in tests a fake one does not, so [PjsipCallRecorder]'s consent gate,
  * lifecycle and bookkeeping are exercised without a device — which is where the rules that
  * matter actually live.
  */

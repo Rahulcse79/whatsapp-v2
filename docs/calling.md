@@ -23,14 +23,14 @@ that does not register its calls with the platform will talk over one. So the en
 before the INVITE, and a refusal is final: `SipError.CallNotPermitted`, no INVITE, and the
 dialler says "your phone is on another call".
 
-`LinphoneSipEngineTest` asserts the ordering from inside the fake registry — once both
+`PjsipSipEngineTest` asserts the ordering from inside the fake registry — once both
 calls have returned there is nothing left to observe about which went first.
 
 ## The path of one incoming call
 
 ```
-INVITE -> RealLinphoneCoreGateway (mints a call key)
-       -> LinphoneSipEngine: snapshot in CallState.Incoming
+INVITE -> RealPjsipCoreGateway  (mints a call key)
+       -> PjsipSipEngine: snapshot in CallState.Incoming
        -> PlatformCallRegistry.registerIncoming
             refused  -> 486 Busy, nothing shown          (a cellular call is in progress)
             accepted -> SipCallController.incomingCalls
@@ -54,7 +54,7 @@ then arrives on the path above. Caller identity never travels in a push payload 
 ```
 CallScreen hold button  ->  SipEngine.setHold        (ask the FSM, then the stack)
                                  |
-                              liblinphone pause()/resume()   -- writes the SDP direction
+                              PJSIP setHold()/reinvite()     -- writes the SDP direction
                                  |
              Paused / PausedByRemote / Resuming / StreamsRunning
                                  |
@@ -79,7 +79,7 @@ lift, and with both ends holding, resuming leaves the call `Held(REMOTE)`.
 
 **The SDP direction is the stack's to write.** `pause()` produces `sendonly` while only we
 hold and `inactive` once both ends do. Setting a direction by hand through call parameters
-would re-derive a rule liblinphone already applies, and the both-hold case is exactly where
+would re-derive a rule the stack already applies, and the both-hold case is exactly where
 a hand-rolled version gets it wrong.
 
 ## Mute is two things, and both are set
@@ -104,10 +104,10 @@ app echoing the platform back at itself.
 `RFC 4733 telephone-event` by default, `SIP INFO` when Settings says so — read **per
 digit**, so a mode changed because an IVR is not hearing the caller applies to the next key
 press rather than the next call. Exactly one carrier is enabled on the core before each
-digit; with both on, liblinphone sends the digit twice and an IVR that counts keypresses
+digit; with both on, the stack sends the digit twice and an IVR that counts keypresses
 hears two.
 
-The tone the caller hears is the stack's: liblinphone plays the digit locally as it sends
+The tone the caller hears is the stack's: PJSIP plays the digit locally as it sends
 it. A second tone generated in the app would double every keypress, so the screen's own
 feedback is the line of digits above the keypad — which is also the only record of them.
 DTMF digits are never logged, because a sequence is a PIN or a card number as often as it
@@ -123,7 +123,7 @@ below the UI cannot quietly drop the four that are rare.
 |---|---|---|
 | Which account places a call, and what `1001` means | `PlaceCallUseCase` (`:domain`) | Every screen that dials must resolve it identically; a copy in a ViewModel drifts. |
 | Whether a stack event is a legal transition | `CallStateMachine` (`:domain`) | Pure, exhaustively tested, and the same rules the fake enforces. |
-| What a liblinphone call state means | `CallStateMapper` (`:data:sip`) | liblinphone does not run on the JVM, so a mapping inside the gateway could only be exercised on a device. |
+| What a PJSIP call state means | `CallStateMapper` (`:data:sip`) | PJSIP does not run on the JVM, so a mapping inside the gateway could only be exercised on a device. |
 | Whether the platform permits a call | Telecom, asked through `PlatformCallRegistry` | Only Telecom knows about the cellular call. Guessing is how a SIP call talks over a phone call. |
 | Which notification to show | `CallNotificationPolicy` (`:app`) | A ringing call outranks an ongoing one; that is a rule, and rules belong where a test can reach them. |
 | Whether to ring | `RingerPolicy` (`:app`) | Silent mode and Do Not Disturb are the user's decision, and "did we respect it" must be assertable without a handset and a switch. |
@@ -175,7 +175,8 @@ than as busy. The 486 path is implemented and used; it is simply used where it i
 Everything below the seams above. In particular: that all four audio routes are audible,
 that a headset switches the route mid-call, that the full-screen intent shows on a locked
 screen, and that a push wakes a force-stopped app. Each is recorded against its task in
-`tasks.md` rather than ticked from a passing unit test.
+the task plan — which is kept outside this repository — rather than ticked from a passing
+unit test.
 
 Hold, mute and DTMF add three more of the same kind, and they need the FreeSWITCH target
 rather than only a handset: that a local hold puts `a=sendonly` on the wire and stops media

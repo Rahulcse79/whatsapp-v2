@@ -21,7 +21,7 @@ import javax.inject.Singleton
  *
  * **The only class in the project that touches `ConnectivityManager`.**
  *
- * It sits in its own package for the same reason `RealLinphoneCoreGateway` does: it needs
+ * It sits in its own package for the same reason `RealPjsipCoreGateway` does: it needs
  * a real device to mean anything, so keeping it beside the testable recovery logic would
  * drag that package's coverage gate down until the gate measured nothing. What it
  * produces — an id and a transport — is asserted against on the JVM through

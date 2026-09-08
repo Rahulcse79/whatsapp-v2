@@ -20,7 +20,6 @@ import com.whatsappv2.feature.accounts.AccountEditorRoute
 import com.whatsappv2.feature.accounts.AccountSavedMessage
 import com.whatsappv2.feature.accounts.AccountsRoute
 import com.whatsappv2.feature.dialer.DialerScreen
-import com.whatsappv2.feature.group.GroupCallRoute
 import com.whatsappv2.feature.history.HistoryRoute
 import com.whatsappv2.feature.settings.SettingsScreen
 
@@ -35,7 +34,7 @@ import com.whatsappv2.feature.settings.SettingsScreen
  * ## The shape changed with Tasks 69 and 70
  *
  * Four of these used to be tabs. They are all still routes, reached from the Calls screen
- * instead: floating buttons for the dialler and the group page, the top-right icon for
+ * instead: a floating button for the dialler, the top-right icon for
  * settings, and the account list from inside settings. Nothing was removed from the graph
  * — a tab going away is not a destination going away, and `account-detail/{accountId}`
  * still resolves exactly as it did.
@@ -73,7 +72,7 @@ fun AppNavHost(
     }
 }
 
-/** Calls, and the three screens reached from it (Tasks 69, 70, 78). */
+/** Calls, and the two screens reached from it (Tasks 69, 70). */
 private fun NavGraphBuilder.callRoutes(
     navController: NavHostController,
     openCall: (CallId) -> Unit,
@@ -85,7 +84,6 @@ private fun NavGraphBuilder.callRoutes(
         HistoryRoute(
             onCallPlaced = openCall,
             onOpenDialer = { navController.navigate(AppDestination.DIALER.route) },
-            onOpenGroupCall = { navController.navigate(AppDestination.GROUP.route) },
             onOpenSettings = { navController.navigate(AppDestination.SETTINGS.route) },
             videoGate = videoGate,
         )
@@ -93,16 +91,6 @@ private fun NavGraphBuilder.callRoutes(
 
     composable(AppDestination.DIALER.route) {
         DialerScreen(
-            onCallPlaced = openCall,
-            onBack = { navController.popBackStack() },
-            videoGate = videoGate,
-        )
-    }
-
-    // Task 78. A local group plus a dial-in address; the conference machinery behind
-    // the join is Tasks 60 and 61's and is untouched by this route.
-    composable(AppDestination.GROUP.route) {
-        GroupCallRoute(
             onCallPlaced = openCall,
             onBack = { navController.popBackStack() },
             videoGate = videoGate,

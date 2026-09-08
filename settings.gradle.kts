@@ -30,17 +30,10 @@ dependencyResolutionManagement {
         }
         mavenCentral()
 
-        // liblinphone (ADR-001) is not published to Maven Central or Google Maven; it
-        // ships from Belledonne's own repository.
-        //
-        // Scoped to org.linphone deliberately. Without the filter this repository could
-        // answer for ANY coordinate, so a compromise there could substitute an androidx
-        // or Kotlin artifact. With it, the widened supply chain is exactly one group.
-        maven {
-            name = "belledonne"
-            setUrl("https://download.linphone.org/maven_repository")
-            content { includeGroup("org.linphone") }
-        }
+        // No third repository. liblinphone needed one of its own (ADR-001) because it
+        // shipped from Belledonne rather than Maven Central; PJSIP ships from nowhere at
+        // all and is built by `.github/workflows/build-pjsip.yml` into `:pjsip`. The
+        // supply chain is narrower for it (ADR-006).
     }
 }
 
@@ -57,11 +50,17 @@ include(":core:designsystem")
 include(":data:account")
 include(":data:settings")
 include(":data:sip")
+
+// The PJSIP binaries, wrapped (ADR-006). Not a source module — see pjsip/build.gradle.kts.
+include(":pjsip")
+
+// The Java half of that AAR, as source, so the tree still compiles when the binary is
+// absent. Used only then; the AAR wins whenever it exists. See pjsip/api/build.gradle.kts.
+include(":pjsip:api")
 include(":data:calllog")
 include(":data:contacts")
 
 include(":feature:dialer")
-include(":feature:group")
 include(":feature:calls")
 include(":feature:accounts")
 include(":feature:history")

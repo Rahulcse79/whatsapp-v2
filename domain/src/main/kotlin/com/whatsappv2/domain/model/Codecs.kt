@@ -8,6 +8,35 @@ package com.whatsappv2.domain.model
  */
 enum class AudioCodec(val payloadName: String, val isWideband: Boolean) {
     OPUS("opus", isWideband = true),
+
+    /**
+     * Google's neural speech codec, and the reason it is worth having: it carries
+     * intelligible wideband speech at **3.2, 6 or 9.2 kbps**, an order of magnitude below
+     * anything else in this list. On a congested mobile uplink that is the difference
+     * between a call and no call.
+     *
+     * `payloadName` is lowercase deliberately. pjproject registers the codec as `lyra`
+     * (`pjmedia/src/pjmedia-codec/lyra.cpp`), and the stack matches a preference against a
+     * codec id by prefix — `lyra/16000/1`. `LYRA` would match nothing, silently.
+     *
+     * **Not in [CodecPreferences.DEFAULT], and that is deliberate.** Three things have to
+     * be true before this negotiates, and only the first is done:
+     *
+     *  1. It is selectable here.
+     *  2. The native library is built with `PJMEDIA_HAS_LYRA_CODEC` — it defaults to `0`,
+     *     and enabling it means cross-compiling Google's Lyra, which pulls in Bazel and
+     *     TensorFlow Lite.
+     *  3. The four model files (`lyra_config.binarypb`, `lyragan.tflite`,
+     *     `quantizer.tflite`, `soundstream_encoder.tflite`) ship on the device and
+     *     `CodecLyraConfig.modelPath` points at them. Without them the codec registers and
+     *     then fails to open a stream.
+     *
+     * Until (2) and (3), selecting it is a no-op that the stack logs as "preferred but not
+     * in this build". Marked wideband because the default clock rate is 16 kHz; pjproject
+     * also offers 8, 32 and 48 kHz, and only 16 kHz is enabled by default.
+     */
+    LYRA("lyra", isWideband = true),
+
     G722("G722", isWideband = true),
     PCMU("PCMU", isWideband = false),
     PCMA("PCMA", isWideband = false),

@@ -88,6 +88,26 @@ object AudioRoutePolicy {
     }
 
     /**
+     * Whether the proximity sensor may blank the screen.
+     *
+     * ## The earpiece is not sufficient on its own
+     *
+     * The rule used to be exactly `route == EARPIECE`, on the reasoning that the earpiece
+     * is the only route where a phone is against a face. That is true of a voice call and
+     * false of a video one: a video call routed to the earpiece is held *in front of* a
+     * face, at arm's length, and the proximity sensor sits at the top of the handset where
+     * a hand passes over it constantly. The screen went black in the middle of the picture
+     * the user was watching, and stayed black until they moved away.
+     *
+     * So video vetoes it. There is no video call on any handset where blanking the display
+     * is the right answer, whatever the audio route happens to be.
+     *
+     * @param hasVideo true when the call has a video stream, negotiated or requested.
+     */
+    fun screenMayBlank(route: AudioRoute, hasVideo: Boolean): Boolean =
+        route == AudioRoute.EARPIECE && !hasVideo
+
+    /**
      * What a focus change means.
      *
      * `LOSS` and `LOSS_TRANSIENT` both mute: an incoming cellular call takes focus

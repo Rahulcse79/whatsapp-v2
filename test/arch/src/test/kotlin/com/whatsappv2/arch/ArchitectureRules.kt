@@ -120,18 +120,41 @@ object ArchitectureRules {
             }
 
     /**
-     * **Rule 2 — no SIP SDK type outside `:data:sip` (DoD 3).**
+     * **Rule 2 — no SIP SDK type outside `:data:sip`, and no liblinphone anywhere (DoD 3).**
      *
-     * This is what keeps ADR-001 reversible: swapping liblinphone for PJSIP must be a
-     * rewrite of one module, not of the application.
+     * Two clauses, because the migration in ADR-006 made them different questions.
+     *
+     * **PJSIP outside `:data:sip`** is the original rule and the reason the seam survived
+     * a stack swap at all: replacing liblinphone with PJSIP was a rewrite of one file
+     * behind four interfaces, not of the application. Letting `org.pjsip` leak upward
+     * would spend that.
+     *
+     * **liblinphone anywhere at all** is the migration's guard rail. It is gone — the
+     * dependency, the repository and the adapter were all deleted — and the way a removed
+     * stack comes back is one import at a time, in a hurry, because something was easier
+     * to reach for. Listing it here is not a reference to liblinphone; it is what stops
+     * one being added.
      */
+    /** The SIP SDK in use (ADR-006). Confined to `:data:sip`. */
+    private const val SIP_SDK = "org.pjsip"
+
+    /** The stack ADR-006 removed. Permitted nowhere. */
+    private const val REMOVED_SDK = "org.linphone"
+
     fun sipSdkStaysInDataSip(files: List<SourceFile>): List<Violation> =
-        files.filterNot { it.isUnder("data/sip") }
-            .flatMap { file ->
-                file.imports
-                    .filter { it.startsWith("org.linphone") || it.startsWith("org.pjsip") }
-                    .map { Violation(file.relativePath, "imports $it outside :data:sip") }
+        files.flatMap { file ->
+            file.imports.mapNotNull { imported ->
+                when {
+                    imported.startsWith(REMOVED_SDK) ->
+                        Violation(file.relativePath, "imports $imported; liblinphone was removed in ADR-006")
+
+                    imported.startsWith(SIP_SDK) && !file.isUnder("data/sip") ->
+                        Violation(file.relativePath, "imports $imported outside :data:sip")
+
+                    else -> null
+                }
             }
+        }
 
     /**
      * **Rule 3 — `:feature:*` depends on `:domain`, never on `:data:*`.**
@@ -171,6 +194,12 @@ object ArchitectureRules {
      * Not stylistic. Mixing LiveData and Flow puts two lifecycle models in one screen;
      * `AsyncTask` has been removed from the platform; and a raw `Thread` in an app that
      * holds a long-lived registration is how leaks and wake-lock bugs start.
+     *
+     * **The forbidden imports have no exceptions.** The raw-`Thread` clause has exactly
+     * one, and it is [THREAD_EXEMPT] rather than a suppression: the rule is scoped, the
+     * way rule 2 scopes `org.pjsip` to `:data:sip`, instead of the finding being hidden.
+     * The difference matters — a scope is one line a reviewer reads in the rule, and a
+     * baseline is a file that grows on its own.
      */
     fun forbiddenConcurrencyApis(files: List<SourceFile>): List<Violation> = buildList {
         for (file in files) {
@@ -178,7 +207,7 @@ object ArchitectureRules {
                 .filter { import -> FORBIDDEN_IMPORTS.any { import.startsWith(it) } }
                 .forEach { add(Violation(file.relativePath, "uses $it, which is forbidden (§3)")) }
 
-            if (RAW_THREAD.containsMatchIn(file.code)) {
+            if (RAW_THREAD.containsMatchIn(file.code) && file.relativePath !in THREAD_EXEMPT) {
                 add(Violation(file.relativePath, "constructs a raw Thread; use coroutines (§3)"))
             }
         }
@@ -266,6 +295,26 @@ object ArchitectureRules {
         Regex("""^\s*(?:public\s+)?interface\s+\w*Repository\b""", RegexOption.MULTILINE)
     private val REPOSITORY_IMPL =
         Regex("""^\s*(?:\w+\s+)*class\s+\w+Repository(?:Impl|Implementation)\b""", RegexOption.MULTILINE)
+
+    /**
+     * The one file allowed to construct a thread, and why.
+     *
+     * pjsua2 requires every thread that calls into it to be registered first, and
+     * `Endpoint::libRegisterThread` allocates a descriptor **freed only when the library
+     * is destroyed**. Posting to `Dispatchers.IO` - a pool of up to 64 threads that come
+     * and go - would therefore leak one descriptor per thread for the life of the process,
+     * and calling in unregistered is undefined behaviour that surfaces as a native crash.
+     * One dedicated, named, daemon thread is what the native library's threading contract
+     * demands; it is not hand-rolled concurrency, which is what this rule is actually for.
+     *
+     * Deliberately a path and not a package: the exemption should stop applying the moment
+     * this file is renamed or moved, so a stale carve-out cannot quietly widen the rule.
+     * `rule 5 exempts one file, and it still exists` is what enforces that.
+     */
+    val THREAD_EXEMPT = setOf(
+        "data/sip/src/main/kotlin/com/whatsappv2/data/sip/registration/stack/RealPjsipCoreGateway.kt",
+    )
+
     private val RAW_THREAD = Regex("""\bThread\s*\(""")
     private val VIEW_MODEL = Regex(""":\s*ViewModel\s*\(""")
     private val PUBLIC_MUTABLE_FLOW = Regex(

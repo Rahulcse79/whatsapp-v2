@@ -34,13 +34,13 @@ import javax.inject.Singleton
  * Recordings on disk, encrypted with a Keystore key (Task 58, §7, DoD 12).
  *
  * In its own `stack` package for the same reason `AndroidKeystoreSecretKeyProvider` and
- * `RealLinphoneCoreGateway` are in theirs: the Android Keystore cannot run on the JVM, so
+ * `RealPjsipCoreGateway` are in theirs: the Android Keystore cannot run on the JVM, so
  * keeping this beside the testable recorder would drag that package's coverage gate down
  * until the gate measured nothing.
  *
  * ## The shape of the protection
  *
- * The stack can only write plaintext — liblinphone opens a file and writes a WAV or MKV
+ * The stack can only write plaintext — PJSIP opens a file and writes a WAV or MKV
  * into it, and there is no hook to encrypt on the way through. So the window exists and is
  * closed rather than denied: the plaintext lives in the app's private `filesDir` for the
  * length of the call, and [seal] rewrites it as AES-GCM ciphertext and **deletes the

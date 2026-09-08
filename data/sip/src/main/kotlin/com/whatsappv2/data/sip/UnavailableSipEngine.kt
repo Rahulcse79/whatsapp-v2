@@ -30,7 +30,7 @@ import javax.inject.Singleton
 /**
  * A [SipEngine] that does nothing, because no SIP stack is embedded yet.
  *
- * **Temporary. Replaced by the liblinphone implementation in Task 27.**
+ * **Temporary. Replaced by the PJSIP implementation in Task 27.**
  *
  * It exists so the dependency graph is complete and the app runs: account management,
  * the list and the editor are all finished, and none of them should be blocked on the

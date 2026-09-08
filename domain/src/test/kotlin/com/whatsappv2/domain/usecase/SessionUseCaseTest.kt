@@ -131,7 +131,7 @@ class LogoutUseCaseTest {
         // Task 29's third done-when, at this layer: the engine is the only thing above
         // storage that is ever given credentials, and unregistering drops the account and
         // with it everything the stack kept for it. The stack half of the same rule is
-        // asserted in LinphoneSipEngineTest.
+        // asserted in PjsipSipEngineTest.
         val stored = account()
         repository.given(stored)
         engine.givenRegistered(stored)

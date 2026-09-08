@@ -3,7 +3,6 @@ package com.whatsappv2.ui.navigation
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Dialpad
-import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -19,9 +18,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
  *
  * There was a bottom bar with Dialer, Calls, Accounts and Settings on it. Removing the
  * Dialer and Settings tabs left one item, and a one-item bottom bar is chrome that
- * navigates nowhere — so the bar went too. Calls is now the app's home, and the other four
- * are reached from it: the dialler and the group page from floating buttons, settings from
- * the top-right icon, and the account list from inside settings.
+ * navigates nowhere — so the bar went too. Calls is now the app's home and the other three
+ * are reached from it: the dialler from a floating button, settings from the top-right
+ * icon, and the account list from inside settings.
+ *
+ * A fifth, `GROUP`, went with the group-call page it addressed — see `HistoryFabs`.
  *
  * Each still keeps a [label] and an [icon], which are now the words and glyph used by
  * whatever opens it rather than by a tab.
@@ -33,7 +34,6 @@ enum class AppDestination(
 ) {
     HISTORY("history", "Calls", Icons.Filled.History),
     DIALER("dialer", "Dialer", Icons.Filled.Dialpad),
-    GROUP("group", "Group call", Icons.Filled.Groups),
     ACCOUNTS("accounts", "Accounts", Icons.Filled.AccountCircle),
     SETTINGS("settings", "Settings", Icons.Filled.Settings),
     ;

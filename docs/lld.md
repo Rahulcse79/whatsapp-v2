@@ -80,7 +80,7 @@ in a test rather than being swallowed at run time.
 
 ## 2. `SipEngine` — the contract
 
-The seam between the application and liblinphone (§4.3). Everything above it is written
+The seam between the application and PJSIP (§4.3, ADR-006). Everything above it is written
 against `:domain` types and can be built, run and tested with `FakeSipEngine` — no server,
 no network, no device. It splits into four role interfaces so a ViewModel that only toggles
 the speaker does not have `transfer` in scope.
@@ -94,7 +94,8 @@ the speaker does not have `transfer` in scope.
 
 ### The five promises, and why each exists
 
-1. **Only `:domain` types cross it.** No `org.linphone.*` anywhere above `:data:sip`,
+1. **Only `:domain` types cross it.** No `org.pjsip.*` anywhere above `:data:sip` — and
+   no `org.linphone.*` anywhere at all, since ADR-006 removed that stack —
    enforced by architecture Rule 2 and a CI step. This is what makes `FakeSipEngine` a
    drop-in rather than an approximation.
 2. **Every `suspend` function is main-safe.** Implementations move to their own dispatcher
@@ -162,14 +163,14 @@ Only the classes that hold a decision. Anything absent is plumbing.
 
 | Class | Responsibility |
 |---|---|
-| `LinphoneSipEngine` | Bookkeeping and orchestration. Holds no rule that could live in `:domain` |
-| `RealLinphoneCoreGateway` | **The only class that names liblinphone.** Callbacks → buffered flows |
+| `PjsipSipEngine` | Bookkeeping and orchestration. Holds no rule that could live in `:domain` |
+| `RealPjsipCoreGateway` | **The only class that names the SDK.** Callbacks → buffered flows; every call into PJSIP confined to one registered thread |
 | `CallStateMapper` | Stack call states → FSM events. Pure, so it is testable off-device |
 | `TransferEventMapper` | REFER progress → `TransferEvent`. The 202 is *accepted*, never *succeeded* |
 | `ConferenceMapper` | Bridge roster → `ConferenceSession`, preserving "no roster" |
 | `RegistrationStateMapper` | Stack registration states → `RegistrationState` |
 | `RegistrationRecoveryCoordinator` | Owns the retry timers; asks `RegistrationRecoveryPolicy` what to do |
-| `LinphoneCallRecorder` | Gate, lifecycle, indicator. Never chooses where bytes go |
+| `PjsipCallRecorder` | Gate, lifecycle, indicator. Never chooses where bytes go |
 | `EncryptedRecordingStore` | AES-GCM under a Keystore key; deletes the plaintext before reporting success |
 
 ### `:app`

@@ -61,7 +61,7 @@ sealed interface RecordingError {
  *
  * Android does not let a normal app capture the far end of a call from the system audio
  * path; `MediaRecorder.AudioSource.VOICE_CALL` is refused outside privileged builds. What
- * *is* possible is recording the SIP media this app itself handles, which liblinphone
+ * *is* possible is recording the SIP media this app itself handles, which the SIP stack
  * does — and that is what an implementation records. The distinction matters legally and
  * is written down in `docs/security.md` rather than buried here: a user told "call
  * recording" who receives one side of the conversation has been misled.

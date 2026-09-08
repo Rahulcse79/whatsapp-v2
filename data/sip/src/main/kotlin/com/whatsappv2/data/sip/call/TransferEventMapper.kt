@@ -10,7 +10,7 @@ import com.whatsappv2.domain.model.TransferType
  * Turns the stack's transfer states into the events the app publishes (Task 55, DoD 10).
  *
  * Pure, and here rather than in the gateway for the same reason as [CallStateMapper]:
- * liblinphone does not run on the JVM, so a mapping that lived beside the SDK could only
+ * PJSIP does not run on the JVM, so a mapping that lived beside the SDK could only
  * ever be exercised on a device.
  *
  * ## The one thing worth knowing about REFER

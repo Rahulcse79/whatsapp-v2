@@ -48,6 +48,23 @@ class ArchitectureTest {
         assertNoViolations("Rule 5", ArchitectureRules.forbiddenConcurrencyApis(files))
     }
 
+    /**
+     * Rule 5's raw-`Thread` clause has one exemption, and an exemption naming a file that
+     * no longer exists is how a scope quietly becomes a licence. Renaming or deleting
+     * `RealPjsipCoreGateway` should fail here and force the carve-out to be re-justified,
+     * rather than leaving a dead path that matches nothing and forbids nothing.
+     */
+    @Test
+    fun `rule 5 exempts one file, and it still exists`() {
+        val present = files.map { it.relativePath }.toSet()
+        ArchitectureRules.THREAD_EXEMPT.forEach { exempt ->
+            assertTrue(
+                exempt in present,
+                "$exempt is exempt from rule 5 but is not in the source tree any more",
+            )
+        }
+    }
+
     @Test
     fun `rule 6 - ViewModels expose immutable state`() {
         assertNoViolations("Rule 6", ArchitectureRules.viewModelsExposeImmutableState(files))

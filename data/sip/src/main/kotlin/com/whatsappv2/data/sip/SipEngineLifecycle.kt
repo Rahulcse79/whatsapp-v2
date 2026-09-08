@@ -1,7 +1,7 @@
 package com.whatsappv2.data.sip
 
 import com.whatsappv2.core.common.logging.Logger
-import com.whatsappv2.data.sip.recording.LinphoneCallRecorder
+import com.whatsappv2.data.sip.recording.PjsipCallRecorder
 import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -11,10 +11,10 @@ import javax.inject.Singleton
  *
  * ## Why this exists at all
  *
- * [LinphoneSipEngine] is `internal`, deliberately — nothing above `:data:sip` should be
+ * [PjsipSipEngine] is `internal`, deliberately — nothing above `:data:sip` should be
  * able to name the class that owns the native stack. But something above it has to decide
  * *when* the stack exists, because the engine will not start itself: `register` returns
- * `EngineUnavailable` until [LinphoneSipEngine.start] has run, and a test asserts exactly
+ * `EngineUnavailable` until [PjsipSipEngine.start] has run, and a test asserts exactly
  * that.
  *
  * Between Task 27 and Task 30 nothing did. The engine was written, tested to 100% on its
@@ -28,12 +28,12 @@ import javax.inject.Singleton
  *
  * Because a native stack that comes up as a side effect of injection comes up before the
  * app has decided it wants one — and on a device that is a socket, a media library and a
- * wake-up path, not just an object. [LinphoneSipEngine] says so in its own KDoc. Keeping
+ * wake-up path, not just an object. [PjsipSipEngine] says so in its own KDoc. Keeping
  * the start explicit means the decision is somewhere a person can read it.
  */
 @Singleton
 class SipEngineLifecycle @Inject internal constructor(
-    private val engine: LinphoneSipEngine,
+    private val engine: PjsipSipEngine,
     /**
      * Started beside the engine so no recording outlives the stack (Task 58).
      *
@@ -41,7 +41,7 @@ class SipEngineLifecycle @Inject internal constructor(
      * the engine is: nothing above `:data:sip` should be able to name the thing that
      * knows where a recording's bytes are.
      */
-    private val recorder: LinphoneCallRecorder,
+    private val recorder: PjsipCallRecorder,
     private val logger: Logger,
 ) {
 

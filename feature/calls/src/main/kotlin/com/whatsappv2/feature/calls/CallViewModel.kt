@@ -113,7 +113,7 @@ class CallViewModel @Inject constructor(
      * happened between the press and the round trip completing. The fix is to acknowledge
      * the *press* immediately without claiming the *outcome* — an optimistic icon would
      * show "Muted" over a live microphone whenever the engine refused, which is the bug
-     * `LinphoneSipEngine.setHold` already refuses to ship for hold.
+     * `PjsipSipEngine.setHold` already refuses to ship for hold.
      *
      * It also guards the double press: a second tap while the first is in flight would
      * otherwise queue the opposite request and leave the icon and the microphone

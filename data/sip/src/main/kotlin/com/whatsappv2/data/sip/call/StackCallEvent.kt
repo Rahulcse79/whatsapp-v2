@@ -3,7 +3,7 @@ package com.whatsappv2.data.sip.call
 /**
  * A call's progress, as the stack reports it, with no SDK type in the signature.
  *
- * Reduced from liblinphone's twenty-odd `Call.State` values to the ones that mean
+ * Reduced from the stack's `pjsip_inv_state` and per-stream media statuses to the ones that mean
  * something different to this application. `Pausing`, `Updating`, `Released` and the rest
  * are collapsed at the SDK boundary rather than carried up: a state nothing branches on is
  * a state every reader has to check does not matter.
