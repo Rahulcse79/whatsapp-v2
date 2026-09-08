@@ -831,9 +831,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
     /**
      * Starts or stops sending captured video (Task 51).
      *
-     * PJSIP has no core-wide capture switch; capture belongs to a call's video stream. So this is `START_TRANSMIT`/`STOP_TRANSMIT` applied to every
-     * call that has one, which produces the same observable behaviour — the camera is
-     * released when `CameraPolicy` says nobody should hold it.
+     * PJSIP has no core-wide capture switch; capture belongs to a call's video stream. So
+     * this is `START_TRANSMIT`/`STOP_TRANSMIT` applied to every call that has one, which
+     * produces the same observable behaviour — the camera is released when `CameraPolicy`
+     * says nobody should hold it.
      */
     override fun setCameraCapturing(capturing: Boolean) {
         onPjsip("setCameraCapturing") {
