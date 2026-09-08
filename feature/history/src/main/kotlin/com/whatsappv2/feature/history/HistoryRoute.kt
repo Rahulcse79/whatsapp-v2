@@ -27,7 +27,6 @@ import com.whatsappv2.domain.model.CallLogEntry
 fun HistoryRoute(
     onCallPlaced: (CallId) -> Unit,
     onOpenDialer: () -> Unit,
-    onOpenGroupCall: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: HistoryViewModel = hiltViewModel(),
@@ -64,7 +63,7 @@ fun HistoryRoute(
         }
     }
 
-    val actions = remember(viewModel, onOpenDialer, onOpenGroupCall, onOpenSettings, videoGate) {
+    val actions = remember(viewModel, onOpenDialer, onOpenSettings, videoGate) {
         HistoryActions(
             onFilterChanged = viewModel::onFilterChanged,
             onEntryOpened = viewModel::onEntryOpened,
@@ -76,7 +75,6 @@ fun HistoryRoute(
             onCallBack = viewModel::onCallBack,
             onVideoCallBack = { entry -> videoGate { viewModel.onVideoCallBack(entry) } },
             onOpenDialer = onOpenDialer,
-            onOpenGroupCall = onOpenGroupCall,
             onOpenSettings = onOpenSettings,
         )
     }

@@ -20,7 +20,6 @@ import androidx.compose.material.icons.automirrored.filled.CallMissed
 import androidx.compose.material.icons.automirrored.filled.CallReceived
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dialpad
-import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Videocam
@@ -32,7 +31,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Tab
@@ -181,10 +179,12 @@ private fun CallList(
 }
 
 /**
- * The dialler, and the group-call page above it (Tasks 70, 78).
+ * The dialler (Task 70).
  *
- * The dialler is the larger of the two because placing a call is what people open this app
- * to do; the group button is a small FAB so it reads as the secondary action it is.
+ * A second, smaller FAB above it opened the group-call page. That page is gone: it built a
+ * group this app had no way to act on, because ADR-003's dial-in MCU gives a client no way
+ * to create a room or invite anyone into one. Dialling a bridge is an ordinary call and
+ * the dialler already places it.
  */
 @Composable
 private fun HistoryFabs(actions: HistoryActions) {
@@ -192,14 +192,6 @@ private fun HistoryFabs(actions: HistoryActions) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.medium),
     ) {
-        SmallFloatingActionButton(
-            onClick = actions.onOpenGroupCall,
-            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-            modifier = Modifier.testTag(TAG_GROUP_CALL),
-        ) {
-            Icon(Icons.Filled.Groups, contentDescription = "Start a group call")
-        }
         FloatingActionButton(
             onClick = actions.onOpenDialer,
             elevation = FloatingActionButtonDefaults.elevation(),
@@ -422,7 +414,6 @@ internal const val TAG_CONFIRM_CLEAR = "history-confirm-clear"
 internal const val TAG_CLEAR_ALL = "history-clear-all"
 internal const val TAG_SETTINGS = "history-settings"
 internal const val TAG_DIALER = "history-dialer"
-internal const val TAG_GROUP_CALL = "history-group-call"
 
 internal fun filterTag(filter: CallLogFilter) = "history-filter-${filter.name.lowercase()}"
 internal fun entryTag(entry: CallLogEntry) = "history-entry-${entry.id.value}"

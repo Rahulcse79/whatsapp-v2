@@ -33,7 +33,6 @@ data class HistoryActions(
     /** Open the dialler, which is a floating button on this screen rather than a tab (Task 70). */
     val onOpenDialer: () -> Unit = {},
     /** Open the group-call page (Task 78). */
-    val onOpenGroupCall: () -> Unit = {},
     /** Open settings, which is where the accounts list lives too (Task 69). */
     val onOpenSettings: () -> Unit = {},
 )

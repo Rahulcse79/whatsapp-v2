@@ -70,16 +70,6 @@ class AppRootNavigationTest {
     }
 
     @Test
-    fun `the group call page is reachable from Calls`() {
-        compose.setContent { WhatsAppV2Theme { AppRoot() } }
-
-        compose.onNodeWithContentDescription("Start a group call").performClick()
-        compose.waitForIdle()
-
-        compose.onNodeWithText("Conference address").assertIsDisplayed()
-    }
-
-    @Test
     fun `settings is reachable from the top bar, and accounts from settings`() {
         // Task 69's whole claim in one path: neither is a tab any more, and both must
         // still be reachable in a couple of taps.
