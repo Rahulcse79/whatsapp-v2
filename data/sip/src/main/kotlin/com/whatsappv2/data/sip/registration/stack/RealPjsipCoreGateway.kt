@@ -186,45 +186,93 @@ internal class RealPjsipCoreGateway @Inject constructor(
      */
     private var linkDownSeen = false
 
+    /**
+     * Why [start] failed, when it did, so a later operation can say so instead of
+     * failing silently.
+     *
+     * Written by [start] and read by [reportStackUnavailable], both of which run on the
+     * [pjsip] executor thread, so it needs no synchronisation. Null means either the
+     * stack is up or nothing has tried yet - [endpoint] distinguishes those.
+     */
+    private var startFailure: Throwable? = null
+
     // ------------------------------------------------------------------ lifecycle
 
     override fun start() {
         onPjsip("start") {
             if (endpoint != null) return@onPjsip
 
-            // Without this there are no capture devices at all, and a video call
-            // negotiates a stream it can never fill.
-            PjCameraInfo2.SetCameraManager(context.getSystemService(CameraManager::class.java))
+            // Staged deliberately. Every line below can fail for a different reason, and
+            // until this was traced from a handset the only evidence of any of them was
+            // one line saying "start failed" with a message and no stack trace. The stage
+            // that logged last is the stage that broke.
+            logger.info(TAG, "start: begin")
+            startFailure = null
 
-            val created = Endpoint()
-            created.libCreate()
-            // The one registration this process makes. Every later call into PJSIP is
-            // posted to this same thread, so no second one is ever needed.
-            created.libRegisterThread(PJSIP_THREAD)
-            created.libInit(endpointConfig())
-
-            // After libInit and before libStart, and both halves of that matter. libInit
-            // is what registers the codecs, so there is nothing to configure before it;
-            // a stream created after libStart has already taken its parameters, so
-            // configuring later changes nothing until the next call.
-            created.tuneOpus()
-            created.tuneVideoCodecs()
-
-            // All three, once, at startup. PJSIP binds an account to a transport by id,
-            // so the transport an account needs has to exist before the account does —
-            // and creating them lazily would mean the first TLS account paid for a
-            // listener the UDP ones had already been running without.
-            transports[TRANSPORT_UDP] =
-                created.transportCreate(pjsip_transport_type_e.PJSIP_TRANSPORT_UDP, TransportConfig())
-            transports[TRANSPORT_TCP] =
-                created.transportCreate(pjsip_transport_type_e.PJSIP_TRANSPORT_TCP, TransportConfig())
-            transports[TRANSPORT_TLS] =
-                created.transportCreate(pjsip_transport_type_e.PJSIP_TRANSPORT_TLS, tlsTransportConfig())
-
-            created.libStart()
-            endpoint = created
-            logger.info(TAG, "SIP core started (PJSIP)")
+            runCatching { startEndpoint() }
+                .onSuccess { logger.info(TAG, "start: SIP core running") }
+                .onFailure { cause ->
+                    // Recorded, not just logged. Without this the next addAccount knows
+                    // only that `endpoint` is null and cannot say why - which is exactly
+                    // how a dead stack became an indefinite "Registering" spinner.
+                    startFailure = cause
+                    logger.error(TAG, "start: FAILED - the SIP stack is not running", cause)
+                }
         }
+    }
+
+    /**
+     * Brings the endpoint up, or throws saying which stage did not survive.
+     *
+     * Separated from [start] so the failure has somewhere to be caught once, rather than
+     * a `runCatching` around each stage that would turn a hard failure into five soft
+     * ones and carry on with a half-built stack.
+     */
+    private fun startEndpoint() {
+        // Without this there are no capture devices at all, and a video call
+        // negotiates a stream it can never fill.
+        PjCameraInfo2.SetCameraManager(context.getSystemService(CameraManager::class.java))
+
+        // This is where a build with no `libpjsua2.so` dies, and it dies here rather
+        // than at `libCreate` because touching `Endpoint` runs the static initialiser
+        // of `pjsua2JNI` - which calls `swig_module_init()` with nothing behind it.
+        // Note that only the FIRST attempt reports UnsatisfiedLinkError; a class whose
+        // initialiser threw is permanently unusable, so every retry after it reports
+        // NoClassDefFoundError instead, for the same underlying reason.
+        val created = Endpoint()
+        logger.info(TAG, "start: Endpoint constructed (JNI bindings loaded)")
+
+        created.libCreate()
+        logger.info(TAG, "start: libCreate ok")
+        // The one registration this process makes. Every later call into PJSIP is
+        // posted to this same thread, so no second one is ever needed.
+        created.libRegisterThread(PJSIP_THREAD)
+        created.libInit(endpointConfig())
+        logger.info(TAG, "start: libInit ok")
+
+        // After libInit and before libStart, and both halves of that matter. libInit
+        // is what registers the codecs, so there is nothing to configure before it;
+        // a stream created after libStart has already taken its parameters, so
+        // configuring later changes nothing until the next call.
+        created.tuneOpus()
+        created.tuneVideoCodecs()
+
+        // All three, once, at startup. PJSIP binds an account to a transport by id,
+        // so the transport an account needs has to exist before the account does —
+        // and creating them lazily would mean the first TLS account paid for a
+        // listener the UDP ones had already been running without.
+        transports[TRANSPORT_UDP] =
+            created.transportCreate(pjsip_transport_type_e.PJSIP_TRANSPORT_UDP, TransportConfig())
+        transports[TRANSPORT_TCP] =
+            created.transportCreate(pjsip_transport_type_e.PJSIP_TRANSPORT_TCP, TransportConfig())
+        transports[TRANSPORT_TLS] =
+            created.transportCreate(pjsip_transport_type_e.PJSIP_TRANSPORT_TLS, tlsTransportConfig())
+
+        logger.info(TAG, "start: transports created (UDP, TCP, TLS)")
+
+        created.libStart()
+        logger.info(TAG, "start: libStart ok")
+        endpoint = created
     }
 
     /**
@@ -466,7 +514,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
     override fun addAccount(account: StackAccount) {
         onPjsip("addAccount") {
             val running = endpoint ?: run {
-                logger.error(TAG, "addAccount before start")
+                reportStackUnavailable(account.key, "addAccount")
                 return@onPjsip
             }
 
@@ -490,6 +538,38 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // docs/security.md rather than hidden behind an API that looks per-account.
             running.applyCodecs(account)
         }
+    }
+
+    /**
+     * Tells whoever asked that the stack is not running, and why.
+     *
+     * This existed as `logger.error("addAccount before start")` and nothing else, which
+     * is the defect a handset found: `PjsipSipEngine.register` sets
+     * `RegistrationState.Registering` before calling through, the call returned without
+     * doing anything, and no event ever arrived to move the state off it. A dead stack
+     * presented as an indefinite spinner - indistinguishable, to the user, from a slow
+     * network or a wrong password.
+     *
+     * A FAILED event with no status code maps to `SipError.TransportFailure`, which is
+     * the honest reading: the request never reached a server, so this is not a rejection
+     * to check a password against. [startFailure] supplies the actual cause, because
+     * "the stack is not running" is not an answer anybody can act on.
+     */
+    private fun reportStackUnavailable(accountKey: String, operation: String) {
+        val cause = startFailure
+        val reason = cause
+            ?.let { "${it.javaClass.simpleName}: ${it.message ?: "no message"}" }
+            ?: "the SIP stack was never started"
+
+        logger.error(TAG, "$operation refused - $reason", cause)
+        events.tryEmit(
+            StackRegistrationEvent(
+                accountKey = accountKey,
+                state = StackRegistrationState.FAILED,
+                statusCode = null,
+                message = reason,
+            ),
+        )
     }
 
     override fun removeAccount(accountKey: String) {
@@ -1167,7 +1247,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
      */
     private fun onPjsip(what: String, block: () -> Unit) {
         pjsip.execute {
-            runCatching(block).onFailure { logger.error(TAG, "$what failed: ${it.message}") }
+            // The throwable, not just its message. A message alone cannot say which frame
+            // in a JNI call threw, and for an UnsatisfiedLinkError the frame is the answer.
+            runCatching(block).onFailure { logger.error(TAG, "$what failed: ${it.message}", it) }
         }
     }
 
