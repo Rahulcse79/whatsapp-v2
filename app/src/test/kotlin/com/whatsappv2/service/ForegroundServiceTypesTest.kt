@@ -116,5 +116,37 @@ class ForegroundServiceTypesTest {
         assertEquals(ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL, types)
     }
 
+    @Test
+    fun `a registration never declares a type a permission can refuse`() {
+        // What the fallback in RegistrationService.enterForeground rests on. When
+        // startForeground is refused for a call's types, the service retries as a
+        // REGISTRATION instead of stopping - because stopping before startForeground has
+        // succeeded is what kills the process with
+        // ForegroundServiceDidNotStartInTimeException, which is the crash a handset found
+        // on 2026-09-08.
+        //
+        // That retry is only worth making while REGISTRATION declares nothing the platform
+        // checks a runtime permission for. `microphone` and `camera` are exactly those;
+        // `specialUse` and `phoneCall` rest on install-time permissions the manifest holds,
+        // so they cannot be revoked out from under the service.
+        val flags = listOf(false, true)
+        val combinations = flags.flatMap { mic -> flags.flatMap { cam -> flags.map { vid -> Triple(mic, cam, vid) } } }
+
+        for (sdkInt in listOf(q, u)) {
+            for ((microphone, camera, video) in combinations) {
+                val types = ForegroundServiceTypes.of(
+                    reason = ServiceReason.REGISTRATION,
+                    sdkInt = sdkInt,
+                    microphoneGranted = microphone,
+                    cameraGranted = camera,
+                    videoActive = video,
+                )
+
+                assertFalse(types has ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                assertFalse(types has ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+            }
+        }
+    }
+
     private infix fun Int.has(type: Int): Boolean = this and type == type
 }
