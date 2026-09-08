@@ -339,8 +339,23 @@ two clauses rather than one. Narrowing as originally specified would have remove
 thing that catches a liblinphone import being added back, which is the opposite of what
 this task is for.
 
-**This was done ahead of a green P-1**, on an explicit instruction, so the tree does not
-compile until `pjsip/libs/pjsua2.aar` exists. That is the one remaining gate.
+**This was done ahead of a green P-1**, on an explicit instruction, so for a day the tree
+did not compile at all: `:data:sip:compileDebugKotlin` failed with 259 unresolved
+`org.pjsip` references, and because `./gradlew build` stops there, nothing behind it —
+detekt, lint, the architecture rules, the whole rest of the gate — ran on any commit.
+
+**That is fixed, and not by waiting for the binary.** The Java half of the AAR is SWIG
+output generated from the pjsua2 headers alone, with no NDK, no OpenSSL and no
+cross-compile, so it is checked in as `:pjsip:api` (313 generated files plus the five
+hand-written `org.pjsip` camera and audio shims pjproject ships beside its C) and
+`:data:sip` falls back to it whenever `pjsip/libs/pjsua2.aar` is absent. The two are
+mutually exclusive — the AAR always wins — because both on one classpath is a
+duplicate-class failure at dex time.
+
+So the adapter is now compiled and checked against the real PJSIP API on every commit.
+What is still gated on P-1 is *running*: there is no `libpjsua2.so` without the AAR, and
+an APK built without it raises `UnsatisfiedLinkError` on the first call. `:pjsip` says
+exactly that at configuration time.
 
 **Verified:** zero `org.linphone` imports in production code, zero `linphone` references
 in build files.
@@ -352,6 +367,29 @@ IVR, hold/resume, blind and attended transfer, SRTP mandatory refusing a clearte
 
 **Done when:** each is recorded with its result. None of these are covered by the JVM suite
 — they all cross the seam being replaced, and the tests deliberately do not.
+
+### P-8 · Restore TLS certificate verification  🔴 **outstanding — a behaviour change, not a gap in the plan**
+
+The stack that was removed verified the server certificate and its CN on every TLS
+connection, unconditionally, in `RealLinphoneCoreGateway.applySecurity`. The replacement
+does not: `RealPjsipCoreGateway` creates its TLS transport with a default
+`TransportConfig()` (`data/sip/.../RealPjsipCoreGateway.kt:201`), and pjsua2's
+`TlsConfig.verifyServer` defaults to off. Nothing in the JVM suite covers it, because the
+seam is exactly where the tests stop.
+
+This was found while correcting the two comments that still described the old stack —
+`app/src/main/AndroidManifest.xml` and `app/src/main/res/xml/network_security_config.xml`
+both told the reader that certificate validation was set in a class ADR-006 deleted. The
+comments are now accurate; the behaviour they describe is not yet restored.
+
+**Deliberately not fixed in the same change that made the tree compile.** Turning
+verification on is a functional change to a security path, on a stack that has never
+completed a call, and it belongs with P-7's hardware run where a rejected certificate can
+actually be observed rather than assumed.
+
+**Done when:** `verifyServer` is set on the TLS transport, a certificate the device does
+not trust is refused on hardware, and docs/security.md states which of the two halves owns
+which check.
 
 ---
 

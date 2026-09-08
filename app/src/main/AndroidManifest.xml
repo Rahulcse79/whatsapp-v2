@@ -89,9 +89,10 @@
       credentials, and backup would copy them off the device (§7, DoD 12).
 
       usesCleartextTraffic and networkSecurityConfig are Task 62's platform half. They do
-      not cover SIP over TLS - liblinphone runs its own TLS on its own sockets - so the
-      certificate validation for that path is set in RealLinphoneCoreGateway. Both are
-      needed; see docs/security.md.
+      not cover SIP over TLS - PJSIP opens its own sockets and runs its own TLS through
+      the OpenSSL that build-pjsip.yml cross-compiles - so the settings for that path are
+      the ones RealPjsipCoreGateway gives its TLS transport. Both are needed; see
+      docs/security.md.
     -->
     <application
         android:name=".SipApplication"

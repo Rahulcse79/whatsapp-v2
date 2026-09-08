@@ -15,12 +15,14 @@
 
   It covers Firebase and any HTTP this app makes through the platform.
 
-  It does NOT cover SIP over TLS: liblinphone opens its own sockets and runs its own TLS
-  through mbedTLS, so `network_security_config.xml` never sees them. The equivalent
-  settings for that path are `verifyServerCertificates` and `verifyServerCn`, set
-  unconditionally in RealLinphoneCoreGateway.applySecurity. Both halves are needed and
-  neither substitutes for the other; docs/security.md says so in one place rather than
-  leaving somebody to discover it.
+  It does NOT cover SIP over TLS: PJSIP opens its own sockets and runs its own TLS
+  through OpenSSL, so `network_security_config.xml` never sees them. The equivalent
+  settings for that path belong to the TLS transport RealPjsipCoreGateway creates, and
+  ADR-006 replaced the stack that used to carry them - `TransportConfig.tlsConfig` is
+  currently left at its defaults, which is recorded as an open item in
+  docs/pjsip-migration.md P-8 rather than implied to be settled here. Both halves are
+  needed and neither substitutes for the other; docs/security.md says so in one place
+  rather than leaving somebody to discover it.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false">
