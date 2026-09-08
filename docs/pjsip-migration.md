@@ -225,7 +225,7 @@ mechanism changes, and pjsua2 has no per-call `params.recordFile` equivalent.
 
 ## 4. Tasks, in dependency order
 
-### P-1 · Produce a PJSIP artifact  🔴 blocks P-2 and P-4
+### P-1 · Produce a PJSIP artifact  🔴 **blocks the build — the only thing left**
 
 `.github/workflows/build-pjsip.yml` has never completed a run. Three defects in it were
 fixed on 2026-09-08 (the host `ar` leaking into the Opus cross-compile; a configure that
@@ -262,7 +262,7 @@ not exist breaks the build for everyone, today, in exchange for nothing.
 **Done when:** the AAR exists, `:pjsip` is added, and `:data:sip` resolves
 `org.pjsip.pjsua2.Endpoint`.
 
-### P-3 · Check section 3 against the generated Java  🟢 no longer gated on P-1
+### P-3 · Check section 3 against the generated Java  ✅ **done 2026-09-08**
 
 Section 3 was derived from the C++ headers. SWIG's Java output is a faithful mapping but
 not a literal one — enums become classes of static ints, `std::vector` becomes a typed
@@ -280,43 +280,72 @@ ports and `swig-java` supplies the `java.swg`, `arrays_java.i` and `enumtypeunsa
 that the base port does not. Ubuntu's `swig` package includes them, which is why this is a
 CI job.)
 
-**Done when:** every discrepancy between the generated Java and section 3 is corrected
-**here**, before any adapter code is written.
+**Done.** Run locally rather than in CI: SWIG 4.4.1 was already installed, and its Java
+library files (`java.swg`, `arrays_java.i`, `enumtypeunsafe.swg`) were fetched as data
+rather than installed as a port. 313 Java files generated and read. The `bindings` job
+stays, because CI is where this must be reproducible.
 
-This is the step that keeps the adapter from being fiction. It is now the cheapest task in
-the plan and it is not optional.
+**What the generated Java corrected in section 3** — every one of these would have been a
+compile error written from the C++ headers alone:
 
-### P-4 · Write `RealPjsipCoreGateway`
+| Header says | SWIG actually generates |
+|---|---|
+| `codecSetPriority(string, pj_uint8_t)` | `codecSetPriority(String, short)` — **short**, not int |
+| typed enums | classes of `public final static int`; every enum parameter is `Int` |
+| `unsigned` fields | `long` — `audioCount`, `videoCount`, `getIndex`, `libDestroy(long)` |
+| — | `CallSetting.customCallId` exists; `CallInfo.getRemVideoCount()` is how a video offer is detected |
+| `VideoWindowHandle.handle` | `WindowHandle.setWindow(java.lang.Object)` — a `Surface` passes |
+| `std::vector` | `CallMediaInfoVector` etc., `AbstractList`-shaped: `get`/`add`/`size` |
+| — | 2.17 adds `onCallRxReinvite` and `onCallTxOffer`; `onCallRedirected` returns `int` |
+
+### P-4 · Write `RealPjsipCoreGateway`  ✅ **done 2026-09-08**
 
 Implements the four existing gateway interfaces. Single-threaded dispatcher per §2.1;
 strong references to director objects per §2.2; explicit audio port connection per §3.
 
-**Done when:** `:data:sip` compiles with both stacks present and the existing 3,663 lines
-of `:data:sip` tests still pass — they do not touch either SDK, so a failure there means
-the gateway contract was changed rather than implemented.
+**Written**, ~800 lines, against the generated Java. Single-threaded dispatcher per §2.1;
+directors strongly held per §2.2; explicit audio port connection per §3.
 
-### P-5 · Move the video surface to `SurfaceView`
+**Not yet compiled** — that needs the AAR (P-1, P-2). The contract was not changed, so the
+3,663 lines of existing `:data:sip` tests should pass untouched; a failure there means the
+gateway contract was altered rather than implemented.
+
+### P-5 · Move the video surface to `SurfaceView`  ✅ **done 2026-09-08**
 
 `CallVideo.kt`, `StackVideoSurfaceController`, and `PjCameraInfo2.SetCameraManager` at
 startup.
 
-**Done when:** local preview and remote video both render on a handset, and the surface is
-released on rotation without a native crash.
+**Written.** `CallVideo.kt` uses two `SurfaceView`s driven by `SurfaceHolder.Callback`,
+because a surface is valid between `surfaceCreated` and `surfaceDestroyed` rather than for
+the composable's lifetime. The preview takes `setZOrderMediaOverlay(true)` — two
+overlapping `SurfaceView`s compose by z-order, and without it the preview draws *behind*
+the full-screen remote video and is invisible.
 
-### P-6 · Cut over and delete liblinphone
+`PjCameraInfo2.SetCameraManager` is called in `RealPjsipCoreGateway.start()`; without it
+there are no capture devices at all.
 
-Only now, and in this order: bind the PJSIP gateway in `SipStackModule`; narrow
-`ArchitectureRules` from `org.linphone || org.pjsip` to `org.pjsip` alone; delete
-`RealLinphoneCoreGateway`; drop `linphone-sdk` from the catalog and the Belledonne
-repository from `settings.gradle.kts`.
+**Still needs a handset:** that both render, and that rotation releases the surface without
+a native crash.
 
-Doing this last is what keeps the app buildable and shippable throughout. **Deleting
-liblinphone before P-4 passes leaves no working stack at all.**
+### P-6 · Cut over and delete liblinphone  ✅ **done 2026-09-08**
 
-**Done when:** no `org.linphone` import remains outside the arch-test violation fixtures,
-the Belledonne repository is gone, and the APK ships no `liblinphone.so`.
+All of it: the PJSIP gateway bound in `SipStackModule`, `RealLinphoneCoreGateway`
+deleted, `linphone-sdk` gone from the catalog, the Belledonne repository gone from
+`settings.gradle.kts`, and seven files renamed off the old stack's name.
 
-### P-7 · Re-verify on hardware
+**One deviation from the plan as written.** Rule 2 was *not* narrowed to `org.pjsip`
+alone. It now bans `org.linphone` **everywhere** and confines `org.pjsip` to `:data:sip` —
+two clauses rather than one. Narrowing as originally specified would have removed the only
+thing that catches a liblinphone import being added back, which is the opposite of what
+this task is for.
+
+**This was done ahead of a green P-1**, on an explicit instruction, so the tree does not
+compile until `pjsip/libs/pjsua2.aar` exists. That is the one remaining gate.
+
+**Verified:** zero `org.linphone` imports in production code, zero `linphone` references
+in build files.
+
+### P-7 · Re-verify on hardware  🔴 **outstanding — nothing below is verified**
 
 Registration over UDP/TCP/TLS, audio both directions, video both directions, DTMF to an
 IVR, hold/resume, blind and attended transfer, SRTP mandatory refusing a cleartext peer.

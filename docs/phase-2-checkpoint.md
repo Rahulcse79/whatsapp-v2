@@ -30,8 +30,9 @@ registered would let screens be built against behaviour that does not exist, and
 would surface only when the real stack arrived. Task 27 replaces one Hilt binding.
 
 **The licence question is still open** (ADR-002, Q1/Q2). Development proceeds under the
-GPLv3 working assumption. If the app ships closed-source, liblinphone requires a paid
-commercial licence from Belledonne. Nothing in Phases 1–8 depends on the answer; Task 64
+GPLv2 working assumption — ADR-006 moved the stack to PJSIP, whose `COPYING` is GPL
+version 2. If the app ships closed-source, PJSIP requires a paid commercial licence from
+Teluu. Nothing in Phases 1–8 depends on the answer; Task 64
 does.
 
 ## Deliberate deviations from the task list

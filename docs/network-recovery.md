@@ -22,7 +22,7 @@ both leave it unregistered — and they call for opposite behaviour.
 - `RegistrationRecoveryCoordinator` (`:data:sip`) — holds the bookkeeping and the timers,
   debounces the network, and drives the stack.
 - `ConnectivityNetworkMonitor` (`:data:sip/network/platform`) — the only class that touches
-  `ConnectivityManager`, isolated for the same reason as the liblinphone gateway.
+  `ConnectivityManager`, isolated for the same reason as the PJSIP gateway.
 
 Recovery is owned by the SIP engine and starts and stops with it, **not** by `:app`. It has
 to outlive the foreground service, because the case it exists for — no network, so nothing
@@ -102,6 +102,6 @@ the duplicate filter.
 
 These lines are produced and asserted on the JVM, against `FakeSipEngine` and a fake
 network monitor. That is what makes them reproducible; it is also their limit. The two
-classes that cannot run there — `ConnectivityNetworkMonitor` and the liblinphone gateway's
+classes that cannot run there — `ConnectivityNetworkMonitor` and the PJSIP gateway's
 `setNetworkReachable` — are verified on-device from Task 33, and this document should gain
 a `logcat` capture from a real handover at that point.

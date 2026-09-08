@@ -95,8 +95,8 @@ to make one impossible rather than merely discouraged.
 have been since Android 10; they are available to the platform dialer and to privileged
 builds, and to nothing else.
 
-What *is* possible is recording the SIP media this app handles itself, which liblinphone
-does through `Call.startRecording()`. That covers both directions of a SIP call, because
+What *is* possible is recording the SIP media this app handles itself, which PJSIP does
+through an `AudioMediaRecorder` both call legs transmit into. That covers both directions of a SIP call, because
 both streams pass through this process — but it covers only SIP calls placed by this app.
 A cellular call happening at the same time is not recorded and cannot be.
 
@@ -142,7 +142,7 @@ said, including the DTMF that §7 forbids logging.
 - **Encrypted.** `EncryptedRecordingStore` seals each finished file with AES-GCM under a
   key that never leaves the Android Keystore, and **deletes the plaintext before reporting
   success**.
-- **The plaintext window is real and is closed.** liblinphone can only write a plain file,
+- **The plaintext window is real and is closed.** The stack can only write a plain file,
   so one exists inside the app's private `filesDir` for the length of the call. A crash in
   that window leaves a `.tmp`, which the store sweeps on its next construction rather than
   leaving to be found later.
@@ -192,7 +192,7 @@ This is the thing most likely to be got wrong by somebody changing one of them.
 
 | Path | Whose TLS | Configured by |
 |---|---|---|
-| SIP signalling and media | **liblinphone's own**, over mbedTLS on its own sockets | `RealLinphoneCoreGateway.applySecurity` |
+| SIP signalling and media | **PJSIP's own**, over OpenSSL on its own sockets | `RealPjsipCoreGateway` — `TransportConfig` and `AccountConfig.mediaConfig` |
 | Firebase, and any platform HTTP | Android's | `res/xml/network_security_config.xml` |
 
 `network_security_config.xml` **never sees a SIP packet.** A change that tightened it and
@@ -239,8 +239,10 @@ encryption while another is a carrier trunk that cannot do it at all.
 
 Two gates enforce Mandatory, and they catch different things:
 
-1. `setMediaEncryptionMandatory(true)` makes liblinphone refuse the **negotiation**.
-2. `LinphoneSipEngine.enforceMediaEncryption` drops a call that reached **running media**
+1. `AccountConfig.mediaConfig.srtpUse = PJMEDIA_SRTP_MANDATORY` makes PJSIP refuse the
+   **negotiation**, with `srtpSecureSignaling` set alongside it so the requirement covers
+   the signalling path too.
+2. `PjsipSipEngine.enforceMediaEncryption` drops a call that reached **running media**
    without encryption. That is the case the first gate cannot see, and it is the one a test
    can hold — proving the first needs a cleartext-only peer on a real network.
 
