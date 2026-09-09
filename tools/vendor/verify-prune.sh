@@ -29,6 +29,15 @@
 # here, in seconds, before anything is committed.
 #
 # **The real rule: prune only what the build files never mention.** Not "tests and docs".
+#
+# ## What this check CANNOT see, stated so nobody trusts it further than it goes
+#
+# It greps for pruned PATHS. A build file that names a directory as a bare word — pjproject's
+# `swig/Makefile:5` says `LANG = java csharp`, and `csharp` is a directory — is invisible to
+# it. That one cost a fifth failed run, four minutes in, after the Java wrapper had already
+# linked. The remedy there was to name the target (`make java`) rather than restore a binding
+# nobody consumes; the general remedy is to read the tree's own build files when pruning
+# something whose name could also be a target.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

@@ -185,7 +185,16 @@ make dep && make clean && make -j"$jobs"
 #      link above; the java Makefile appends `$(LDFLAGS)` to a line it has already
 #      assembled, and in the green workflow that step was a separate shell where the
 #      export did not reach. Alignment is already handled by the pjproject link.
-( unset LDFLAGS; cd pjsip-apps/src/swig && make )
+#   3. The target is `java`, not the default. `swig/Makefile:5` sets `LANG = java csharp`
+#      for Android, so a bare `make` also builds the C# bindings — which this project does
+#      not want, and whose tree is pruned, so the build got as far as
+#      `make[3]: *** [Makefile:27: csharp] Error 2` AFTER linking the Java wrapper
+#      successfully. Naming the target is better than restoring a binding nobody consumes.
+#
+#      Note what this one says about `tools/vendor/verify-prune.sh`: it greps build files
+#      for pruned PATHS, and `LANG = java csharp` is a bare word. A checker that reads
+#      paths cannot see a target name, and this is the class of prune it will not catch.
+( unset LDFLAGS; cd pjsip-apps/src/swig && make java )
 
 jni_so="$work/pjproject/pjsip-apps/src/swig/java/android/pjsua2/src/main/jniLibs/$ABI/libpjsua2.so"
 [ -f "$jni_so" ] || { echo "::error::the SWIG Java build produced no $jni_so" >&2
