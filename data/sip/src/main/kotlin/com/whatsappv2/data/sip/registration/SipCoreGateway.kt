@@ -121,6 +121,17 @@ internal data class StackAccount(
      * is a carrier trunk that cannot do it at all.
      */
     val mediaEncryption: StackMediaEncryption = StackMediaEncryption.OPTIONAL,
+    /**
+     * NAT traversal, from the account's own `NatPolicy` (§5.1).
+     *
+     * These used to stop at the domain: the gateway hardcoded `iceEnabled = true` and
+     * never read the policy at all, so three per-account settings the UI collects were
+     * decoration. ICE forced on also puts `a=ice-ufrag` and `a=candidate` into every
+     * offer, which on a flat LAN buys nothing and is one of the things a B2BUA can refuse.
+     */
+    val iceEnabled: Boolean = true,
+    val stunEnabled: Boolean = true,
+    val keepaliveIntervalSeconds: Int = 30,
 
     /**
      * The audio codecs this account offers, most preferred first (§5.1).

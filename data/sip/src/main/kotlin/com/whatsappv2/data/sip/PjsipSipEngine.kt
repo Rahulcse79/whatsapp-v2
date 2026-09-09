@@ -1356,6 +1356,9 @@ internal class PjsipSipEngine @Inject constructor(
         // whatever the stack's built-in defaults happened to be and the codec editor
         // changed nothing at all. The stack takes RTP mime types, which is what
         // `payloadName` is.
+        iceEnabled = natPolicy.iceEnabled,
+        stunEnabled = natPolicy.stunEnabled,
+        keepaliveIntervalSeconds = natPolicy.keepaliveIntervalSeconds,
         audioCodecs = codecs.audio.map { it.payloadName },
         videoCodecs = codecs.video.map { it.payloadName },
         // §7, DoD 13. MANDATORY becomes `setMediaEncryptionMandatory(true)` on the stack,

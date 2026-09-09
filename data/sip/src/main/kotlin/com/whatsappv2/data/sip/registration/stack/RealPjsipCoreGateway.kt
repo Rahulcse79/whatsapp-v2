@@ -58,6 +58,7 @@ import org.pjsip.pjsua2.pjsip_status_code
 import org.pjsip.pjsua2.pjsip_transport_type_e
 import org.pjsip.pjsua2.pjsua_call_flag
 import org.pjsip.pjsua2.pjsua_call_media_status
+import org.pjsip.pjsua2.pjsua_stun_use
 import org.pjsip.pjsua2.pjsua_call_vid_strm_op
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -783,7 +784,27 @@ internal class RealPjsipCoreGateway @Inject constructor(
         proxyUri?.let { sipConfig.proxies.add(it) }
         transports[transport.uppercase()]?.let { sipConfig.transportId = it }
 
-        natConfig.iceEnabled = true
+        // The account's policy, not a constant. This was `= true` regardless of what the
+        // account said, which made three settings in the account form do nothing - and
+        // forced `a=ice-ufrag`, `a=ice-pwd` and `a=candidate` into every SDP offer this
+        // app sends. On a flat LAN that buys nothing, and a B2BUA that does not want to
+        // parse it has one more reason to answer 488.
+        // Read out before the `apply`, because inside it `iceEnabled` would resolve to
+        // AccountNatConfig's own property rather than this account's.
+        val wantIce = iceEnabled
+        val wantStun = if (stunEnabled) {
+            pjsua_stun_use.PJSUA_STUN_USE_DEFAULT
+        } else {
+            pjsua_stun_use.PJSUA_STUN_USE_DISABLED
+        }
+        val keepalive = keepaliveIntervalSeconds.toLong()
+
+        natConfig.apply {
+            iceEnabled = wantIce
+            sipStunUse = wantStun
+            mediaStunUse = wantStun
+            udpKaIntervalSec = keepalive
+        }
 
         // Per account, and genuinely so. A core-wide setting would let the last
         // account added decide encryption for every other one, which is the
