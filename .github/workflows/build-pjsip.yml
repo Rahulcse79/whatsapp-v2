@@ -338,20 +338,29 @@ jobs:
           export LD="$CC"
           export AR=llvm-ar RANLIB=llvm-ranlib NM=llvm-nm STRIP=llvm-strip
 
-          # AS is the same trap one tool further on, and it is the one that actually
-          # broke armeabi-v7a. `setup_gnu_toolchain` defaults it to
-          # `AS=${AS:-${CROSS}as}`, so emptying CROSS above resolves it to a bare `as`
-          # - the runner's HOST x86_64 assembler - which meets libvpx's own
-          # `-march=armv7-a` asflag and dies with "invalid -march= option". Only 32-bit
-          # ARM hits it: it is the sole target with an ads2gas `.asm.S` path, which is
-          # why arm64 and x86_64 went green over the same omission.
+          # AS is the same trap one tool further on, and ON ARM ONLY.
           #
-          # `$CC -c` rather than a bare assembler, and the `-c` is not optional: the
-          # rule in build/make/Makefile is `$(AS) $(ASFLAGS) -o $@ $<` and supplies
-          # none of its own. This is libvpx's own form - configure.sh uses exactly
-          # `AS="$CC -c"` for its Windows ARM targets, for the same reason. Clang's
-          # integrated assembler takes the ads2gas output and every armv7 asflag.
-          export AS="$CC -c"
+          # `setup_gnu_toolchain` defaults it to `AS=${AS:-${CROSS}as}`, so emptying
+          # CROSS above resolves it to a bare `as` - the runner's HOST x86_64 assembler
+          # - which meets libvpx's own `-march=armv7-a` asflag and dies with "invalid
+          # -march= option". `$CC -c` is libvpx's own remedy: configure.sh writes
+          # exactly that for its Windows ARM targets, and the `-c` is load-bearing
+          # because the rule is `$(AS) $(ASFLAGS) -o $@ $<` and supplies none of its
+          # own. Clang's integrated assembler takes the ads2gas output and every asflag
+          # libvpx derives for armv7.
+          #
+          # x86 must NOT get it. There the assembler is yasm and ASFLAGS are yasm's, so
+          # clang is handed `-f elf64` and answers "unknown argument: '-f'". Setting AS
+          # unconditionally traded a broken armeabi-v7a for a broken x86_64, which is
+          # how this reads as a `case` rather than an export.
+          #
+          # Keyed off vpx-target because that is the axis that decides it: `arm*`
+          # matches both ARM legs and nothing else. 32-bit ARM is the only target with
+          # an ads2gas `.asm.S` path at all, so arm64 neither needs this nor is harmed
+          # by it - it has no `.asm.S` to assemble.
+          case "${{ matrix.vpx-target }}" in
+            arm*) export AS="$CC -c" ;;
+          esac
 
           # libvpx names its own targets, and they are not the autotools host triples the
           # other two cross-compiles use, so the matrix carries both.
