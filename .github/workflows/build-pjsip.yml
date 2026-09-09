@@ -464,7 +464,8 @@ jobs:
               echo "::error::$so has a LOAD segment aligned under 16 KB"
               status=1
             fi
-          done < <(find pjproject -name 'libpjsua2.so' -print0)
+          done < <(find pjproject -path '*/java/android/pjsua2/src/main/jniLibs/*' \
+                        -name 'libpjsua2.so' -print0)
 
           if [ "$found" -eq 0 ]; then
             echo "::error::No libpjsua2.so was produced - the SWIG step did not build it"
@@ -484,7 +485,29 @@ jobs:
           set -euo pipefail
           mkdir -p "staging/jni/$ABI" staging/java
 
-          find pjproject -name 'libpjsua2.so' -exec cp -v {} "staging/jni/$ABI/" \;
+          # The EXACT path, not `find -name`. pjproject builds three libpjsua2.so - one
+          # for Java, one for pjsua2maui and one for pjsua2xamarin - and a name search
+          # copied all three in turn, so the last one to land won. That was the C#
+          # wrapper: same name, same size, correctly aligned, and exporting no
+          # Java_org_pjsip_* symbol at all. The AAR looked perfect and would have failed
+          # with the identical UnsatisfiedLinkError the app already had.
+          #
+          # This path is the one java/Makefile:31 defines as LIBPJSUA2_SO.
+          jni_so="pjproject/pjsip-apps/src/swig/java/android/pjsua2/src/main/jniLibs/$ABI/libpjsua2.so"
+          if [ ! -f "$jni_so" ]; then
+            echo "::error::the SWIG Java build produced no $jni_so"
+            find pjproject -name 'libpjsua2.so' | sed 's/^/  also present: /'
+            exit 1
+          fi
+
+          # And prove it is the JNI one before it goes anywhere near an AAR. A wrapper
+          # with no Java_* exports is the failure this gate exists for, and it is
+          # invisible in every other property of the file.
+          if ! LC_ALL=C grep -aq "Java_org_pjsip_pjsua2_pjsua2JNI_swig_1module_1init" "$jni_so"; then
+            echo "::error::$jni_so exports no pjsua2JNI symbols - wrong wrapper"
+            exit 1
+          fi
+          cp -v "$jni_so" "staging/jni/$ABI/"
 
           # libc++_shared.so travels with it. libpjsua2.so links against the NDK's shared
           # C++ runtime, so without this `System.loadLibrary("pjsua2")` fails at run time
@@ -590,6 +613,15 @@ jobs:
               cp "$so" "aar/jni/$abi/"
               echo "  $abi <- $so"
             done
+
+            # Belt and braces on the thing that cannot be seen by looking: the AAR is
+            # useless if its wrapper is not the JNI one, and every other property -
+            # size, ABI, alignment - looks right when it is not.
+            if ! LC_ALL=C grep -aq "Java_org_pjsip_pjsua2_pjsua2JNI_swig_1module_1init" \
+                 "aar/jni/$abi/libpjsua2.so"; then
+              echo "::error::aar/jni/$abi/libpjsua2.so exports no pjsua2JNI symbols"
+              exit 1
+            fi
           done
 
           # The bindings are identical across ABIs; take the first and say so. Anchored
