@@ -49,6 +49,7 @@ import org.pjsip.pjsua2.VideoWindowHandle
 import org.pjsip.pjsua2.pj_ssl_sock_proto
 import org.pjsip.pjsua2.pjmedia_dir
 import org.pjsip.pjsua2.pjmedia_srtp_use
+import org.pjsip.pjsua2.pjmedia_tp_proto
 import org.pjsip.pjsua2.pjmedia_type
 import org.pjsip.pjsua2.pjmedia_vid_stream_rc_method
 import org.pjsip.pjsua2.pjsip_inv_state
@@ -1341,9 +1342,43 @@ internal class RealPjsipCoreGateway @Inject constructor(
                         it.type == pjmedia_type.PJMEDIA_TYPE_VIDEO &&
                             it.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE
                     } == true,
-                    mediaEncrypted = false,
+                    mediaEncrypted = encryptedAudio(info),
                 ),
             )
+        }
+
+        /**
+         * Whether this call's audio is actually running over SRTP.
+         *
+         * This used to be the literal `false`, with nothing anywhere that could make it
+         * true - so `PjsipSipEngine.enforceMediaEncryption` saw "not encrypted" on every
+         * call. On an account set to `SrtpPolicy.MANDATORY` that check terminates the
+         * call, which means mandatory encryption did not fail closed on a cleartext peer:
+         * it failed closed on *everything*, encrypted calls included. A control that
+         * rejects the good case as well as the bad one is not a control, it is an outage.
+         *
+         * `StreamInfo.proto` is the negotiated transport profile and carries
+         * `PJMEDIA_TP_PROFILE_SRTP` as a bit, which covers SAVP, SAVPF and DTLS-SRTP
+         * alike - hence a mask rather than an equality against one constant.
+         *
+         * Every audio stream must be encrypted, not just one: a call with one secured
+         * stream and one in the clear is not a secured call. `getStreamInfo` throws for a
+         * media index the library has already released, and an exception escaping here
+         * would read as "encrypted", so it is caught and answered `false` - the safe
+         * direction for a check whose failure hangs the call up.
+         */
+        private fun encryptedAudio(info: CallInfo?): Boolean {
+            val audio = info?.media
+                ?.withIndex()
+                ?.filter { (_, m) -> m.type == pjmedia_type.PJMEDIA_TYPE_AUDIO }
+                .orEmpty()
+            if (audio.isEmpty()) return false
+
+            return audio.all { (index, _) ->
+                runCatching {
+                    (getStreamInfo(index.toLong()).proto and SRTP_PROFILE) != 0
+                }.getOrDefault(false)
+            }
         }
 
         /**
@@ -1453,6 +1488,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
         /** 1 enables the SIP message trace. The level alone does not. */
         const val SIP_MESSAGE_LOGGING = 1L
+
+        /** `pjmedia_tp_proto`'s SRTP bit. `StreamInfo.proto` is an Int, so this is too. */
+        const val SRTP_PROFILE = pjmedia_tp_proto.PJMEDIA_TP_PROFILE_SRTP
+
         const val PJSIP_THREAD = "pjsip-main"
         const val EVENT_BUFFER = 64
 
@@ -1485,7 +1524,24 @@ internal class RealPjsipCoreGateway @Inject constructor(
         const val EC_TAIL_MS = 200L
 
         /** Jitter buffer ceiling, ms. Beyond this, delay is the worse defect. */
-        const val JITTER_BUFFER_MAX_MS = 500
+        /**
+         * The jitter buffer's ceiling, in milliseconds.
+         *
+         * This was 500, under a comment observing that half a second of delay is already
+         * a conversation people talk over - which is the right observation and the wrong
+         * number. PJSIP's buffer is adaptive and grows toward this bound whenever it sees
+         * jitter, so the ceiling is the worst delay a user can be made to hear, and on the
+         * LAN these calls actually run on (25 ms round trip) half a second of it is all
+         * cost and no benefit. The handset symptom was exactly that: audible lag on a call
+         * between two phones on the same Wi-Fi.
+         *
+         * 200 ms is the usual VoIP ceiling: comfortably above the worst jitter a local
+         * network produces, and below the ~250 ms where people start talking over each
+         * other. A congested link will drop into concealment sooner than it used to, which
+         * is the trade - and it is the right way round, because a brief artefact is
+         * recoverable and a permanently late conversation is not.
+         */
+        const val JITTER_BUFFER_MAX_MS = 200
 
         /** Transparent for speech at 48 kHz mono; well above narrowband practice. */
         const val OPUS_BITRATE = 32_000L

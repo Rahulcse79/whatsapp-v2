@@ -527,7 +527,15 @@ internal class PjsipSipEngine @Inject constructor(
      */
     private fun advance(id: CallId, current: CallSnapshot, event: StackCallEvent) {
         if (CallStateMapper.isTerminal(event.state)) {
-            endCall(id, CallStateMapper.toHangupReason(event))
+            val reason = CallStateMapper.toHangupReason(event)
+            // Said out loud, because until now it was not. Six consecutive outbound calls
+            // were killed with Telecom's bare DisconnectCause.ERROR and the app wrote not
+            // one line explaining any of them - the whole record of a failed call was two
+            // audio-route lines. The status code is what separates "they were busy" from
+            // "the codecs did not agree" from "nothing reached the server", and it costs
+            // one line to keep. Never the peer's address (§7).
+            logger.info(TAG, "Call $id ended: $reason (status ${event.statusCode ?: "none"})")
+            endCall(id, reason)
             return
         }
 
@@ -940,9 +948,15 @@ internal class PjsipSipEngine @Inject constructor(
 
         val result = CallStateMachine.transition(call.state, event)
         if (result is TransitionResult.Rejected) {
+            // Logged, not just returned. On a handset the Hold button did nothing twice
+            // over and the app's entire output for both taps was two GC lines - so there
+            // was no way to tell a rejected transition from a re-INVITE the far end never
+            // answered. They need different fixes, so they must look different.
+            logger.warn(TAG, "Hold refused for $callId: cannot ${if (held) "hold" else "resume"} in ${call.state}")
             return failure(SipError.InvalidState("cannot ${if (held) "hold" else "resume"} in ${call.state}"))
         }
 
+        logger.info(TAG, "Asking the stack to ${if (held) "hold" else "resume"} $callId")
         if (held) callGateway.pauseCall(callId.value) else callGateway.resumeCall(callId.value)
         return success(Unit)
     }
