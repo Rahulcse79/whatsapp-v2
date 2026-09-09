@@ -48,14 +48,19 @@ import com.whatsappv2.domain.model.DtmfDigit
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
+import com.whatsappv2.domain.model.RegistrationFailure
 import com.whatsappv2.domain.model.RegistrationState
 import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.TransferType
+import com.whatsappv2.domain.registration.NetworkStatus
 import com.whatsappv2.domain.registration.RegistrationRetrySchedule
 import com.whatsappv2.domain.repository.AppSettingsRepository
 import com.whatsappv2.domain.repository.SipAccountRepository
+import java.util.UUID
+import javax.inject.Inject
+import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
@@ -69,9 +74,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import java.util.UUID
-import javax.inject.Inject
-import javax.inject.Singleton
 
 /**
  * Registration and calling, backed by the real SIP stack (Tasks 27, 35, 37, 40-43).
@@ -359,6 +361,8 @@ internal class PjsipSipEngine @Inject constructor(
     /** The conference-roster collector (Task 60). Held for the same reason. */
     private var conferenceCollectJob: Job? = null
 
+    private var networkCollectJob: Job? = null
+
     /**
      * Begins consuming stack events.
      *
@@ -374,6 +378,7 @@ internal class PjsipSipEngine @Inject constructor(
         callCollectJob = scope.collectCallEvents()
         transferCollectJob = scope.collectTransferEvents()
         conferenceCollectJob = scope.collectConferenceEvents()
+        networkCollectJob = scope.launch { watchNetwork() }
         collectJob = scope.launch {
             gateway.registrationEvents.collect { event ->
                 val id = AccountId(event.accountKey)
@@ -395,6 +400,47 @@ internal class PjsipSipEngine @Inject constructor(
                             retryScheduled = false,
                         )
                         )
+                }
+            }
+        }
+    }
+
+    /**
+     * Stops reporting a registration the device cannot possibly still hold.
+     *
+     * A REGISTER binding is a promise between this client and a registrar, and it is only
+     * as good as the path between them. When that path goes away the stack says nothing:
+     * PJSIP has no outstanding transaction to fail, so no event arrives, and the last
+     * `Registered` this engine published stays on screen. On a handset that meant turning
+     * Wi-Fi off and watching the account go on claiming it was registered - and it would
+     * keep claiming it until the refresh fell due, which for the default expiry is an
+     * hour away.
+     *
+     * The honest state is a failure the user can read, and `NETWORK_UNAVAILABLE` names the
+     * cause rather than blaming the server or the password. Recovery is not this function's
+     * business: [RegistrationRecoveryCoordinator] re-registers when a link returns, and the
+     * event that comes back moves the state on its own.
+     *
+     * Only `Registered` is rewritten. `Registering` is already honest, a `Failed` account
+     * has a more specific reason than this one, and `Unregistered` is a deliberate logout
+     * that no network change should undo.
+     */
+    private suspend fun watchNetwork() {
+        networkMonitor.status.collect { status ->
+            if (status is NetworkStatus.Available) return@collect
+
+            states.update { current ->
+                current.mapValues { (_, state) ->
+                    if (state is RegistrationState.Registered) {
+                        RegistrationState.Failed(
+                            reason = RegistrationFailure.NETWORK_UNAVAILABLE,
+                            // Nothing is scheduled: with no link the coordinator waits for
+                            // the platform's callback rather than running a timer (DoD 6).
+                            retryScheduled = false,
+                        )
+                    } else {
+                        state
+                    }
                 }
             }
         }
@@ -1285,6 +1331,8 @@ internal class PjsipSipEngine @Inject constructor(
         transferCollectJob = null
         conferenceCollectJob?.cancel()
         conferenceCollectJob = null
+        networkCollectJob?.cancel()
+        networkCollectJob = null
         gateway.stop()
         requestedExpiry.clear()
         mediaPolicy.clear()

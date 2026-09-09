@@ -54,6 +54,7 @@ import kotlinx.coroutines.test.runTest
 import java.util.IdentityHashMap
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -1054,6 +1055,50 @@ class PjsipSipEngineTest : PjsipSipEngineFixture() {
 
         assertTrue(engine.registrationState.value.isEmpty())
         assertEquals(1, gateway.stopCount)
+    }
+
+    // ------------------------------------------------- the link (Task 30, DoD 6)
+
+    @Test
+    fun `losing the network stops the account claiming it is still registered`() = runTest {
+        // The defect a handset found: turn Wi-Fi off and the account went on reporting
+        // Registered, because the stack has no outstanding transaction to fail and so
+        // raises no event. Nothing corrected it until the refresh fell due - an hour, at
+        // the default expiry.
+        val engine = registeredEngine()
+        networkMonitor.onWifi()
+        advanceUntilIdle()
+        assertIs<RegistrationState.Registered>(engine.registrationState.value[account.id])
+
+        networkMonitor.lost()
+        advanceUntilIdle()
+
+        val state = engine.registrationState.value[account.id]
+        assertIs<RegistrationState.Failed>(state)
+        // The cause, named. Not the password and not the server - neither is at fault.
+        assertEquals(RegistrationFailure.NETWORK_UNAVAILABLE, state.reason)
+        assertFalse(state.retryScheduled)
+
+        engine.stop()
+    }
+
+    @Test
+    fun `losing the network leaves a deliberate logout alone`() = runTest {
+        // Unregistered is a choice the user made. A link that comes and goes underneath it
+        // must not turn that into a failure the account screen asks them to act on.
+        val engine = registeredEngine()
+        networkMonitor.onWifi()
+        advanceUntilIdle()
+
+        engine.unregister(account.id)
+        advanceUntilIdle()
+        assertEquals(RegistrationState.Unregistered, engine.registrationState.value[account.id])
+
+        networkMonitor.lost()
+        advanceUntilIdle()
+
+        assertEquals(RegistrationState.Unregistered, engine.registrationState.value[account.id])
+        engine.stop()
     }
 }
 

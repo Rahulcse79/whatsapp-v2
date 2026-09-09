@@ -610,7 +610,26 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // a device that has stopped listening.
             val existing = accounts[account.key]
             if (existing != null) {
-                existing.modify(config)
+                // `pjsua_acc_modify` re-registers in place when the identity, the proxy or
+                // the credentials moved, and it does that by calling
+                // `pjsua_acc_set_registration` - which returns PJSIP_EBUSY rather than
+                // queueing when a REGISTER transaction is already in flight, because
+                // `pjsip_regc_register` refuses a second one. pjsua2 raises that status as
+                // a thrown Error.
+                //
+                // Swallowed by `onPjsip`, as it was, an edit went nowhere: the engine had
+                // already published `Registering`, no stack event ever followed, and the
+                // account sat on that spinner until the user logged out and registered
+                // again. Logging out worked because it destroys the account and the next
+                // register builds a fresh one - so that is what this does, instead of
+                // leaving the user to find the workaround.
+                runCatching { existing.modify(config) }.onFailure { failure ->
+                    logger.warn(
+                        TAG,
+                        "modify failed for ${account.key}; rebuilding it: ${failure.message}",
+                    )
+                    rebuildAccount(account.key, config)
+                }
             } else {
                 val created = PjAccount(account.key)
                 created.create(config, accounts.isEmpty())
@@ -654,6 +673,40 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 message = reason,
             ),
         )
+    }
+
+    /**
+     * Destroys an account and stands a fresh one up in its place.
+     *
+     * The automated form of the workaround a handset found: an edit that PJSIP refused to
+     * apply in place only took effect after a logout and a new registration, because that
+     * path destroys the account rather than modifying it. Failing to rebuild is reported
+     * as a registration failure, since the alternative - a silent log line - is the
+     * indefinite spinner this exists to remove.
+     */
+    private fun rebuildAccount(accountKey: String, config: AccountConfig) {
+        accounts.remove(accountKey)?.let { stale ->
+            // Best effort, and unchecked on purpose: the reason we are here is usually
+            // that the registrar is not answering, so neither of these can be relied on.
+            runCatching { stale.setRegistration(false) }
+            runCatching { stale.shutdown() }
+        }
+
+        runCatching {
+            val rebuilt = PjAccount(accountKey)
+            rebuilt.create(config, accounts.isEmpty())
+            accounts[accountKey] = rebuilt
+        }.onFailure { failure ->
+            logger.error(TAG, "Could not rebuild $accountKey", failure)
+            events.tryEmit(
+                StackRegistrationEvent(
+                    accountKey = accountKey,
+                    state = StackRegistrationState.FAILED,
+                    statusCode = null,
+                    message = failure.message ?: "the account could not be rebuilt",
+                ),
+            )
+        }
     }
 
     override fun removeAccount(accountKey: String) {
@@ -903,7 +956,16 @@ internal class RealPjsipCoreGateway @Inject constructor(
     override fun setMicrophoneMuted(callKey: String, muted: Boolean) {
         onPjsip("setMicrophoneMuted") {
             val running = endpoint ?: return@onPjsip
-            val media = calls[callKey]?.audioMedia ?: return@onPjsip
+            val call = calls[callKey] ?: return@onPjsip
+
+            // Recorded first, and whether or not there is a stream to act on. A mute
+            // pressed before the media is up used to return here having done nothing,
+            // while the engine had already moved its own state to muted - so the screen
+            // said muted and the microphone was live. Now the intent is kept and
+            // [PjCall.onCallMediaState] applies it to whatever stream arrives.
+            call.microphoneMuted = muted
+
+            val media = call.audioMedia ?: return@onPjsip
             val capture = running.audDevManager().captureDevMedia
             if (muted) capture.stopTransmit(media) else capture.startTransmit(media)
         }
@@ -1109,6 +1171,19 @@ internal class RealPjsipCoreGateway @Inject constructor(
         var audioMedia: AudioMedia? = null
             private set
 
+        /**
+         * Whether the user has muted this call, independently of any one audio stream.
+         *
+         * The stream is not the place to keep it. [audioMedia] does not exist while the
+         * call is still ringing, and it is replaced outright on every re-INVITE - a hold,
+         * a resume, a codec renegotiation - so a mute applied only to the stream that
+         * happened to exist at the time is a mute that the next negotiation quietly
+         * undoes. That is what made the mute button look intermittent: it worked, and
+         * then hold and resume put a live microphone back on the call.
+         */
+        @Volatile
+        var microphoneMuted: Boolean = false
+
         /** The capture device this call is using, for [switchCamera] to cycle from. */
         @Volatile
         var captureDevice: Int = CAPTURE_DEVICE_DEFAULT
@@ -1158,7 +1233,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
                         runCatching {
                             val stream = getAudioMedia(index)
                             audioMedia = stream
-                            running.audDevManager().captureDevMedia.startTransmit(stream)
+                            // Only when the user has not muted. This used to start the
+                            // capture leg unconditionally, so every re-INVITE reconnected
+                            // a microphone the user had switched off. Playback is
+                            // unconditional: muting is about what leaves this device.
+                            if (!microphoneMuted) {
+                                running.audDevManager().captureDevMedia.startTransmit(stream)
+                            }
                             stream.startTransmit(running.audDevManager().playbackDevMedia)
                         }.onFailure { logger.error(TAG, "Could not connect audio: ${it.message}") }
                     }
