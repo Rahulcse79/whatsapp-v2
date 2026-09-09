@@ -181,10 +181,7 @@ make dep && make clean && make -j"$jobs"
 #   1. `make` runs from `pjsip-apps/src/swig`, NOT from `swig/java`. The parent delegates
 #      with `$(MAKE) -C java`, and the delegation is what supplies the flags the java
 #      Makefile reads out of build.mak.
-#   2. LDFLAGS is UNSET first. It carried `-Wl,-z,max-page-size=16384` for the pjproject
-#      link above; the java Makefile appends `$(LDFLAGS)` to a line it has already
-#      assembled, and in the green workflow that step was a separate shell where the
-#      export did not reach. Alignment is already handled by the pjproject link.
+#   2. LDFLAGS is REPLACED rather than inherited — see 4.
 #   3. The target is `java`, not the default. `swig/Makefile:5` sets `LANG = java csharp`
 #      for Android, so a bare `make` also builds the C# bindings — which this project does
 #      not want, and whose tree is pruned, so the build got as far as
@@ -194,7 +191,14 @@ make dep && make clean && make -j"$jobs"
 #      Note what this one says about `tools/vendor/verify-prune.sh`: it greps build files
 #      for pruned PATHS, and `LANG = java csharp` is a bare word. A checker that reads
 #      paths cannot see a target name, and this is the class of prune it will not catch.
-( unset LDFLAGS; cd pjsip-apps/src/swig && make java )
+#   4. LDFLAGS carries `-L$prefix/lib`, and this is the one that had to be worked out
+#      rather than copied. The wrapper link failed on every `opus_*` and `vpx_*` symbol:
+#      the static libraries are in the prefix, `configure-android` found them, and they
+#      were still not on the wrapper's link line. `java/Makefile:167` assembles
+#      `MY_LDFLAGS := $(PJ_LDXXFLAGS) $(PJ_LDXXLIBS) … $(LDFLAGS)`, so LDFLAGS is the
+#      documented seam for exactly this — and the alignment flag is dropped here because
+#      the pjproject link above is where that belongs.
+( export LDFLAGS="-L$prefix/lib"; cd pjsip-apps/src/swig && make java )
 
 jni_so="$work/pjproject/pjsip-apps/src/swig/java/android/pjsua2/src/main/jniLibs/$ABI/libpjsua2.so"
 [ -f "$jni_so" ] || { echo "::error::the SWIG Java build produced no $jni_so" >&2

@@ -111,7 +111,7 @@ class DeclaredFeatureSetTest {
 
     /** Walks up to `settings.gradle.kts`, the same way the architecture rules find the root. */
     private fun repositoryRoot(): File =
-        generateSequence(File(System.getProperty("user.dir")).absoluteFile) { it.parentFile }
+        generateSequence(File(System.getProperty("user.dir") ?: ".").absoluteFile) { it.parentFile }
             .firstOrNull { File(it, "settings.gradle.kts").isFile }
             ?: error("could not find the repository root from ${System.getProperty("user.dir")}")
 }
