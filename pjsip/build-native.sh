@@ -174,7 +174,18 @@ make dep && make clean && make -j"$jobs"
 # Java stage 1 generated. It writes into pjsip-apps/src/swig/java/android/… , a directory
 # the vendored tree does not carry (it is a pruned sample app) and which this Makefile
 # creates itself.
-( cd pjsip-apps/src/swig/java && make )
+#
+# Two details are copied from the green run rather than reasoned about, because both were
+# got wrong first and the failure was a wall of undefined symbols four minutes in.
+#
+#   1. `make` runs from `pjsip-apps/src/swig`, NOT from `swig/java`. The parent delegates
+#      with `$(MAKE) -C java`, and the delegation is what supplies the flags the java
+#      Makefile reads out of build.mak.
+#   2. LDFLAGS is UNSET first. It carried `-Wl,-z,max-page-size=16384` for the pjproject
+#      link above; the java Makefile appends `$(LDFLAGS)` to a line it has already
+#      assembled, and in the green workflow that step was a separate shell where the
+#      export did not reach. Alignment is already handled by the pjproject link.
+( unset LDFLAGS; cd pjsip-apps/src/swig && make )
 
 jni_so="$work/pjproject/pjsip-apps/src/swig/java/android/pjsua2/src/main/jniLibs/$ABI/libpjsua2.so"
 [ -f "$jni_so" ] || { echo "::error::the SWIG Java build produced no $jni_so" >&2
