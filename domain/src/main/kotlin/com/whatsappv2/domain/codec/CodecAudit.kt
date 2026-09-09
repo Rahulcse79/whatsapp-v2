@@ -113,7 +113,7 @@ data class RegisteredCodec(
  * A codec this build was **configured** to contain — the declared feature set (N-8).
  *
  * Deliberately not the same type as [AudioCodec]/[VideoCodec]. The declared set is a
- * property of `pjsip/config/config_site.h`; the domain enums are what the app can *offer*.
+ * property of `pjsip/config/pj/config_site.h`; the domain enums are what the app can *offer*.
  * They overlap and they are not the same list, and collapsing them would hide exactly the
  * mismatch this audit exists to report — H264 is in `CodecPreferences.DEFAULT` and not in
  * the declared set.

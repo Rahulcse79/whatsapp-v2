@@ -1,9 +1,17 @@
 # Stage 2 of the native build: the single CMake entry point (N-4).
 #
-# Reached through `externalNativeBuild` in pjsip/build.gradle.kts, so ONE `./gradlew`
-# invocation produces every `.so` from vendored source with no human in the loop (N-5).
-# AGP invokes this once per ABI, with the NDK toolchain file already applied — which is
-# where ANDROID_ABI, CMAKE_ANDROID_ARCH_ABI and the sysroot come from below.
+# Invoked once per ABI by `:pjsip:buildPjsua2Native`, as
+#
+#   cmake -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake -DANDROID_ABI=<abi>
+#
+# which is the command line master prompt §2.3 option (a) specifies. ONE `./gradlew`
+# invocation produces every `.so` from vendored source with no human in the loop (N-4, N-5).
+#
+# NOT reached through `externalNativeBuild`, and that was tried first. AGP enumerates a
+# CMake project's TARGETS and packages the libraries they declare; this project declares
+# none, because the `.so` is produced by upstream's autotools and CMake never sees it. AGP's
+# answer was `configureCMakeDebug[arm64-v8a] > java.lang.NullPointerException` — no message,
+# no target named. See com.whatsappv2.buildlogic.BuildPjsua2Native for the full trade.
 #
 # ## Why this drives upstream's build systems rather than replacing them
 #
@@ -29,12 +37,17 @@
 # cannot share one configured tree.
 
 cmake_minimum_required(VERSION 3.22)
-project(pjsip_native NONE)
+# One language, not NONE: enabling C is what makes the toolchain file resolve
+# CMAKE_ANDROID_NDK and the sysroot, which everything below reads. The NDK ships a working
+# C compiler, so the compiler check it triggers costs a second and buys the variables.
+project(pjsip_native C)
 
 if(NOT ANDROID)
     message(FATAL_ERROR
-        "This build is Android-only and is reached through externalNativeBuild. "
-        "It is not a general-purpose CMake project.")
+        "This build is Android-only. Invoke it with the NDK toolchain file:\n"
+        "  cmake -DCMAKE_TOOLCHAIN_FILE=$ENV{ANDROID_NDK_ROOT}/build/cmake/android.toolchain.cmake "
+        "-DANDROID_ABI=arm64-v8a\n"
+        "or, more usefully, `./gradlew :pjsip:buildPjsua2Native`, which does that for every ABI.")
 endif()
 
 set(VENDOR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party")
@@ -84,8 +97,8 @@ endif()
 set(ANDROID_API_LEVEL 26)
 
 # The NDK CMake resolved, never the host's. `CMAKE_ANDROID_NDK` is set by the toolchain
-# file AGP applies, so this is the NDK that is actually compiling — asking the environment
-# instead is how a cached-NDK-with-no-compiler gets used four steps later.
+# file, so this is the NDK that is actually compiling — asking the environment instead is
+# how a cached-NDK-with-no-compiler gets used four steps later.
 if(NOT DEFINED CMAKE_ANDROID_NDK)
     message(FATAL_ERROR "CMAKE_ANDROID_NDK is unset — this must run under the NDK toolchain file")
 endif()

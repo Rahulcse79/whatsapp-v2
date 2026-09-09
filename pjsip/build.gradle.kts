@@ -22,11 +22,22 @@
  *                           measured 2m46s–3m23s/ABI     + libc++_shared.so
  * ```
  *
- * Both stages read the same `pjsip/config/config_site.h` (N-8), which is what makes the
+ * Both stages read the same `pjsip/config/pj/config_site.h` (N-8), which is what makes the
  * generated Java and the `.so` describe the same library **by construction** rather than by
  * a comment asking people to be careful.
  *
- * ## No cache, and that is a measurement rather than an omission
+ * ## The native stage is a Gradle task, not `externalNativeBuild`
+
+`externalNativeBuild` was the first shape and AGP could not model it: it enumerates a CMake
+project's **targets** and this project declares none — the `.so` is produced by upstream's
+autotools, which CMake never sees. AGP's answer was
+`':pjsip:configureCMakeDebug[arm64-v8a]' > java.lang.NullPointerException`, with no message
+and no target named. [com.whatsappv2.buildlogic.BuildPjsua2Native] explains the trade in
+full; the short version is that N-4 is still satisfied literally — one `./gradlew`, one
+CMake entry point invoked with the NDK toolchain file, no manual step — without handing AGP
+a model it cannot represent.
+
+## No cache, and that is a measurement rather than an omission
  *
  * The master prompt's §2.3 designs a content-hash cache on an estimate of "roughly an hour
  * per ABI". The measured figure is **2m46s–3m23s**, and 7m18s end to end
@@ -41,35 +52,14 @@
  * If stage 2 produces no `.so` for the target ABI, the build **fails**. It does not quietly
  * assemble an APK that dies on the first call (DoD 24).
  */
+import com.whatsappv2.buildlogic.BuildPjsua2Native
+
 plugins {
     id("whatsappv2.android.library")
 }
 
 android {
     namespace = "com.whatsappv2.pjsip"
-
-    defaultConfig {
-        // No `externalNativeBuild { cmake { arguments } }` block here on purpose. AGP
-        // already passes the NDK toolchain file, ANDROID_ABI and ANDROID_PLATFORM (from
-        // minSdk) — restating them is a second copy that can disagree with the first. The
-        // vendored trees are driven by their own build systems, so there are no CMake
-        // targets to configure either; everything travels through CMakeLists.txt to
-        // build-native.sh. ANDROID_STL is deliberately left alone: pjproject links the
-        // NDK's shared libc++, and libc++_shared.so is packaged beside libpjsua2.so.
-
-        // Must match app/build.gradle.kts. An ABI built here and not packaged there is
-        // wasted build time; one packaged and not built is a crash on that device (N-6).
-        ndk {
-            abiFilters += setOf("arm64-v8a", "armeabi-v7a", "x86_64")
-        }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("CMakeLists.txt")
-            version = "3.22.1+"
-        }
-    }
 
     packaging {
         jniLibs {
@@ -80,15 +70,46 @@ android {
 }
 
 dependencies {
-    // Stage 1. `:data:sip` takes `:pjsip` and gets both halves — the API and the library —
-    // from one dependency, which is what N-14's "exactly one way to consume PJSIP" means in
-    // a build file.
+    // Stage 1. `:data:sip` takes `:pjsip` and gets both halves — the generated API and the
+    // library — from one dependency, which is what N-14's "exactly one way to consume
+    // PJSIP" means in a build file.
     api(project(":pjsip:api"))
 }
 
 // No Kotlin and no Java of this module's own: the sources are :pjsip:api's, generated.
 tasks.matching { it.name.startsWith("lint") || it.name.startsWith("detekt") }.configureEach {
     enabled = false
+}
+
+/**
+ * Stage 2 — the cross-compile, per ABI, through `pjsip/CMakeLists.txt`.
+ *
+ * The ABI list must match `:app`'s `abiFilters`: one built here and not packaged there is
+ * wasted build time; one packaged and not built is a crash on that device (N-6).
+ */
+val buildNative = tasks.register<BuildPjsua2Native>("buildPjsua2Native") {
+    nativeSourceDir.set(layout.projectDirectory)
+    vendoredDir.set(rootProject.layout.projectDirectory.dir("third_party"))
+    jniLibsDir.set(layout.buildDirectory.dir("generated/jniLibs"))
+    abis.set(listOf("arm64-v8a", "armeabi-v7a", "x86_64"))
+
+    // From the environment, so this task can also run in a job that has an NDK and no
+    // Android SDK — which is exactly what the egress-blocked offline test of §2.1.2 is.
+    ndkRoot.set(
+        providers.environmentVariable("ANDROID_NDK_ROOT")
+            .orElse(providers.environmentVariable("ANDROID_NDK_HOME"))
+            .orElse(providers.gradleProperty("android.ndkPath")),
+    )
+
+    // The native stage is expensive and nothing in the JVM half of the build needs it, so
+    // it is opt-in per invocation rather than on the path of `./gradlew :domain:test`.
+    //
+    // This is NOT the fallback N-14 deletes, and the difference is the whole point: skipping
+    // it produces NO library and therefore NO APK — `assertNativeLibraries` fails the
+    // packaging. What N-14 forbids is a build that quietly assembles an APK anyway.
+    onlyIf {
+        providers.gradleProperty("pjsip.native").orNull != "false"
+    }
 }
 
 /**
@@ -105,7 +126,7 @@ tasks.matching { it.name.startsWith("lint") || it.name.startsWith("detekt") }.co
 val assertNativeLibraries = tasks.register("assertNativeLibraries") {
     val expected = setOf("libpjsua2.so", "libc++_shared.so")
     val abis = setOf("arm64-v8a", "armeabi-v7a", "x86_64")
-    val jniRoot = layout.buildDirectory.dir("intermediates/cxx")
+    val jniRoot = layout.buildDirectory.dir("generated/jniLibs")
 
     inputs.dir(jniRoot).optional(true)
     outputs.upToDateWhen { false }
@@ -134,6 +155,20 @@ val assertNativeLibraries = tasks.register("assertNativeLibraries") {
     }
 }
 
+/**
+ * The generated `.so` files are this module's jniLibs.
+ *
+ * `addGeneratedSourceDirectory` rather than `sourceSets`: it carries the task dependency
+ * with it, so packaging cannot run before the libraries exist — and AGP 9 removed the
+ * source-set DSL the old form used.
+ */
+androidComponents {
+    onVariants { variant ->
+        variant.sources.jniLibs?.addGeneratedSourceDirectory(buildNative) { it.jniLibsDir }
+    }
+}
+
 tasks.matching { it.name.startsWith("assemble") }.configureEach {
+    dependsOn(buildNative)
     finalizedBy(assertNativeLibraries)
 }

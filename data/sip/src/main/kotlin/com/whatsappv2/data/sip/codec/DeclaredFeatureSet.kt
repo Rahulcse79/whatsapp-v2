@@ -10,7 +10,7 @@ import com.whatsappv2.domain.codec.DeclaredCodec
  * Two reasons, and the second is the load-bearing one.
  *
  * It is not a property of the gateway: the feature set is a decision about the **build**,
- * made in `pjsip/config/config_site.h`, and the gateway merely reports what the resulting
+ * made in `pjsip/config/pj/config_site.h`, and the gateway merely reports what the resulting
  * library did with it.
  *
  * And it has to be reachable **from a JVM unit test**. Touching any `org.pjsip.pjsua2` type
@@ -20,7 +20,7 @@ import com.whatsappv2.domain.codec.DeclaredCodec
  * read by a test without loading the whole native stack. Here, it can.
  *
  * `DeclaredFeatureSetTest` is what stops this becoming a second source of truth: it parses
- * `pjsip/config/config_site.h` and fails if the two disagree. Without that test this file is
+ * `pjsip/config/pj/config_site.h` and fails if the two disagree. Without that test this file is
  * exactly the drift N-13 removes elsewhere, restated in Kotlin.
  */
 object DeclaredFeatureSet {

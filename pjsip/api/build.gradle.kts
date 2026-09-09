@@ -26,7 +26,7 @@
  * ## The two things that make this real work rather than a one-line `swig` call
  *
  * 1. **SWIG parses `config_site.h`**, so the generated Java depends on the declared feature
- *    set — the same header stage 2 compiles against. `pjsip/config/config_site.h` is that
+ *    set — the same header stage 2 compiles against. `pjsip/config/pj/config_site.h` is that
  *    single file, and it is put FIRST on the include path so `#include <pj/config_site.h>`
  *    resolves to it. Upstream ships no `config_site.h`, only `config_site_sample.h`, so
  *    there is nothing to shadow and nothing is written into the vendored tree — which rule

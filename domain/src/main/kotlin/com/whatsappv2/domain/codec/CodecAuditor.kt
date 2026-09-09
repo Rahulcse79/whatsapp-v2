@@ -18,7 +18,7 @@ package com.whatsappv2.domain.codec
  */
 class CodecAuditor(
     /**
-     * Codecs the build was configured to contain, from `pjsip/config/config_site.h` (N-8).
+     * Codecs the build was configured to contain, from `pjsip/config/pj/config_site.h` (N-8).
      *
      * Injected rather than read from a constant so the audit can be tested against a
      * declared set that is not this build's — which is the only way to prove
