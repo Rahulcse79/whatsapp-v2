@@ -42,6 +42,10 @@ on:
         description: "Opus version to cross-compile (§5.2 audio quality)"
         required: true
         default: "1.5.2"
+      libvpx-version:
+        description: "libvpx tag to cross-compile for VP8 (the only video codec the server offers)"
+        required: true
+        default: "v1.17.0"
 
 permissions:
   contents: read
@@ -162,12 +166,15 @@ jobs:
           - abi: arm64-v8a
             host: aarch64-linux-android
             openssl-target: android-arm64
+            vpx-target: arm64-android-gcc
           - abi: armeabi-v7a
             host: armv7a-linux-androideabi
             openssl-target: android-arm
+            vpx-target: armv7-android-gcc
           - abi: x86_64
             host: x86_64-linux-android
             openssl-target: android-x86_64
+            vpx-target: x86_64-android-gcc
 
     env:
       # Must match app/build.gradle.kts abiFilters. An ABI built here and not packaged
@@ -294,6 +301,55 @@ jobs:
             --disable-shared --enable-static
           make -j"$(nproc)" && make install
 
+      # VP8, and it is not optional for this deployment. The target FreeSWITCH has
+      # mod_av missing and mod_h26x unloaded, so its only working video codec is the VP8
+      # that CORE_VPX provides. PJSIP's other route to video is OpenH264, which this build
+      # disables. Without libvpx there is no video codec both ends can negotiate, and
+      # "video calling" is the requirement this whole app exists for.
+      #
+      # It is also what broke run #13: config_site.h force-enabled PJMEDIA_HAS_VPX_CODEC
+      # while configure had correctly decided "Checking if VPX is disabled... yes". `make
+      # dep` then ran the compiler over vpx.c, which failed on a missing
+      # 'vpx/vpx_encoder.h', and the error text landed IN the generated .depend - which is
+      # the "missing separator" at line 4351 that killed all three ABIs.
+      # No `env:` NDK override here on purpose. "Locate the NDK toolchain" already put the
+      # verified toolchain on PATH and ANDROID_NDK_ROOT into the environment; pointing this
+      # step back at `steps.ndk.outputs.ndk-path` would reintroduce exactly the cached-NDK
+      # -with-no-compiler failure that step exists to prevent.
+      - name: Cross-compile libvpx ${{ inputs.libvpx-version }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o libvpx.tar.gz \
+            "https://github.com/webmproject/libvpx/archive/refs/tags/${{ inputs.libvpx-version }}.tar.gz"
+          mkdir -p libvpx && tar -xzf libvpx.tar.gz -C libvpx --strip-components=1
+          cd libvpx
+
+          # The same trap the Opus step fell into, in libvpx's own words: its configure
+          # defaults are `CC=${CROSS}gcc` and `AR=${CROSS}ar` (build/make/configure.sh),
+          # and a modern NDK ships neither a triple-prefixed gcc nor a triple-prefixed ar.
+          # Left alone it finds the HOST tools and builds an x86_64 archive that cannot
+          # link into an arm64 .so. Naming them is what makes the target mean anything.
+          #
+          # CROSS is emptied rather than unset: the defaults interpolate it, so a stale
+          # value would put a prefix back on the names below.
+          export CROSS=""
+          export CC="${{ matrix.host }}$ANDROID_API-clang"
+          export CXX="${{ matrix.host }}$ANDROID_API-clang++"
+          export LD="$CC"
+          export AR=llvm-ar RANLIB=llvm-ranlib NM=llvm-nm STRIP=llvm-strip
+
+          # libvpx names its own targets, and they are not the autotools host triples the
+          # other two cross-compiles use, so the matrix carries both.
+          ./configure --target=${{ matrix.vpx-target }} \
+            --prefix="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}" \
+            --disable-examples --disable-tools --disable-docs --disable-unit-tests \
+            --enable-pic --enable-static --disable-shared \
+            --enable-vp8 --enable-vp9
+          make -j"$(nproc)" && make install
+
+          test -f "$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}/include/vpx/vpx_encoder.h" \
+            || { echo "::error::libvpx installed no headers - vpx.c will fail the same way again"; exit 1; }
+
       - name: Configure and build pjproject
         env:
           TARGET_ABI: ${{ matrix.abi }}
@@ -316,7 +372,8 @@ jobs:
 
           ./configure-android --use-ndk-cflags \
             --with-ssl="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}" \
-            --with-opus="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}"
+            --with-opus="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}" \
+            --with-vpx="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}"
 
           echo "::group::configure summary - the SSL and Opus lines"
           grep -iE "ssl|opus|video" config.log | tail -40 || true
@@ -335,6 +392,14 @@ jobs:
           fi
           if ! grep -qiE 'opus.*(enabled|found)|found opus' config.log; then
             echo "::error::Opus is NOT enabled - configure did not find it. See --with-opus."
+            exit 1
+          fi
+          # The one that actually failed. `configure` prints "Checking if VPX is
+          # disabled... yes" when it cannot find libvpx, and config_site.h then enables the
+          # codec anyway - which is not a link error later, it is a corrupt .depend now.
+          if grep -qi 'Checking if VPX is disabled\.\.\. yes' config.log; then
+            echo "::error::VPX is NOT enabled - configure did not find libvpx. See --with-vpx."
+            echo "::error::config_site.h sets PJMEDIA_HAS_VPX_CODEC 1, so make dep will corrupt .depend."
             exit 1
           fi
 
