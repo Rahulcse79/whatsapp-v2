@@ -19,7 +19,7 @@ package com.whatsappv2.data.sip.registration
  * remote address will not parse". A caller who cannot be addressed cannot be shown, so
  * the engine was right to refuse; it was being handed something it should never have seen.
  *
- * liblinphone gave both halves for free — `asStringUriOnly()` and `displayName` — and the
+ * The previous stack gave both halves already split, and the
  * gateway simply passed them on. pjsua2 has no equivalent on `CallInfo`, so the split
  * belongs here: normalising the SDK's representation into this module's contract is what
  * this class is for, and doing it above the seam would put SIP header syntax in `:domain`.

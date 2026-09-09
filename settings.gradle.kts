@@ -30,7 +30,7 @@ dependencyResolutionManagement {
         }
         mavenCentral()
 
-        // No third repository. liblinphone needed one of its own (ADR-001) because it
+        // No third repository. The previous SIP stack needed one of its own because it
         // shipped from Belledonne rather than Maven Central; PJSIP ships from nowhere at
         // all and is built by `.github/workflows/build-pjsip.yml` into `:pjsip`. The
         // supply chain is narrower for it (ADR-006).

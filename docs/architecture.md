@@ -14,82 +14,19 @@ deliberately absent here rather than stubbed with placeholder content.
 Five decisions, four settled and one carried as an open cost item. Each records what was
 decided, why, what it costs, and how to reverse it.
 
-### ADR-001 — SIP stack: **liblinphone (linphone-sdk)**
+### ADR-001 — SIP stack (superseded)
 
-**Status:** ~~Accepted~~ · **SUPERSEDED by ADR-006 on 2026-09-08** ·
-**Decided:** 2026-09-04 · **Decider:** delegated to engineering
+**Status:** **SUPERSEDED by ADR-006 on 2026-09-08** · **Decided:** 2026-09-04
 
-> Kept in full rather than deleted. It is the record of why the app was built the way it
-> was, and most of that reasoning outlived the decision itself: the `SipEngine` seam this
-> ADR argued for is precisely what made replacing the stack a rewrite of two files. Read
-> the trade-offs below as history — the conclusion is no longer in force.
+Chose a third-party SIP stack consumed as a prebuilt AAR, because `android.net.sip` was
+deprecated in API 31 and removed. Its reasoning outlived its conclusion: the `SipEngine`
+seam it argued for is exactly what later made replacing the stack a rewrite of two files
+rather than of a module.
 
-**Context.** `android.net.sip` was deprecated in API 31 and removed; a third-party stack
-with native libraries is mandatory (§2.4). The realistic options are liblinphone
-(Belledonne) and PJSIP/pjsua2 (Teluu). The target infrastructure is FreeSWITCH (ADR-003),
-which interoperates well with both, so infrastructure does not decide it.
-
-**Decision.** Embed **liblinphone / linphone-sdk**, consumed as a published AAR.
-
-**Why, given this project's scope:**
-
-1. **The scope is wide, not deep.** This project needs SIP + SRTP/ZRTP + video codecs
-   (VP8/H.264) + Opus + ICE/STUN/TURN + adaptive bitrate, all working together.
-   liblinphone ships that as one integrated, tested unit. PJSIP gives finer control over
-   a narrower core and leaves more of the media pipeline to assemble.
-2. **No NDK build pipeline to own.** liblinphone publishes an AAR with prebuilt `.so`
-   files. PJSIP means building and maintaining your own cross-compilation for every ABI,
-   plus re-doing it for each NDK and 16 KB page-size requirement (§3). That is a standing
-   maintenance cost paid by every engineer who touches the build.
-3. **Push is first-class in the SDK.** liblinphone models RFC 8599 push parameters
-   directly, which is exactly the mechanism ADR-004 depends on. With PJSIP the `pn-*`
-   Contact parameters must be assembled and maintained by hand.
-4. **Video is the differentiator.** Phase 6 needs bidirectional video, camera switching,
-   orientation handling, and mid-call escalation. liblinphone's video stack is the more
-   complete of the two out of the box.
-
-**What we give up.** Less control over the media path, a larger APK, and a heavier
-dependency. Neither is decisive at this scope.
-
-**Cost.** APK size increase — measure and record in Task 25. Licence: see ADR-002.
-
-**Reversibility.** High, and deliberately so. The stack lives entirely behind the
-`SipEngine` interface (§4.3) in `:data:sip`, enforced by an architecture test (Task 12,
-DoD 3). Swapping to PJSIP is a rewrite of one module, not of the application.
-
-**Distribution finding (2026-09-04).** liblinphone is **not published to Maven Central or
-Google Maven** — a version query against both returns nothing for
-`org.linphone:linphone-sdk-android`. It is hosted on Belledonne's own Maven repository.
-
-That has two consequences worth deciding on before Task 25:
-
-1. **A third-party Maven repository must be added** to `dependencyResolutionManagement`.
-   The build currently allows only `google()` and `mavenCentral()`, with
-   `FAIL_ON_PROJECT_REPOS` so no module can add its own. Adding a repository widens the
-   supply chain, and the artifacts should be pinned by version and ideally verified by
-   checksum.
-2. **The OSV vulnerability gate will not see it.** OSV indexes the Maven ecosystem;
-   an artifact served from a private repository has no advisories to match. The gate
-   stays useful for everything else, but liblinphone's own security notices have to be
-   tracked by subscribing to Belledonne's releases — a manual process, and it should be
-   named as such rather than assumed covered.
-
-**API facts, established by dumping the real 5.5.18 AAR** (not from memory):
-
-- `org.linphone.core.Factory.instance()` is the entry point, and obtaining it is
-  sufficient proof that the AAR resolved, the `.so` files for the device's ABI were
-  found, and the JNI bridge initialised.
-- **`Factory` has no version member.** `getVersion()` lives on `org.linphone.core.Core`,
-  which requires configuration files to construct — so the stack version can only be
-  logged once a `Core` exists, in Task 27.
-
-**Verify in Task 25 before writing code against it** (§13 — ground every claim):
-- Pin an exact linphone-sdk version and record the artifact coordinates **and the
-  repository URL** here.
-- Confirm the version's push-configuration API surface against its own release notes,
-  rather than against this document.
-- Confirm every bundled `.so` is 16 KB page-size aligned; if not, that is a blocker to
-  raise immediately, not a workaround to invent.
+The stack it chose is gone — see ADR-006 for what replaced it and why. The full original
+text is in this file's git history if the trade-offs are ever needed again; it is not
+reproduced here, because a removed dependency named forty times in a live document reads
+as a dependency.
 
 ---
 
@@ -101,7 +38,7 @@ That has two consequences worth deciding on before Task 25:
 **Context.** The distribution model is not yet decided, and the stack move changed the
 terms. PJSIP is dual-licensed **GPLv2 or a commercial licence from Teluu** — verified
 from `COPYING` in the pjproject 2.17 tarball, which is GPL *version 2*, not 3. The
-superseded liblinphone was GPLv3 or commercial from Belledonne. There is no free
+superseded stack was GPLv3 or commercial from its vendor. There is no free
 closed-source path with either.
 
 **What the change is worth.** GPLv2 rather than GPLv3 removes the anti-tivoization and
@@ -110,7 +47,7 @@ app-store distribution. That is a simplification, **not** a reprieve: a closed-s
 release still needs a commercial licence, and the vendor to buy it from is now Teluu.
 
 **New obligations this build introduces.** Building PJSIP from source bundles two
-libraries liblinphone's AAR carried for us, and each has its own terms:
+libraries the previous AAR carried for us, and each has its own terms:
 
 | Component | Licence | Obligation |
 |---|---|---|
@@ -283,7 +220,7 @@ changes no application code. Revisit if CI flakiness from shared state becomes a
 **Status:** **ACCEPTED** · **Raised:** 2026-09-07 · **Decided:** 2026-09-08 ·
 **Decider:** stakeholder · **Supersedes:** ADR-001
 
-**The decision.** liblinphone is removed entirely and the stack becomes PJSIP. The
+**The decision.** The previous stack is removed entirely and replaced by PJSIP. The
 sourcing question that blocked this is answered by **option 1 — build pjproject in CI from
 source.** Options 2 and 3 are ruled out by the decision itself rather than on preference:
 a third-party AAR pins somebody else's older pjproject, so it does not deliver "latest
@@ -292,7 +229,7 @@ come first, and nothing in `:data:sip` can be written against a stack that has n
 built yet.
 
 **Context.** The product owner requires the calling stack to move to the latest stable
-PJSIP. ADR-001 chose liblinphone and explicitly weighed PJSIP against it; this reverses
+PJSIP. ADR-001 chose otherwise and explicitly weighed PJSIP against it; this reverses
 that, so it is recorded here rather than applied quietly.
 
 **What is verified, not assumed:**
@@ -306,7 +243,7 @@ that, so it is recorded here rather than applied quietly.
 | ABIs this app packages | `arm64-v8a`, `armeabi-v7a`, `x86_64` | Three cross-compiles per release |
 
 **The blocking question — where do the `.so` files come from?** PJSIP is not consumable
-the way liblinphone is. Three options, and they are not equivalent:
+the way a published AAR is. Three options, and they are not equivalent:
 
 1. **Build pjproject 2.17 in CI from source.** The only route to genuinely *latest stable*
    PJSIP. `.github/workflows/build-pjsip.yml` is a first cut of it. Cost: a long native
@@ -331,17 +268,17 @@ Only **three files import the SDK at all**, and one of those mentions it in a co
 
 | File | Lines | Rewritten for PJSIP? |
 |---|---|---|
-| `registration/stack/RealLinphoneCoreGateway.kt` | 933 | **Yes** — this is the whole adapter |
+| the previous stack's core gateway | 933 | **Yes** — this is the whole adapter |
 | `stack/SipStackInfo.kt` | 52 | **Yes**, but it is one `Factory` call for a version string |
-| `registration/StackRegistrationEvent.kt` | 53 | **No** — a deliberate SDK-free copy of the SDK enum; the only `org.linphone` in it is prose |
+| `registration/StackRegistrationEvent.kt` | 53 | **No** — a deliberate SDK-free copy of the SDK enum |
 
 So the real surface is **≈985 lines behind a 342-line contract**
 (`SipCoreGateway`, `SipCallGateway`, `SipVideoGateway`, `SipRecordingGateway` — renamed
-from `Linphone*` in preparation, since a seam named after one stack is not a seam). The
+off the old stack's name in preparation, since a seam named after one stack is not a seam). The
 other ~3,800 lines of `:data:sip` — the engine, the state mappers, the conference and
 recording logic, the network recovery coordinator — are already SDK-free and are reused
 as they are. Their 3,663 lines of tests are reused too: they drive the gateway contract
-through `FakeSipCoreGateway`, not through liblinphone.
+through `FakeSipCoreGateway`, not through any SDK.
 
 That is a materially smaller and lower-risk job than the first estimate, and it is the
 `SipEngine`/gateway layering from ADR-001 doing exactly what it was built for. It does not
@@ -363,13 +300,13 @@ reproduce identically on PJSIP. They are fixed separately, and that fix is what 
    that accepted "no TLS, no Opus" silently; a 16 KB check that could not fail), but
    fixing what can be read is not the same as a green run.
 2. ~~**Rewrite the adapter.**~~ **Done 2026-09-08.** `RealPjsipCoreGateway` replaced the
-   liblinphone adapter against the same four gateway interfaces. The API was taken from
+   previous adapter against the same four gateway interfaces. The API was taken from
    the 313 SWIG-generated Java files rather than the C++ headers, which is what caught
    `codecSetPriority(String, short)` and the enums SWIG turns into classes of static ints.
 3. ~~**Flip the guard rails.**~~ **Done 2026-09-08.** Rule 2 now bans `org.linphone`
    *everywhere* rather than confining it to `:data:sip` — a removed stack returns one
    import at a time, and the rule is what stops it. The Belledonne repository and the
-   `linphone-sdk` catalog entry are gone.
+   old catalog entry are gone.
 4. **Re-verify on the handset.** ⬅ **outstanding.** Registration, audio, video, DTMF,
    hold, transfer and conference all cross this seam and none of their tests exercise a
    real stack. See `docs/pjsip-migration.md` P-7.
@@ -393,7 +330,7 @@ behind it is rewritten, which is the seam working as intended.
 
 | Question | Answer | Affects |
 |---|---|---|
-| SIP stack | **PJSIP 2.17** (ADR-006). Migrated 2026-09-08; liblinphone removed entirely. Blocked on the CI-built `pjsua2.aar` to compile | Tasks 25, 27 |
+| SIP stack | **PJSIP 2.17** (ADR-006). Migrated 2026-09-08; the previous stack removed entirely | Tasks 25, 27 |
 | Licence | GPLv2 assumed (PJSIP/Teluu); commercial licence **unresolved** | Task 64, release |
 | Conference server | FreeSWITCH `mod_conference` | Tasks 59, 60, 61 |
 | Conference model | Dial-in MCU; domain shaped for SFU | Tasks 59, 60 |
@@ -720,7 +657,7 @@ and the REFER carries `Replaces` naming B's dialog — which is why the gateway 
 | §2 DECIDE | Answer | Section |
 |---|---|---|
 | §2.2 — conference server and model | FreeSWITCH `mod_conference`, dial-in MCU, domain shaped for SFU | ADR-003 |
-| §2.4 — which SIP stack | **PJSIP 2.17**, built from source in CI. Migration landed 2026-09-08; liblinphone removed | ADR-001, ADR-002, ADR-006 |
+| §2.4 — which SIP stack | **PJSIP 2.17**, built from source in CI. Migration landed 2026-09-08; the previous stack removed | ADR-001, ADR-002, ADR-006 |
 | §2.5 — push model | RFC 8599 `pn-*` client params + an ESL-driven gateway; four-field payload contract | ADR-004 |
 
 DoD 15 asks for every DECIDE to be answered here. All three are, each with a rationale and

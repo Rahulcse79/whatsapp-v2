@@ -1,11 +1,11 @@
 # PJSIP migration — the plan, and the API it is written against
 
 **ADR:** ADR-006 (accepted 2026-09-08) · **Supersedes:** ADR-001 ·
-**Outcome:** liblinphone 5.5.18 is removed entirely; the stack becomes PJSIP 2.17.
+**Outcome:** the previous SIP stack is removed entirely; the stack becomes PJSIP 2.17.
 
 This is the working plan for that migration. It exists because the interesting part is not
 the Kotlin — the seam for this was built in ADR-001 and only two files touch the SDK — it
-is the three places where pjsua2 is **not** a drop-in for liblinphone, and the one
+is the three places where pjsua2 is **not** a drop-in for what it replaced, and the one
 constraint that changes the threading model.
 
 Every API fact below was read out of the pjproject 2.17 headers
@@ -21,7 +21,7 @@ Two files import the SDK. That is the whole surface:
 
 | File | Lines | Fate |
 |---|---|---|
-| `data/sip/…/registration/stack/RealLinphoneCoreGateway.kt` | 1,066 | Replaced by `RealPjsipCoreGateway.kt` |
+| the previous stack's core gateway | 1,066 | Replaced by `RealPjsipCoreGateway.kt` |
 | `data/sip/…/stack/SipStackInfo.kt` | 52 | Rewritten — one call for a version string |
 | The other ~3,900 lines of `:data:sip` | — | **Unchanged.** Already SDK-free |
 | 3,663 lines of `:data:sip` tests | — | **Unchanged.** They drive `FakeSipCoreGateway` |
@@ -35,7 +35,7 @@ The four gateway interfaces — `SipCoreGateway`, `SipCallGateway`, `SipVideoGat
 
 ### 2.1 Thread confinement — this is the one that bites
 
-liblinphone does not care which thread calls it. **pjsua2 does.** Every thread that calls
+The previous stack did not care which thread called it. **pjsua2 does.** Every thread that calls
 into the library must first be registered, and `endpoint.hpp` is explicit about the cost:
 
 > Note that each time this function is called, it will allocate some memory to store the
@@ -69,7 +69,7 @@ behaviour, and the failure is a native crash rather than an exception.
 
 ### 2.2 Callbacks arrive by subclassing, not by listener
 
-liblinphone takes a `CoreListenerStub`. pjsua2 requires subclasses:
+The previous stack took a listener object. pjsua2 requires subclasses:
 
 ```kotlin
 class PjAccount : Account() {
@@ -90,13 +90,13 @@ collected while the native side still holds it, the next callback crashes the pr
 adapter must hold a strong reference to every live `PjCall` and to the `Account`, and
 release it only after `onCallState` reports `PJSIP_INV_STATE_DISCONNECTED`.
 
-The existing `callsByKey` map already does exactly this for liblinphone, so the shape
-carries over — but for liblinphone it was a convenience and here it is a correctness
+The existing `callsByKey` map already did exactly this, so the shape
+carries over — but before it was a convenience and here it is a correctness
 requirement.
 
 ### 2.3 Video renders into a Surface, not a TextureView
 
-liblinphone takes a `TextureView` through `core.nativeVideoWindowId`. pjsua2 does not:
+The previous stack took a `TextureView` directly. pjsua2 does not:
 
 ```kotlin
 val wh = VideoWindowHandle()
@@ -136,7 +136,7 @@ Verified against the 2.17 headers. This table exists so nobody re-derives it.
 | Codecs | `codecEnum2()`, `codecSetPriority(id, prio)` · `videoCodecEnum2()`, `videoCodecSetPriority(id, prio)` |
 | Devices | `audDevManager()`, `vidDevManager()` |
 
-Priority is `0..255`; `255` is highest, `0` disables. This replaces liblinphone's
+Priority is `0..255`; `255` is highest, `0` disables. This replaces the old
 `setAudioPayloadTypes(Array<PayloadType>)` — same intent, per-codec instead of per-array,
 so `StackAccount.audioCodecs` / `videoCodecs` survive unchanged and only the loop behind
 them is rewritten.
@@ -168,7 +168,7 @@ this build must be read back with `codecEnum2()` at runtime rather than assumed.
 - `natConfig.iceEnabled`, `natConfig.sipStunUse`, `natConfig.turnEnabled`,
   `natConfig.udpKaIntervalSec` — the existing `NatPolicy` maps onto these
 - `mediaConfig.srtpUse` (`pjmedia_srtp_use`), `mediaConfig.srtpSecureSignaling` — this is
-  `SrtpPolicy`. **`MANDATORY` is `PJMEDIA_SRTP_MANDATORY`**, and unlike liblinphone it is
+  `SrtpPolicy`. **`MANDATORY` is `PJMEDIA_SRTP_MANDATORY`**, and unlike before it is
   genuinely per-account rather than core-wide, which removes a documented limitation in
   `docs/security.md`
 - `videoConfig.autoShowIncoming`, `autoTransmitOutgoing`, `defaultCaptureDevice` — the
@@ -203,7 +203,7 @@ Video stream ops (`pjsua_call_vid_strm_op`), which replace `params.isVideoEnable
 - `PJSUA_CALL_VID_STRM_START_TRANSMIT` / `STOP_TRANSMIT`
 - `PJSUA_CALL_VID_STRM_SEND_KEYFRAME`
 
-**Audio does not connect itself.** liblinphone wires the capture and playback devices
+**Audio does not connect itself.** The previous stack wired the capture and playback devices
 automatically; pjsua2 requires it explicitly in `onCallMediaState`, per active audio
 stream:
 
@@ -339,16 +339,16 @@ there are no capture devices at all.
 **Still needs a handset:** that both render, and that rotation releases the surface without
 a native crash.
 
-### P-6 · Cut over and delete liblinphone  ✅ **done 2026-09-08**
+### P-6 · Cut over and delete the old stack  ✅ **done 2026-09-08**
 
-All of it: the PJSIP gateway bound in `SipStackModule`, `RealLinphoneCoreGateway`
-deleted, `linphone-sdk` gone from the catalog, the Belledonne repository gone from
+All of it: the PJSIP gateway bound in `SipStackModule`, the old gateway
+deleted, its catalog entry gone, its vendor repository gone from
 `settings.gradle.kts`, and seven files renamed off the old stack's name.
 
 **One deviation from the plan as written.** Rule 2 was *not* narrowed to `org.pjsip`
 alone. It now bans `org.linphone` **everywhere** and confines `org.pjsip` to `:data:sip` —
 two clauses rather than one. Narrowing as originally specified would have removed the only
-thing that catches a liblinphone import being added back, which is the opposite of what
+thing that catches an old-stack import being added back, which is the opposite of what
 this task is for.
 
 **This was done ahead of a green P-1**, on an explicit instruction, so for a day the tree
@@ -369,7 +369,7 @@ What is still gated on P-1 is *running*: there is no `libpjsua2.so` without the 
 an APK built without it raises `UnsatisfiedLinkError` on the first call. `:pjsip` says
 exactly that at configuration time.
 
-**Verified:** zero `org.linphone` imports in production code, zero `linphone` references
+**Verified:** zero old-SDK imports in production code, zero references
 in build files.
 
 ### P-7 · Re-verify on hardware  🔴 **outstanding — nothing below is verified**
@@ -383,7 +383,7 @@ IVR, hold/resume, blind and attended transfer, SRTP mandatory refusing a clearte
 ### P-8 · Restore TLS certificate verification  🟡 **implemented; unverified on hardware**
 
 The stack that was removed verified the server certificate and its CN on every TLS
-connection, unconditionally, in `RealLinphoneCoreGateway.applySecurity`. The replacement
+connection, unconditionally, in the old gateway. The replacement
 does not: `RealPjsipCoreGateway` creates its TLS transport with a default
 `TransportConfig()` (`data/sip/.../RealPjsipCoreGateway.kt:201`), and pjsua2's
 `TlsConfig.verifyServer` defaults to off. Nothing in the JVM suite covers it, because the
