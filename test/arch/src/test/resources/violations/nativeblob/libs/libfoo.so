@@ -1,0 +1,5 @@
+Not an ELF object. A stub, so the fixture costs bytes rather than megabytes.
+
+Rule 11 fires on the NAME, deliberately: a rule that parsed ELF headers would pass a
+committed binary that had been renamed, and the thing being forbidden is "a binary nobody
+in a fresh clone can reproduce", not "a well-formed ELF file".

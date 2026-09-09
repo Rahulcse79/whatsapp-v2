@@ -37,6 +37,17 @@ class DetektConventionPlugin : Plugin<Project> {
 
         tasks.withType<Detekt>().configureEach {
             jvmTarget = libs.findVersion("jvmToolchain").get().requiredVersion
+
+            // The vendored native trees are upstream's code in upstream's conventions, and
+            // they are excluded EXPLICITLY rather than by accident of which directories
+            // happen to hold Kotlin (ADR-007, docs/module-structure.md §2.2).
+            //
+            // Reformatting a vendored tree makes every future upstream diff unreadable,
+            // which is the one thing vendoring must not cost — and it would break the tree
+            // hash architecture rule 12 checks, so the failure would be loud but pointless.
+            // pjproject ships no Kotlin today, so this excludes nothing right now; it is
+            // here so that the day it does, nothing has to be noticed.
+            exclude("**/third_party/**")
             reports {
                 html.required.set(true)
                 xml.required.set(true)

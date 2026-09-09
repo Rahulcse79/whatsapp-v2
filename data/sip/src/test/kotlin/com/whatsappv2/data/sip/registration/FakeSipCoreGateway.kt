@@ -8,9 +8,13 @@ import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.StackConferenceEvent
 import com.whatsappv2.data.sip.call.StackParticipant
 import com.whatsappv2.data.sip.call.StackTransferEvent
+import com.whatsappv2.domain.codec.CodecAudit
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * A [SipCoreGateway] with no SIP stack behind it.
@@ -41,6 +45,16 @@ internal class FakeSipCoreGateway :
         extraBufferCapacity = BUFFER,
     )
     override val registrationEvents: Flow<StackRegistrationEvent> = events.asSharedFlow()
+
+    /**
+     * The codec audit, settable so a test can drive the UI states it produces.
+     *
+     * `null` by default, which is the honest starting value: it means *the stack has not
+     * started and nothing has been measured*, not *there are no codecs*. A fake that
+     * defaulted to an empty audit would let a screen that mishandles "unknown" pass.
+     */
+    val audit = MutableStateFlow<CodecAudit?>(null)
+    override val codecAudit: StateFlow<CodecAudit?> = audit.asStateFlow()
 
     private val callEventFlow = MutableSharedFlow<StackCallEvent>(
         replay = 0,

@@ -1,0 +1,20 @@
+// A deliberately violating build script (rule 11, second clause).
+//
+// Named `.gradle.kts.fixture` on disk so Gradle never configures it, and renamed to
+// `.gradle.kts` by the test before the rule sees it. A real `.gradle.kts` under
+// `src/test/resources` is not configured either, but a reader who greps for build files
+// should not have to work that out.
+//
+// Both clauses are here on purpose. A fixture proving only one leaves the other unproven,
+// which is the exact failure rule 4 of the master prompt's §7 exists to prevent.
+
+repositories {
+    flatDir { dirs("libs") }
+}
+
+configurations.maybeCreate("default")
+artifacts.add("default", file("libs/libfoo.so"))
+
+dependencies {
+    implementation(files("libs/pjsua2.aar"))
+}

@@ -1,0 +1,3 @@
+# <sha256>  <tree name>, one per vendored tree under third_party/.
+# This hash is deliberately wrong - see third_party/faketree/src/upstream.c.
+0000000000000000000000000000000000000000000000000000000000000000  faketree

@@ -26,10 +26,11 @@ captures/
 .cxx/
 output.json
 
-# PJSIP binaries (ADR-006). Built by .github/workflows/build-pjsip.yml and fetched from
-# its artifact; ~30 MB of native code that changes with every pjproject or NDK bump, and
-# not something git should be carrying. See docs/pjsip-migration.md P-2.
-pjsip/libs/*.aar
+# No PJSIP binary is ignored here any more, because none exists (ADR-007, N-1). The
+# native stack is built from third_party/ by `:pjsip`, and its output lands under
+# `build/` like every other build output. Architecture rule 11 fails the build on a
+# committed .aar or .so — an ignore rule is a convention that `git add -f` defeats
+# silently, and a rule is not.
 
 # Keystores & secrets — never commit (ADR-005 / §7)
 *.jks

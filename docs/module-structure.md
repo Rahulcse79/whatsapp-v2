@@ -55,6 +55,39 @@ not on the classpath.
 `third_party/lyra` is **absent pending the §2.4 gate**. See `docs/native-dependencies.md`
 for the gate's status and both exits.
 
+### 2.0 DECIDE — `third_party/` sits at the repository root, not under `pjsip/`
+
+The master prompt is inconsistent about this and the difference is load-bearing, so it is
+settled here.
+
+**§7's layout diagram** nests the vendored trees under the module: `:pjsip` →
+`third_party/pjproject`. **§2.1.2, N-2 and N-10 all name a bare `third_party/`** — *"with
+`third_party/` checked out"*, *"a CI check that the file lists exactly the directories under
+`third_party/`"*.
+
+**Root wins, and DoD 23 is what decides it.** That item requires `git ls-files pjsip/` to
+return **no `.java` file**. pjproject's own tree contains **13** — five of them the
+`org.pjsip` camera and audio helpers that stage 1 copies out
+(`pjmedia/src/pjmedia-{video,audio}dev/android/`), the rest sample-app sources. Vendoring
+into `pjsip/third_party/` would put all 13 under `pjsip/` and **fail DoD 23 permanently**,
+for a reason that has nothing to do with the defect DoD 23 exists to catch.
+
+Three references to one diagram, and a Definition-of-Done item that cannot otherwise be
+met. `third_party/` is at the root.
+
+### 2.0.1 Two sample apps are pruned, and the reason is not size
+
+`pjproject/pjsip-apps/src/pjsua/android/` and
+`pjproject/pjsip-apps/src/swig/java/android/app/` are demo applications, and each ships a
+committed **`gradle-wrapper.jar`**. Neither is a build input: stage 1 needs
+`pjsip-apps/src/swig/java/Makefile` and `pjsua2.i`, not the sample that consumes them.
+
+They are pruned because **this repository should not carry a second project's Gradle wrapper
+binary**. §2.1.1 exempts *this* repository's `gradle-wrapper.jar` as a tool; it does not
+make every wrapper jar in every vendored tree exempt by association. Rule 11 covers `.aar`
+and `.so` and would not fire on these — which is precisely why they are removed by hand and
+the reason is written down.
+
 Everything above `:data:sip` is untouched by this. That is the seam doing its job: the
 whole sourcing model changes and `:domain` does not know.
 
@@ -236,15 +269,21 @@ house standard: each names a thing, and each is one sentence to describe.
 
 ## 5. What changes, and in what order
 
-| Change | Rule / requirement | Phase | Breaks the build until done? |
+| Change | Rule / requirement | Phase | Status |
 |---|---|---|---|
-| Add rules 11 and 12 with their fixtures | Master prompt §7 | 7 | No |
-| Extend the fixture harness to non-Kotlin fixtures | §3.3 | 7 | No |
-| Vendor the four trees, pruned | N-2, ADR-007 | 2a | No |
-| Delete the 318 committed `.java` | N-13 | 3a | **Yes** — until SWIG runs in the build |
-| Delete `data/sip/build.gradle.kts:71-73` | N-14 | 3a | **Yes** — same window |
-| Delete the AAR path in `pjsip/build.gradle.kts:36-56` | N-1, N-5 | 3b | **Yes** |
-| `:pjsip` becomes an `externalNativeBuild` module | N-4 | 3b | — |
+| Rules 11 and 12, with their fixtures | Master prompt §7 | 7 | **Done.** `NativeMandateRulesTest` |
+| The fixture harness reads non-Kotlin fixtures | §3.3 | 7 | **Done.** `trackedFiles()` asks git; rule 12 hashes a directory |
+| Vendor the four trees, pruned | N-2, ADR-007 | 2a | **Done.** 141 MB, 8,133 files, hashes verified against a fresh checkout |
+| Delete the 318 committed `.java` | N-13 | 3a | **Done.** `git ls-files pjsip/` returns three files, none `.java` |
+| Delete the `:pjsip:api` fallback condition | N-14 | 3a | **Done.** `data/sip/build.gradle.kts` has no `if` |
+| Delete the AAR path in `pjsip/build.gradle.kts` | N-1, N-5 | 3b | **Done.** The module is the native build |
+| `:pjsip` becomes an `externalNativeBuild` module | N-4 | 3b | **Written, NOT YET GREEN.** See below |
+
+**The honest status of the last row.** `pjsip/CMakeLists.txt` and `pjsip/build-native.sh`
+are ported flag-for-flag from a build that IS green — run `34317978694`
+(`docs/reconciliation.md` B-7) — but the port itself has not had a CI run. Until it does,
+the accurate claim is *"written from a proven build, not yet proven"*. The three words in
+master prompt §10 are not interchangeable, and this is *implemented*, not *verified*.
 
 **The honest cost of phases 3a-3b, stated up front.** Deleting the fallback means that
 until stage 1 works, the tree does not compile at all. That is not a regression — it is

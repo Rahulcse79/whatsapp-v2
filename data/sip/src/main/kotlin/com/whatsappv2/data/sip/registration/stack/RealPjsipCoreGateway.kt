@@ -1,6 +1,7 @@
 package com.whatsappv2.data.sip.registration.stack
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.hardware.camera2.CameraManager
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.data.sip.call.SipCallGateway
@@ -10,6 +11,7 @@ import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.StackConferenceEvent
 import com.whatsappv2.data.sip.call.StackTransferEvent
+import com.whatsappv2.data.sip.codec.DeclaredFeatureSet
 import com.whatsappv2.data.sip.registration.NameAddr
 import com.whatsappv2.data.sip.registration.SipCoreGateway
 import com.whatsappv2.data.sip.registration.StackAccount
@@ -17,11 +19,22 @@ import com.whatsappv2.data.sip.registration.StackMediaEncryption
 import com.whatsappv2.data.sip.registration.StackPushParameters
 import com.whatsappv2.data.sip.registration.StackRegistrationEvent
 import com.whatsappv2.data.sip.registration.StackRegistrationState
+import com.whatsappv2.domain.codec.AbsenceReason
+import com.whatsappv2.domain.codec.CodecAudit
+import com.whatsappv2.domain.codec.CodecAuditor
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import javax.inject.Inject
+import javax.inject.Singleton
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.pjsip.PjCameraInfo2
 import org.pjsip.pjsua2.Account
 import org.pjsip.pjsua2.AccountConfig
@@ -60,11 +73,6 @@ import org.pjsip.pjsua2.pjsua_call_flag
 import org.pjsip.pjsua2.pjsua_call_media_status
 import org.pjsip.pjsua2.pjsua_call_vid_strm_op
 import org.pjsip.pjsua2.pjsua_stun_use
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
-import javax.inject.Inject
-import javax.inject.Singleton
 
 /**
  * The real SIP stack, behind the gateway seam (ADR-006).
@@ -156,6 +164,79 @@ internal class RealPjsipCoreGateway @Inject constructor(
     private val pjsip = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, PJSIP_THREAD).apply { isDaemon = true }
     }
+
+    /**
+     * Enforces the thread-confinement invariant instead of documenting it (DoD 4).
+     *
+     * ## The invariant
+     *
+     * pjsua2 requires every thread that calls into it to be **registered with the library
+     * first**, and `Endpoint::libRegisterThread` allocates a thread descriptor that is
+     * *"only freed when the library is destroyed"*. The adapter's answer is this
+     * single-threaded executor: `libCreate` registers its own caller, every call is posted
+     * through the same executor, so exactly one thread ever calls in and no descriptor
+     * leaks (`docs/pjsip-migration.md:36-60`).
+     *
+     * ## Why an assertion and not a comment
+     *
+     * That design is correct and was, until now, held in place by everyone remembering it.
+     * Calling in from an unregistered thread is **undefined behaviour**: it does not throw,
+     * it does not log, and it surfaces later as a `SIGSEGV` in a stack trace with no Kotlin
+     * frames — the top source of native crashes in pjsua2 apps, and silent until it is
+     * fatal. Owning the build makes this more important rather than less: a stack you
+     * patched is a stack whose crashes are yours to explain.
+     *
+     * ## Debug only, deliberately
+     *
+     * A release build does nothing here. The check must never be the thing that ends a
+     * shipped call — the underlying bug is a crash either way, and turning a maybe-crash
+     * into a definite one in front of a user buys nothing.
+     *
+     * O(1): one reference comparison per call into the library.
+     *
+     * `FLAG_DEBUGGABLE` rather than `BuildConfig.DEBUG`: this module does not generate a
+     * `BuildConfig` (AGP 8 made that opt-in), and turning the feature on for one boolean
+     * would add a generated class to every variant of a library that has managed without
+     * one. The manifest flag is the same fact, already present.
+     *
+     * @throws IllegalStateException in a debug build, naming both threads.
+     */
+    private fun assertOnPjsipThread(operation: String) {
+        if (!isDebuggable) return
+        val current = Thread.currentThread()
+        check(current.name == PJSIP_THREAD) {
+            "$operation called pjsua2 from '${current.name}', not '$PJSIP_THREAD'.\n" +
+                "  Every thread that calls into pjsua2 must be registered with the library " +
+                "first, and libRegisterThread leaks a descriptor for the life of the " +
+                "process. Post through the pjsip executor instead.\n" +
+                "  Calling in unregistered is undefined behaviour: it does not throw at the " +
+                "boundary, it becomes a SIGSEGV later with no Kotlin frames."
+        }
+    }
+
+    /**
+     * Whether this is a debuggable build, read once.
+     *
+     * The flag the platform sets from the manifest, which is exactly "is this a debug
+     * build" without needing a generated `BuildConfig` in this module.
+     */
+    private val isDebuggable: Boolean =
+        (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
+    /**
+     * The codec audit (N-9, §2.5), recomputed once per successful [start].
+     *
+     * `null` until the stack has started. A `StateFlow` rather than a one-shot because the
+     * endpoint can be stopped and started again — a network change, a settings change — and
+     * the answer is a property of the running library, not of the process.
+     */
+    private val audit = MutableStateFlow<CodecAudit?>(null)
+    override val codecAudit: StateFlow<CodecAudit?> = audit.asStateFlow()
+
+    private val auditor = CodecAuditor(
+        declared = DeclaredFeatureSet.declared,
+        knownUnnegotiable = DeclaredFeatureSet.unnegotiableOnThisDeployment,
+    )
 
     private var endpoint: Endpoint? = null
 
@@ -884,6 +965,49 @@ internal class RealPjsipCoreGateway @Inject constructor(
             TAG,
             "Codecs for ${account.key}: audio=${account.audioCodecs} video=${account.videoCodecs}",
         )
+
+        publishCodecAudit()
+    }
+
+    /**
+     * Reads the registry and publishes the audit.
+     *
+     * Deliberately here rather than beside [applyCodecs]: this reads the SAME
+     * `codecEnum2()` the priority pass reads, so the audit cannot disagree with what was
+     * actually prioritised. `applyPriorities` already iterates only the codecs PJSIP
+     * registered, which is why the H264-in-defaults mismatch is skipped rather than raised
+     * — that skip becomes reportable evidence here instead of a silent no-op (§2.5 step 4).
+     *
+     * O(n) over ≤ ~30 codecs, once per endpoint start, never in the call path.
+     */
+    private fun Endpoint.publishCodecAudit() {
+        val result = auditor.audit(
+            registeredAudio = codecEnum2().map { it.codecId to it.priority.toInt() },
+            registeredVideo = videoCodecEnum2().map { it.codecId to it.priority.toInt() },
+            compiledIn = DeclaredFeatureSet.compiledIn,
+        )
+        audit.value = result
+
+        // INFO once per start: the codec list the running library ACTUALLY registered.
+        // Reported verbatim rather than summarised — a summary is what hid this for months.
+        logger.info(
+            TAG,
+            "Codec audit: registered audio=${result.registeredAudio.map { it.codecId }} " +
+                "video=${result.registeredVideo.map { it.codecId }}",
+        )
+
+        result.absent.forEach { (codec, reason) ->
+            val line = "Codec ${codec.name} (${codec.kind}) is not usable: $reason"
+            // A codec declared and compiled in that did not register is a BUILD DEFECT and
+            // N-9 requires it be reported as one — at ERROR, once, with the codec id.
+            // Everything else is a decision or a fact about the deployment, and reporting
+            // those at ERROR is how people learn to ignore the log.
+            if (reason == AbsenceReason.RegistrationFailed) {
+                logger.error(TAG, "$line — the build declared it and the library did not register it")
+            } else {
+                logger.info(TAG, line)
+            }
+        }
     }
 
     private inline fun applyPriorities(
@@ -1506,10 +1630,31 @@ internal class RealPjsipCoreGateway @Inject constructor(
      */
     private fun onPjsip(what: String, block: () -> Unit) {
         pjsip.execute {
+            // DoD 4. Every pjsua2 call in this class arrives through here, so this one line
+            // is the whole enforcement point for the thread-confinement invariant. It is a
+            // tautology today - `pjsip` is single-threaded, so the check cannot fail - and
+            // that is exactly the point: the day somebody adds a second executor, or posts
+            // one operation to Dispatchers.IO to "just get it working", this fails in the
+            // debug build instead of becoming a SIGSEGV with no Kotlin frames weeks later.
+            assertOnPjsipThread(what)
+
             // The throwable, not just its message. A message alone cannot say which frame
             // in a JNI call threw, and for an UnsatisfiedLinkError the frame is the answer.
             runCatching(block).onFailure { logger.error(TAG, "$what failed: ${it.message}", it) }
         }
+    }
+
+    /**
+     * Runs [block] on the caller's thread, having first asserted it is the PJSIP one.
+     *
+     * For the paths that are ALREADY on the executor — a SWIG director callback, which
+     * pjsua2 raises on its own registered thread — where re-posting through [onPjsip] would
+     * deadlock or reorder. Visible to tests so DoD 4's "proven by a test that trips it
+     * deliberately" has something to trip.
+     */
+    internal fun <T> requirePjsipThread(what: String, block: () -> T): T {
+        assertOnPjsipThread(what)
+        return block()
     }
 
     private companion object {
@@ -1533,6 +1678,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
         const val PJSIP_THREAD = "pjsip-main"
         const val EVENT_BUFFER = 64
+
 
         const val TRANSPORT_UDP = "UDP"
         const val TRANSPORT_TCP = "TCP"

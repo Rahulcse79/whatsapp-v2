@@ -66,6 +66,36 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      # ---------------------------------------------------------------------
+      # The native toolchain. Required from ADR-007 onward, and the reason is
+      # N-14: `:data:sip` takes `:pjsip` unconditionally, `:pjsip` builds
+      # libpjsua2.so from third_party/, and a build that produces no .so FAILS.
+      # There is no Java-only fallback to fall back to any more, deliberately —
+      # it was a path that compiled and could not run.
+      #
+      # swig is stage 1 (~15 s) and the NDK is stage 2 (~3 min per ABI). Both
+      # are TOOLCHAIN, exempt from N-1 and pinned per §2.1.1: an unpinned swig
+      # is a silently different JNI surface, so the version is asserted by
+      # GeneratePjsua2Bindings rather than accepted.
+      - name: Install swig (stage 1 — the pjsua2 Java bindings)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y swig
+          # Printed so a runner-image bump is visible in the log as well as being
+          # caught by the build's own version assertion.
+          swig -version
+
+      - name: Set up the NDK (stage 2 — r27+, for 16 KB page sizes)
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          # NOT cached. With local-cache: true the action restored a tree with
+          # `toolchains/llvm/prebuilt` and nothing inside it — an NDK with no
+          # compiler, which is worse than no NDK because every later step still
+          # looks like it should work.
+          local-cache: false
+          add-to-path: true
+
       # API 37 ships as MINOR-versioned platforms (android-37.0, android-37.1,
       # android-37.2) - there is no plain "android-37" directory, so an exact-match
       # check finds nothing even when the platform is installed.
@@ -150,6 +180,15 @@ jobs:
       # an architecture that is only documented is one that gets violated in week three.
       - name: Architecture rules
         run: ./gradlew :test:arch:test --stacktrace
+
+      # The native mandate's own checks (§2). Cheap, file-reading, and each one caught a
+      # real defect during phase 2a — see docs/native-dependencies.md §1.3. They also run
+      # in their own workflow so a vendoring mistake is not gated behind AGP.
+      - name: Vendored trees are complete, pinned and unmodified (N-2, N-7, N-10)
+        run: |
+          ./tools/vendor/verify-pins.sh
+          ./tools/vendor/verify-vendored.sh
+          ./tools/vendor/verify-openssl-prune.sh
 
       # Task 3 done-when #2: "zero warnings suppressed by baseline abuse".
       # A baseline file is how suppressed findings quietly become permanent.

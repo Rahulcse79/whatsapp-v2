@@ -5,11 +5,12 @@ version *and commit*, licence, why it is here, every local patch, and size. Plus
 **exempt toolchain** under its own heading (§2.1.1) — not vendored, not built here, and
 pinned anyway, because an unpinned tool is a silently different `.so` and defeats N-11.
 
-> **STATUS — read this first.** `third_party/` **does not exist yet.** Phase 2a has not
-> run. Every version, commit and licence below is verified against upstream; every size is
-> **measured** by extracting the four tarballs and running `du`, on 2026-09-09, on macOS
-> 12.6 with APFS. Nothing here is estimated. What is not yet true is that these trees are
-> *in this repository* — that is phase 2a, and this document is its specification.
+> **STATUS — `third_party/` exists.** Phase 2a landed on 2026-09-09. Every version, commit
+> and licence below is verified against upstream, and every size is **measured** with `du`
+> on the vendored tree, not estimated. The tree hashes in
+> `pjsip/patches/vendored-tree.sha256` were verified to reproduce **byte-identically from a
+> fresh `git worktree` checkout**, which is what makes architecture rule 12 meaningful in
+> CI rather than only on the machine that vendored.
 
 ---
 
@@ -35,22 +36,27 @@ from*, not *which source*.
 tree. Then committed to a throwaway git repository and `git gc --aggressive --prune=now`,
 to measure what the *pack* actually costs — which is what a clone pays.
 
-| Tree | Extracted | After the §2 prune |
+| Tree | Extracted | **Vendored (final)** |
 |---|---|---|
-| pjproject | 66 MB | 61 MB |
-| OpenSSL | 138 MB | 39 MB |
-| libvpx | 26 MB | 20 MB |
-| Opus | 16 MB | 15 MB |
-| **Total working tree** | **246 MB** | **134 MB** |
-| **`.git` pack cost** | **115 MB** | **26 MB** |
+| pjproject | 66 MB | **57 MB** |
+| OpenSSL | 138 MB | **49 MB** |
+| libvpx | 26 MB | **20 MB** |
+| Opus | 16 MB | **15 MB** |
+| **Total working tree** | **246 MB** | **141 MB** — 8,133 files |
 
-**Clone size before and after**, as master prompt §2.1 requires:
+**Clone size before and after**, as master prompt §2.1 requires — `.git` measured directly:
 
 ```
-today                         .git = 30 MB
-+ vendored, unpruned          .git = 145 MB
-+ vendored, pruned  ◄── this  .git =  56 MB
+before phase 2a               .git = 30 MB
+after,  vendored + pruned     .git = 87 MB   ◄── actual
+(unpruned would have been     .git ≈ 145 MB)
 ```
+
+**The final figure is 141 MB rather than the 134 MB a first pass measured**, and the
+difference is a correction worth keeping: `doc/`, `demos/` and `fuzz/` were pruned from
+OpenSSL and then **restored**, because they are in OpenSSL's *unconditional* `SUBDIRS`
+line and `Configure` walks into them. 9.6 MB against a build that does not configure is
+not a trade. §1.3 is the check that now holds that line.
 
 **The master prompt's cost table is high by roughly a factor of four, and the reason is
 worth stating** because it changes the decision. §2.1 quotes GitHub API repository sizes —
@@ -73,12 +79,13 @@ build scratch** — artefacts that are neither compiled into the `.so` nor read 
 
 | Tree | Removed | Measured saving | Risk |
 |---|---|---|---|
-| OpenSSL | `test/` | **89.1 MB** | **The one to verify.** OpenSSL's `Configure` walks `build.info` files, and `test/build.info` is one of them. **VERIFY in CI before committing the prune** — see §1.3 |
-| OpenSSL | `doc/`, `demos/`, `fuzz/` | 10.5 MB | Low. Not referenced by the library build |
+| OpenSSL | `test/` | **89.1 MB** | **Verified safe, and the safety is now asserted.** OpenSSL's root `build.info:5-7` guards `SUBDIRS=test` behind `IF[{- !$disabled{tests} -}]`, and every `./Configure` in this repository passes `no-tests` (`.github/workflows/build-pjsip.yml:285-286`). `tools/vendor/verify-openssl-prune.sh` asserts **both**, because the prune is safe only while both hold |
+| OpenSSL | ~~`doc/`, `demos/`, `fuzz/`~~ | — | **Pruned, then RESTORED.** All three are in the **unconditional** `SUBDIRS` line (`build.info:4`), so `Configure` walks into each and reads a `build.info` that would not be there. Read the root `build.info` before adding anything to this list |
 | pjproject | `tests/`, `pjsip-apps/src/samples/` | 4.7 MB | Low |
+| pjproject | `pjsip-apps/src/pjsua/android/`, `pjsip-apps/src/swig/java/android/app/` | small | Low — **and the reason is not size.** Each ships a committed `gradle-wrapper.jar`, and this repository should not carry a second project's wrapper binary. Rule 11 covers `.aar`/`.so` and would not fire on these, so they are removed deliberately. `pjsip-apps/src/swig/java/Makefile` and `pjsua2.i` are **kept** — they are stage 1 |
 | libvpx | `test/`, `build_debug/`, `examples/` | 6.1 MB | Low. `build_debug/` is pre-generated scratch |
 | Opus | `doc/`, `tests/` | 0.9 MB | Low |
-| — | **Total** | **111.3 MB** | |
+| — | **Total** | **~105 MB** | |
 
 **What is deliberately NOT pruned, and why each would have been a mistake:**
 
@@ -93,25 +100,33 @@ build scratch** — artefacts that are neither compiled into the `.so` nor read 
 prune candidate by eye, and pruning it would have broken the build. It was kept because
 `grep` found it on the include path, not because it looked important.
 
-### 1.3 The prune is not committed until CI proves it builds
+### 1.3 Four checks, because every one of them caught something
 
-**A pruned tree that does not build is worse than an unpruned one**, and `Configure`
-failures from a missing `build.info` are exactly the kind that surface as an obscure
-generated-makefile error rather than "you deleted `test/`".
+**A pruned tree that does not build is worse than an unpruned one**, and every failure in
+this class is silent: the tree looks complete on the machine that vendored it, and CI fails
+on a fresh checkout with an error nowhere near the cause. So each is asserted rather than
+trusted. Three of the four caught a real defect on the first vendoring attempt.
 
-**Required before the prune lands:** one CI run of the existing native workflow against the
-pruned trees, green on all three ABIs, with the TLS/Opus/VPX assertions
-(`.github/workflows/build-pjsip.yml:420-432`) and the 16 KB alignment assertion (`:464`)
-passing. If OpenSSL's `Configure` needs `test/build.info`, the fallback is to keep that one
-file and delete the rest of `test/` — measured separately at that point, not guessed here.
+| Check | What it asserts | What it caught |
+|---|---|---|
+| `tools/vendor/verify-vendored.sh` | Every file on disk under `third_party/` is one git tracks | **348 files silently dropped.** `.gitignore`'s `build/` rule matched `third_party/pjproject/build/` — which is not build output, it is the make-based build system every target includes — and the vendored sample apps' own `.gitignore` files excluded the rest |
+| `tools/vendor/verify-openssl-prune.sh` | `build.info` still guards `SUBDIRS=test`, `no-tests` is still passed, and every unconditional `SUBDIR` exists | **`doc/`, `demos/` and `fuzz/` had been pruned** out of the unconditional `SUBDIRS` line |
+| `.gitattributes` `third_party/** -text` | Git performs no line-ending conversion in a vendored tree | **188 CRLF files would have been rewritten**, so the committed bytes would not be upstream's bytes and rule 12's hash would differ between the vendoring machine and a fresh checkout |
+| Architecture **rule 12** | Each tree matches its recorded content hash | The standing check. Verified to reproduce byte-identically from a fresh `git worktree` checkout |
 
-**Status: NOT YET RUN.** This is the first thing phase 2a does.
+**Still owed: one green CI run that compiles FROM the vendored trees.** `pjsip/build-native.sh`
+carries the TLS/Opus/VPX assertions and the 16 KB alignment assertion, ported flag-for-flag
+from the green workflow, and `.github/workflows/native-mandate.yml` runs the whole native
+stage with **egress blocked** (§2.1.2). Until that job is green, the honest claim is
+*"vendored, verified byte-identical, and built by a script ported from a proven build but
+not yet proven itself"*.
 
 ---
 
 ## 2. Local patches
 
-`pjsip/patches/` — **empty.** No local change to any vendored tree exists yet.
+`pjsip/patches/` holds **no `.patch` files** — no local change to any vendored tree exists
+yet. It holds `vendored-tree.sha256`, which is rule 12's manifest.
 
 **The rule (N-7).** Every local change is a **numbered patch file**, applied by the build in
 order, never an edit to the vendored tree. Each carries: what it changes, why, and whether

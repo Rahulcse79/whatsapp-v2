@@ -90,6 +90,34 @@ object ArchitectureRules {
     fun fixtureFiles(): List<SourceFile> =
         filesUnder(File(projectRoot, FIXTURES), excludeResources = false)
 
+    /**
+     * Every file git is tracking, as repository-relative paths.
+     *
+     * Rules 11 and 12 ask what has been **committed**, not what happens to be on disk, and
+     * those are different questions: `pjsip/libs/*.aar` is gitignored (`.gitignore:22`), so
+     * a developer who fetched one to run the app has a `.aar` in their tree that the
+     * repository does not carry. A filesystem scan would fail their build for doing
+     * exactly what `docs/pjsip-migration.md` P-2 tells them to do.
+     *
+     * Asking git also means no exclusion list: it already knows about `build/`, `.gradle/`
+     * and everything else in `.gitignore`, and it cannot drift from them the way a second
+     * copy of that list here would.
+     *
+     * A failure to run git is a hard error rather than an empty list. An empty list would
+     * make every rule below pass vacuously, which is the one outcome an architecture rule
+     * must never produce.
+     */
+    fun trackedFiles(): List<String> {
+        val process = ProcessBuilder("git", "ls-files", "-z")
+            .directory(projectRoot)
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().readText()
+        val exit = process.waitFor()
+        check(exit == 0) { "git ls-files failed in $projectRoot (exit $exit): ${output.take(500)}" }
+        return output.split('\u0000').filter { it.isNotBlank() }
+    }
+
     private fun filesUnder(root: File, excludeResources: Boolean = true): List<SourceFile> {
         require(root.isDirectory) { "Not a directory: $root" }
         val excluded = if (excludeResources) EXCLUDED else EXCLUDED - "resources"
@@ -400,4 +428,181 @@ object ArchitectureRules {
      * variable.
      */
     private val CALL_STATE = Regex("""\b(CallSnapshot|CallState|CallUiState|CallDisplay)\b""")
+
+    // ================================================ rules 11 and 12 (the native mandate)
+
+    /**
+     * **Rule 11 — no prebuilt native binary in the tree (N-1).**
+     *
+     * The native mandate's first requirement: *no binary this repository did not compile,
+     * from source that lives in this repository, may ship inside the APK.* This is the
+     * machine check for it.
+     *
+     * **Two clauses, because there are two ways to bring a binary in.** Deleting the file
+     * and leaving the reference produces a build that resolves nothing and fails
+     * obscurely; deleting the reference and leaving the file leaves a 19 MB binary in git
+     * history that one line can re-wire. Neither half is sufficient on its own, so both
+     * are checked and [nativeBinaryReferences] is the second.
+     *
+     * **The toolchain needs no exemption here, and adding one would be the first crack in
+     * this rule.** N-1 governs what ships inside the APK, not what does the building: a
+     * `.so` ships and a compiler does not. The NDK's clang, the `swig` binary and
+     * `gradle-wrapper.jar` are not tracked files under this rule's scope, so the rule as
+     * written already draws that line correctly.
+     *
+     * Build **output** is out of scope for free: [trackedFiles] asks git, and every
+     * `build/` and `.cxx/` directory is already ignored. So "a `.so` that `:pjsip` built"
+     * cannot fire this rule, and a `.so` somebody committed always does.
+     */
+    fun noPrebuiltNativeBinaries(tracked: List<String>): List<Violation> =
+        tracked.filterNot { it.startsWith("$FIXTURES/") }
+            .filter { path -> NATIVE_BINARY_SUFFIXES.any { path.endsWith(it) } }
+            .map { Violation(it, "is a committed native binary; :pjsip must build it from source (N-1)") }
+
+    /**
+     * **Rule 11, second clause — no build file points at a prebuilt binary.**
+     *
+     * Scoped to build scripts rather than to every file, because a `.so` path in a comment
+     * or a document is prose, and prose is what `docs/` is for. A `flatDir`, or an
+     * `artifacts.add`/`files(...)` naming an `.aar` or `.so`, is a build instruction.
+     *
+     * `pjsip/build.gradle.kts:38-41` is the live example this rule exists to delete
+     * (N-14), and it will fire on it until phase 3b lands — which is the rule working,
+     * not the rule being wrong.
+     */
+    fun nativeBinaryReferences(files: List<SourceFile>): List<Violation> =
+        files.filter { it.relativePath.endsWith(".gradle.kts") || it.relativePath.endsWith(".gradle") }
+            .filterNot { it.isUnder(FIXTURES) }
+            .flatMap { file ->
+                buildList {
+                    if (FLAT_DIR.containsMatchIn(file.code)) {
+                        add(
+                            Violation(
+                                file.relativePath,
+                                "declares a flatDir repository; a local .aar is not a repository (N-1)",
+                            ),
+                        )
+                    }
+                    BINARY_ARTIFACT.findAll(file.code).forEach {
+                        add(
+                            Violation(
+                                file.relativePath,
+                                "references the prebuilt binary ${it.groupValues[1]}; :pjsip must build it (N-1)",
+                            ),
+                        )
+                    }
+                }
+            }
+
+    /**
+     * **Rule 12 — vendored source is only changed through `patches/` (N-7).**
+     *
+     * N-7 allows any pjproject source file to be modified. It does not allow a modified
+     * vendored tree with **no record of what changed** — an unrecorded edit is invisible at
+     * the next version bump, so somebody bumps pjproject, re-applies the patch series, and
+     * a fixed bug comes back with no commit that removed it.
+     *
+     * **How the comparison is done without the network.** The honest statement of N-7 is
+     * "the tree equals upstream-at-the-recorded-commit plus the patches, in order", and
+     * resolving *upstream* means a fetch. So the hash of that known-good state is recorded
+     * once — at vendoring time, when upstream and the patches were both in hand — in
+     * [TREE_HASH_MANIFEST], and every build re-hashes the tree and compares. A pin change
+     * updates the manifest in the same commit that changes it, which is the only moment
+     * the network is needed.
+     *
+     * **Vacuously passing is the failure mode here**, because `third_party/` does not exist
+     * until phase 2a: an empty tree hashes consistently with an empty manifest for ever.
+     * So an absent tree AND an absent manifest is a pass, an absent tree with a manifest
+     * that names trees is a violation — which is what
+     * `rule 12 is not vacuous - an absent third_party with a populated manifest fails`
+     * holds in place.
+     */
+    fun vendoredTreesMatchTheirManifest(root: File = projectRoot): List<Violation> {
+        val manifest = File(root, TREE_HASH_MANIFEST)
+        val vendored = File(root, VENDORED_ROOT)
+
+        val recorded: Map<String, String> =
+            if (!manifest.isFile) {
+                emptyMap()
+            } else {
+                manifest.readLines()
+                    .map { it.substringBefore('#').trim() }
+                    .filter { it.isNotEmpty() }
+                    .mapNotNull { line ->
+                        // A malformed line must be a reported violation, not an exception:
+                        // this file is edited by hand at every pin change.
+                        val parts = line.split(Regex("\\s+"), limit = 2)
+                        if (parts.size == 2) parts[1].trim() to parts[0].trim() else null
+                    }
+                    .toMap()
+            }
+
+        val present: Set<String> =
+            if (!vendored.isDirectory) emptySet()
+            else vendored.listFiles()?.filter { it.isDirectory }?.map { it.name }?.toSet().orEmpty()
+
+        return buildList {
+            (recorded.keys - present).forEach {
+                add(Violation(TREE_HASH_MANIFEST, "records $it, which is not a directory under $VENDORED_ROOT/"))
+            }
+            (present - recorded.keys).forEach {
+                add(Violation("$VENDORED_ROOT/$it", "is vendored but has no recorded tree hash (N-7)"))
+            }
+            (recorded.keys intersect present).forEach { name ->
+                val actual = hashTree(File(vendored, name))
+                if (actual != recorded[name]) {
+                    add(
+                        Violation(
+                            "$VENDORED_ROOT/$name",
+                            "does not match its recorded hash — an edit with no patch " +
+                                "in pjsip/patches/ (N-7). recorded " +
+                                "${recorded[name]?.take(HASH_PREFIX)}…, " +
+                                "found ${actual.take(HASH_PREFIX)}…",
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * A stable content hash of one vendored tree.
+     *
+     * Paths are sorted and hashed alongside the bytes, so a **renamed** file changes the
+     * hash even when every byte in the tree is unchanged — a rename is an edit, and one
+     * that a bytes-only hash would miss entirely.
+     *
+     * `/` is forced as the separator so the manifest a Linux runner writes matches the one
+     * a macOS or Windows checkout computes.
+     */
+    fun hashTree(root: File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        root.walkTopDown()
+            .filter { it.isFile }
+            .map { it.relativeTo(root).path.replace('\\', '/') to it }
+            .sortedBy { it.first }
+            .forEach { (relative, file) ->
+                digest.update(relative.toByteArray())
+                digest.update(0.toByte())
+                digest.update(file.readBytes())
+            }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /** Where the vendored trees live — the repository root, not under `pjsip/`. */
+    const val VENDORED_ROOT = "third_party"
+
+    /** One `<sha256>  <tree name>` line per vendored tree. `#` starts a comment. */
+    const val TREE_HASH_MANIFEST = "pjsip/patches/vendored-tree.sha256"
+
+    /** What "a native binary" means for rule 11. */
+    private val NATIVE_BINARY_SUFFIXES = listOf(".aar", ".so")
+
+    private val FLAT_DIR = Regex("""\bflatDir\s*[({]""")
+
+    /** `files("....aar")`, `artifacts.add("default", file("....so"))`, and the like. */
+    private val BINARY_ARTIFACT = Regex("""["']([^"']*\.(?:aar|so))["']""")
+
+    /** Enough of a hash to identify it in a failure message without printing 64 chars twice. */
+    private const val HASH_PREFIX = 12
 }
