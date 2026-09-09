@@ -9,6 +9,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import com.whatsappv2.core.designsystem.component.PermissionRationaleSheet
 
 /**
@@ -34,6 +36,17 @@ fun rememberPermissionRequest(
         mutableStateOf(coordinator.status(permission, activity))
     }
     var showRationale by remember(permission) { mutableStateOf(false) }
+
+    // Re-read on every resume, because the launcher callback below is not the only way a
+    // permission changes. The sheet's own "Open settings" button sends the user to the
+    // system settings app, and granting there does not restart the process or fire any
+    // result we listen for - so the cached status stayed `PermanentlyDenied` for the life
+    // of the composition. Pressing the dialler's video button then showed "Open settings"
+    // again on a device where `dumpsys package` reported `CAMERA: granted=true`, for ever.
+    // Resume is the one moment the answer can have changed behind our back.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        status = coordinator.status(permission, activity)
+    }
 
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
