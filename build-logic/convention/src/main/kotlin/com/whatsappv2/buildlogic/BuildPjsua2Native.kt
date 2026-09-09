@@ -2,10 +2,13 @@ package com.whatsappv2.buildlogic
 
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
@@ -48,10 +51,39 @@ abstract class BuildPjsua2Native @Inject constructor(
     private val exec: ExecOperations,
 ) : DefaultTask() {
 
-    /** `pjsip/`, which holds `CMakeLists.txt`, `build-native.sh` and `config/`. */
+    /**
+     * `pjsip/` — what CMake is pointed at with `-S`.
+     *
+     * `@Internal`, and the three real inputs are declared separately below. Declaring this
+     * directory as an input instead is what the first version did, and Gradle refused it:
+     * `pjsip/` CONTAINS `pjsip/api/`, whose `build/` is another task's output, so the task
+     * graph read as *"buildPjsua2Native consumes compileDebugJavaWithJavac's output without
+     * declaring a dependency"*. Overlapping a subproject's output directory is an
+     * ordering bug waiting to happen even when it is not, in this case, real.
+     */
+    @get:Internal
+    abstract val nativeSourceDir: DirectoryProperty
+
+    /** The CMake entry point. Changing it must rebuild. */
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val cmakeLists: RegularFileProperty
+
+    /** The per-ABI build script CMake drives. Changing it must rebuild. */
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val buildScript: RegularFileProperty
+
+    /**
+     * `pjsip/config/`, holding `pj/config_site.h` — the declared feature set (N-8).
+     *
+     * A real input and not an afterthought: the feature set decides what is compiled in, so
+     * a change here that did not rebuild would leave a `.so` describing a different library
+     * from the one the generated Java describes — the exact drift N-13 exists to remove.
+     */
     @get:InputDirectory
     @get:PathSensitive(PathSensitivity.RELATIVE)
-    abstract val nativeSourceDir: DirectoryProperty
+    abstract val configDir: DirectoryProperty
 
     /** `third_party/` — the vendored trees. Read only; rule 12 hashes them. */
     @get:InputDirectory

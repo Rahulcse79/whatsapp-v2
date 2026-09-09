@@ -89,6 +89,9 @@ tasks.matching { it.name.startsWith("lint") || it.name.startsWith("detekt") }.co
  */
 val buildNative = tasks.register<BuildPjsua2Native>("buildPjsua2Native") {
     nativeSourceDir.set(layout.projectDirectory)
+    cmakeLists.set(layout.projectDirectory.file("CMakeLists.txt"))
+    buildScript.set(layout.projectDirectory.file("build-native.sh"))
+    configDir.set(layout.projectDirectory.dir("config"))
     vendoredDir.set(rootProject.layout.projectDirectory.dir("third_party"))
     jniLibsDir.set(layout.buildDirectory.dir("generated/jniLibs"))
     abis.set(listOf("arm64-v8a", "armeabi-v7a", "x86_64"))
