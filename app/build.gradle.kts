@@ -23,6 +23,37 @@ android {
         }
     }
 
+    signingConfigs {
+        // A debug key shared across machines, when one is supplied.
+        //
+        // AGP's default is `~/.android/debug.keystore`, generated per machine. On CI that
+        // means a different key on every runner, so an APK from one run will not install
+        // over an APK from another: the package manager sees a different signer and
+        // refuses with INSTALL_FAILED_UPDATE_INCOMPATIBLE. The only way past it is
+        // `adb uninstall`, which erases the SIP accounts, their credentials and the call
+        // log - so every build under test began from an empty app, which is not the state
+        // any of the bugs worth finding live in.
+        //
+        // Supplied through the environment rather than a file in the tree: `ci.yml` fails
+        // the build if a keystore is ever committed, and that gate is correct. CI decodes
+        // one from a secret into the runner's temp directory and names it here.
+        //
+        // Absent - a local build, a fork, a clone - nothing is configured and AGP's
+        // default applies, exactly as before.
+        val keystore = providers.environmentVariable("DEBUG_KEYSTORE_FILE").orNull
+        if (!keystore.isNullOrBlank()) {
+            getByName("debug") {
+                storeFile = file(keystore)
+                storePassword =
+                    providers.environmentVariable("DEBUG_KEYSTORE_PASSWORD").orNull ?: "android"
+                keyAlias =
+                    providers.environmentVariable("DEBUG_KEY_ALIAS").orNull ?: "androiddebugkey"
+                keyPassword =
+                    providers.environmentVariable("DEBUG_KEY_PASSWORD").orNull ?: "android"
+            }
+        }
+    }
+
     buildTypes {
         release {
             // Task 64, DoD 1. R8 in full mode - the AGP default since 8.0 and stated

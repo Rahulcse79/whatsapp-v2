@@ -88,6 +88,56 @@ jobs:
           "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-$COMPILE_SDK"
           ls -1 "$SDK/platforms" | sort -V
 
+      # Without this, every runner generates its own ~/.android/debug.keystore, so two
+      # builds of the same commit are signed by different keys. Android then refuses to
+      # update one with the other - INSTALL_FAILED_UPDATE_INCOMPATIBLE - and the only way
+      # onto a phone is `adb uninstall`, which takes the SIP accounts, their credentials
+      # and the call log with it. Every test build therefore started from an empty app.
+      #
+      # The keystore stays out of the repository: the gate below still fails the build if
+      # one is ever committed, and this writes it to the runner's temp directory, outside
+      # the checkout. A debug key signs nothing anyone trusts; it exists so that
+      # yesterday's build and today's are the same identity to the package manager.
+      #
+      # Optional by design. With no secret set - a fork, or a clone of this repo - the
+      # step says so and AGP falls back to its per-runner default, exactly as before.
+      - name: Stage the debug signing key
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+          DEBUG_KEYSTORE_PASSWORD: ${{ secrets.DEBUG_KEYSTORE_PASSWORD }}
+          DEBUG_KEY_ALIAS: ${{ secrets.DEBUG_KEY_ALIAS }}
+          DEBUG_KEY_PASSWORD: ${{ secrets.DEBUG_KEY_PASSWORD }}
+        run: |
+          if [ -z "${DEBUG_KEYSTORE_BASE64:-}" ]; then
+            echo "No DEBUG_KEYSTORE_BASE64 secret is set."
+            echo "AGP will generate a debug key for this runner, and the resulting APK"
+            echo "will not install over one built by any other run."
+            exit 0
+          fi
+
+          store="$RUNNER_TEMP/debug.keystore"
+          printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 -d > "$store"
+
+          # A truncated or mis-pasted secret decodes to something that is not a keystore,
+          # and the failure would otherwise surface much later as an unsigned APK.
+          if ! keytool -list -keystore "$store" \
+                 -storepass "${DEBUG_KEYSTORE_PASSWORD:-android}" >/dev/null 2>&1; then
+            echo "::error::DEBUG_KEYSTORE_BASE64 did not decode to a keystore readable"
+            echo "::error::with DEBUG_KEYSTORE_PASSWORD. Re-create the secret."
+            exit 1
+          fi
+
+          {
+            echo "DEBUG_KEYSTORE_FILE=$store"
+            echo "DEBUG_KEYSTORE_PASSWORD=${DEBUG_KEYSTORE_PASSWORD:-android}"
+            echo "DEBUG_KEY_ALIAS=${DEBUG_KEY_ALIAS:-androiddebugkey}"
+            echo "DEBUG_KEY_PASSWORD=${DEBUG_KEY_PASSWORD:-android}"
+          } >> "$GITHUB_ENV"
+
+          echo "Debug builds will be signed with the shared key:"
+          keytool -list -keystore "$store" \
+            -storepass "${DEBUG_KEYSTORE_PASSWORD:-android}" | grep -i "SHA-256" || true
+
       - name: Build
         # warningsAsErrors is CI-only: locally a deprecation warning should not stop
         # work, but in CI warnings must not be allowed to accumulate.
