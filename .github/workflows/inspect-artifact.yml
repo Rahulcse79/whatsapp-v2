@@ -1,8 +1,12 @@
 # Dumps the real API of a published artifact with javap.
 #
 # Replaces the AGP-specific inspector with something general. Guessing at a library's API
-# has cost this project several CI round trips - CommonExtension's arity, hiltViewModel's
-# package, and now liblinphone's version accessor. Looking is cheaper than guessing twice.
+# has cost this project several CI round trips - CommonExtension's arity and hiltViewModel's
+# package among them. Looking is cheaper than guessing twice.
+#
+# NOT the way to inspect pjsua2. PJSIP publishes no Maven artifact, so there is nothing here
+# to fetch: its Java API is SWIG-generated, and the `bindings` job in build-pjsip.yml prints
+# the signatures of the classes the adapter uses straight into its own log. Use that.
 name: Inspect artifact API
 
 on:
@@ -11,11 +15,11 @@ on:
       repository:
         description: "Maven repository base URL"
         required: true
-        default: "https://download.linphone.org/maven_repository"
+        default: "https://repo1.maven.org/maven2"
       coordinate:
         description: "group:artifact:version"
         required: true
-        default: "org.linphone:linphone-sdk-android:5.5.18"
+        default: "com.google.dagger:hilt-android:2.60.1"
       packaging:
         description: "jar or aar"
         required: false
@@ -23,11 +27,11 @@ on:
       classes:
         description: "Space-separated FQCNs to dump"
         required: false
-        default: "org.linphone.core.Factory"
+        default: "dagger.hilt.android.HiltAndroidApp"
       grep:
         description: "Only show members matching this (case-insensitive); blank for all"
         required: false
-        default: "version"
+        default: ""
 
 permissions:
   contents: read

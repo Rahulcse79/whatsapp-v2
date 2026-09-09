@@ -1,6 +1,6 @@
 # Builds pjproject (PJSIP) for Android and publishes the result as a workflow artifact.
 #
-# Why this exists: PJSIP publishes no Android AAR. Unlike liblinphone, which ships one
+# Why this exists: PJSIP publishes no Android AAR. Unlike stacks that ship one
 # with prebuilt `.so` files, pjsua2 for Android is a source build — `./configure-android`,
 # `make`, then SWIG-generated Java bindings. ADR-006 records that, and this workflow is
 # the "build it ourselves" option from it.

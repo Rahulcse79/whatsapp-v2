@@ -82,18 +82,18 @@ Mixing two languages by preference is a maintenance tax, not an architecture. Ru
 third-party SIP stack with native libraries.
 
 **DECIDE (blocking):** which stack?
-- **liblinphone / linphone-sdk** (GPLv3 or commercial) — maintained, batteries-included
+- **A published SIP AAR** (GPLv3 or commercial) — maintained, batteries-included
   (SIP + SRTP/ZRTP + video + Opus/VP8/H.264), Kotlin-friendly Java bindings, published AAR.
   **Recommended default** — fastest path to a correct, complete client.
 - **PJSIP / pjsua2** (GPLv2 or commercial) — smaller, more control, more manual work,
   you build the `.so` files yourself.
 
-**Licensing is a real constraint, not a footnote.** liblinphone and PJSIP are both
+**Licensing is a real constraint, not a footnote.** The candidate stacks are both
 copyleft-or-commercial. If this app will be distributed without publishing source, a
 commercial licence is required. Flag this in the design document and ask before assuming.
 
 Whichever you choose, it lives behind a `SipEngine` interface in the domain layer
-(§4.3). No `org.linphone.*` or `org.pjsip.*` import may appear outside the `:data:sip` module.
+(§4.3). No SIP SDK import may appear outside the `:data:sip` module.
 
 ### 2.5 A long-lived socket cannot survive Doze — you need push
 
@@ -415,7 +415,7 @@ and report what works, what does not, and what you assumed.
 
 1. `./gradlew clean build` passes from a fresh clone with no local state.
 2. `:domain` has zero Android dependencies, proven by a failing build if one is added.
-3. No `org.linphone.*` / `org.pjsip.*` import exists outside `:data:sip`, proven by an
+3. No SIP SDK import exists outside `:data:sip`, proven by an
    architecture test.
 4. The whole app runs end-to-end against `FakeSipEngine` with no network and no SIP server.
 5. Two SIP accounts can be saved, registered simultaneously, and edited/deleted; deleting

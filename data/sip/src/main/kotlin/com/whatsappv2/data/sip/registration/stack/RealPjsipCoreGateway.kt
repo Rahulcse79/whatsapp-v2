@@ -10,6 +10,7 @@ import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.StackConferenceEvent
 import com.whatsappv2.data.sip.call.StackTransferEvent
+import com.whatsappv2.data.sip.registration.NameAddr
 import com.whatsappv2.data.sip.registration.SipCoreGateway
 import com.whatsappv2.data.sip.registration.StackAccount
 import com.whatsappv2.data.sip.registration.StackMediaEncryption
@@ -1155,12 +1156,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
 
         fun publish(state: StackCallState, info: CallInfo? = infoOrNull()) {
+            val remote = NameAddr.of(info?.remoteUri)
             callEventFlow.tryEmit(
                 StackCallEvent(
                     callKey = callKey,
                     accountKey = accountKey,
-                    remoteUri = info?.remoteUri.orEmpty(),
-                    remoteDisplayName = null,
+                    remoteUri = remote.uri,
+                    remoteDisplayName = remote.displayName,
                     state = state,
                     statusCode = info?.lastStatusCode?.takeIf { it > 0 },
                     message = info?.lastReason,

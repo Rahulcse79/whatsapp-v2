@@ -332,7 +332,7 @@ document does not claim they are. Recorded as an unmet item in
 
 ## The SIP stack's licence, and what it means for distribution
 
-**liblinphone is GPLv3** (ADR-001, ADR-002). The consequence is not a footnote:
+**The SIP stack is copyleft** (ADR-002, ADR-006). The consequence is not a footnote:
 
 - **Open-source or internal distribution**: fine. The GPL's obligations are met by
   offering the corresponding source.
@@ -343,7 +343,7 @@ document does not claim they are. Recorded as an unmet item in
   release.
 
 Nothing in this repository assumes the licence has been bought. The alternative considered
-was PJSIP, whose licence terms differ; ADR-001 records why liblinphone was chosen anyway
+was PJSIP, whose licence terms differ; ADR-001 records why the other was chosen at the time
 and what the cost of that choice is.
 
 This affects security because it affects **who may receive the binary**, and a build shipped

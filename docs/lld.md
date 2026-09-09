@@ -95,7 +95,7 @@ the speaker does not have `transfer` in scope.
 ### The five promises, and why each exists
 
 1. **Only `:domain` types cross it.** No `org.pjsip.*` anywhere above `:data:sip` — and
-   no `org.linphone.*` anywhere at all, since ADR-006 removed that stack —
+   and no import of the removed stack anywhere at all, since ADR-006 —
    enforced by architecture Rule 2 and a CI step. This is what makes `FakeSipEngine` a
    drop-in rather than an approximation.
 2. **Every `suspend` function is main-safe.** Implementations move to their own dispatcher

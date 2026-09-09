@@ -62,7 +62,7 @@ step that greps its build file.
 ## 3. No SIP SDK import outside `:data:sip` — **PASS**
 
 Architecture Rule 2, plus a CI grep. Since ADR-006 the rule has two clauses: `org.pjsip`
-is confined to `:data:sip`, and `org.linphone` is rejected **anywhere** — a removed stack
+is confined to `:data:sip`, and the removed SDK is rejected **anywhere** — a removed stack
 comes back one import at a time, and the rule is what stops it. `RealPjsipCoreGateway` and
 `EncryptedRecordingStore` are the only classes that name the SDK, and both live in `stack`
 packages precisely so their untestability is visible in the path.
