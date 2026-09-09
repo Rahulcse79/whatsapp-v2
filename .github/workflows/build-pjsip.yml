@@ -603,9 +603,21 @@ jobs:
           fi
           srcroot="$(cd "$(dirname "$jni_java")/../.." && pwd)"
 
-          # android.jar is on the classpath because the generated bindings reference
-          # Android types directly - PjCameraInfo2 takes a CameraManager, and the
-          # video handle takes a Surface. Without it javac fails on the first import.
+          # android.jar goes on the CLASSPATH, not the bootclasspath.
+          #
+          # It is needed at all because the hand-written helpers reference Android types
+          # directly - PjCameraInfo2 takes a CameraManager, the video handle takes a
+          # Surface. But putting it on `-bootclasspath` with `-source 8 -target 8` made
+          # javac resolve java.* from android.jar too, and android.jar carries no usable
+          # java.lang.invoke.LambdaMetafactory - so PjAudioDevInfo's `Integer::sum`
+          # failed with "Unable to find method metafactory". Lambdas on Android are
+          # desugared by D8, not resolved by the JVM, which is why the stub is absent.
+          #
+          # `--release 17` instead: the JDK supplies its own platform classes, so method
+          # references resolve, and android.jar on the classpath still answers for
+          # android.*. 17 is the project's own toolchain (libs.versions.toml
+          # jvmToolchain), so classes.jar matches what AGP produces for :pjsip:api, and
+          # the app already enables core library desugaring for exactly this.
           ANDROID_JAR="$(find "$ANDROID_HOME/platforms" -name android.jar | sort -V | tail -1)"
           echo "compiling against $ANDROID_JAR"
 
@@ -621,7 +633,7 @@ jobs:
             find "$srcroot" -maxdepth 3 | head -20
             exit 1
           fi
-          javac -nowarn -source 8 -target 8 -bootclasspath "$ANDROID_JAR" \
+          javac -nowarn --release 17 -classpath "$ANDROID_JAR" \
                 -d classes @sources.txt
 
           (cd classes && jar cf ../aar/classes.jar .)
