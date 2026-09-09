@@ -13,6 +13,16 @@
 #     "required file 'doc/Makefile.in' not found" — three minutes into a cross-compile, and
 #     naming a file nobody deleted.
 #   * pjproject's root `Makefile` names `pjsip-apps/src/pjsua/android`.
+#   * pjproject's `configure-android:102` runs
+#     `ndk-build -C pjsip-apps/src/samples/android_sample` as its NDK PROBE, and reads
+#     `pjsip-apps/src/swig/java/android/jni/Application.mk`. Deleting either stopped the
+#     build with "failed to run ndk-build, check ANDROID_NDK_ROOT env var" — a message
+#     about an environment variable that was set correctly.
+#
+# That last one got through the FIRST version of this check, because `configure-android`
+# is a hand-written shell script and the file list only looked for `configure`. Hence
+# `-name 'configure-*'` below: a build system is whatever the tree calls its build system,
+# not whatever autotools would have called it.
 #
 # Every one of those is discovered minutes in, with a message that points at a symptom. So
 # the question "does this tree's build know about the directory I am deleting?" is asked
@@ -32,8 +42,9 @@ status=0
 # deliberate act nobody can call an accident.
 build_files() {
   find "third_party/$1" -type f \( \
-      -name Makefile -o -name 'Makefile.*' -o -name configure -o -name 'configure.ac' \
-      -o -name 'aconfigure.ac' -o -name 'build.info' -o -name 'CMakeLists.txt' \
+      -name Makefile -o -name 'Makefile.*' -o -name 'configure' -o -name 'configure.ac' \
+      -o -name 'configure-*' -o -name 'aconfigure.ac' -o -name 'autogen.sh' \
+      -o -name 'build.info' -o -name 'CMakeLists.txt' \
       -o -name '*.mk' -o -name 'build.mak.in' \) 2>/dev/null
 }
 

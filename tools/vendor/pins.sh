@@ -62,9 +62,17 @@ LIBVPX_URL="https://github.com/webmproject/libvpx/archive/refs/tags/${LIBVPX_TAG
 
 PJPROJECT_PRUNE=(
   tests
-  pjsip-apps/src/samples
-
-  # The sample applications. Removed for two reasons that are not size.
+  # `pjsip-apps/src/samples` is NOT pruned: `configure-android:102` runs
+  # `ndk-build -C pjsip-apps/src/samples/android_sample` as its NDK probe, and without the
+  # directory it stops with "failed to run ndk-build, check ANDROID_NDK_ROOT env var" —
+  # a message about an environment variable that is set correctly.
+  #
+  # Neither is `pjsip-apps/src/swig/java/android`: the same script reads
+  # `.../android/jni/Application.mk`. It carries a gradle-wrapper.jar and its own
+  # .gitignore, both of which this repository would rather not have. A build that runs
+  # wins.
+  #
+  # The remaining sample applications. Removed for two reasons that are not size.
   #
   # 1. Each Android sample ships a committed `gradle-wrapper.jar`. This repository should
   #    not carry another project's wrapper binary. Rule 11 covers .aar/.so and would NOT
@@ -86,7 +94,6 @@ PJPROJECT_PRUNE=(
   # carry is a smaller problem than a build that does not run, and `verify-prune.sh` is
   # what turned that from an opinion into a check.
   pjsip-apps/src/pjsua/ios
-  pjsip-apps/src/swig/java/android
   pjsip-apps/src/swig/csharp
   pjsip-apps/src/swig/python
   pjsip-apps/src/rust

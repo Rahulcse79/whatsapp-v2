@@ -38,11 +38,11 @@ to measure what the *pack* actually costs — which is what a clone pays.
 
 | Tree | Extracted | **Vendored (final)** |
 |---|---|---|
-| pjproject | 66 MB | **57 MB** |
+| pjproject | 66 MB | **60 MB** |
 | OpenSSL | 138 MB | **49 MB** |
-| libvpx | 26 MB | **20 MB** |
-| Opus | 16 MB | **15 MB** |
-| **Total working tree** | **246 MB** | **141 MB** — 8,133 files |
+| libvpx | 26 MB | **22 MB** |
+| Opus | 16 MB | **16 MB** |
+| **Total working tree** | **246 MB** | **148 MB** |
 
 **Clone size before and after**, as master prompt §2.1 requires — `.git` measured directly:
 
@@ -52,11 +52,10 @@ after,  vendored + pruned     .git = 87 MB   ◄── actual
 (unpruned would have been     .git ≈ 145 MB)
 ```
 
-**The final figure is 141 MB rather than the 134 MB a first pass measured**, and the
-difference is a correction worth keeping: `doc/`, `demos/` and `fuzz/` were pruned from
-OpenSSL and then **restored**, because they are in OpenSSL's *unconditional* `SUBDIRS`
-line and `Configure` walks into them. 9.6 MB against a build that does not configure is
-not a trade. §1.3 is the check that now holds that line.
+**The final figure is 148 MB rather than the 134 MB a first pass measured**, and every
+megabyte of the difference is a directory that was pruned and then restored because the
+tree's own build system needed it. §1.2 has the three failures and the corrected rule;
+`tools/vendor/verify-prune.sh` is what turned it from a lesson into a check.
 
 **The master prompt's cost table is high by roughly a factor of four, and the reason is
 worth stating** because it changes the decision. §2.1 quotes GitHub API repository sizes —
@@ -69,36 +68,54 @@ all. The correct figure is 246 MB extracted, 115 MB packed — and 26 MB packed 
 before the commit lands" trigger it describes does not fire on size. ADR-007 is still owed —
 for the sourcing change itself — but it is not a size exception.
 
-### 1.2 The prune, specified
+### 1.2 The prune, and the rule that had to be corrected three times
 
 **Decision: vendor pruned trees.** Recorded in ADR-007.
 
-**The rule:** remove each tree's **own test suite, its documentation, and its pre-generated
-build scratch** — artefacts that are neither compiled into the `.so` nor read by
-`configure`. Remove nothing else.
+**The rule as first written was wrong**, and it is worth recording why, because it sounds
+obviously right: *"remove each tree's own test suite, its documentation, and its
+pre-generated build scratch — things neither compiled into the `.so` nor read by
+`configure`."*
 
-| Tree | Removed | Measured saving | Risk |
+An autotools project **declares** its tests and docs, and declaring one is enough to
+require it. Three failures, each discovered further into the build than the last:
+
+| # | Tree | What broke | How far in |
 |---|---|---|---|
-| OpenSSL | `test/` | **89.1 MB** | **Verified safe, and the safety is now asserted.** OpenSSL's root `build.info:5-7` guards `SUBDIRS=test` behind `IF[{- !$disabled{tests} -}]`, and every `./Configure` in this repository passes `no-tests` (`.github/workflows/build-pjsip.yml:285-286`). `tools/vendor/verify-openssl-prune.sh` asserts **both**, because the prune is safe only while both hold |
-| OpenSSL | ~~`doc/`, `demos/`, `fuzz/`~~ | — | **Pruned, then RESTORED.** All three are in the **unconditional** `SUBDIRS` line (`build.info:4`), so `Configure` walks into each and reads a `build.info` that would not be there. Read the root `build.info` before adding anything to this list |
-| pjproject | `tests/`, `pjsip-apps/src/samples/` | 4.7 MB | Low |
-| pjproject | `pjsip-apps/src/pjsua/android/`, `pjsip-apps/src/swig/java/android/app/` | small | Low — **and the reason is not size.** Each ships a committed `gradle-wrapper.jar`, and this repository should not carry a second project's wrapper binary. Rule 11 covers `.aar`/`.so` and would not fire on these, so they are removed deliberately. `pjsip-apps/src/swig/java/Makefile` and `pjsua2.i` are **kept** — they are stage 1 |
-| libvpx | `test/`, `build_debug/`, `examples/` | 6.1 MB | Low. `build_debug/` is pre-generated scratch |
-| Opus | `doc/`, `tests/` | 0.9 MB | Low |
-| — | **Total** | **~105 MB** | |
+| 1 | OpenSSL | `doc/`, `demos/` and `fuzz/` are in the **unconditional** `SUBDIRS` line (`build.info:4`), so `Configure` walks into each and reads a `build.info` that is not there | Configure |
+| 2 | Opus | `configure.ac:1039` declares `doc/Makefile` and `Makefile.am:10` names `./doc`, so `autoreconf` stops with *"required file `doc/Makefile.in` not found"* — **a message about a file nobody deleted** | ~3 minutes into a cross-compile, after OpenSSL had built |
+| 3 | pjproject | the root `Makefile` names `pjsip-apps/src/pjsua/android` | `make` |
+
+**The corrected rule: prune only what the tree's own build files never mention.** Not
+"tests and docs". `tools/vendor/verify-prune.sh` greps every build file in every vendored
+tree for every pruned path and fails if one is referenced — so the question is answered in
+seconds rather than three minutes into a cross-compile.
+
+**What is actually pruned, after the corrections:**
+
+| Tree | Removed | Saving | Why it is safe |
+|---|---|---|---|
+| OpenSSL | `test/` | **89 MB** | **The one deliberate exception, and it carries two thirds of the saving.** `build.info:5-7` guards it — `IF[{- !$disabled{tests} -}] SUBDIRS=test` — and every `./Configure` here passes `no-tests`. `verify-openssl-prune.sh` asserts **both**, because the prune is safe only while both hold. Proven empirically: OpenSSL cross-compiled green with `test/` absent |
+| pjproject | `tests/` → **restored** | — | The root `Makefile` recurses into it |
+| pjproject | `pjsip-apps/src/samples`, `src/pjsua/ios`, `src/swig/{java/android,csharp,python}`, `src/rust` | ~8 MB | Sample apps and other-language bindings. Unreferenced by the build, and each carried its own `.gitignore` — which cost 348 silently dropped files before they were removed. `pjsip-apps/src/swig/{Makefile,pjsua2.i,java/Makefile}` are **kept**: they are stage 1 |
+| pjproject | `src/pjsua/android` → **restored** | — | The root `Makefile` names it. It carries a `gradle-wrapper.jar` this repository would rather not hold; a wrapper jar is a smaller problem than a build that does not run |
+| libvpx | `build_debug/` | ~4 MB | Pre-generated scratch, referenced by nothing |
+| libvpx | `test/`, `examples/` → **restored** | — | libvpx's `configure` knows about both, and `--disable-unit-tests` is not the same as the directory being absent |
+| Opus | nothing | — | `configure.ac` declares `doc/Makefile`; Opus is 16 MB and there is nothing here worth breaking a cross-compile for |
+| — | **Total** | **~98 MB of 246** | |
 
 **What is deliberately NOT pruned, and why each would have been a mistake:**
 
 | Kept | Size | Why |
 |---|---|---|
-| `pjproject/pjsip-apps/src/swig/` | 4.0 MB | **This is stage 1.** `pjsua2.i` and the Java `Makefile` are what SWIG reads (N-13). Pruning it deletes the bindings |
-| `pjproject/third_party/webrtc/` | 1.7 MB | `PJMEDIA_HAS_WEBRTC_AEC=1` is in the green build's compile line. This is the acoustic echo canceller — the difference between a usable speakerphone and feedback |
-| `pjproject/third_party/*` generally | 16 MB | pjproject bundles `speex`, `srtp`, `yuv`, `g7221`, `gsm`, `ilbc`, `resample` and builds against them by relative path. This is upstream's own vendoring and it is load-bearing |
-| `opus/dnn/` | 10.7 MB | `Makefile.am:14` puts it on the include path. Opus 1.5's LACE/NoLACE enhancement lives here; removing it breaks the build, not just a feature |
+| `pjproject/pjsip-apps/src/swig/` (less its sample apps) | 4 MB | **This is stage 1.** `pjsua2.i` and the Java `Makefile` are what SWIG reads (N-13) |
+| `pjproject/third_party/webrtc/` | 1.7 MB | `PJMEDIA_HAS_WEBRTC_AEC=1` in the green build's compile line — the acoustic echo canceller, and the difference between a usable speakerphone and feedback |
+| `pjproject/third_party/*` generally | 16 MB | Upstream's own vendoring, built by relative path. Load-bearing |
+| `opus/dnn/` | 10.7 MB | `Makefile.am:14` puts it on the include path. Opus 1.5's LACE/NoLACE enhancement; removing it breaks the build, not just a feature |
 
-**`opus/dnn/` is the near-miss worth recording.** At 10.7 MB it is the second-largest single
-prune candidate by eye, and pruning it would have broken the build. It was kept because
-`grep` found it on the include path, not because it looked important.
+**`opus/dnn/` is the near-miss worth recording.** At 10.7 MB it was the second-largest prune
+candidate by eye, and pruning it would have broken the build. It was kept because `grep`
+found it on the include path — the same question `verify-prune.sh` now asks automatically.
 
 ### 1.3 Four checks, because every one of them caught something
 
