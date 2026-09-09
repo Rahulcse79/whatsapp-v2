@@ -40,9 +40,25 @@ import org.pjsip.pjsua2.LogWriter
  * app's own facade rather than flattened, so a PJSIP error is an error in logcat and the
  * message trace stays at debug — which the release logger compiles away to an empty body.
  */
-internal class PjsipLogWriter(private val logger: Logger) : LogWriter() {
+internal class PjsipLogWriter(
+    private val logger: Logger,
+    /**
+     * Whether the trace is switched on, asked afresh for every line.
+     *
+     * A lambda rather than a value: pjsua2 reads `logConfig` once at `libInit`, so a
+     * writer built with the setting frozen in could only change with a stack restart -
+     * and dropping a call to turn a diagnostic on is not a trade worth making. Asked per
+     * line, the switch in Settings takes effect on the next message.
+     */
+    private val enabled: () -> Boolean,
+) : LogWriter() {
 
     override fun write(entry: LogEntry) {
+        // Before anything is formatted or redacted. PJSIP has already built the string by
+        // the time it reaches here, but the redaction pass and the logcat write are ours
+        // and are worth skipping when nobody asked for a trace.
+        if (!enabled()) return
+
         // Defensive: this runs on a PJSIP thread, and an exception thrown back across the
         // JNI boundary into C++ is undefined behaviour rather than a stack trace. A
         // logging call is never worth taking the process down for.

@@ -181,6 +181,16 @@ internal class RealPjsipCoreGateway @Inject constructor(
     @Volatile
     private var logWriter: PjsipLogWriter? = null
 
+    /**
+     * Whether the trace reaches the log, from the switch in Settings.
+     *
+     * Read on PJSIP's own threads and written from the engine's, hence `@Volatile`.
+     * Default off, matching `AppSettings.DEFAULT.sipTraceEnabled`, so a build does not
+     * start writing signalling to logcat before anyone has asked it to.
+     */
+    @Volatile
+    private var traceEnabled: Boolean = false
+
     /** Transport ids by the token the domain uses — `UDP`, `TCP`, `TLS`. */
     private val transports = ConcurrentHashMap<String, Int>()
 
@@ -294,7 +304,8 @@ internal class RealPjsipCoreGateway @Inject constructor(
         // logcat instead of in a source read.
         logger.info(
             TAG,
-            "start: libInit ok (SIP trace ${if (logWriter != null) "on" else "off"})",
+            "start: libInit ok (trace writer ${if (logWriter != null) "installed" else "missing"}, " +
+                "trace ${if (traceEnabled) "on" else "off"})",
         )
 
         // After libInit and before libStart, and both halves of that matter. libInit
@@ -381,7 +392,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
         // single delete in `libDestroy` the only one, and has the director hold a strong
         // reference back so the object stays alive while PJSIP can still call it.
         logConfig.apply {
-            writer = PjsipLogWriter(logger)
+            writer = PjsipLogWriter(logger) { traceEnabled }
                 .also { it.swigReleaseOwnership() }
                 .also { logWriter = it }
             msgLogging = SIP_MESSAGE_LOGGING
@@ -718,6 +729,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
             runCatching { account.setRegistration(false) }
             account.shutdown()
         }
+    }
+
+    override fun setTraceEnabled(enabled: Boolean) {
+        // Not posted to the PJSIP thread: it is one volatile write, the writer reads it on
+        // whichever thread PJSIP logs from, and going through the executor would make a
+        // debugging switch wait behind whatever the stack is busy with.
+        traceEnabled = enabled
+        logger.info(TAG, "SIP trace ${if (enabled) "enabled" else "disabled"}")
     }
 
     override fun refreshAccount(accountKey: String) {

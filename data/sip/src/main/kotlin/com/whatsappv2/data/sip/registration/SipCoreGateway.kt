@@ -60,6 +60,19 @@ internal interface SipCoreGateway : TransportRebinder {
     fun setPushParameters(parameters: StackPushParameters?)
 
     /** Releases the stack, every transport it holds, and every stored credential. */
+    /**
+     * Turns the SIP message trace on or off (§7, DoD 12).
+     *
+     * Settings carries a switch for this and, until now, nothing read it: the value went
+     * into DataStore and no part of the stack ever asked for it, so the control did
+     * nothing at all while telling the user it wrote signalling to the log.
+     *
+     * A gate on the writer rather than on pjsua2's `msgLogging`, which is fixed at
+     * `libInit` and would need the endpoint restarted to change. The trace is a debugging
+     * aid; it may be switched mid-call without dropping one.
+     */
+    fun setTraceEnabled(enabled: Boolean)
+
     fun stop()
 }
 

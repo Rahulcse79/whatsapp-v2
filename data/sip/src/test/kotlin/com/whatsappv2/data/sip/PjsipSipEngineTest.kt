@@ -1057,6 +1057,31 @@ class PjsipSipEngineTest : PjsipSipEngineFixture() {
         assertEquals(1, gateway.stopCount)
     }
 
+    // ------------------------------------------------- diagnostics (§7, DoD 12)
+
+    @Test
+    fun `the SIP trace switch reaches the stack`() = runTest {
+        // It used to reach DataStore and stop there. Nothing in :data:sip ever read
+        // sipTraceEnabled, so the control in Settings did nothing at all while its own
+        // description told the user it wrote SIP signalling to the device log.
+        val engine = engine(this)
+        engine.start()
+        runCurrent()
+        assertFalse(gateway.traceEnabled)
+
+        settings.setSipTraceEnabled(true)
+        runCurrent()
+        assertTrue(gateway.traceEnabled)
+
+        // And back off again, because a diagnostic that cannot be turned off is a leak of
+        // signalling into the log for the life of the process.
+        settings.setSipTraceEnabled(false)
+        runCurrent()
+        assertFalse(gateway.traceEnabled)
+
+        engine.stop()
+    }
+
     // ------------------------------------------------- the link (Task 30, DoD 6)
 
     @Test

@@ -66,7 +66,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
@@ -363,6 +365,8 @@ internal class PjsipSipEngine @Inject constructor(
 
     private var networkCollectJob: Job? = null
 
+    private var traceCollectJob: Job? = null
+
     /**
      * Begins consuming stack events.
      *
@@ -379,6 +383,15 @@ internal class PjsipSipEngine @Inject constructor(
         transferCollectJob = scope.collectTransferEvents()
         conferenceCollectJob = scope.collectConferenceEvents()
         networkCollectJob = scope.launch { watchNetwork() }
+        traceCollectJob = scope.launch {
+            // The switch in Settings, finally connected to something. It was written to
+            // DataStore and read by nothing, so the control did nothing while its own
+            // description promised it wrote signalling to the device log.
+            settings.observeSettings()
+                .map { it.sipTraceEnabled }
+                .distinctUntilChanged()
+                .collect { gateway.setTraceEnabled(it) }
+        }
         collectJob = scope.launch {
             gateway.registrationEvents.collect { event ->
                 val id = AccountId(event.accountKey)
@@ -1333,6 +1346,8 @@ internal class PjsipSipEngine @Inject constructor(
         conferenceCollectJob = null
         networkCollectJob?.cancel()
         networkCollectJob = null
+        traceCollectJob?.cancel()
+        traceCollectJob = null
         gateway.stop()
         requestedExpiry.clear()
         mediaPolicy.clear()

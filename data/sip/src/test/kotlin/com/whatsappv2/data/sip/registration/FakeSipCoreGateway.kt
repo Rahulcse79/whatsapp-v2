@@ -188,6 +188,14 @@ internal class FakeSipCoreGateway :
         pushParameters = parameters
     }
 
+    /** The last value the engine pushed, so a test can assert the switch is connected. */
+    var traceEnabled: Boolean = false
+        private set
+
+    override fun setTraceEnabled(enabled: Boolean) {
+        traceEnabled = enabled
+    }
+
     override fun setNetworkReachable(reachable: Boolean) {
         reachabilitySignals += reachable
     }
