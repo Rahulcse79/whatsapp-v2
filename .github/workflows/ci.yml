@@ -679,8 +679,109 @@ jobs:
       # Every push produces a downloadable, installable debug APK. Debug, not release:
       # a release build needs a signing keystore, and keystores are not something CI
       # should hold or this repo should carry.
+      # And it produces one that can PLACE A CALL, which until now it did not.
+      # `pjsip/libs/pjsua2.aar` is gitignored - 20 MB of native code does not belong in
+      # git - so a bare checkout falls back to `:pjsip:api`, the SWIG-generated Java API
+      # with no `.so` behind it. That APK compiled, installed, launched, and died on the
+      # first SIP call with UnsatisfiedLinkError. It was a compile gate wearing the name
+      # of a deliverable, and it cost a debugging session to notice.
+
+      - name: Restore the pjsua2 AAR from cache
+        id: aar-cache
+        uses: actions/cache@v4
+        with:
+          path: pjsip/libs/pjsua2.aar
+          # Keyed on the workflow that produces it, so bumping pjproject, OpenSSL, Opus
+          # or libvpx - all pinned in that file - invalidates this automatically. There
+          # is no second place to remember to edit.
+          key: pjsua2-aar-${{ hashFiles('.github/workflows/build-pjsip.yml') }}
+
+      # Self-healing: on a cache miss, take the AAR from the last green native build
+      # rather than failing and waiting for somebody to notice. The cache holds it for
+      # later runs, so this costs ~20s once per invalidation rather than the ~10 minutes
+      # a native rebuild would.
+      - name: Fetch the pjsua2 AAR from the last green native build
+        if: steps.aar-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" \
+                      --workflow "Build PJSIP for Android" \
+                      --status success --limit 1 --json databaseId -q '.[0].databaseId')"
+          if [ -z "$run_id" ]; then
+            echo "::error::No successful 'Build PJSIP for Android' run to take an AAR from."
+            echo "Run that workflow once, then re-run this job."
+            exit 1
+          fi
+
+          # By prefix, not by a hardcoded version: the artifact is named after the
+          # pjproject tag, and pinning it here would be the second place to edit.
+          name="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" \
+                    -q '.artifacts[].name' | grep '^pjsua2-aar-' | head -1)"
+          if [ -z "$name" ]; then
+            echo "::error::Run $run_id produced no pjsua2-aar-* artifact."
+            exit 1
+          fi
+
+          echo "taking $name from run $run_id"
+          mkdir -p pjsip/libs aar-download
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" -n "$name" -D aar-download
+          cp aar-download/pjsua2-*.aar pjsip/libs/pjsua2.aar
+
+      # The AAR is what makes the difference, so prove it is intact before building
+      # against it. A truncated or wrong-wrapper AAR fails at run time on a handset,
+      # which is the most expensive place to find out.
+      - name: Verify the AAR carries the JNI wrapper
+        run: |
+          set -euo pipefail
+          aar=pjsip/libs/pjsua2.aar
+          test -f "$aar" || { echo "::error::$aar is missing"; exit 1; }
+          echo "AAR: $(du -h "$aar" | cut -f1)"
+
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            for lib in libpjsua2.so libc++_shared.so; do
+              unzip -l "$aar" | grep -q "jni/$abi/$lib" \
+                || { echo "::error::$aar is missing jni/$abi/$lib"; exit 1; }
+            done
+          done
+
+          # pjproject builds three libpjsua2.so - Java, maui and xamarin - and they are
+          # indistinguishable by name, size, ABI and alignment. Only the exports differ.
+          unzip -o -q "$aar" jni/arm64-v8a/libpjsua2.so -d aar-check
+          LC_ALL=C grep -aq "Java_org_pjsip_pjsua2_pjsua2JNI_swig_1module_1init" \
+            aar-check/jni/arm64-v8a/libpjsua2.so \
+            || { echo "::error::the AAR's wrapper exports no pjsua2JNI symbols"; exit 1; }
+          rm -rf aar-check
+          echo "OK - all three ABIs present, wrapper is the JNI one."
+
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
+
+      # The check that would have caught the whole PJSIP episode on day one. An APK
+      # without these installs cleanly, launches, and dies on the first SIP call.
+      - name: Assert the APK carries the native SIP stack
+        run: |
+          set -euo pipefail
+          apk="$(find app/build/outputs/apk/debug -name '*.apk' -print -quit)"
+          [ -n "$apk" ] || { echo "::error::no APK was produced"; exit 1; }
+
+          missing=0
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            for lib in libpjsua2.so libc++_shared.so; do
+              if unzip -l "$apk" | grep -q "lib/$abi/$lib"; then
+                echo "  ok       lib/$abi/$lib"
+              else
+                echo "  MISSING  lib/$abi/$lib"
+                missing=1
+              fi
+            done
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::This APK cannot place a call - the native stack is absent."
+            exit 1
+          fi
+          echo "OK - all three ABIs carry the SIP stack and its C++ runtime."
 
       - name: Report APK size
         run: |
@@ -702,8 +803,8 @@ jobs:
             echo ""
             echo "Download it from the **Artifacts** section at the bottom of this run."
             echo ""
-            echo "> Installs and launches, but shows a blank screen: the design system"
-            echo "> and navigation arrive in Tasks 14-15."
+            echo "> Carries the PJSIP native stack for all three ABIs, verified by the"
+            echo "> step above. This APK can register and place calls."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload debug APK
