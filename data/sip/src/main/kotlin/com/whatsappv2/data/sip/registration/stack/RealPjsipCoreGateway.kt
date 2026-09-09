@@ -11,7 +11,6 @@ import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.StackConferenceEvent
 import com.whatsappv2.data.sip.call.StackTransferEvent
-import com.whatsappv2.data.sip.codec.DeclaredFeatureSet
 import com.whatsappv2.data.sip.registration.NameAddr
 import com.whatsappv2.data.sip.registration.SipCoreGateway
 import com.whatsappv2.data.sip.registration.StackAccount
@@ -19,15 +18,8 @@ import com.whatsappv2.data.sip.registration.StackMediaEncryption
 import com.whatsappv2.data.sip.registration.StackPushParameters
 import com.whatsappv2.data.sip.registration.StackRegistrationEvent
 import com.whatsappv2.data.sip.registration.StackRegistrationState
-import com.whatsappv2.domain.codec.AbsenceReason
 import com.whatsappv2.domain.codec.CodecAudit
-import com.whatsappv2.domain.codec.CodecAuditor
 import dagger.hilt.android.qualifiers.ApplicationContext
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
-import javax.inject.Inject
-import javax.inject.Singleton
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -73,6 +65,11 @@ import org.pjsip.pjsua2.pjsua_call_flag
 import org.pjsip.pjsua2.pjsua_call_media_status
 import org.pjsip.pjsua2.pjsua_call_vid_strm_op
 import org.pjsip.pjsua2.pjsua_stun_use
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * The real SIP stack, behind the gateway seam (ADR-006).
@@ -232,11 +229,6 @@ internal class RealPjsipCoreGateway @Inject constructor(
      */
     private val audit = MutableStateFlow<CodecAudit?>(null)
     override val codecAudit: StateFlow<CodecAudit?> = audit.asStateFlow()
-
-    private val auditor = CodecAuditor(
-        declared = DeclaredFeatureSet.declared,
-        knownUnnegotiable = DeclaredFeatureSet.unnegotiableOnThisDeployment,
-    )
 
     private var endpoint: Endpoint? = null
 
@@ -966,48 +958,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             "Codecs for ${account.key}: audio=${account.audioCodecs} video=${account.videoCodecs}",
         )
 
-        publishCodecAudit()
-    }
-
-    /**
-     * Reads the registry and publishes the audit.
-     *
-     * Deliberately here rather than beside [applyCodecs]: this reads the SAME
-     * `codecEnum2()` the priority pass reads, so the audit cannot disagree with what was
-     * actually prioritised. `applyPriorities` already iterates only the codecs PJSIP
-     * registered, which is why the H264-in-defaults mismatch is skipped rather than raised
-     * — that skip becomes reportable evidence here instead of a silent no-op (§2.5 step 4).
-     *
-     * O(n) over ≤ ~30 codecs, once per endpoint start, never in the call path.
-     */
-    private fun Endpoint.publishCodecAudit() {
-        val result = auditor.audit(
-            registeredAudio = codecEnum2().map { it.codecId to it.priority.toInt() },
-            registeredVideo = videoCodecEnum2().map { it.codecId to it.priority.toInt() },
-            compiledIn = DeclaredFeatureSet.compiledIn,
-        )
-        audit.value = result
-
-        // INFO once per start: the codec list the running library ACTUALLY registered.
-        // Reported verbatim rather than summarised — a summary is what hid this for months.
-        logger.info(
-            TAG,
-            "Codec audit: registered audio=${result.registeredAudio.map { it.codecId }} " +
-                "video=${result.registeredVideo.map { it.codecId }}",
-        )
-
-        result.absent.forEach { (codec, reason) ->
-            val line = "Codec ${codec.name} (${codec.kind}) is not usable: $reason"
-            // A codec declared and compiled in that did not register is a BUILD DEFECT and
-            // N-9 requires it be reported as one — at ERROR, once, with the codec id.
-            // Everything else is a decision or a fact about the deployment, and reporting
-            // those at ERROR is how people learn to ignore the log.
-            if (reason == AbsenceReason.RegistrationFailed) {
-                logger.error(TAG, "$line — the build declared it and the library did not register it")
-            } else {
-                logger.info(TAG, line)
-            }
-        }
+        audit.value = auditCodecs(logger)
     }
 
     private inline fun applyPriorities(
@@ -1678,7 +1629,6 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
         const val PJSIP_THREAD = "pjsip-main"
         const val EVENT_BUFFER = 64
-
 
         const val TRANSPORT_UDP = "UDP"
         const val TRANSPORT_TCP = "TCP"

@@ -197,8 +197,18 @@ make dep && make clean && make -j"$jobs"
 #      were still not on the wrapper's link line. `java/Makefile:167` assembles
 #      `MY_LDFLAGS := $(PJ_LDXXFLAGS) $(PJ_LDXXLIBS) … $(LDFLAGS)`, so LDFLAGS is the
 #      documented seam for exactly this — and the alignment flag is dropped here because
-#      the pjproject link above is where that belongs.
-( export LDFLAGS="-L$prefix/lib"; cd pjsip-apps/src/swig && make java )
+#      the pjproject link above is where that belongs. `-L` alone did not fix it, so the
+#      archives are named too, and the group above prints what configure actually wrote
+#      into build.mak so the next failure of this shape is one line to diagnose.
+echo "::group::what configure actually put in build.mak for the wrapper link"
+grep -E "^(PJ_LDXXLIBS|APP_THIRD_PARTY_LIBS|APP_LDLIBS)" build.mak || true
+ls -la "$prefix/lib" || true
+echo "::endgroup::"
+
+# `-L` alone was not enough: the prefix was on the search path and the archives were still
+# not pulled in, so the libraries are NAMED here as well. LDFLAGS is last in MY_LDFLAGS,
+# which is the correct position for static archives — after the objects that reference them.
+( export LDFLAGS="-L$prefix/lib -lopus -lvpx"; cd pjsip-apps/src/swig && make java )
 
 jni_so="$work/pjproject/pjsip-apps/src/swig/java/android/pjsua2/src/main/jniLibs/$ABI/libpjsua2.so"
 [ -f "$jni_so" ] || { echo "::error::the SWIG Java build produced no $jni_so" >&2
