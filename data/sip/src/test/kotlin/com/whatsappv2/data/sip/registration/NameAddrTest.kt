@@ -1,5 +1,6 @@
 package com.whatsappv2.data.sip.registration
 
+import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.domain.model.SipUri
 import kotlin.test.Test
 import kotlin.test.assertEquals
