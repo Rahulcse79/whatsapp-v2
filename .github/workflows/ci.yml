@@ -426,7 +426,7 @@ jobs:
               # residue is defensive branches DataStore does not expose a way to trigger.
               "com/whatsappv2/data/settings": 65,
               # The SDK-touching classes live in .../stack packages and are ungated:
-              # liblinphone cannot run on the JVM, so they are verified on-device from
+              # PJSIP cannot run on the JVM, so they are verified on-device from
               # Task 33. Gating them here would only lower the bar for the code that CAN
               # be tested.
               "com/whatsappv2/data/sip": 80,
@@ -471,7 +471,7 @@ jobs:
           # which holds every run/stop decision, had no uncovered line at all.
           #
           # Say plainly what this is: RegistrationService is UNTESTED, not untestable.
-          # Robolectric can drive a Service, unlike liblinphone. Until something does, its
+          # Robolectric can drive a Service, unlike the SIP stack. Until something does, its
           # behaviour is verified on-device, and the 90% below is a real bar on the pure
           # classes rather than an unreachable one on the package. Anything added here
           # needs the same justification in writing.
