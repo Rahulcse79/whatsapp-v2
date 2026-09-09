@@ -189,6 +189,7 @@ jobs:
           ./tools/vendor/verify-pins.sh
           ./tools/vendor/verify-vendored.sh
           ./tools/vendor/verify-openssl-prune.sh
+          ./tools/vendor/verify-prune.sh
 
       # Task 3 done-when #2: "zero warnings suppressed by baseline abuse".
       # A baseline file is how suppressed findings quietly become permanent.

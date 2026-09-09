@@ -5,7 +5,7 @@
 # edited vendored source without recording a patch, and re-recording hides it.
 #
 # <sha256>  <tree name>
-2cd9508229ff8ff13d55178c1cf7fa8f218689df0540723e658f3ce194576fd2  libvpx
+1e9f94e6010767bef42b1dbe9351fd94422a22dfbc37c352c12481543c7a17a6  libvpx
 141b337af6ca01aed764030db116e2dcdaa5b9b93f070666aa7d343c380927aa  openssl
-c5e5aa906da61f45426a640cd504b77bd79f6577fe4b7ede01fc81b1e3698814  opus
-4140c10f5acda95c1af6f0c784114055dfc8da374776b44912c5023d2eb6f614  pjproject
+6efc2662655c5ce140bf0f8573d78d8e0d1d966d40242db67e003f546771985a  opus
+6adac089f181e9cde5efcd2b0c2a93c03962a28d8ebdda275d2cddefe79e46ad  pjproject

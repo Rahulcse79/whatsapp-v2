@@ -105,14 +105,19 @@ val buildNative = tasks.register<BuildPjsua2Native>("buildPjsua2Native") {
     )
 
     // The native stage is expensive and nothing in the JVM half of the build needs it, so
-    // it is opt-in per invocation rather than on the path of `./gradlew :domain:test`.
+    // it can be skipped per invocation — `-Ppjsip.native=false` — rather than sitting on
+    // the path of `./gradlew :domain:test`.
     //
-    // This is NOT the fallback N-14 deletes, and the difference is the whole point: skipping
-    // it produces NO library and therefore NO APK — `assertNativeLibraries` fails the
-    // packaging. What N-14 forbids is a build that quietly assembles an APK anyway.
-    onlyIf {
-        providers.gradleProperty("pjsip.native").orNull != "false"
-    }
+    // This is NOT the fallback N-14 deletes, and the difference is the whole point:
+    // skipping it produces NO library and therefore NO APK, because `assertNativeLibraries`
+    // fails the packaging. What N-14 forbids is a build that quietly assembles an APK
+    // anyway.
+    //
+    // Resolved to a value HERE rather than read inside the lambda: a lambda that touches
+    // `providers` captures the build script object, and Gradle refuses to serialise that
+    // into the configuration cache ("cannot serialize Gradle script object references").
+    val nativeEnabled = providers.gradleProperty("pjsip.native").orNull != "false"
+    onlyIf { nativeEnabled }
 }
 
 /**

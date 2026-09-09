@@ -38,6 +38,12 @@ jobs:
       - name: The OpenSSL prune is still safe
         run: ./tools/vendor/verify-openssl-prune.sh
 
+      # The first prune rule was "remove tests, docs and build scratch", and it broke the
+      # build three times: an autotools project DECLARES those directories, and declaring
+      # one is enough to require it. This asks the question in seconds instead.
+      - name: No pruned directory is one its own build files name
+        run: ./tools/vendor/verify-prune.sh
+
       # DoD 23, as a command. The bindings are generated from third_party/pjproject on every
       # build; a committed .java under pjsip/ is the drift N-13 removes.
       - name: No committed Java under pjsip/ (N-13)

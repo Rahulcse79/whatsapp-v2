@@ -30,10 +30,28 @@ LIBVPX_URL="https://github.com/webmproject/libvpx/archive/refs/tags/${LIBVPX_TAG
 # ---------------------------------------------------------------------------
 # What is removed from each tree, and why.
 #
-# The rule: remove each tree's OWN test suite, its documentation, and its pre-generated
-# build scratch — things neither compiled into the .so nor read by configure. Remove
-# nothing else. Measured saving: 111 MB of 246, and 89 MB of that is OpenSSL's test suite
-# alone. docs/native-dependencies.md §1.2 carries the table and the risk per entry.
+# ## The rule, corrected by three failures
+#
+# The first rule was "remove each tree's own tests, docs and build scratch". That is WRONG,
+# and it broke the build three times before the real rule was clear:
+#
+#   1. OpenSSL's `doc/`, `demos/` and `fuzz/` are in its UNCONDITIONAL `SUBDIRS` line, so
+#      Configure walks into each and reads a `build.info` that was not there.
+#   2. Opus's `configure.ac:1039` declares `doc/Makefile`, so `autoreconf` failed with
+#      "required file 'doc/Makefile.in' not found" — a message about a file nobody deleted,
+#      three minutes into a cross-compile.
+#   3. pjproject's root `Makefile` names `pjsip-apps/src/pjsua/android`.
+#
+# **The real rule: remove only what the tree's OWN build files never mention.** Not "tests
+# and docs" — an autotools project routinely declares both, and declaring them is enough to
+# require them. `tools/vendor/verify-prune.sh` greps every build file in every vendored tree
+# for every pruned path and fails if one is referenced, so this is checked rather than
+# reasoned about.
+#
+# The saving is smaller than the first pass claimed — ~98 MB of 246 rather than 111 — and
+# 89 MB of it is OpenSSL's test suite, which survives because its SUBDIRS entry is GUARDED
+# (`IF[{- !$disabled{tests} -}]`) and every Configure here passes `no-tests`.
+# docs/native-dependencies.md §1.2 carries the table and the risk per entry.
 #
 # What is deliberately NOT here is as important as what is:
 #   - pjproject/pjsip-apps/src/swig  — this IS stage 1. Pruning it deletes the bindings.
@@ -63,7 +81,10 @@ PJPROJECT_PRUNE=(
   # writes into the `android/` tree removed here — stage 1 invokes `swig` directly rather
   # than through that target, exactly as the existing green workflow does
   # (.github/workflows/build-pjsip.yml:110-117), so nothing reads it.
-  pjsip-apps/src/pjsua/android
+  # `pjsip-apps/src/pjsua/android` is NOT pruned, though it carries a gradle-wrapper.jar:
+  # pjproject's root Makefile names it. A wrapper jar this repository would rather not
+  # carry is a smaller problem than a build that does not run, and `verify-prune.sh` is
+  # what turned that from an opinion into a check.
   pjsip-apps/src/pjsua/ios
   pjsip-apps/src/swig/java/android
   pjsip-apps/src/swig/csharp
@@ -88,12 +109,14 @@ OPENSSL_PRUNE=(
 )
 
 OPUS_PRUNE=(
-  doc
-  tests
+  # Nothing. `configure.ac:1039` declares `doc/Makefile` and `Makefile.am:10` names
+  # `./doc`, so `autoreconf` requires both directories to exist whatever the build does
+  # with them. Opus is 16 MB; there is nothing here worth breaking a cross-compile for.
 )
 
 LIBVPX_PRUNE=(
-  test
+  # Pre-generated build scratch, referenced by nothing. `test/` and `examples/` were
+  # pruned in a first pass and restored: libvpx's configure knows about both, and
+  # --disable-unit-tests is not the same as the directory being absent.
   build_debug
-  examples
 )
