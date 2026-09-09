@@ -5,6 +5,16 @@ build/
 !gradle/wrapper/gradle-wrapper.properties
 local.properties
 
+# ...but NOT inside the vendored trees (N-2). `build/` above is Gradle's output directory;
+# in pjproject and libvpx it is the *build system itself* — `third_party/pjproject/build/`
+# holds the .mak files every target includes. Without these negations git silently drops
+# nine directories and the vendored tree cannot build, with no error saying why.
+#
+# Verified with `git check-ignore -v`, and `tools/vendor/verify-vendored.sh` fails the
+# build if the file count on disk and the count git tracks ever diverge again.
+!third_party/**/build/
+!third_party/**/build/**
+
 # Android
 *.apk
 *.aab
