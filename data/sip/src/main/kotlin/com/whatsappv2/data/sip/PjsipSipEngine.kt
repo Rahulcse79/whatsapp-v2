@@ -58,9 +58,6 @@ import com.whatsappv2.domain.registration.NetworkStatus
 import com.whatsappv2.domain.registration.RegistrationRetrySchedule
 import com.whatsappv2.domain.repository.AppSettingsRepository
 import com.whatsappv2.domain.repository.SipAccountRepository
-import java.util.UUID
-import javax.inject.Inject
-import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
@@ -74,6 +71,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.UUID
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Registration and calling, backed by the real SIP stack (Tasks 27, 35, 37, 40-43).
