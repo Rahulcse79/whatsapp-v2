@@ -58,8 +58,8 @@ import org.pjsip.pjsua2.pjsip_status_code
 import org.pjsip.pjsua2.pjsip_transport_type_e
 import org.pjsip.pjsua2.pjsua_call_flag
 import org.pjsip.pjsua2.pjsua_call_media_status
-import org.pjsip.pjsua2.pjsua_stun_use
 import org.pjsip.pjsua2.pjsua_call_vid_strm_op
+import org.pjsip.pjsua2.pjsua_stun_use
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
