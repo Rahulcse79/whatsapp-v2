@@ -158,14 +158,25 @@ internal class RealPjsipCoreGateway @Inject constructor(
     private var endpoint: Endpoint? = null
 
     /**
-     * PJSIP's log sink, held for the life of the gateway.
+     * PJSIP's log sink, held for the life of the gateway — but not built until the stack
+     * is.
      *
      * A SWIG director like [PjAccount] and [PjCall], and held for the same reason: PJSIP
      * keeps a native pointer to it and calls it from its own threads. Collected while that
      * pointer is live, the next log line is a use-after-free — and one raised from a
      * thread that has nothing to do with whatever caused it.
+     *
+     * **`by lazy` is load-bearing, not style.** `PjsipLogWriter` extends pjsua2's
+     * `LogWriter`, and loading that class runs `pjsua2JNI`'s static initialiser, which is
+     * `System.loadLibrary("pjsua2")`. As an eager field that ran in this gateway's
+     * *constructor*, so merely resolving the Hilt graph tried to load a native library —
+     * fine on a handset, an `UnsatisfiedLinkError` on the JVM, and it took thirteen unit
+     * tests in `:app` down with it the moment the trace was added. Deferring the
+     * construction to first use puts it inside [endpointConfig], which runs on the
+     * [pjsip] thread after `libCreate` has already loaded the library. The reference is
+     * still a field, so the director is still held for the life of the gateway.
      */
-    private val logWriter = PjsipLogWriter(logger)
+    private val logWriter by lazy { PjsipLogWriter(logger) }
 
     /** Transport ids by the token the domain uses — `UDP`, `TCP`, `TLS`. */
     private val transports = ConcurrentHashMap<String, Int>()
