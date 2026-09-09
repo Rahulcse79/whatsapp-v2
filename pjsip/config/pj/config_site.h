@@ -14,6 +14,13 @@
  * Before this file existed the same flags were written twice in one workflow, 290 lines
  * apart (.github/workflows/build-pjsip.yml:97-102 and :390-396).
  *
+ * ## Why it lives under `config/pj/`
+ *
+ * pjproject includes it as `#include <pj/config_site.h>`, so the directory placed on the
+ * include path has to CONTAIN a `pj/` — it cannot be it. With the header one level up,
+ * SWIG stops at `pjsua2.i:210: Error: Unable to find 'pj/config_site.h'`, which names the
+ * file it wanted and not the search path that was wrong.
+ *
  * ## This file is NOT copied into third_party/
  *
  * The vendored tree is read-only: architecture rule 12 hashes it, and an edit with no

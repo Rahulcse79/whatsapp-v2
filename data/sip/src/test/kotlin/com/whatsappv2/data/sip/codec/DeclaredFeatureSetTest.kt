@@ -6,7 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Holds [DeclaredFeatureSet] and `pjsip/config/config_site.h` together.
+ * Holds [DeclaredFeatureSet] and `pjsip/config/pj/config_site.h` together.
  *
  * ## Why this test is the point of the whole arrangement
  *
@@ -28,7 +28,7 @@ import kotlin.test.assertTrue
 class DeclaredFeatureSetTest {
 
     private val configSite: String by lazy {
-        val header = File(repositoryRoot(), "pjsip/config/config_site.h")
+        val header = File(repositoryRoot(), "pjsip/config/pj/config_site.h")
         assertTrue(header.isFile, "the declared feature set is missing: $header")
         // Comments carry example values and prose about codecs that are NOT enabled — the
         // Lyra block alone names PJMEDIA_HAS_LYRA_CODEC three times. Stripping them first

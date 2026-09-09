@@ -138,7 +138,7 @@ cd "$work/pjproject"
 
 # The declared feature set (N-8), from the ONE file both stages read. Copied into the build
 # copy — never into third_party/, which rule 12 hashes.
-cp "$CONFIG_SITE_DIR/config_site.h" pjlib/include/pj/config_site.h
+cp "$CONFIG_SITE_DIR/pj/config_site.h" pjlib/include/pj/config_site.h
 
 # 16 KB pages: r27 links its own output aligned, but pjproject drives its link line itself,
 # so the flag is stated rather than assumed. An unaligned .so is one Android 15 refuses to
