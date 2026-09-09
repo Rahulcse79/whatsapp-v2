@@ -157,6 +157,16 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     private var endpoint: Endpoint? = null
 
+    /**
+     * PJSIP's log sink, held for the life of the gateway.
+     *
+     * A SWIG director like [PjAccount] and [PjCall], and held for the same reason: PJSIP
+     * keeps a native pointer to it and calls it from its own threads. Collected while that
+     * pointer is live, the next log line is a use-after-free — and one raised from a
+     * thread that has nothing to do with whatever caused it.
+     */
+    private val logWriter = PjsipLogWriter(logger)
+
     /** Transport ids by the token the domain uses — `UDP`, `TCP`, `TLS`. */
     private val transports = ConcurrentHashMap<String, Int>()
 
@@ -323,6 +333,22 @@ internal class RealPjsipCoreGateway @Inject constructor(
     private fun endpointConfig(): EpConfig = EpConfig().apply {
         uaConfig.userAgent = USER_AGENT
         uaConfig.maxCalls = MAX_CALLS
+
+        // Without this, everything PJSIP has to say goes to a sink Android drops, and an
+        // entire failed call leaves zero app-side log lines - which is exactly what it
+        // did. `msgLogging` is the one that carries the SIP messages themselves; the
+        // level alone would give the library's chatter and not the INVITEs.
+        //
+        // The writer is a field rather than a temporary: it is a director with a native
+        // peer, and a collected one is a use-after-free on the next line logged.
+        logConfig.apply {
+            writer = logWriter
+            msgLogging = SIP_MESSAGE_LOGGING
+            level = TRACE_LEVEL
+            // Nothing reads PJSIP's own console on Android, and leaving it at the default
+            // means every line is formatted twice. The writer above is the only consumer.
+            consoleLevel = 0
+        }
 
         medConfig.apply {
             clockRate = CORE_CLOCK_RATE
@@ -1272,6 +1298,19 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     private companion object {
         const val TAG = "PjsipGateway"
+
+        /**
+         * PJSIP's trace level, and what it costs.
+         *
+         * 4 is where the SIP messages are. The release logger compiles `debug` to an
+         * empty body, so the lines are dropped there rather than shipped - but PJSIP
+         * still formats them before handing them over. That is a real if small cost, and
+         * the honest trade for a client whose signalling is otherwise invisible.
+         */
+        const val TRACE_LEVEL = 4L
+
+        /** 1 enables the SIP message trace. The level alone does not. */
+        const val SIP_MESSAGE_LOGGING = 1L
         const val PJSIP_THREAD = "pjsip-main"
         const val EVENT_BUFFER = 64
 
