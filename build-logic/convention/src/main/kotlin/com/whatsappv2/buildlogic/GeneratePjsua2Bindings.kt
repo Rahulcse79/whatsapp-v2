@@ -1,3 +1,5 @@
+package com.whatsappv2.buildlogic
+
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.ProjectLayout
@@ -56,7 +58,7 @@ abstract class GeneratePjsua2Bindings @Inject constructor(
     @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val configSiteDir: DirectoryProperty
 
-    /** The generated Java source root: `org/pjsip/pjsua2/**` plus the five helpers. */
+    /** The generated Java source root: the `org.pjsip.pjsua2` package plus the five helpers. */
     @get:OutputDirectory
     abstract val outputDirectory: DirectoryProperty
 

@@ -47,6 +47,8 @@
  * set that Makefile lists, which is exactly what the green workflow already does
  * (`.github/workflows/build-pjsip.yml:110-117`).
  */
+import com.whatsappv2.buildlogic.GeneratePjsua2Bindings
+
 plugins {
     id("whatsappv2.android.library")
 }

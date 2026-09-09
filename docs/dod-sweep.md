@@ -16,6 +16,36 @@ packages are measured and which cannot be — does not change.
 
 ---
 
+## The native mandate's items (N-1…N-14, DoD 15-24)
+
+**Added 2026-09-09.** `docs/master-engineering-prompt.md` §12 adds ten binary items to the
+Definition of Done. This is where they stand. The distinction the master prompt §10 insists
+on is kept: **compiled, registered, negotiated and verified-on-hardware are four different
+claims**, and only the last ends an argument.
+
+| # | Item | Result |
+|---|---|---|
+| 15 | **N-1** — no `.aar`/`.so` in the tree that `:pjsip` did not build, and the rule fails on its fixture | **PASS.** Rule 11, two clauses, two fixtures. It caught a real 19 MB AAR during this change |
+| 16 | **N-2, N-3** — the egress-blocked job runs the native stage to completion; the four trees are in-tree at pinned commits | **PARTIAL.** The trees are vendored, pinned and verified byte-identical from a fresh checkout. The egress-blocked job is written and **has not gone green yet** |
+| 17 | **N-4, N-5** — one `./gradlew` and one Actions run produce the stack from source, no manual step, no typed version | **NOT VERIFIED.** Written and unproven. `pjsip/CMakeLists.txt` + `build-native.sh` are ported flag-for-flag from a green build; the port has had no run |
+| 18 | **N-6** — every ABI carries its full expected `.so` set, asserted at packaging | **PARTIAL.** `assertNativeLibraries` asserts `{libpjsua2.so, libc++_shared.so}` per ABI. Unexercised until 17 passes |
+| 19 | **N-7** — every change to vendored source is a numbered patch; the integrity check passes | **PASS, vacuously — and that is the honest word.** `pjsip/patches/` holds no patch because no vendored file has been changed. Rule 12 passes, and its fixtures prove it *can* fail in all three directions |
+| 20 | **N-9** — the audit reports every declared codec as registered, with an on-device round trip | **NOT VERIFIED.** The audit is written and unit-tested; no device has run it. **On Lyra this item is satisfied by ADR-008**: it is not in the declared set, and the audit reports it as *not compiled* |
+| 21 | **N-10** — `docs/native-dependencies.md` lists exactly the `third_party/` directories with version, commit, licence, reason, patches, size | **PASS.** `verify-pins.sh` is the check, and it runs in CI |
+| 22 | **N-11** — every dependency pinned to a commit, no `branch =`, two builds hash-compared | **PARTIAL.** Pinned, and `verify-pins.sh` fails on any `_BRANCH=`. **The two-build comparison has not been run**, and it cannot be meaningful until the exempt toolchain is pinned — SWIG is not (§3 of `docs/native-dependencies.md`) |
+| 23 | **N-13** — `git ls-files pjsip/` returns no `.java` | **PASS.** Three files, none Java. Checked in CI |
+| 24 | **N-14** — no `if (aar.exists())`, no fallback; a build with no `.so` fails | **PASS** as written. The condition is gone and `assertNativeLibraries` is the failure. Unexercised until 17 passes |
+
+**The one number to watch: item 17.** Every "unexercised until" above hangs off it.
+
+**And one existing item changes meaning.** DoD 1 — *"`clean build` passes from a fresh
+clone"* — was PASS on a build that took the `:pjsip:api` fallback and shipped no `.so`
+(`docs/reconciliation.md` B-8). Under DoD 24 that build now **fails**, which is the intended
+outcome. Do not restore the fallback to make DoD 1 green again; a green build that cannot
+place a call is exactly what this change removes.
+
+---
+
 ## Summary
 
 | # | Item | Result |
