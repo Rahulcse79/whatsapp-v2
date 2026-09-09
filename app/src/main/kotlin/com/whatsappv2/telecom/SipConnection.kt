@@ -63,6 +63,23 @@ internal class SipConnection(
      */
     private var platformMuted = false
 
+    /**
+     * The last route Telecom reported, for the same reason [platformMuted] exists.
+     *
+     * Telecom repeats the whole `CallAudioState` on every audio event, and forwarding the
+     * route half unconditionally closed a loop: the report reached
+     * `TelecomCallBridge.onAudioRouteChanged`, which asks the engine to apply it, which
+     * asks Telecom for it, which reports it again. On a real handset that ran at roughly
+     * a hundred round trips a second for the whole of a ringing call — 439 identical
+     * `EARPIECE` lines in 4.4 seconds — burning CPU during call setup and flushing the
+     * logcat ring buffer, which is what left every earlier call failure with no
+     * diagnosable history.
+     *
+     * `null` until Telecom reports for the first time, so the opening route is always
+     * forwarded and the in-call screen starts out showing something true.
+     */
+    private var platformRoute: AudioRoute? = null
+
     init {
         // Self-managed: this app draws its own in-call UI and Telecom must not hand the
         // call to the system dialer.
@@ -129,7 +146,15 @@ internal class SipConnection(
     @Suppress("OVERRIDE_DEPRECATION")
     override fun onCallAudioStateChanged(state: CallAudioState?) {
         val current = state ?: return
-        listener.onAudioRouteChanged(callId, TelecomPolicy.audioRouteOf(current.route))
+
+        // Only on an actual move. See [platformRoute]: unconditional forwarding here is a
+        // feedback loop, because what this notifies eventually asks Telecom for the very
+        // route it is reporting.
+        val route = TelecomPolicy.audioRouteOf(current.route)
+        if (platformRoute != route) {
+            platformRoute = route
+            listener.onAudioRouteChanged(callId, route)
+        }
 
         // One callback carries both, and the mute half matters: a headset's own mute
         // button reaches this app through here and nowhere else.

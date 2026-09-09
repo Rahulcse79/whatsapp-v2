@@ -166,17 +166,20 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * pointer is live, the next log line is a use-after-free — and one raised from a
      * thread that has nothing to do with whatever caused it.
      *
-     * **`by lazy` is load-bearing, not style.** `PjsipLogWriter` extends pjsua2's
+     * **Built in [endpointConfig], never here.** `PjsipLogWriter` extends pjsua2's
      * `LogWriter`, and loading that class runs `pjsua2JNI`'s static initialiser, which is
      * `System.loadLibrary("pjsua2")`. As an eager field that ran in this gateway's
      * *constructor*, so merely resolving the Hilt graph tried to load a native library —
      * fine on a handset, an `UnsatisfiedLinkError` on the JVM, and it took thirteen unit
-     * tests in `:app` down with it the moment the trace was added. Deferring the
-     * construction to first use puts it inside [endpointConfig], which runs on the
-     * [pjsip] thread after `libCreate` has already loaded the library. The reference is
-     * still a field, so the director is still held for the life of the gateway.
+     * tests in `:app` down with it the moment the trace was added.
+     *
+     * **One per `start`, because `libDestroy` deletes it.** `Endpoint::libDestroy` ends
+     * with `delete this->writer` (pjsua2 `endpoint.cpp`), so the writer handed to
+     * `libInit` does not survive the matching [stop]. A single cached instance reused
+     * across a stop/start cycle would hand `libInit` a pointer C++ had already freed.
      */
-    private val logWriter by lazy { PjsipLogWriter(logger) }
+    @Volatile
+    private var logWriter: PjsipLogWriter? = null
 
     /** Transport ids by the token the domain uses — `UDP`, `TCP`, `TLS`. */
     private val transports = ConcurrentHashMap<String, Int>()
@@ -285,7 +288,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
         // `Endpoint::libRegisterThread`. It would also have leaked, since the
         // `pj_thread_desc` it mallocs is only freed when the library is destroyed.
         created.libInit(endpointConfig())
-        logger.info(TAG, "start: libInit ok")
+        // The trace state is stated rather than assumed. It was silently off for two
+        // builds - the stack came up, registered and rang with not one PJSIP line - and a
+        // startup that says which it is costs one line and settles that question in
+        // logcat instead of in a source read.
+        logger.info(
+            TAG,
+            "start: libInit ok (SIP trace ${if (logWriter != null) "on" else "off"})",
+        )
 
         // After libInit and before libStart, and both halves of that matter. libInit
         // is what registers the codecs, so there is nothing to configure before it;
@@ -350,15 +360,33 @@ internal class RealPjsipCoreGateway @Inject constructor(
         // did. `msgLogging` is the one that carries the SIP messages themselves; the
         // level alone would give the library's chatter and not the INVITEs.
         //
-        // The writer is a field rather than a temporary: it is a director with a native
-        // peer, and a collected one is a use-after-free on the next line logged.
+        // `consoleLevel` is NOT "the level of PJSIP's own console sink". It is the gate on
+        // the application callback as well. pjsua's `log_writer` reads:
+        //
+        //     if (level <= (int)pjsua_var.log_cfg.console_level) {
+        //         if (pjsua_var.log_cfg.cb) (*pjsua_var.log_cfg.cb)(level, buffer, len);
+        //         else pj_log_write(level, buffer, len);
+        //     }
+        //
+        // - and `cb` is what pjsua2 points at this writer. Set to 0, as it was, no level
+        // can ever satisfy `level <= 0`, so the callback is never reached and the trace is
+        // dead by construction. The stack came up, registered and rang with not one line
+        // to show for it. It tracks `level` instead: one number decides the verbosity, and
+        // there is no second one left behind to silence the first.
+        //
+        // Ownership: `libDestroy` does `delete this->writer`, so C++ frees it. SWIG's
+        // generated `LogWriter()` sets `swigCMemOwn = true` and its finalizer calls
+        // `delete_LogWriter` - which after `libDestroy` would be a second free of the same
+        // pointer. `swigReleaseOwnership()` hands ownership to C++, which is what makes the
+        // single delete in `libDestroy` the only one, and has the director hold a strong
+        // reference back so the object stays alive while PJSIP can still call it.
         logConfig.apply {
-            writer = logWriter
+            writer = PjsipLogWriter(logger)
+                .also { it.swigReleaseOwnership() }
+                .also { logWriter = it }
             msgLogging = SIP_MESSAGE_LOGGING
             level = TRACE_LEVEL
-            // Nothing reads PJSIP's own console on Android, and leaving it at the default
-            // means every line is formatted twice. The writer above is the only consumer.
-            consoleLevel = 0
+            consoleLevel = TRACE_LEVEL
         }
 
         medConfig.apply {
@@ -505,6 +533,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // cycle leaves an Endpoint behind for a finalizer to find later.
             runCatching { running.delete() }
             endpoint = null
+            // libDestroy already deleted it; this only drops the Kotlin reference so the
+            // next start builds a fresh one rather than reusing a freed pointer.
+            logWriter = null
             logger.info(TAG, "SIP core stopped")
         }
     }
