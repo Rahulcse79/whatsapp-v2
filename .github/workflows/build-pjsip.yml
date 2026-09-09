@@ -165,14 +165,20 @@ jobs:
         include:
           - abi: arm64-v8a
             host: aarch64-linux-android
+            sysroot-triple: aarch64-linux-android
             openssl-target: android-arm64
             vpx-target: arm64-android-gcc
           - abi: armeabi-v7a
             host: armv7a-linux-androideabi
+            # NOT the same as `host`. The compiler driver is armv7a-…-androideabi26-clang,
+            # but the sysroot library directory is arm-linux-androideabi. Using `host`
+            # here finds nothing and the C++ runtime silently goes missing from the AAR.
+            sysroot-triple: arm-linux-androideabi
             openssl-target: android-arm
             vpx-target: armv7-android-gcc
           - abi: x86_64
             host: x86_64-linux-android
+            sysroot-triple: x86_64-linux-android
             openssl-target: android-x86_64
             vpx-target: x86_64-android-gcc
 
@@ -473,25 +479,57 @@ jobs:
       - name: Gather the pieces into a consumable layout
         env:
           ABI: ${{ matrix.abi }}
+          SYSROOT_TRIPLE: ${{ matrix.sysroot-triple }}
         run: |
           set -euo pipefail
           mkdir -p "staging/jni/$ABI" staging/java
 
           find pjproject -name 'libpjsua2.so' -exec cp -v {} "staging/jni/$ABI/" \;
 
-          # The SWIG-generated bindings. Same for every ABI, and harmless to carry three
-          # times: whoever assembles the AAR takes one copy, and the three must agree anyway.
-          #
-          # `-print -quit` rather than `| head -1`: under `set -o pipefail`, head closing
-          # the pipe early hands find a SIGPIPE, and the step fails on a search that
-          # succeeded. Stopping find itself has no pipe to break.
-          srcroot="$(find pjproject/pjsip-apps/src/swig -type d -path '*/org/pjsip' -print -quit)"
-          if [ -z "$srcroot" ]; then
-            echo "::error::SWIG produced no org/pjsip bindings"
+          # libc++_shared.so travels with it. libpjsua2.so links against the NDK's shared
+          # C++ runtime, so without this `System.loadLibrary("pjsua2")` fails at run time
+          # with "library libc++_shared.so not found" - an AAR that installs and cannot
+          # load. pjproject's own Makefile copies it into jniLibs beside the .so for
+          # exactly this reason (java/Makefile:185).
+          cxx_so="$(find "$ANDROID_NDK_ROOT" -path "*/sysroot/usr/lib/$SYSROOT_TRIPLE/libc++_shared.so" -print -quit)"
+          if [ -z "$cxx_so" ]; then
+            echo "::error::no libc++_shared.so for $SYSROOT_TRIPLE - the AAR would not load"
             exit 1
           fi
-          # Copy the `org` root, so the tree keeps the package layout javac expects.
-          cp -r "$(dirname "$srcroot")" staging/java/
+          cp -v "$cxx_so" "staging/jni/$ABI/"
+
+          # The SWIG-generated bindings, anchored on pjsua2JNI.java.
+          #
+          # NOT `find -type d -path '*/org/pjsip'`. The swig tree contains three sample
+          # apps that each have their own org/pjsip package, and `-print -quit` returned
+          # whichever the directory walk reached first - which was app-kotlin, so the AAR
+          # job was handed one MainActivity.kt and reported "0 generated source files".
+          # pjsua2JNI.java is produced by SWIG and by nothing else, so it identifies the
+          # real output unambiguously.
+          jni_java="$(find pjproject/pjsip-apps/src/swig -name pjsua2JNI.java -print -quit)"
+          if [ -z "$jni_java" ]; then
+            echo "::error::SWIG produced no pjsua2JNI.java"
+            exit 1
+          fi
+          # .../java/org/pjsip/pjsua2/pjsua2JNI.java -> .../java/org
+          srcroot="$(cd "$(dirname "$jni_java")/../.." && pwd)"
+          cp -r "$srcroot" staging/java/
+
+          # The five hand-written helpers, which SWIG does not generate and which live in
+          # a different tree entirely (pjmedia/src/pjmedia-{video,audio}dev/android).
+          # PjCameraInfo2 is the one the adapter calls; without it there are no capture
+          # devices at all, and a video call has nothing to send.
+          mkdir -p staging/java/org/pjsip
+          helpers=0
+          while IFS= read -r -d '' helper; do
+            cp -v "$helper" staging/java/org/pjsip/
+            helpers=$((helpers + 1))
+          done < <(find pjproject/pjmedia/src -name 'Pj*.java' -print0)
+          if [ "$helpers" -eq 0 ]; then
+            echo "::error::none of the org.pjsip helper sources were found"
+            exit 1
+          fi
+          echo "  staged $helpers hand-written helpers"
 
           echo "::group::staged"
           find staging -type f | sed 's/^/  /'
@@ -539,22 +577,31 @@ jobs:
           # Every ABI packaged by :app must be present. A missing one is not a
           # smaller AAR, it is an UnsatisfiedLinkError on that architecture.
           for abi in arm64-v8a armeabi-v7a x86_64; do
-            so="$(find parts -path "*/jni/$abi/libpjsua2.so" -print -quit)"
-            if [ -z "$so" ]; then
-              echo "::error::No libpjsua2.so for $abi - that ABI's build did not produce one"
-              exit 1
-            fi
             mkdir -p "aar/jni/$abi"
-            cp "$so" "aar/jni/$abi/"
-            echo "  $abi <- $so"
+            # Both, and both required: libpjsua2.so is the stack, libc++_shared.so is the
+            # runtime it links against. Shipping only the first is an AAR that installs
+            # and then cannot load.
+            for lib in libpjsua2.so libc++_shared.so; do
+              so="$(find parts -path "*/jni/$abi/$lib" -print -quit)"
+              if [ -z "$so" ]; then
+                echo "::error::No $lib for $abi - that ABI's build did not produce one"
+                exit 1
+              fi
+              cp "$so" "aar/jni/$abi/"
+              echo "  $abi <- $so"
+            done
           done
 
-          # The SWIG bindings are identical across ABIs; take the first and say so.
-          srcroot="$(find parts -type d -name org -path '*/java/*' -print -quit)"
-          if [ -z "$srcroot" ]; then
-            echo "::error::No generated org/ source root in any artifact"
+          # The bindings are identical across ABIs; take the first and say so. Anchored
+          # on pjsua2JNI.java rather than on a directory named `org`, for the same reason
+          # the build job is: several sample apps carry an org/ package too, and matching
+          # by name found one of those.
+          jni_java="$(find parts -name pjsua2JNI.java -print -quit)"
+          if [ -z "$jni_java" ]; then
+            echo "::error::No pjsua2JNI.java in any artifact - the bindings were not staged"
             exit 1
           fi
+          srcroot="$(cd "$(dirname "$jni_java")/../.." && pwd)"
 
           # android.jar is on the classpath because the generated bindings reference
           # Android types directly - PjCameraInfo2 takes a CameraManager, and the
@@ -564,7 +611,16 @@ jobs:
 
           mkdir -p classes
           find "$srcroot" -name '*.java' > sources.txt
-          echo "  $(wc -l < sources.txt) generated source files"
+          count="$(wc -l < sources.txt)"
+          echo "  $count Java source files"
+          # A real pjsua2 API is ~300 files. Anything near zero means the wrong tree was
+          # staged, which is precisely how this job failed the first time it ran - javac's
+          # "error: no source files" named the symptom and not the cause.
+          if [ "$count" -lt 100 ]; then
+            echo "::error::only $count Java files under $srcroot - wrong source root staged"
+            find "$srcroot" -maxdepth 3 | head -20
+            exit 1
+          fi
           javac -nowarn -source 8 -target 8 -bootclasspath "$ANDROID_JAR" \
                 -d classes @sources.txt
 
