@@ -782,7 +782,25 @@ internal class RealPjsipCoreGateway @Inject constructor(
             AuthCredInfo("Digest", "*", authUsername, 0, password),
         )
         proxyUri?.let { sipConfig.proxies.add(it) }
-        transports[transport.uppercase()]?.let { sipConfig.transportId = it }
+
+        // UDP is deliberately left unpinned. `transportId` becomes a
+        // PJSIP_TPSELECTOR_TRANSPORT on the dialog (pjsua_init_tpselector in
+        // pjsua_core.c), and that defeats RFC 3261 s18.1.1: PJSIP rewrites the first
+        // destination of a request over 1300 bytes to TCP, then
+        // `pjsip_endpt_acquire_transport2` refuses it because the pinned transport is a
+        // UDP one, and the message falls back to the UDP entry behind it. Every
+        // oversized INVITE this app sent said so - "Unsuitable transport selected
+        // (PJSIP_ETPNOTSUITABLE)" one line before a 1735-byte datagram - and a 1735-byte
+        // datagram is IP-fragmented, which is what a router between us and the registrar
+        // drops. REGISTER at 822 bytes went through the same path untouched.
+        // Unpinned, the account still resolves to UDP by default; it now switches to a
+        // congestion-controlled transport only when the message is too big to send as
+        // one datagram, which is what the RFC asks for.
+        // TCP and TLS stay pinned: the registrar URI carries no `;transport=` parameter,
+        // so nothing else would select them.
+        if (transport.uppercase() != TRANSPORT_UDP) {
+            transports[transport.uppercase()]?.let { sipConfig.transportId = it }
+        }
 
         // The account's policy, not a constant. This was `= true` regardless of what the
         // account said, which made three settings in the account form do nothing - and
