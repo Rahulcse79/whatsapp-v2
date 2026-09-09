@@ -93,6 +93,19 @@ internal class RegistrationRecoveryCoordinator(
      * to no purpose. The test that DOES assert a time passes a `MutableClock`.
      */
     private val clock: Clock = SystemClock,
+    /**
+     * Called once the link has gone, so the engine can stop publishing a registration the
+     * device cannot hold any more.
+     *
+     * Here rather than in a second collector on the same flow: this class already watches
+     * the network, already debounces it, and already knows the moment it went away. The
+     * engine owns the state, so it supplies the action; what "gone" means stays one
+     * decision in one place.
+     *
+     * Defaulted, like [clock], because the nine tests of this class construct it without
+     * one and none of them asserts anything about registration state.
+     */
+    private val onNetworkLost: () -> Unit = {},
 ) : RegistrationRetrySchedule {
 
     /** Consecutive failures per account. Reset only by a successful registration. */
@@ -187,6 +200,7 @@ internal class RegistrationRecoveryCoordinator(
             // things is the platform's callback, not a timer of ours.
             logger.info(TAG, "No network: retries stopped until one returns")
             rebinder.setNetworkReachable(false)
+            onNetworkLost()
         }
     }
 

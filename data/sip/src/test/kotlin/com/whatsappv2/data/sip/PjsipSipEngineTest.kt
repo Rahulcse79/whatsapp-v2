@@ -1093,6 +1093,10 @@ class PjsipSipEngineTest : PjsipSipEngineFixture() {
         val engine = registeredEngine()
         networkMonitor.onWifi()
         advanceUntilIdle()
+        // Re-asserted rather than assumed: coming up on a link can make the recovery
+        // policy re-register, and this test is about losing one, not about that.
+        gateway.emit(account.id.value, StackRegistrationState.OK)
+        advanceUntilIdle()
         assertIs<RegistrationState.Registered>(engine.registrationState.value[account.id])
 
         networkMonitor.lost()

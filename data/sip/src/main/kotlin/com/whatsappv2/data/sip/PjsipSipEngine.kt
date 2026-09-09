@@ -48,13 +48,11 @@ import com.whatsappv2.domain.model.DtmfDigit
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
-import com.whatsappv2.domain.model.RegistrationFailure
 import com.whatsappv2.domain.model.RegistrationState
 import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.TransferType
-import com.whatsappv2.domain.registration.NetworkStatus
 import com.whatsappv2.domain.registration.RegistrationRetrySchedule
 import com.whatsappv2.domain.repository.AppSettingsRepository
 import com.whatsappv2.domain.repository.SipAccountRepository
@@ -163,6 +161,15 @@ internal class PjsipSipEngine @Inject constructor(
 ) : SipEngine, RegistrationRetrySchedule {
 
     /**
+     * Every account's registration state, and the only thing that publishes it.
+     *
+     * Declared before [recovery] because that captures it: the coordinator is what notices
+     * the link going away, and invalidating what this holds is the response.
+     */
+    private val states = MutableStateFlow<Map<AccountId, RegistrationState>>(emptyMap())
+    override val registrationState: StateFlow<Map<AccountId, RegistrationState>> = states.asStateFlow()
+
+    /**
      * Network-change recovery (Task 30).
      *
      * Constructed here rather than injected, because it needs this engine as its
@@ -176,10 +183,10 @@ internal class PjsipSipEngine @Inject constructor(
         rebinder = gateway,
         scope = scope,
         logger = logger,
+        // It already watches the link and already debounces it; a second collector on the
+        // same flow would only duplicate that. See RegistrationStateMapper.withoutNetwork.
+        onNetworkLost = { states.update(RegistrationStateMapper::withoutNetwork) },
     )
-
-    private val states = MutableStateFlow<Map<AccountId, RegistrationState>>(emptyMap())
-    override val registrationState: StateFlow<Map<AccountId, RegistrationState>> = states.asStateFlow()
 
     /**
      * Forwarded from [recovery], which is the thing that actually schedules retries.
@@ -363,8 +370,6 @@ internal class PjsipSipEngine @Inject constructor(
     /** The conference-roster collector (Task 60). Held for the same reason. */
     private var conferenceCollectJob: Job? = null
 
-    private var networkCollectJob: Job? = null
-
     private var traceCollectJob: Job? = null
 
     /**
@@ -382,7 +387,6 @@ internal class PjsipSipEngine @Inject constructor(
         callCollectJob = scope.collectCallEvents()
         transferCollectJob = scope.collectTransferEvents()
         conferenceCollectJob = scope.collectConferenceEvents()
-        networkCollectJob = scope.launch { watchNetwork() }
         traceCollectJob = scope.launch {
             // The switch in Settings, finally connected to something. It was written to
             // DataStore and read by nothing, so the control did nothing while its own
@@ -413,47 +417,6 @@ internal class PjsipSipEngine @Inject constructor(
                             retryScheduled = false,
                         )
                         )
-                }
-            }
-        }
-    }
-
-    /**
-     * Stops reporting a registration the device cannot possibly still hold.
-     *
-     * A REGISTER binding is a promise between this client and a registrar, and it is only
-     * as good as the path between them. When that path goes away the stack says nothing:
-     * PJSIP has no outstanding transaction to fail, so no event arrives, and the last
-     * `Registered` this engine published stays on screen. On a handset that meant turning
-     * Wi-Fi off and watching the account go on claiming it was registered - and it would
-     * keep claiming it until the refresh fell due, which for the default expiry is an
-     * hour away.
-     *
-     * The honest state is a failure the user can read, and `NETWORK_UNAVAILABLE` names the
-     * cause rather than blaming the server or the password. Recovery is not this function's
-     * business: [RegistrationRecoveryCoordinator] re-registers when a link returns, and the
-     * event that comes back moves the state on its own.
-     *
-     * Only `Registered` is rewritten. `Registering` is already honest, a `Failed` account
-     * has a more specific reason than this one, and `Unregistered` is a deliberate logout
-     * that no network change should undo.
-     */
-    private suspend fun watchNetwork() {
-        networkMonitor.status.collect { status ->
-            if (status is NetworkStatus.Available) return@collect
-
-            states.update { current ->
-                current.mapValues { (_, state) ->
-                    if (state is RegistrationState.Registered) {
-                        RegistrationState.Failed(
-                            reason = RegistrationFailure.NETWORK_UNAVAILABLE,
-                            // Nothing is scheduled: with no link the coordinator waits for
-                            // the platform's callback rather than running a timer (DoD 6).
-                            retryScheduled = false,
-                        )
-                    } else {
-                        state
-                    }
                 }
             }
         }
@@ -1344,8 +1307,6 @@ internal class PjsipSipEngine @Inject constructor(
         transferCollectJob = null
         conferenceCollectJob?.cancel()
         conferenceCollectJob = null
-        networkCollectJob?.cancel()
-        networkCollectJob = null
         traceCollectJob?.cancel()
         traceCollectJob = null
         gateway.stop()

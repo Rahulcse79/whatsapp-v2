@@ -2,6 +2,8 @@ package com.whatsappv2.data.sip.registration
 
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.toRegistrationFailure
+import com.whatsappv2.domain.model.AccountId
+import com.whatsappv2.domain.model.RegistrationFailure
 import com.whatsappv2.domain.model.RegistrationState
 
 /**
@@ -71,6 +73,32 @@ internal object RegistrationStateMapper {
         else -> SipError.TransportFailure(
             com.whatsappv2.domain.engine.TransportFailureKind.CONNECTION_LOST,
         )
+    }
+
+    /**
+     * [current] with every registration the device cannot possibly still hold marked as
+     * such.
+     *
+     * A REGISTER binding is only as good as the path to the registrar. When that path goes
+     * away the stack says nothing - there is no outstanding transaction to fail - so the
+     * last `Registered` stands until the refresh falls due, which at the default expiry is
+     * an hour. On a handset that meant turning Wi-Fi off and watching the account go on
+     * claiming it was registered.
+     *
+     * Only `Registered` is rewritten. `Registering` is already honest, a `Failed` account
+     * has a more specific reason than this one, and `Unregistered` is a deliberate logout
+     * that no network change may undo. `NETWORK_UNAVAILABLE` names the cause rather than
+     * blaming the server or the password, and nothing is scheduled: with no link the
+     * recovery coordinator waits for the platform's callback rather than a timer (DoD 6).
+     */
+    fun withoutNetwork(
+        current: Map<AccountId, RegistrationState>,
+    ): Map<AccountId, RegistrationState> = current.mapValues { (_, state) ->
+        if (state is RegistrationState.Registered) {
+            RegistrationState.Failed(RegistrationFailure.NETWORK_UNAVAILABLE, retryScheduled = false)
+        } else {
+            state
+        }
     }
 
     /** True when the state means the account can currently place and receive calls. */
