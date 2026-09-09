@@ -1,6 +1,5 @@
 package com.whatsappv2.call
 
-import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -29,10 +28,22 @@ import javax.inject.Inject
  * ## Showing over the keyguard
  *
  * `setShowWhenLocked` and `setTurnScreenOn` are the API 27+ way and the window flags are
- * the older one; both are applied because `minSdk` is 26. `requestDismissKeyguard` then
- * asks — asks, not forces — for a secure keyguard to be dismissed once the user acts, and
- * a device with a PIN will still demand it, which is correct: the call is answerable, the
- * rest of the phone is not.
+ * the older one; both are applied because `minSdk` is 26. Between them the call is
+ * answerable without unlocking, and the rest of the phone stays locked — which is the
+ * whole of what this screen needs.
+ *
+ * **`requestDismissKeyguard` is deliberately not called**, though it used to be. It leaks
+ * this activity, every time. `KeyguardManager.requestDismissKeyguard` hands system_server
+ * an anonymous `IKeyguardDismissCallback.Stub` whose generated `val$activity` field holds
+ * the activity — it captures it whether or not a callback is passed, because the stub's
+ * own methods reach for `activity.isDestroyed()` and `activity.mHandler`. That binder
+ * object is rooted in native code and nothing releases it, so the activity survives its
+ * own `onDestroy`. LeakCanary caught it on a handset: two `CallActivity` instances
+ * retained, 213 kB each, one per call that had rung.
+ *
+ * Nothing is lost by dropping it. It only ever *asked* for a secure keyguard to be
+ * dismissed, and a device with a PIN refused anyway; showing over the lock screen — the
+ * part that matters — is `setShowWhenLocked`'s job and it still does it.
  */
 @AndroidEntryPoint
 class CallActivity : ComponentActivity() {
@@ -82,7 +93,6 @@ class CallActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
-            getSystemService(KeyguardManager::class.java)?.requestDismissKeyguard(this, null)
         } else {
             @Suppress("DEPRECATION")
             window.addFlags(
