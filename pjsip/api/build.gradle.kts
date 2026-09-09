@@ -69,11 +69,25 @@ val generateBindings = tasks.register<GeneratePjsua2Bindings>("generatePjsua2Bin
 
 android {
     namespace = "org.pjsip"
+}
 
-    sourceSets.named("main") {
-        // The generated tree, not a checked-in one. `git ls-files pjsip/` returns no
-        // .java file, which is DoD 23 stated as a command.
-        java.srcDir(generateBindings.flatMap { it.outputDirectory })
+/**
+ * Wires the generated tree in as a source directory.
+ *
+ * `androidComponents.onVariants { … addGeneratedSourceDirectory(…) }` rather than
+ * `sourceSets["main"].java.srcDir(…)`: AGP 9 replaced the source-set DSL and the old form
+ * fails at configuration time with `DefaultAndroidLibrarySourceSet_Decorated cannot be cast
+ * to AndroidLibrarySourceSet` — a message that says nothing about source sets.
+ *
+ * It is also the better wiring on its own merits. `addGeneratedSourceDirectory` establishes
+ * the task dependency from the task's own output property, so `compileDebugJavaWithJavac`
+ * cannot start before the bindings exist. A bare `srcDir` on a `Provider` leaves that
+ * ordering to be inferred, and when the inference misses, the failure is 259 unresolved
+ * references rather than "the generator has not run".
+ */
+androidComponents {
+    onVariants { variant ->
+        variant.sources.java?.addGeneratedSourceDirectory(generateBindings) { it.outputDirectory }
     }
 }
 
