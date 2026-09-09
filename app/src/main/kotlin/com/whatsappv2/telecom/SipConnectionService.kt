@@ -80,7 +80,7 @@ internal class SipConnectionService : ConnectionService() {
             // call UI, the lock screen and a car display all show a call from nobody, and
             // `dumpsys telecom` confirms it. The app's own screen looked right only
             // because it reads the engine directly rather than Telecom.
-            request?.address?.let { address ->
+            request.address?.let { address ->
                 it.setAddress(address, TelecomManager.PRESENTATION_ALLOWED)
             }
             it.setDialing()
@@ -117,7 +117,7 @@ internal class SipConnectionService : ConnectionService() {
             // and comes back on the request. Setting it here is what puts a number on the
             // incoming-call UI the platform draws; without it the call rings as `handle=
             // null` and nothing outside this app knows who is calling.
-            request?.address?.let { address ->
+            request.address?.let { address ->
                 it.setAddress(address, TelecomManager.PRESENTATION_ALLOWED)
             }
             it.setRinging()
