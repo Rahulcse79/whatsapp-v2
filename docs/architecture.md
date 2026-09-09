@@ -218,7 +218,23 @@ changes no application code. Revisit if CI flakiness from shared state becomes a
 ### ADR-006 — Migrate the SIP stack to **PJSIP / pjsua2**, and how the binaries are sourced
 
 **Status:** **ACCEPTED** · **Raised:** 2026-09-07 · **Decided:** 2026-09-08 ·
-**Decider:** stakeholder · **Supersedes:** ADR-001
+**Decider:** stakeholder · **Supersedes:** ADR-001 ·
+**Amended:** 2026-09-09 — see the note below and **ADR-007**
+
+> **Amendment, 2026-09-09.** This ADR chose PJSIP and it chose *build from source*. **Both
+> stand.** What ADR-007 changes is **where the source lives and who runs the build**: from
+> "fetch four tarballs in CI, package an AAR, download it by hand" to "vendored source in
+> this repository, built by the app build". The three sourcing options below are unchanged
+> and their rejections still hold — note in particular that option 3 rejects vendored
+> **binaries**, which is the opposite decision to ADR-007's vendored **source**, and its
+> reasoning supports ADR-007 rather than conflicting with it.
+>
+> **One fact in the sequencing section below is now false.** Step 1 says the native
+> workflow "has still never completed a run". It has: four green runs on 2026-09-09, the
+> most recent producing all three ABIs, an AAR and an APK in 7m18s. See
+> `docs/reconciliation.md` B-7 for the evidence. The step is left in place rather than
+> rewritten, because this ADR is a record of a decision made on 2026-09-08 and history is
+> not edited — but it must not be read as current.
 
 **The decision.** The previous stack is removed entirely and replaced by PJSIP. The
 sourcing question that blocked this is answered by **option 1 — build pjproject in CI from
@@ -272,7 +288,7 @@ Only **three files import the SDK at all**, and one of those mentions it in a co
 | `stack/SipStackInfo.kt` | 52 | **Yes**, but it is one `Factory` call for a version string |
 | `registration/StackRegistrationEvent.kt` | 53 | **No** — a deliberate SDK-free copy of the SDK enum |
 
-So the real surface is **≈985 lines behind a 342-line contract**
+So the real surface is **≈985 lines behind a 368-line contract**
 (`SipCoreGateway`, `SipCallGateway`, `SipVideoGateway`, `SipRecordingGateway` — renamed
 off the old stack's name in preparation, since a seam named after one stack is not a seam). The
 other ~3,800 lines of `:data:sip` — the engine, the state mappers, the conference and
@@ -323,6 +339,123 @@ full-screen remote video and is invisible.
 equivalent — pjsua2 uses `Endpoint.codecSetPriority()` per codec id. The
 `StackAccount.audioCodecs` / `videoCodecs` contract survives; only the implementation
 behind it is rewritten, which is the seam working as intended.
+
+---
+
+### ADR-007 — The native stack is **vendored source, built by the app build**
+
+**Status:** **PROPOSED** · **Raised:** 2026-09-09 · **Decider:** stakeholder ·
+**Amends:** ADR-006
+
+**The decision.** The complete source of pjproject, OpenSSL, Opus and libvpx is vendored
+into `third_party/` at exact pinned commits, **pruned** of each tree's own tests, docs and
+build scratch, and compiled by this repository's own build. **No binary this repository did
+not compile ships inside the APK.** The toolchain that does the compiling is exempt and
+pinned — `docs/native-dependencies.md` §3.
+
+**Context — what is true today, and why it is not enough.** The native workflow is green
+and produces a correct stack (`docs/reconciliation.md` B-7). What it does not give is
+reproducibility from a diff: four `curl` invocations put unreviewed bytes into the build
+(`.github/workflows/build-pjsip.yml:85, 271, 281, 293, 328`), the versions are typed into a
+`workflow_dispatch` box by a human (`:33-47`), and the resulting AAR reaches a developer's
+machine only when they download it and place it by hand
+(`pjsip/build.gradle.kts:52-54`). **The build is reproducible by CI and not by a reviewer.**
+
+**Alternatives, and why each was rejected.**
+
+| Option | Rejected because |
+|---|---|
+| **A third-party repackaged AAR** | Already rejected by ADR-006 on the evidence: none is published by Teluu, each pins its own older pjproject, none documents 16 KB page support |
+| **The CI-artifact AAR that exists today** | A manual fetch step, and a binary nobody in a fresh clone can reproduce. This is the *status quo* and it is what the decision replaces |
+| **A git submodule** | A pointer to somebody else's repository resolved at fetch time. It re-introduces the "source comes from elsewhere" property, and it breaks the patch requirement the first time a file is changed |
+| **Vendor unpruned** | Costs **115 MB** of pack against **26 MB** pruned — 4.4× for test suites and documentation that are never compiled. Measured, §1.1 of `docs/native-dependencies.md` |
+| **Vendor prebuilt `.so` files** | ADR-006 option 3, still rejected, and for the same reason: binaries in git that nobody can reproduce |
+
+**The cost, measured rather than estimated.** `.git` goes from **30 MB to 56 MB**. The
+working tree gains 134 MB of third-party source. Method and per-tree figures in
+`docs/native-dependencies.md` §1.1.
+
+**This is roughly a quarter of what the master prompt's §2.1 cost table predicts**, and the
+discrepancy is worth recording because it changed the decision: that table quotes GitHub
+*repository* sizes, which include upstream's full history. A tarball extract of one tag
+carries none. **The 1 GB threshold that would have required a size exception is not
+approached.**
+
+**Non-goals, stated so they constrain later scope:**
+
+- **Not a rewrite of pjproject's build system.** Upstream's autotools path is the one
+  Android is documented and tested on, and it is the one that is green today. Re-expressing
+  several hundred source files as hand-authored CMake is permanent divergence, and
+  divergence is not ownership.
+- **Not a change to anything above `:data:sip`.** The whole sourcing model changes and
+  `:domain` does not know. That is the seam doing its job.
+- **Not a performance change.** The `.so` this produces is byte-for-byte the same build as
+  the green run, from the same versions. What changes is provenance.
+
+**What this does not fix: the licence.** See ADR-002. Vendoring makes the GPLv2 obligation
+*more* visible, not less — the source is now in this repository, readable by anyone who
+clones it. §4.1 of `docs/native-dependencies.md`.
+
+**Reversibility.** High, and cheaply: `git revert` the vendoring commit. The measured
+7m18s rebuild is what makes that a real rollback rather than a theoretical one.
+
+---
+
+### ADR-008 — Lyra: **gate open, criterion 1 only**
+
+**Status:** ⚠️ **OPEN — running** · **Raised:** 2026-09-09 · **Decider:** stakeholder
+
+**An ADR is owed in both directions.** A decision *not* to ship something is still a
+decision, and it is the one a later engineer is most likely to re-litigate without a record.
+This ADR is opened now, in its undecided state, rather than written after the fact.
+
+**The decision so far.** The §2.4 gate is being run **for criterion 1 only** — does
+`liblyra` and its closure build for `arm64-v8a` with **NDK r27+**, producing 16 KB aligned
+`.so` files? Criteria 2-4 are not being attempted. This is the fast signal and the
+first-order blocker: everything else is wasted if it fails.
+
+**Why criterion 1 and not the full five-day gate.** Lyra's README pins NDK
+**r21.4.7075529**; this project mandates **r27c**. Lyra at r21 and pjproject at r27 is a
+C++17 libc++ ABI mismatch across the `-llyra` link, and an r21-built `.so` is not 16 KB
+aligned — which Android 15 refuses to load. Criteria 2-4 (offline Bazel, pinning the
+closure, the 1 GB threshold) all cost real time and all become moot if the two halves
+cannot link.
+
+**Verified upstream state**, 2026-09-09, from the GitHub API — full table in
+`docs/native-dependencies.md` §5.1. The four facts that matter:
+
+- `.bazelversion` is **5.3.2**; Bazel 5 is end-of-life.
+- `com_google_glog` is `branch = "master"` and `com_github_gflags_gflags` is
+  `branch = "android_linking_fix"` on an individual's fork. **Both float.** N-11 is not
+  measurable until they are pinned, and pinning them is the spike's first act.
+- TensorFlow is pinned at `d5b57ca9` (v2.11.0) — a ~1.35 GB tree fetched at build time.
+- The four `.tflite` model files are **prebuilt binaries this repository cannot compile.**
+  They are trained weights: data, not code. N-3 requires vendoring them and this is the one
+  place N-1's absolutism does not reach. Said out loud rather than assumed.
+
+**The two exits, decided in advance so "we tried Lyra" produces a decision:**
+
+- **Exit A — criterion 1 passes.** The remaining criteria are then worth running, and this
+  ADR is superseded by a decision to ship or not.
+- **Exit B — criterion 1 fails.** Lyra leaves the declared feature set (N-8), so **N-9 has
+  no Lyra row to prove**. `third_party/lyra` is not vendored. `AudioCodec.LYRA` stays in the
+  domain enum with its lowercase id (`domain/…/model/Codecs.kt:38`) and stays out of
+  `CodecPreferences.DEFAULT` (`:78-82`), and the codec audit reports it as **not
+  compiled** — which is the audit working, not the audit being skipped.
+  **Re-evaluation trigger:** a maintained fork of Lyra, or upstream resuming (last release
+  v1.3.2, December 2022).
+
+**The blocker that survives either exit: there is no peer.** The deployed FreeSWITCH offers
+PCMU, PCMA, G.729, G.723.1, AMR, Speex, VP8 and VP9 — measured 2026-09-09,
+`docs/reconciliation.md` A-1b. Even on Exit A the honest deliverable is *"Lyra compiled,
+registered, model files verified, provably selectable, with no deployed peer that accepts
+it"*. **That is a real result and it is what N-9 asks for. It is not "Lyra calling works."**
+
+**And the cheaper decision that is available first.** `mod_opus` is configured in
+FreeSWITCH's `modules.conf.xml` and its `.so` is simply not installed. Installing it halves
+the bandwidth of every call — 160 kbps to 80 kbps — with **no client change at all**,
+because the APK already compiles and registers Opus. The arithmetic is in
+`docs/system-design.md` §2.1. **Do that before spending a week on Lyra.**
 
 ---
 
@@ -659,6 +792,117 @@ and the REFER carries `Replaces` naming B's dialog — which is why the gateway 
 | §2.2 — conference server and model | FreeSWITCH `mod_conference`, dial-in MCU, domain shaped for SFU | ADR-003 |
 | §2.4 — which SIP stack | **PJSIP 2.17**, built from source in CI. Migration landed 2026-09-08; the previous stack removed | ADR-001, ADR-002, ADR-006 |
 | §2.5 — push model | RFC 8599 `pn-*` client params + an ESL-driven gateway; four-field payload contract | ADR-004 |
+| Native — where the source lives | **Vendored, pinned, pruned** into `third_party/`; built by the app build | ADR-007 |
+| Native — the build shape | Upstream autotools driven by one CMake entry point; the path that is green today | ADR-007, `docs/module-structure.md` §2 |
+| Native — the cache | **None on Exit B.** The measured build is 7m18s end to end | `docs/system-design.md` §2.5 |
+| Native — where the bindings land | `:pjsip:api` survives as a module; its 318 committed sources do not | `docs/module-structure.md` §2.1 |
+| Native — Lyra | Gate open, **criterion 1 only** | ADR-008 |
+| Codecs — H264 in `DEFAULT`, absent from the build | **Open.** OpenH264 in, or H264 out | §4.11, `docs/reconciliation.md` A-1 |
+| Codecs — G.729, which the server offers and the client does not prefer | **Open.** 48 kbps against today's 160 kbps | §4.11 |
+| Backoff parameters against the server ceiling | **Open.** The mis-set parameter is the server's `sessions-per-second = 30`, not the client's base delay | `docs/data-structures.md` §3.3 |
+| Push-gateway outage detection | **Open.** Server-side liveness recommended; heartbeat rejected on battery | `docs/system-design.md` §3.1 |
+| Call-log retention bound | **Open.** The table is unbounded today | `docs/data-structures.md` §5.1 |
+| Remote telemetry | **No.** No analytics SDK, no third-party crash reporter | `docs/system-design.md` §4.4 |
 
 DoD 15 asks for every DECIDE to be answered here. All three are, each with a rationale and
 with what remains unresolved named as an open question rather than assumed away.
+
+---
+
+### 4.10 The native build is part of the HLD
+
+ADR-007 changes the component graph, so it changes this document.
+
+#### The build pipeline
+
+```mermaid
+graph TD
+  subgraph "This repository — a human-reviewed diff"
+    SRC["third_party/{pjproject,openssl,opus,libvpx}<br/>vendored, pinned, pruned"]
+    PATCH["pjsip/patches/*.patch<br/>numbered, applied in order"]
+    FEAT["the declared feature set<br/>one list, §4.11"]
+  end
+
+  subgraph "Toolchain — exempt, pinned, not shipped"
+    NDK["Android NDK r27c"]
+    SWIG["SWIG — UNPINNED, a defect"]
+  end
+
+  SRC --> PATCH --> CS["config_site.h<br/>generated, not hand-written"]
+  FEAT --> CS
+  CS --> S1["stage 1 · SWIG<br/>measured 15 s"]
+  CS --> S2["stage 2 · CMake + NDK<br/>measured 2m46s–3m23s per ABI"]
+  SWIG -.-> S1
+  NDK -.-> S2
+  S1 --> JAVA["generated org.pjsip.pjsua2<br/>+ 5 copied org.pjsip classes"]
+  S2 --> SO["libpjsua2.so × 3 ABIs"]
+  JAVA --> PJ[":pjsip"]
+  SO --> PJ
+  PJ --> DS[":data:sip — one dependency, no condition"]
+  DS --> APK["APK"]
+
+  style SWIG fill:#5a2d2d,color:#fff
+  style S2 fill:#4a3d2d,color:#fff
+```
+
+**What CI does:** everything above. **What the developer's machine does: nothing native.**
+Owning the build does not mean running it on a laptop; it means the repository contains
+everything the build needs.
+
+**Where the cache sits: nowhere, on Exit B of the §2.4 gate.** The master prompt's §2.3
+designs a content-hash cache on an estimate of "roughly an hour per ABI". The measured
+figure is **2m46s-3m23s** (`docs/reconciliation.md` B-7), and a seven-minute end-to-end
+build does not need a cache. A cache that is not needed is a cache that can go stale,
+thrash, or be populated by hand — all of which are how a prebuilt binary comes back. On
+Exit A a cache becomes necessary and should be scoped to **the Lyra prefix alone**.
+Full reasoning: `docs/system-design.md` §2.5.
+
+#### The trust boundary this moves
+
+Under ADR-007 the supply chain for the most sensitive component in the system — the one
+that holds SIP credentials and carries media — becomes a diff in this repository. **That is
+the strongest security claim the project has**, and it is worth stating rather than leaving
+implicit. Today, four `curl` invocations put unreviewed bytes into that component.
+
+### 4.11 The declared feature set (N-8)
+
+**One list, and each flag traced to the app capability that needs it.** `config_site.h` is
+generated from this; it is not hand-written in two places, which is how the bindings and the
+binary drifted apart before.
+
+**VERIFIED against the green run `34317978694`** — the first five from the `config_site.h`
+heredoc at `.github/workflows/build-pjsip.yml:390-396`, the rest read off the actual
+compiler invocation in the arm64-v8a job log, which is the only source that cannot be stale.
+
+| Flag | Value | The app capability that needs it | Exercised by |
+|---|---|---|---|
+| `PJMEDIA_HAS_VIDEO` | **1** | Video calling at all. Off by default upstream | `:feature:calls`, `SipVideoGateway` |
+| `PJSIP_HAS_TLS_TRANSPORT` | **1** | TLS accounts. DoD 13 and `docs/security.md` §Transport | `RealPjsipCoreGateway` transport setup |
+| `PJMEDIA_HAS_OPUS_CODEC` | **1** | The only wideband audio codec in the build. **Registered, and no peer accepts it** — `docs/reconciliation.md` A-1b | `CodecPreferences.DEFAULT` |
+| `PJMEDIA_HAS_VPX_CODEC` | **1** | **VP8** — the only video codec both ends can negotiate | `CodecPreferences.DEFAULT` video |
+| `PJMEDIA_HAS_OPENH264_CODEC` | **0** | — **and `CodecPreferences.DEFAULT` names H264 anyway.** The mismatch is silent: `applyPriorities` iterates registered codecs, so an absent H264 is skipped. `docs/reconciliation.md` A-1 | Nothing. This is the defect |
+| `PJMEDIA_HAS_LYRA_CODEC` | **0** | — Gate-dependent, ADR-008 | Nothing |
+| `PJMEDIA_HAS_WEBRTC_AEC` | **1** | **Acoustic echo cancellation** — the difference between a usable speakerphone and feedback | Every call on the loudspeaker route |
+| `PJMEDIA_HAS_WEBRTC_AEC3` | **0** | — The older AEC is the one in use | — |
+| `PJMEDIA_HAS_ANDROID_MEDIACODEC` | **1** | Hardware video encode/decode | Video calls |
+| `PJMEDIA_VIDEO_DEV_HAS_ANDROID` | **1** | Camera capture | `PjCameraInfo2`, the local preview |
+| `PJMEDIA_VIDEO_DEV_HAS_ANDROID_OPENGL` | **1** | Rendering into the `SurfaceView` (ADR-006) | `CallVideo.kt` |
+| `PJMEDIA_HAS_LIBYUV` | **1** | Colour-space conversion between the camera and the encoder | Video calls |
+| `PJMEDIA_HAS_OPENCORE_AMRNB_CODEC` | **0** | — **and the server offers AMR.** Not in `CodecPreferences` either, so this is consistent, not a defect | — |
+| `PJMEDIA_HAS_OPENCORE_AMRWB_CODEC` | **0** | Same | — |
+| `PJMEDIA_RESAMPLE_IMP` | `LIBRESAMPLE` | Sample-rate conversion between codec and device rates | Every call |
+| `PJMEDIA_AUDIO_DEV_HAS_WMME` | **0** | Windows audio. Correctly off | — |
+
+**Two rows are decisions rather than settings, and both are open:**
+
+- **`PJMEDIA_HAS_OPENH264_CODEC 0` against a `DEFAULT` that names H264.** Either OpenH264
+  enters the feature set — a fourth native dependency plus Cisco's licensing terms, which is
+  a product decision — or H264 leaves `CodecPreferences.DEFAULT`. **DECIDE, unanswered.**
+- **`PJMEDIA_HAS_LYRA_CODEC 0`.** ADR-008.
+
+**And one row is a finding about the server, not the build:** the deployed FreeSWITCH offers
+**G.729** and **AMR**, and this build compiles neither into the preference list. Adding
+G.729 to `CodecPreferences.DEFAULT` would give a **48 kbps** call where today it is
+**160 kbps** — see `docs/system-design.md` §2.1. G.729 is built into pjmedia by default and
+carries its own patent history, which is why it is a decision and not an oversight.
+**DECIDE, unanswered.**

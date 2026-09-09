@@ -237,18 +237,50 @@ mechanism changes, and pjsua2 has no per-call `params.recordFile` equivalent.
 
 ## 4. Tasks, in dependency order
 
-### P-1 · Produce a PJSIP artifact  🔴 **blocks the build — the only thing left**
+### P-1 · Produce a PJSIP artifact  ✅ **done 2026-09-09**
 
-`.github/workflows/build-pjsip.yml` has never completed a run. Three defects in it were
-fixed on 2026-09-08 (the host `ar` leaking into the Opus cross-compile; a configure that
-accepted "no TLS, no Opus" silently; a 16 KB check that could not fail) but fixing what can
-be read is not a green run.
+Three defects were fixed on 2026-09-08 (the host `ar` leaking into the Opus cross-compile;
+a configure that accepted "no TLS, no Opus" silently; a 16 KB check that could not fail).
+**The workflow then went green.**
 
-**Done when:** the workflow produces, for all three ABIs, a `libpjsua2.so` with every LOAD
-segment aligned ≥ 0x4000, alongside the generated `org.pjsip.pjsua2` sources; and
-`config.log` shows TLS and Opus both enabled.
+**Evidence:** GitHub Actions run **`34317978694`**, 2026-09-09T06:11:28Z, head SHA
+`051fe490` — an ancestor of `main`. Every job green:
 
-### P-2 · Assemble a consumable AAR
+| Job | Duration |
+|---|---|
+| Generate the pjsua2 Java API | 15s |
+| pjproject 2.17 · arm64-v8a | 2m51s |
+| pjproject 2.17 · x86_64 | 3m23s |
+| pjproject 2.17 · armeabi-v7a | 2m46s |
+| Assemble pjsua2.aar | 1m20s |
+| Build the app APK | 2m21s |
+| **Total** | **7m18s** |
+
+Artifacts: `pjsua2-aar-2.17` (19 MB), `app-debug-apk-pjsip-2.17` (38 MB), and a per-ABI
+`pjsip-2.17-<abi>` (9–10 MB each). The arm64 log shows `checking VPX usability... yes`, the
+SSL/Opus configure-summary group, and the 16 KB LOAD-segment assertion running to
+completion. The NDK resolved to **r27c**.
+
+**Done when — met:** all three ABIs, `libpjsua2.so` with every LOAD segment aligned
+≥ 0x4000, the generated `org.pjsip.pjsua2` sources, TLS and Opus both enabled.
+
+> **The measurement that matters beyond this task.** 2m46s–3m23s per ABI is roughly a
+> twentieth of the "about an hour per ABI" this project had been assuming, and it is the
+> number that removes the case for a native-build cache. See `docs/system-design.md` §2.5.
+
+### P-2 · Assemble a consumable AAR  ⚠️ **superseded by ADR-007**
+
+> **Superseded 2026-09-09.** ADR-007 replaces the AAR entirely: the source is vendored into
+> `third_party/` and `:pjsip` becomes the native build rather than a wrapper around a
+> binary. **The instruction below to take `pjsua2-aar-<version>` from a workflow artifact
+> and place it at `pjsip/libs/pjsua2.aar` is exactly the manual native step N-5 forbids**,
+> and DoD 14 fails on any document that still describes it.
+>
+> It is kept, marked, rather than deleted: it is the accurate record of how the binary
+> reaches a build **today**, and it will stay accurate until phase 3b lands. Delete this
+> task — not just this note — when `:pjsip` compiles from `third_party/`.
+
+
 
 The matrix stages `jni/<abi>/libpjsua2.so` and a Java source root; the `aar` job compiles
 the bindings against `android.jar` and packages all three ABIs into one

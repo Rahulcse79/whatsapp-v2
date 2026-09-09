@@ -16,6 +16,11 @@ multi-account SIP registration, Telecom integration, and conferencing against Fr
 | [`docs/dod-sweep.md`](docs/dod-sweep.md) | Every Definition-of-Done item with its actual measured result |
 | [`docs/calling.md`](docs/calling.md) | How a call happens: the Telecom seam, notifications, audio and push |
 | [`docs/latency-sweep.md`](docs/latency-sweep.md) | Every screen classified pushed vs pulled, every timer named, six defects and their fixes |
+| [`docs/data-structures.md`](docs/data-structures.md) | DSA dossier — every structure with its complexity bound, its capacity, its policy at that bound, and the failure it prevents |
+| [`docs/module-structure.md`](docs/module-structure.md) | The module graph, package and visibility conventions, and the twelve machine-checked architecture rules |
+| [`docs/system-design.md`](docs/system-design.md) | Beyond the APK — topology, capacity arithmetic, failure domains, observability, rollout |
+| [`docs/native-dependencies.md`](docs/native-dependencies.md) | Every vendored native dependency: version, commit, licence, reason, patches, measured size — plus the pinned toolchain |
+| [`docs/reconciliation.md`](docs/reconciliation.md) | Where the documents and the code disagree, with a citation and an owning phase for each |
 
 ## Build policy — CI, not laptops
 

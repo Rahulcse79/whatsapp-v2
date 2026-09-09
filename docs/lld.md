@@ -113,9 +113,22 @@ the speaker does not have `transfer` in scope.
 `incomingCalls`, `endedCalls` and `transferEvents` are `Flow`, not `StateFlow`, and are
 buffered rather than replayed. Replay would re-ring a call answered minutes ago, write a
 second call-log row on every re-collection, and raise a second alarm about a transfer that
-already failed. Dropping would lose the missed call nobody was collecting for — which is
-precisely the call that matters — so the buffer is 64, far more than a phone will ever have
-at once.
+already failed. The buffer is 64, far more than a phone will ever have at once.
+
+> **Correction, 2026-09-09.** The paragraph above used to end "Dropping would lose the
+> missed call nobody was collecting for — which is precisely the call that matters".
+> **That states an intent the code does not implement.** `MutableSharedFlow` defaults
+> `onBufferOverflow` to `SUSPEND`, and on such a flow `tryEmit` returns `false` without
+> emitting when the buffer is full. `endedCalls` (`PjsipSipEngine.kt:322`),
+> `transferEvents` (`:471`, `:484`) and `videoRequests` (`:719`) all emit with `tryEmit`
+> and **discard the boolean** — so all three drop silently. Only `incomingCalls` uses a
+> suspending `emit` (`:772`) and therefore actually holds the promise.
+>
+> The per-stream capacity **and policy** table is in `docs/data-structures.md` §1.2, which
+> is now the single source of truth for this; the finding is `docs/reconciliation.md` A-5.
+> Below the seam the four gateway streams declare `DROP_OLDEST` explicitly
+> (`RealPjsipCoreGateway.kt:114-148`), which is correct there — the emitter is a pjsua2
+> worker thread and suspending it stops the stack.
 
 ### Error taxonomy
 
@@ -222,6 +235,150 @@ as silent data loss instead of a build error.
 Settings live in DataStore rather than Room (`:data:settings`): they are a handful of
 scalars with no relationships, and a database for them would be a migration surface for
 nothing.
+
+---
+
+## 4b. The types the native mandate adds
+
+Three of them. Each gets the full treatment: responsibility in one sentence, the invariant
+it maintains, its concurrency contract, its error model, and its idempotence where that
+applies. All three are **PROPOSED** — none exists yet.
+
+### 4b.1 `CodecAudit` — the result of the startup codec audit
+
+**Lives in `:domain`.** It is a value, not a service: the thing that computes it lives in
+`:data:sip` because only that module may touch `Endpoint.codecEnum2()`.
+
+**Responsibility.** Report, for one endpoint start, which declared codecs the running
+library actually registered — and for each one that did not, why.
+
+**The shape:**
+
+```kotlin
+data class CodecAudit(
+    val registeredAudio: List<RegisteredCodec>,
+    val registeredVideo: List<RegisteredCodec>,
+    val absent: Map<DeclaredCodec, AbsenceReason>,
+)
+
+sealed interface AbsenceReason {
+    /** The build was configured without it. `PJMEDIA_HAS_*_CODEC 0`. */
+    data object NotCompiled : AbsenceReason
+
+    /** The flag was 1 and the library did not register it. A build defect. */
+    data object RegistrationFailed : AbsenceReason
+
+    /** Registered, but its model files are missing or fail their manifest. */
+    data class ModelFilesUnusable(val detail: String) : AbsenceReason
+
+    /** Registered and selectable, and no peer has ever accepted it. */
+    data object NoPeerAccepts : AbsenceReason
+}
+```
+
+**The invariant.** `absent.keys` and the registered lists are **disjoint**, and their union
+is exactly the declared feature set. A codec that appears in neither is a bug in the audit,
+not in the build — and the test for this is a set-equality assertion, not a spot check.
+
+**Why `NoPeerAccepts` is a first-class case and not a footnote.** It is the state **Opus is
+in today**: compiled, registered, first in `CodecPreferences.DEFAULT`, and refused by every
+call because the deployed FreeSWITCH does not offer it
+(`docs/reconciliation.md` A-1b). Without this case the UI can only say "Opus: available",
+which is true and useless. With it the UI can say **"Opus: built, no peer accepts it"**,
+which is the sentence a user or a support engineer can act on.
+
+**Concurrency contract.** Computed **once per endpoint start**, on the single `pjsip`
+executor thread — the only thread that may call `codecEnum2()`. Published as an immutable
+value through a `StateFlow`. Main-safe to read; never recomputed in the call path.
+
+**Error model.** `Outcome<CodecAudit, SipError>`. A failure to enumerate is
+`EngineUnavailable`, not an exception — the endpoint not being up is an ordinary state, not
+a programming error.
+
+**Idempotence.** Reading it twice returns the same value. There is no "refresh": a new
+endpoint start produces a new audit, which is the only event that can change the answer.
+
+**What it must report at ERROR, once, with the codec id:** every `RegistrationFailed`. That
+is a build defect and master prompt §2.5 requires it be reported as one. `NotCompiled` is
+INFO — it is a decision, not a defect.
+
+### 4b.2 `LyraModelStore` — **Exit A of the §2.4 gate only**
+
+Built only if ADR-008 resolves to Exit A. Specified here so the gate's cost is known.
+
+**Responsibility.** Extract four asset files to a readable path, verify them against a
+content-hash manifest, and hand back the path `CodecLyraConfig.modelPath` needs — or a typed
+failure.
+
+**The invariant, and it is the whole class.** **`modelPath` is never handed out
+unverified.** Without the model files the codec **registers and then fails when a stream
+opens**, which is worse than not having it: it advertises a capability it cannot deliver. A
+truncated asset must be a loud startup failure, not a dead call.
+
+**Concurrency contract.** Suspending, main-safe, on `Dispatchers.IO`. It performs file I/O
+and must never be called from the `pjsip` executor thread — that thread must not block, and
+extraction of ~3.6 MB is a block.
+
+**Error model.** `Outcome<Path, ModelStoreError>` with cases for *asset missing*, *hash
+mismatch* and *extraction failed*. Three cases because three different things went wrong and
+a caller may reasonably retry one of them.
+
+**Idempotence — and this is what makes it cheap.** A second call on an already-extracted,
+still-valid set **does no I/O**: it hashes nothing and copies nothing, it checks the
+recorded version marker and returns the same path. O(size) once per version, never per call.
+
+### 4b.3 `NativeLibraryInventory` — the expected `.so` set per ABI
+
+**Responsibility.** Assert that this APK carries every native library it needs, for the ABI
+it is running on.
+
+**The set, verified from the green run:** exactly two entries per ABI —
+`libpjsua2.so` and `libc++_shared.so`. `libc++_shared.so` is not optional: `libpjsua2.so`
+links against the NDK's shared C++ runtime, and without it the load fails with *"library
+libc++\_shared.so not found"* — an APK that installs and cannot run
+(`.github/workflows/build-pjsip.yml:512-519`).
+
+**Half of this already exists, and it is the better half.** CI asserts the set at AAR
+assembly (`:604-607`) and again at APK packaging (`:781-786`), and the packaging assertion
+fails the build on a missing library. **That is N-6 satisfied at build time.**
+
+**What is proposed is the second line of defence: the same check at startup.** Under
+ADR-007 the *build* is what must fail — `pjsip/build.gradle.kts:46` currently catches this
+at configuration time, and DoD 24 moves it to a hard build failure. The runtime check stops
+being the first line and becomes the one that catches an ABI split, a repackaging, or a
+device-side install that dropped a library.
+
+**Concurrency contract.** Runs once, at endpoint creation, on the `pjsip` executor thread,
+before `libCreate`. O(1) per ABI — it is a set comparison, not a filesystem walk.
+
+**Error model.** Fails loudly. This is deliberately **not** an `Outcome`: there is no
+recovery and no caller decision to make. A missing native library is not a state the app
+can be in and still be an app.
+
+### 4b.4 The one assertion that is not a type — thread confinement
+
+**DoD 4**, and it is a check rather than a class.
+
+Every thread that calls into pjsua2 must be registered with the library first, and
+`Endpoint::libRegisterThread` allocates a descriptor **freed only when the library is
+destroyed** (`docs/pjsip-migration.md:44-52`). The adapter's answer is a single-threaded
+executor that every call is posted to, and `libCreate` registers its own caller
+(`:56-60`) — so no explicit registration is needed and no descriptor leaks.
+
+**That is a correct design held in place by a convention.** The assertion makes it an
+enforced invariant: capture the executor's thread identity once at `libCreate`, compare on
+every entry to a pjsua2 call, and **throw in a debug build**. Release builds do nothing —
+the check must not be the thing that crashes a shipped call.
+
+**What it prevents:** a `SIGSEGV` in a stack trace with no Kotlin frames. This is the top
+source of native crashes in pjsua2 apps and it is silent until it is fatal.
+
+**Proven by a test that trips it deliberately** — DoD 4 requires the assertion to be shown
+firing, not merely to exist. A rule that never fires reads like protection while providing
+none, which is the same argument architecture rule 4 makes about the layer rules.
+
+**Owning the build makes this more important, not less.** A stack you patched is a stack
+whose crashes are yours to explain.
 
 ---
 
