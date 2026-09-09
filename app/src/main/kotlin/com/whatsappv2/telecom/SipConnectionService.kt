@@ -4,8 +4,8 @@ import android.telecom.Connection
 import android.telecom.ConnectionRequest
 import android.telecom.ConnectionService
 import android.telecom.DisconnectCause
-import android.telecom.TelecomManager
 import android.telecom.PhoneAccountHandle
+import android.telecom.TelecomManager
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.HangupReason
