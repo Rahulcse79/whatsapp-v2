@@ -42,6 +42,10 @@ on:
         description: "Opus version to cross-compile (§5.2 audio quality)"
         required: true
         default: "1.5.2"
+      libvpx-version:
+        description: "libvpx tag to cross-compile for VP8 (the only video codec the server offers)"
+        required: true
+        default: "v1.17.0"
 
 permissions:
   contents: read
@@ -161,13 +165,22 @@ jobs:
         include:
           - abi: arm64-v8a
             host: aarch64-linux-android
+            sysroot-triple: aarch64-linux-android
             openssl-target: android-arm64
+            vpx-target: arm64-android-gcc
           - abi: armeabi-v7a
             host: armv7a-linux-androideabi
+            # NOT the same as `host`. The compiler driver is armv7a-…-androideabi26-clang,
+            # but the sysroot library directory is arm-linux-androideabi. Using `host`
+            # here finds nothing and the C++ runtime silently goes missing from the AAR.
+            sysroot-triple: arm-linux-androideabi
             openssl-target: android-arm
+            vpx-target: armv7-android-gcc
           - abi: x86_64
             host: x86_64-linux-android
+            sysroot-triple: x86_64-linux-android
             openssl-target: android-x86_64
+            vpx-target: x86_64-android-gcc
 
     env:
       # Must match app/build.gradle.kts abiFilters. An ABI built here and not packaged
@@ -294,6 +307,79 @@ jobs:
             --disable-shared --enable-static
           make -j"$(nproc)" && make install
 
+      # VP8, and it is not optional for this deployment. The target FreeSWITCH has
+      # mod_av missing and mod_h26x unloaded, so its only working video codec is the VP8
+      # that CORE_VPX provides. PJSIP's other route to video is OpenH264, which this build
+      # disables. Without libvpx there is no video codec both ends can negotiate, and
+      # "video calling" is the requirement this whole app exists for.
+      #
+      # It is also what broke run #13: config_site.h force-enabled PJMEDIA_HAS_VPX_CODEC
+      # while configure had correctly decided "Checking if VPX is disabled... yes". `make
+      # dep` then ran the compiler over vpx.c, which failed on a missing
+      # 'vpx/vpx_encoder.h', and the error text landed IN the generated .depend - which is
+      # the "missing separator" at line 4351 that killed all three ABIs.
+      # No `env:` NDK override here on purpose. "Locate the NDK toolchain" already put the
+      # verified toolchain on PATH and ANDROID_NDK_ROOT into the environment; pointing this
+      # step back at `steps.ndk.outputs.ndk-path` would reintroduce exactly the cached-NDK
+      # -with-no-compiler failure that step exists to prevent.
+      - name: Cross-compile libvpx ${{ inputs.libvpx-version }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o libvpx.tar.gz \
+            "https://github.com/webmproject/libvpx/archive/refs/tags/${{ inputs.libvpx-version }}.tar.gz"
+          mkdir -p libvpx && tar -xzf libvpx.tar.gz -C libvpx --strip-components=1
+          cd libvpx
+
+          # The same trap the Opus step fell into, in libvpx's own words: its configure
+          # defaults are `CC=${CROSS}gcc` and `AR=${CROSS}ar` (build/make/configure.sh),
+          # and a modern NDK ships neither a triple-prefixed gcc nor a triple-prefixed ar.
+          # Left alone it finds the HOST tools and builds an x86_64 archive that cannot
+          # link into an arm64 .so. Naming them is what makes the target mean anything.
+          #
+          # CROSS is emptied rather than unset: the defaults interpolate it, so a stale
+          # value would put a prefix back on the names below.
+          export CROSS=""
+          export CC="${{ matrix.host }}$ANDROID_API-clang"
+          export CXX="${{ matrix.host }}$ANDROID_API-clang++"
+          export LD="$CC"
+          export AR=llvm-ar RANLIB=llvm-ranlib NM=llvm-nm STRIP=llvm-strip
+
+          # AS is the same trap one tool further on, and ON ARM ONLY.
+          #
+          # `setup_gnu_toolchain` defaults it to `AS=${AS:-${CROSS}as}`, so emptying
+          # CROSS above resolves it to a bare `as` - the runner's HOST x86_64 assembler
+          # - which meets libvpx's own `-march=armv7-a` asflag and dies with "invalid
+          # -march= option". `$CC -c` is libvpx's own remedy: configure.sh writes
+          # exactly that for its Windows ARM targets, and the `-c` is load-bearing
+          # because the rule is `$(AS) $(ASFLAGS) -o $@ $<` and supplies none of its
+          # own. Clang's integrated assembler takes the ads2gas output and every asflag
+          # libvpx derives for armv7.
+          #
+          # x86 must NOT get it. There the assembler is yasm and ASFLAGS are yasm's, so
+          # clang is handed `-f elf64` and answers "unknown argument: '-f'". Setting AS
+          # unconditionally traded a broken armeabi-v7a for a broken x86_64, which is
+          # how this reads as a `case` rather than an export.
+          #
+          # Keyed off vpx-target because that is the axis that decides it: `arm*`
+          # matches both ARM legs and nothing else. 32-bit ARM is the only target with
+          # an ads2gas `.asm.S` path at all, so arm64 neither needs this nor is harmed
+          # by it - it has no `.asm.S` to assemble.
+          case "${{ matrix.vpx-target }}" in
+            arm*) export AS="$CC -c" ;;
+          esac
+
+          # libvpx names its own targets, and they are not the autotools host triples the
+          # other two cross-compiles use, so the matrix carries both.
+          ./configure --target=${{ matrix.vpx-target }} \
+            --prefix="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}" \
+            --disable-examples --disable-tools --disable-docs --disable-unit-tests \
+            --enable-pic --enable-static --disable-shared \
+            --enable-vp8 --enable-vp9
+          make -j"$(nproc)" && make install
+
+          test -f "$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}/include/vpx/vpx_encoder.h" \
+            || { echo "::error::libvpx installed no headers - vpx.c will fail the same way again"; exit 1; }
+
       - name: Configure and build pjproject
         env:
           TARGET_ABI: ${{ matrix.abi }}
@@ -316,7 +402,8 @@ jobs:
 
           ./configure-android --use-ndk-cflags \
             --with-ssl="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}" \
-            --with-opus="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}"
+            --with-opus="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}" \
+            --with-vpx="$GITHUB_WORKSPACE/prefix/${{ matrix.abi }}"
 
           echo "::group::configure summary - the SSL and Opus lines"
           grep -iE "ssl|opus|video" config.log | tail -40 || true
@@ -335,6 +422,14 @@ jobs:
           fi
           if ! grep -qiE 'opus.*(enabled|found)|found opus' config.log; then
             echo "::error::Opus is NOT enabled - configure did not find it. See --with-opus."
+            exit 1
+          fi
+          # The one that actually failed. `configure` prints "Checking if VPX is
+          # disabled... yes" when it cannot find libvpx, and config_site.h then enables the
+          # codec anyway - which is not a link error later, it is a corrupt .depend now.
+          if grep -qi 'Checking if VPX is disabled\.\.\. yes' config.log; then
+            echo "::error::VPX is NOT enabled - configure did not find libvpx. See --with-vpx."
+            echo "::error::config_site.h sets PJMEDIA_HAS_VPX_CODEC 1, so make dep will corrupt .depend."
             exit 1
           fi
 
@@ -369,7 +464,8 @@ jobs:
               echo "::error::$so has a LOAD segment aligned under 16 KB"
               status=1
             fi
-          done < <(find pjproject -name 'libpjsua2.so' -print0)
+          done < <(find pjproject -path '*/java/android/pjsua2/src/main/jniLibs/*' \
+                        -name 'libpjsua2.so' -print0)
 
           if [ "$found" -eq 0 ]; then
             echo "::error::No libpjsua2.so was produced - the SWIG step did not build it"
@@ -384,25 +480,79 @@ jobs:
       - name: Gather the pieces into a consumable layout
         env:
           ABI: ${{ matrix.abi }}
+          SYSROOT_TRIPLE: ${{ matrix.sysroot-triple }}
         run: |
           set -euo pipefail
           mkdir -p "staging/jni/$ABI" staging/java
 
-          find pjproject -name 'libpjsua2.so' -exec cp -v {} "staging/jni/$ABI/" \;
-
-          # The SWIG-generated bindings. Same for every ABI, and harmless to carry three
-          # times: whoever assembles the AAR takes one copy, and the three must agree anyway.
+          # The EXACT path, not `find -name`. pjproject builds three libpjsua2.so - one
+          # for Java, one for pjsua2maui and one for pjsua2xamarin - and a name search
+          # copied all three in turn, so the last one to land won. That was the C#
+          # wrapper: same name, same size, correctly aligned, and exporting no
+          # Java_org_pjsip_* symbol at all. The AAR looked perfect and would have failed
+          # with the identical UnsatisfiedLinkError the app already had.
           #
-          # `-print -quit` rather than `| head -1`: under `set -o pipefail`, head closing
-          # the pipe early hands find a SIGPIPE, and the step fails on a search that
-          # succeeded. Stopping find itself has no pipe to break.
-          srcroot="$(find pjproject/pjsip-apps/src/swig -type d -path '*/org/pjsip' -print -quit)"
-          if [ -z "$srcroot" ]; then
-            echo "::error::SWIG produced no org/pjsip bindings"
+          # This path is the one java/Makefile:31 defines as LIBPJSUA2_SO.
+          jni_so="pjproject/pjsip-apps/src/swig/java/android/pjsua2/src/main/jniLibs/$ABI/libpjsua2.so"
+          if [ ! -f "$jni_so" ]; then
+            echo "::error::the SWIG Java build produced no $jni_so"
+            find pjproject -name 'libpjsua2.so' | sed 's/^/  also present: /'
             exit 1
           fi
-          # Copy the `org` root, so the tree keeps the package layout javac expects.
-          cp -r "$(dirname "$srcroot")" staging/java/
+
+          # And prove it is the JNI one before it goes anywhere near an AAR. A wrapper
+          # with no Java_* exports is the failure this gate exists for, and it is
+          # invisible in every other property of the file.
+          if ! LC_ALL=C grep -aq "Java_org_pjsip_pjsua2_pjsua2JNI_swig_1module_1init" "$jni_so"; then
+            echo "::error::$jni_so exports no pjsua2JNI symbols - wrong wrapper"
+            exit 1
+          fi
+          cp -v "$jni_so" "staging/jni/$ABI/"
+
+          # libc++_shared.so travels with it. libpjsua2.so links against the NDK's shared
+          # C++ runtime, so without this `System.loadLibrary("pjsua2")` fails at run time
+          # with "library libc++_shared.so not found" - an AAR that installs and cannot
+          # load. pjproject's own Makefile copies it into jniLibs beside the .so for
+          # exactly this reason (java/Makefile:185).
+          cxx_so="$(find "$ANDROID_NDK_ROOT" -path "*/sysroot/usr/lib/$SYSROOT_TRIPLE/libc++_shared.so" -print -quit)"
+          if [ -z "$cxx_so" ]; then
+            echo "::error::no libc++_shared.so for $SYSROOT_TRIPLE - the AAR would not load"
+            exit 1
+          fi
+          cp -v "$cxx_so" "staging/jni/$ABI/"
+
+          # The SWIG-generated bindings, anchored on pjsua2JNI.java.
+          #
+          # NOT `find -type d -path '*/org/pjsip'`. The swig tree contains three sample
+          # apps that each have their own org/pjsip package, and `-print -quit` returned
+          # whichever the directory walk reached first - which was app-kotlin, so the AAR
+          # job was handed one MainActivity.kt and reported "0 generated source files".
+          # pjsua2JNI.java is produced by SWIG and by nothing else, so it identifies the
+          # real output unambiguously.
+          jni_java="$(find pjproject/pjsip-apps/src/swig -name pjsua2JNI.java -print -quit)"
+          if [ -z "$jni_java" ]; then
+            echo "::error::SWIG produced no pjsua2JNI.java"
+            exit 1
+          fi
+          # .../java/org/pjsip/pjsua2/pjsua2JNI.java -> .../java/org
+          srcroot="$(cd "$(dirname "$jni_java")/../.." && pwd)"
+          cp -r "$srcroot" staging/java/
+
+          # The five hand-written helpers, which SWIG does not generate and which live in
+          # a different tree entirely (pjmedia/src/pjmedia-{video,audio}dev/android).
+          # PjCameraInfo2 is the one the adapter calls; without it there are no capture
+          # devices at all, and a video call has nothing to send.
+          mkdir -p staging/java/org/pjsip
+          helpers=0
+          while IFS= read -r -d '' helper; do
+            cp -v "$helper" staging/java/org/pjsip/
+            helpers=$((helpers + 1))
+          done < <(find pjproject/pjmedia/src -name 'Pj*.java' -print0)
+          if [ "$helpers" -eq 0 ]; then
+            echo "::error::none of the org.pjsip helper sources were found"
+            exit 1
+          fi
+          echo "  staged $helpers hand-written helpers"
 
           echo "::group::staged"
           find staging -type f | sed 's/^/  /'
@@ -450,33 +600,72 @@ jobs:
           # Every ABI packaged by :app must be present. A missing one is not a
           # smaller AAR, it is an UnsatisfiedLinkError on that architecture.
           for abi in arm64-v8a armeabi-v7a x86_64; do
-            so="$(find parts -path "*/jni/$abi/libpjsua2.so" -print -quit)"
-            if [ -z "$so" ]; then
-              echo "::error::No libpjsua2.so for $abi - that ABI's build did not produce one"
+            mkdir -p "aar/jni/$abi"
+            # Both, and both required: libpjsua2.so is the stack, libc++_shared.so is the
+            # runtime it links against. Shipping only the first is an AAR that installs
+            # and then cannot load.
+            for lib in libpjsua2.so libc++_shared.so; do
+              so="$(find parts -path "*/jni/$abi/$lib" -print -quit)"
+              if [ -z "$so" ]; then
+                echo "::error::No $lib for $abi - that ABI's build did not produce one"
+                exit 1
+              fi
+              cp "$so" "aar/jni/$abi/"
+              echo "  $abi <- $so"
+            done
+
+            # Belt and braces on the thing that cannot be seen by looking: the AAR is
+            # useless if its wrapper is not the JNI one, and every other property -
+            # size, ABI, alignment - looks right when it is not.
+            if ! LC_ALL=C grep -aq "Java_org_pjsip_pjsua2_pjsua2JNI_swig_1module_1init" \
+                 "aar/jni/$abi/libpjsua2.so"; then
+              echo "::error::aar/jni/$abi/libpjsua2.so exports no pjsua2JNI symbols"
               exit 1
             fi
-            mkdir -p "aar/jni/$abi"
-            cp "$so" "aar/jni/$abi/"
-            echo "  $abi <- $so"
           done
 
-          # The SWIG bindings are identical across ABIs; take the first and say so.
-          srcroot="$(find parts -type d -name org -path '*/java/*' -print -quit)"
-          if [ -z "$srcroot" ]; then
-            echo "::error::No generated org/ source root in any artifact"
+          # The bindings are identical across ABIs; take the first and say so. Anchored
+          # on pjsua2JNI.java rather than on a directory named `org`, for the same reason
+          # the build job is: several sample apps carry an org/ package too, and matching
+          # by name found one of those.
+          jni_java="$(find parts -name pjsua2JNI.java -print -quit)"
+          if [ -z "$jni_java" ]; then
+            echo "::error::No pjsua2JNI.java in any artifact - the bindings were not staged"
             exit 1
           fi
+          srcroot="$(cd "$(dirname "$jni_java")/../.." && pwd)"
 
-          # android.jar is on the classpath because the generated bindings reference
-          # Android types directly - PjCameraInfo2 takes a CameraManager, and the
-          # video handle takes a Surface. Without it javac fails on the first import.
+          # android.jar goes on the CLASSPATH, not the bootclasspath.
+          #
+          # It is needed at all because the hand-written helpers reference Android types
+          # directly - PjCameraInfo2 takes a CameraManager, the video handle takes a
+          # Surface. But putting it on `-bootclasspath` with `-source 8 -target 8` made
+          # javac resolve java.* from android.jar too, and android.jar carries no usable
+          # java.lang.invoke.LambdaMetafactory - so PjAudioDevInfo's `Integer::sum`
+          # failed with "Unable to find method metafactory". Lambdas on Android are
+          # desugared by D8, not resolved by the JVM, which is why the stub is absent.
+          #
+          # `--release 17` instead: the JDK supplies its own platform classes, so method
+          # references resolve, and android.jar on the classpath still answers for
+          # android.*. 17 is the project's own toolchain (libs.versions.toml
+          # jvmToolchain), so classes.jar matches what AGP produces for :pjsip:api, and
+          # the app already enables core library desugaring for exactly this.
           ANDROID_JAR="$(find "$ANDROID_HOME/platforms" -name android.jar | sort -V | tail -1)"
           echo "compiling against $ANDROID_JAR"
 
           mkdir -p classes
           find "$srcroot" -name '*.java' > sources.txt
-          echo "  $(wc -l < sources.txt) generated source files"
-          javac -nowarn -source 8 -target 8 -bootclasspath "$ANDROID_JAR" \
+          count="$(wc -l < sources.txt)"
+          echo "  $count Java source files"
+          # A real pjsua2 API is ~300 files. Anything near zero means the wrong tree was
+          # staged, which is precisely how this job failed the first time it ran - javac's
+          # "error: no source files" named the symptom and not the cause.
+          if [ "$count" -lt 100 ]; then
+            echo "::error::only $count Java files under $srcroot - wrong source root staged"
+            find "$srcroot" -maxdepth 3 | head -20
+            exit 1
+          fi
+          javac -nowarn --release 17 -classpath "$ANDROID_JAR" \
                 -d classes @sources.txt
 
           (cd classes && jar cf ../aar/classes.jar .)
@@ -502,3 +691,103 @@ jobs:
           name: pjsua2-aar-${{ inputs.pjsip-version }}
           if-no-files-found: error
           path: pjsua2-*.aar
+
+  # ---------------------------------------------------------------------------
+  # The APK that actually runs.
+  #
+  # `ci.yml` builds :app:assembleDebug on every push and its APK cannot place a
+  # call: pjsip/libs/pjsua2.aar is gitignored - 20 MB of native code has no
+  # business in git - so a checkout compiles against :pjsip:api, the Java API
+  # with no .so behind it. That build is a compile gate, not a deliverable.
+  #
+  # This is the deliverable. It takes the AAR the job above just produced, drops
+  # it where :pjsip expects it, and builds the app around it - so the binding
+  # classes and the .so exporting their symbols come from one run and cannot
+  # skew.
+  # ---------------------------------------------------------------------------
+  apk:
+    name: "Build the app APK"
+    needs: aar
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Take the AAR this run just built
+        uses: actions/download-artifact@v4
+        with:
+          name: pjsua2-aar-${{ inputs.pjsip-version }}
+          path: aar
+
+      - name: Put it where :pjsip looks
+        run: |
+          set -euo pipefail
+          mkdir -p pjsip/libs
+          cp -v aar/pjsua2-*.aar pjsip/libs/pjsua2.aar
+          # :data:sip switches to the AAR and drops :pjsip:api the moment this
+          # file exists (data/sip/build.gradle.kts). Both on one classpath is a
+          # duplicate-class failure at dex time, so confirm the switch happened
+          # rather than assuming it.
+          test -f pjsip/libs/pjsua2.aar
+
+      - name: Verify the Gradle wrapper is present
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "::error::gradle-wrapper.jar is missing. Run the 'Bootstrap Gradle wrapper' workflow first."
+            exit 1
+          fi
+
+      - name: Validate wrapper checksum
+        uses: gradle/actions/wrapper-validation@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Ensure the Android platform this build compiles against is present
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          COMPILE_SDK=$(grep -E '^compileSdk' gradle/libs.versions.toml | grep -oE '[0-9]+')
+          if compgen -G "$SDK/platforms/android-$COMPILE_SDK" > /dev/null ||
+             compgen -G "$SDK/platforms/android-$COMPILE_SDK.*" > /dev/null; then
+            echo "OK - a platform for API $COMPILE_SDK is already installed."
+            exit 0
+          fi
+          yes 2>/dev/null | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-$COMPILE_SDK"
+
+      - name: Build the debug APK against the real stack
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Confirm the APK carries the native stack
+        run: |
+          set -euo pipefail
+          apk="$(find app/build/outputs/apk/debug -name '*.apk' -print -quit)"
+          [ -n "$apk" ] || { echo "::error::no APK was produced"; exit 1; }
+          echo "APK: $apk ($(du -h "$apk" | cut -f1))"
+
+          echo "::group::native libraries in the APK"
+          unzip -l "$apk" | grep '\.so' || true
+          echo "::endgroup::"
+
+          # The check that would have caught the whole of this exercise on day one:
+          # an APK without these installs cleanly and dies on the first SIP call.
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            for lib in libpjsua2.so libc++_shared.so; do
+              unzip -l "$apk" | grep -q "lib/$abi/$lib" \
+                || { echo "::error::$apk is missing lib/$abi/$lib"; exit 1; }
+            done
+          done
+          echo "all three ABIs carry libpjsua2.so and libc++_shared.so"
+
+      - name: Publish the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk-pjsip-${{ inputs.pjsip-version }}
+          if-no-files-found: error
+          path: app/build/outputs/apk/debug/*.apk

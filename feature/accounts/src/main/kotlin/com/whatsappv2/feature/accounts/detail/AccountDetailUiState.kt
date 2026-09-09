@@ -93,6 +93,12 @@ fun RegistrationFailure.remedy(): String = when (this) {
         "Waiting for a network. This will recover on its own."
     RegistrationFailure.TIMEOUT, RegistrationFailure.SERVER_UNAVAILABLE ->
         "Retrying automatically."
+    // The address comes first because it is the likeliest thing to be wrong and the
+    // hardest to eyeball. A transport failure means nothing answered at all, and a
+    // mistyped host looks exactly like a server that is down — this hint used to name
+    // only the transport and port, which sends someone to re-check two fields that were
+    // correct while the digit they fat-fingered sits above them.
     RegistrationFailure.TRANSPORT_FAILURE ->
-        "Retrying automatically. If it persists, check the transport and port."
+        "Retrying automatically. If it persists, check the domain or server address, " +
+            "then the transport and port."
 }

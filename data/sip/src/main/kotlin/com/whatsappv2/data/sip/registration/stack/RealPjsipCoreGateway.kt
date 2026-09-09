@@ -81,10 +81,13 @@ import javax.inject.Singleton
  * descriptor per thread for the life of the process, and calling without registering is
  * undefined behaviour that surfaces as a native crash rather than an exception.
  *
- * So every call into PJSIP is posted to [pjsip], a single-threaded executor whose one
- * thread is registered once at [start]. A single thread also makes ordering free: `start`
- * then `addAccount` cannot race, because the executor runs them in the order they were
- * submitted.
+ * So every call into PJSIP is posted to [pjsip], a single-threaded executor. Its one
+ * thread is registered by `libCreate()` itself — pjsua2's `Endpoint::libCreate` ends with
+ * `mainThread = pj_thread_this()` — and because `start` is posted through the same
+ * executor as everything else, that thread *is* the only one that ever calls in. No
+ * explicit `libRegisterThread` is needed or wanted; see [startEndpoint] for what happened
+ * when one was made anyway. A single thread also makes ordering free: `start` then
+ * `addAccount` cannot race, because the executor runs them in submission order.
  *
  * Callbacks arrive on **pjsua2's own worker threads**, which the library registers itself.
  * Those may call back into the library — [PjCall.onCallMediaState] does — but they must
@@ -244,9 +247,21 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
         created.libCreate()
         logger.info(TAG, "start: libCreate ok")
-        // The one registration this process makes. Every later call into PJSIP is
-        // posted to this same thread, so no second one is ever needed.
-        created.libRegisterThread(PJSIP_THREAD)
+
+        // No libRegisterThread here, and that is deliberate rather than an omission.
+        //
+        // `libCreate()` registers the thread that called it — pjsua2's own
+        // `Endpoint::libCreate` ends with `mainThread = pj_thread_this()` and
+        // `threadDescMap[pj_thread_this()] = NULL`. Every operation in this class,
+        // `start` included, is posted through `onPjsip` to one single-threaded executor,
+        // so the thread that gets registered there is the only thread that ever touches
+        // PJSIP. There is nothing left to register.
+        //
+        // Calling it anyway was a native SIGSEGV, not a no-op: it landed between
+        // `libCreate` and `libInit`, and `pj_thread_register` takes a mutex that
+        // `libInit` is what brings up — the crash was `pj_mutex_lock` two frames under
+        // `Endpoint::libRegisterThread`. It would also have leaked, since the
+        // `pj_thread_desc` it mallocs is only freed when the library is destroyed.
         created.libInit(endpointConfig())
         logger.info(TAG, "start: libInit ok")
 

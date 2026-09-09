@@ -48,9 +48,21 @@ still races, because `libIsThreadRegistered()` is per-thread state on a pool tha
 work to whichever thread is free.
 
 **Decision: the adapter owns a single-threaded dispatcher and confines every PJSIP call to
-it.** One thread, registered once at `libCreate` time. `Endpoint`, `Account` and `Call`
-objects are only ever touched from it. The gateway's public methods stay `suspend` and
-`withContext(pjsipDispatcher)` internally, so nothing above the seam changes.
+it.** `Endpoint`, `Account` and `Call` objects are only ever touched from it. The gateway's
+public methods stay `suspend` and post to that executor internally, so nothing above the
+seam changes.
+
+**And it needs no explicit registration, which cost a native crash to learn.**
+`Endpoint::libCreate` ends with `mainThread = pj_thread_this()` and
+`threadDescMap[pj_thread_this()] = NULL` — it registers its own caller. Since `start` is
+posted through the same executor as every other operation, that caller is the one thread
+that ever calls in.
+
+Calling `libRegisterThread` anyway was not a harmless duplicate. Placed between
+`libCreate` and `libInit` it was a SIGSEGV: `pj_thread_register` takes a mutex that
+`libInit` is what brings up, and the crash landed in `pj_mutex_lock` two frames under
+`Endpoint::libRegisterThread`. It would have leaked as well — the `pj_thread_desc` it
+mallocs is freed only at `libDestroy`.
 
 This is not a preference. Calling pjsua2 from an unregistered thread is undefined
 behaviour, and the failure is a native crash rather than an exception.
