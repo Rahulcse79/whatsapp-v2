@@ -691,3 +691,103 @@ jobs:
           name: pjsua2-aar-${{ inputs.pjsip-version }}
           if-no-files-found: error
           path: pjsua2-*.aar
+
+  # ---------------------------------------------------------------------------
+  # The APK that actually runs.
+  #
+  # `ci.yml` builds :app:assembleDebug on every push and its APK cannot place a
+  # call: pjsip/libs/pjsua2.aar is gitignored - 20 MB of native code has no
+  # business in git - so a checkout compiles against :pjsip:api, the Java API
+  # with no .so behind it. That build is a compile gate, not a deliverable.
+  #
+  # This is the deliverable. It takes the AAR the job above just produced, drops
+  # it where :pjsip expects it, and builds the app around it - so the binding
+  # classes and the .so exporting their symbols come from one run and cannot
+  # skew.
+  # ---------------------------------------------------------------------------
+  apk:
+    name: "Build the app APK"
+    needs: aar
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Take the AAR this run just built
+        uses: actions/download-artifact@v4
+        with:
+          name: pjsua2-aar-${{ inputs.pjsip-version }}
+          path: aar
+
+      - name: Put it where :pjsip looks
+        run: |
+          set -euo pipefail
+          mkdir -p pjsip/libs
+          cp -v aar/pjsua2-*.aar pjsip/libs/pjsua2.aar
+          # :data:sip switches to the AAR and drops :pjsip:api the moment this
+          # file exists (data/sip/build.gradle.kts). Both on one classpath is a
+          # duplicate-class failure at dex time, so confirm the switch happened
+          # rather than assuming it.
+          test -f pjsip/libs/pjsua2.aar
+
+      - name: Verify the Gradle wrapper is present
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "::error::gradle-wrapper.jar is missing. Run the 'Bootstrap Gradle wrapper' workflow first."
+            exit 1
+          fi
+
+      - name: Validate wrapper checksum
+        uses: gradle/actions/wrapper-validation@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Ensure the Android platform this build compiles against is present
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          COMPILE_SDK=$(grep -E '^compileSdk' gradle/libs.versions.toml | grep -oE '[0-9]+')
+          if compgen -G "$SDK/platforms/android-$COMPILE_SDK" > /dev/null ||
+             compgen -G "$SDK/platforms/android-$COMPILE_SDK.*" > /dev/null; then
+            echo "OK - a platform for API $COMPILE_SDK is already installed."
+            exit 0
+          fi
+          yes 2>/dev/null | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-$COMPILE_SDK"
+
+      - name: Build the debug APK against the real stack
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Confirm the APK carries the native stack
+        run: |
+          set -euo pipefail
+          apk="$(find app/build/outputs/apk/debug -name '*.apk' -print -quit)"
+          [ -n "$apk" ] || { echo "::error::no APK was produced"; exit 1; }
+          echo "APK: $apk ($(du -h "$apk" | cut -f1))"
+
+          echo "::group::native libraries in the APK"
+          unzip -l "$apk" | grep '\.so' || true
+          echo "::endgroup::"
+
+          # The check that would have caught the whole of this exercise on day one:
+          # an APK without these installs cleanly and dies on the first SIP call.
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            for lib in libpjsua2.so libc++_shared.so; do
+              unzip -l "$apk" | grep -q "lib/$abi/$lib" \
+                || { echo "::error::$apk is missing lib/$abi/$lib"; exit 1; }
+            done
+          done
+          echo "all three ABIs carry libpjsua2.so and libc++_shared.so"
+
+      - name: Publish the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk-pjsip-${{ inputs.pjsip-version }}
+          if-no-files-found: error
+          path: app/build/outputs/apk/debug/*.apk
