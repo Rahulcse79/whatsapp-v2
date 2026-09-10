@@ -401,9 +401,35 @@ clones it. §4.1 of `docs/native-dependencies.md`.
 
 ---
 
-### ADR-008 — Lyra: **gate open, criterion 1 only**
+### ADR-008 — Lyra: **Exit A — compiled from vendored source, app-to-app only**
 
-**Status:** ⚠️ **OPEN — running** · **Raised:** 2026-09-09 · **Decider:** stakeholder
+**Status:** ✅ **DECIDED — Exit A, 2026-09-10** · **Raised:** 2026-09-09 · **Decider:** stakeholder
+
+**Outcome.** Criterion 1 passed on the first attempt, and the codec is now part of the
+declared feature set (`PJMEDIA_HAS_LYRA_CODEC 1`). What was proved, in order: TensorFlow
+Lite v2.11.0 with the XNNPACK delegate configured and built for `arm64-v8a` under NDK
+r27c with **zero errors** — the 2022-vintage `cpuinfo`/XNNPACK sources the gate feared
+compiled unchanged; glog, `audio_dsp` (hand-written CMake for its 16 files) and Lyra's 17
+sources built against it; the closure linked into one `liblyra.a` that passes pjproject's
+own `--with-lyra` link test; and, run on a Zebra TC15 with the four model files, the codec
+**encoded 50 frames of a 16 kHz tone at exactly 8 bytes per frame (3200 bps) and decoded
+16,000 samples**. Nineteen trees are vendored at commit hashes (`docs/native-dependencies.md`
+§1.0), including the two Lyra floated; protobuf is replaced by a 100-line parser of its
+one-field message (patch `0001`). `pjsip/lyra/CMakeLists.txt` builds it offline from
+staged copies; `build-native.sh` runs it before pjproject.
+
+**What is still owed behind this decision** — said here so the ADR is not read as more
+than it is: `libpjsua2.so` *with Lyra linked in* has not been built (the Mac that did the
+above lacks SWIG's Java typemaps; CI can), so `lyra/16000/1` in a handset's codec audit and
+a call carried by it are unverified. Both are the next two lines of `docs/HANDOFF.md`.
+And the peer problem below is unchanged: this codec has no server that offers it.
+
+**Cost, measured.** ~420 MB more under `third_party/` (XNNPACK 158 MB, TensorFlow 41 MB
+after keeping 472 of its 28,000 files); ~25 minutes of TFLite compile per ABI, stamped
+locally, unpaid-for on CI until a cache is added (`docs/native-dependencies.md` §5.0);
+`liblyra.a` is 193 MB unstripped, of which the linker takes what `lyra.cpp` references.
+
+The record of the gate as it was run follows, unchanged.
 
 **An ADR is owed in both directions.** A decision *not* to ship something is still a
 decision, and it is the one a later engineer is most likely to re-litigate without a record.
