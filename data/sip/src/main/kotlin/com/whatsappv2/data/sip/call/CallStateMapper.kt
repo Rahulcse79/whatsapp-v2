@@ -157,14 +157,25 @@ internal object CallStateMapper {
     /**
      * Why the call ended.
      *
-     * A clean BYE carries no status code and is a normal remote hangup. Anything with a
-     * code goes through the single [SipError] taxonomy so 486, 404 and 408 stay distinct
+     * [StackCallState.ENDED] is a normal hangup, whatever code it carries. That is not a
+     * simplification: the gateway splits a disconnect on the code itself — anything from
+     * 300 up becomes [StackCallState.ERROR] — so an `ENDED` event can only ever carry a
+     * 1xx or 2xx, or nothing at all. Anything with a real failure code arrives as `ERROR`
+     * and goes through the single [SipError] taxonomy, so 486, 404 and 408 stay distinct
      * all the way to the screen — Task 35's third done-when.
+     *
+     * **The `code == null` this used to require is the case that never happens.** A BYE
+     * is answered `200`, and `CallInfo.lastStatusCode` carries that 200 into the event,
+     * so every clean hangup fell through to `fromResponseCode(200)` — which has no arm
+     * for a success code and returns `Unexpected`, which is `SERVER_ERROR`. Measured on
+     * a handset on 2026-09-10: *"Call e0c3fbcd… ended: SERVER_ERROR (status 200)"* after
+     * a 75-second call the far end hung up normally. Every call in the log was recorded
+     * as a server error.
      */
     fun toHangupReason(event: StackCallEvent): HangupReason {
         val code = event.statusCode
         return when {
-            event.state == StackCallState.ENDED && code == null -> HangupReason.REMOTE_HANGUP
+            event.state == StackCallState.ENDED -> HangupReason.REMOTE_HANGUP
             code != null && code > 0 -> SipError.fromResponseCode(code).toHangupReason()
             else -> HangupReason.NETWORK_FAILURE
         }

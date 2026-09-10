@@ -107,6 +107,21 @@ class CallStateMapperTest {
     }
 
     @Test
+    fun `a BYE answered 200 is still a remote hangup`() {
+        // The case that actually happens. A BYE is answered 200 and the stack carries
+        // that 200 as the call's last status code, so an ENDED event has a code on it
+        // — and a mapping that only excused a missing code sent every normal hangup
+        // through the error taxonomy, which has no arm for success and answered
+        // SERVER_ERROR. Measured on a handset on 2026-09-10, after a 75-second call the
+        // far end ended normally: "ended: SERVER_ERROR (status 200)".
+        val terminate = assertIs<CallEvent.Terminate>(
+            CallStateMapper.toCallEvent(event(StackCallState.ENDED, statusCode = OK)),
+        )
+        assertEquals(HangupReason.REMOTE_HANGUP, terminate.reason)
+        assertEquals(HangupReason.REMOTE_HANGUP, CallStateMapper.toHangupReason(event(StackCallState.ENDED, OK)))
+    }
+
+    @Test
     fun `486, 404 and 408 stay distinct all the way to the reason`() {
         // Task 35's third done-when. One "call failed" for all three tells the user
         // nothing about whether to redial, check the address, or check their network.
@@ -269,6 +284,7 @@ class CallStateMapperTest {
     private fun errorEvent(code: Int?) = event(StackCallState.ERROR, statusCode = code)
 
     private companion object {
+        const val OK = 200
         const val BUSY_HERE = 486
         const val NOT_FOUND = 404
         const val REQUEST_TIMEOUT = 408
