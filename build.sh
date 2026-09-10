@@ -8,7 +8,11 @@
 #   ./build.sh --all-abis       arm64-v8a, armeabi-v7a and x86_64
 #   ./build.sh --reuse-native   skip the two SWIG stages, reuse the libraries already built
 #   ./build.sh --install        adb install -r the result when it succeeds
-#   ./build.sh --with-lyra      refuses today, and says exactly what is missing
+#
+# Lyra is part of the build, not a flag (ADR-008 closed at Exit A, 2026-09-10): the
+# declared feature set in pjsip/config/pj/config_site.h says PJMEDIA_HAS_LYRA_CODEC 1, and
+# pjsip/build-native.sh builds the closure from third_party/ before pjproject on every run.
+# The first native build pays ~25 minutes for TensorFlow Lite; --reuse-native skips it.
 #
 # Why the toolchain is checked here rather than left to Gradle: every one of these failures
 # reads as something else at the point Gradle hits it. A missing NDK surfaces as
@@ -23,7 +27,6 @@ cd "$root"
 abis="arm64-v8a"
 reuse_native=0
 install_after=0
-want_lyra=0
 
 die() { printf '\n\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
 note() { printf '\033[36m%s\033[0m\n' "$1"; }
@@ -38,50 +41,11 @@ while [ $# -gt 0 ]; do
     --all-abis) abis="arm64-v8a,armeabi-v7a,x86_64"; shift ;;
     --reuse-native) reuse_native=1; shift ;;
     --install) install_after=1; shift ;;
-    --with-lyra) want_lyra=1; shift ;;
+    --with-lyra) echo "note: --with-lyra is not a flag any more; Lyra is in every build (ADR-008 Exit A)" >&2; shift ;;
     -h|--help) usage ;;
     *) die "unknown option: $1 (try --help)" ;;
   esac
 done
-
-# ---------------------------------------------------------------------- Lyra
-#
-# Refused rather than ignored. A flag that silently built something else is how "Lyra is
-# working" ends up in a status report, and ADR-008 is explicit that the gate is open at
-# criterion 1 only.
-if [ "$want_lyra" = 1 ]; then
-  cat >&2 <<'LYRA'
-
-error: --with-lyra cannot build anything yet. Lyra is 0% implemented.
-
-  What exists:
-    - third_party/pjproject/aconfigure.ac already implements --with-lyra=DIR: it link-tests
-      LyraDecoder::Create, sets ac_lyra_model_path and defines the flag. pjproject needs
-      no change.
-    - AudioCodec.LYRA exists in :domain, deliberately OUT of CodecPreferences.DEFAULT.
-
-  What does not exist, and all four are required:
-    1. third_party/lyra                          -- not vendored (google/lyra v1.3.2)
-    2. TensorFlow Lite v2.11.0 for this ABI      -- ~1.35 GB, reached through
-                                                    lyra/tflite_model_wrapper.cc, XNNPACK
-                                                    delegate included directly. Building it
-                                                    with NDK r27c is ADR-008 criterion 1 and
-                                                    has never been attempted.
-    3. com_google_audio_dsp                      -- no CMake build at all, 12 call sites
-                                                    across 6 targets, all hand-written
-    4. PJMEDIA_HAS_LYRA_CODEC                    -- still 0 in pjsip/config/pj/config_site.h,
-                                                    which is the single source of truth (N-8)
-
-  And the fact that survives either outcome: the deployed server offers PCMU, PCMA, G.729,
-  G.723.1, AMR, Speex, VP8 and VP9 -- no Lyra. Even a successful build ships a codec no
-  deployed peer accepts.
-
-  Read docs/lyra-criterion-1.md and docs/architecture.md ADR-008 before starting. When
-  criterion 1 passes, delete this block and wire --with-lyra=<dir> into the configure flags.
-
-LYRA
-  exit 2
-fi
 
 # ----------------------------------------------------------------------- NDK
 #

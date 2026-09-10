@@ -70,11 +70,19 @@
  * state. DECIDE: OpenH264 in, or H264 out of DEFAULT. */
 #define PJMEDIA_HAS_OPENH264_CODEC 0
 
-/* Lyra is NOT compiled. ADR-008 — the §2.4 gate is open, criterion 1 only.
+/* Lyra IS compiled. ADR-008 closed at Exit A on 2026-09-10: TensorFlow Lite v2.11.0 with
+ * the XNNPACK delegate, audio_dsp, glog and Lyra v1.3.2 all build for arm64-v8a under
+ * NDK r27c from the vendored trees (pjsip/lyra/CMakeLists.txt), and the codec encoded and
+ * decoded on a Zebra TC15 at 3200 bps with its model files.
  *
- * Deliberately stated rather than left to the upstream default of 0, so that the audit's
- * `NotCompiled` reason has a decision behind it and this line is what changes on Exit A. */
-#define PJMEDIA_HAS_LYRA_CODEC 0
+ * Both halves are required and either alone is a silent no-op: `configure-android
+ * --with-lyra` defines this too, but pjmedia-codec/config.h guards it with #ifndef and this
+ * file is included first, so the value here is the one that counts. build-native.sh fails
+ * the build if configure's link test does not also say yes, so the two cannot disagree.
+ *
+ * The codec registers as `lyra/16000/1` and only that (pjmedia-codec/config.h: 8, 32 and
+ * 48 kHz off by default). No deployed server offers it — it is app-to-app only. */
+#define PJMEDIA_HAS_LYRA_CODEC 1
 
 /* Everything else pjproject decides for Android, including the acoustic echo canceller
  * (PJMEDIA_HAS_WEBRTC_AEC), the MediaCodec hardware path, the camera capture backend and

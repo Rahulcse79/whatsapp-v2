@@ -123,6 +123,10 @@ add_custom_target(pjsua2_native ALL
             "VPX_TARGET=${VPX_TARGET}"
             "VENDOR_ROOT=${VENDOR_ROOT}"
             "CONFIG_SITE_DIR=${CONFIG_SITE_DIR}"
+            # The Lyra closure's CMake project and the cmake that is running this one, so
+            # the nested configure uses the same binary rather than whatever is on PATH.
+            "LYRA_CMAKE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/lyra"
+            "CMAKE=${CMAKE_COMMAND}"
             "STAGE=${NATIVE_STAGE}"
             "PREFIX=${PREFIX}"
             "OUT_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
