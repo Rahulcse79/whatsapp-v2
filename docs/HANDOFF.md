@@ -103,18 +103,11 @@ still fragmented and still dropped. On a flat LAN ICE buys nothing.
 exists and reaches the stack at `RealPjsipCoreGateway:924`), or find another 54+ bytes. Then
 **re-measure on the handset** — do not trust the arithmetic alone.
 
-### 3.2 There are uncommitted, never-run changes in the working tree
+### 3.2 ~~Uncommitted, never-run changes~~ — RESOLVED, committed and green
 
-```
-M domain/src/main/kotlin/com/whatsappv2/domain/sdp/SdpBudget.kt
-M domain/src/test/kotlin/com/whatsappv2/domain/sdp/SdpBudgetTest.kt
-```
-
-They correct `AES_256_CRYPTO_LINE_BYTES` 116→**108** and `AES_128_CRYPTO_LINE_BYTES` 76→**84**
-to the measured values, and rewrite the tests to assert §3.1's truth. **The test run was
-interrupted and these have never passed.** Run
-`./gradlew :domain:test --tests "com.whatsappv2.domain.sdp.SdpBudgetTest" -PwarningsAsErrors=true --no-configuration-cache`
-first, fix whatever falls out, then commit.
+The constant corrections (`AES_256` 116→**108**, `AES_128` 76→**84**) and the rewritten
+tests are committed. **9 tests ran and passed.** The working tree is clean; nothing is
+outstanding here. The corrected arithmetic is what §3.1 above is based on.
 
 ### 3.3 `SdpBudget` is inert — it is documentation, not enforcement
 
