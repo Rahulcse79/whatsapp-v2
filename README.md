@@ -7,7 +7,7 @@ multi-account SIP registration, Telecom integration, and conferencing against Fr
 
 | Document | Purpose |
 |---|---|
-| [`android-sip-app-prompt.md`](android-sip-app-prompt.md) | The requirements specification |
+| [`docs/android-sip-app-prompt.md`](docs/android-sip-app-prompt.md) | The requirements specification |
 | [`docs/architecture.md`](docs/architecture.md) | HLD — decision record, module graph, layers, threading, sequence diagrams |
 | [`docs/pjsip-migration.md`](docs/pjsip-migration.md) | The PJSIP migration (ADR-006): verified pjsua2 API map, the three things that are not a translation, tasks in order |
 | [`docs/lld.md`](docs/lld.md) | LLD — the call FSM, the `SipEngine` contract and its error taxonomy, the Room schemas |
