@@ -6,10 +6,81 @@
 > carries the measured baseline. This file says what is done, what is half-done, what is
 > wrong, and what to do next.
 >
-> **Read §3 first.** Everything in it is now resolved *in code* — but §3.4 is not, and it is
-> the one that decides whether any of this is true: **nothing here has been run on a
-> handset.** §4 says why the build that would produce the APK cannot run on this Mac, and
-> what one command from the user unblocks it.
+> **Read §0a first — it is newer than everything below it.** The evening pass of 2026-09-10
+> built the APK, put it on a Zebra TC15, and placed, answered and held calls against two
+> FreeSWITCH servers. §3.4's "nothing has been run on a handset" is no longer true. Where
+> §0a and a later section disagree, §0a wins.
+
+---
+
+## 0a. Evening pass, 2026-09-10 — measured on hardware, and what it found
+
+Device: Zebra TC15, serial `24110524701351`, `adb` at `~/Downloads/platform-tools/adb`.
+Servers: `192.168.80.145` (FreeSWITCH behind an SBC, "iriscloud", extension 7003) and this
+Mac's own FreeSWITCH 1.10.11 at `192.168.2.196` (extension 1001, Zoiper at 1000). Every
+claim below has a log line behind it; the commit messages carry the lines.
+
+### What was fixed, and how far each is verified
+
+| Commit | Defect | Verified |
+|---|---|---|
+| `88b622c` | Every far-end hangup recorded as `SERVER_ERROR` — a BYE's 200 fell through to the error taxonomy | JVM test; not seen on hardware (no far-end hangup occurred in this pass) |
+| `b5a9979` | **Resume never resumed.** The prompt's diagnosis was wrong: the re-INVITE carried `a=sendonly` again plus `m=video`/`m=text`, was 1852 bytes, escalated to TCP, was refused, fell back to a fragmented UDP datagram and got no answer at all. Root cause: `Call::reinvite` reads `opt.flag`, not `CallOpParam.options`, and `CallOpParam(true)` replaced the call's media counts with `1/1/1` | **On hardware, twice each way, on both servers** — 1250 B / 1187 B re-INVITEs, `sendonly`/`sendrecv` alternating, each answered 200 in ≤ 380 ms, Telecom in step |
+| `b5a9979` | `RESUMING` had no producer; a refused resume was silent | JVM tests (`PendingResumeTest`, engine, mapper, FSM); the refusal path not seen on hardware |
+| `d3310dd` | **Speaker pressed while ringing did nothing** — button disabled before media, FSM has no controls to hold it, coordinator re-asserted the earpiece at the 183. `PreferredAudioRoute` wired to nothing | **On hardware**: a press between 180 and the answer produced `USER_SWITCH_SPEAKER → ActiveSpeakerRoute → SPEAKER_ON`; the Settings route is JVM-tested only |
+| `a28a554` | **Native crash**: `SIGABRT` in `FinalizerDaemon`, `Account::~Account → pjsua_acc_del2` on a reused slot after logout/login | Trace captured at 22:14:57; fix (explicit `delete()` on the PJSIP thread) compiled, **not yet exercised through a logout/login on hardware** |
+| `5572bcb` | An SRTP/codec/NAT edit never reached the running stack — `affectsRegistration` skipped it | JVM test that fails on the parent; the symptom was measured on hardware (row `DISABLED`, offer still keyed SDES) |
+
+### The one that needs a decision — 2(e), outgoing calls fail 100%
+
+**Both FreeSWITCH servers refuse the app's default offer.** `SrtpPolicy.OPTIONAL` makes
+PJSIP put `a=crypto` lines on an `RTP/AVP` m-line; FreeSWITCH 1.10.11's own log at the moment
+Zoiper answered:
+
+```
+[ERR] switch_core_media.c:5389 a=crypto in RTP/AVP, refer to rfc3711
+[NOTICE] Hangup sofia/internal/1001@192.168.2.196 [CS_EXECUTE] [INCOMPATIBLE_DESTINATION]
+```
+
+→ `488 Not Acceptable Here`, `Reason: Q.850;cause=88`. With the account set to `DISABLED`
+the same INVITE (1148 B) connects on the first try. So **every new account, on its default
+policy, cannot place a call to a FreeSWITCH**. The options, none taken yet:
+
+1. Default `SrtpPolicy` to `DISABLED` (app default and `SipAccountDraft`). Honest for these
+   deployments — neither server offers SRTP — and no bytes.
+2. Keep `OPTIONAL` but set `AccountMediaConfig.srtpOptionalDupOffer = true`: PJSIP then
+   offers an `RTP/SAVP` m-line *and* an `RTP/AVP` one, the RFC 3711/4568 form FreeSWITCH
+   accepts. Costs ~330 bytes — the audio INVITE on the `80.145` UDP path is 1148 B against
+   1472, so it fits there only without ICE and only just; measure before shipping.
+3. `MANDATORY` → `RTP/SAVP` only. Works only where the server has SRTP enabled; neither
+   tested one does.
+
+Account 7003 on `80.145` and account 1001 on `2.196` are both **left at `DISABLED`**,
+deliberately, so calls work.
+
+### Also measured, not yet acted on
+
+- **The app does not re-register on process start.** After `am force-stop` the account is
+  *Offline* until *Log in* is pressed. Whether that is a policy or a defect is unstated.
+- **`RemoteAnswered rejected from Connected`** is logged on every answered call: the gateway
+  publishes `CONNECTED` twice (invite CONFIRMED, then a media callback whose stream is not yet
+  active maps to `CONNECTED` too). Harmless, noisy, and it hides real rejections.
+- A hardware Back press closes `CallActivity` mid-call; the ongoing-call notification reopens
+  it. Not a defect, but it cost one test run.
+- `192.168.2.196` **accepts TCP 5060** (the escalated 1581-byte INVITE went over TCP and was
+  answered), so §8's video wall does not exist on this server — the direct path in the
+  prompt's §6.3 and a video call through this FreeSWITCH are both open to try.
+- LeakCanary reports `SipConnectionService` leaked via `ConnectionService$1.this$0` after
+  every call. Debug-only noise until someone reads the trace.
+
+### Where to pick up
+
+1. Install `HEAD` (`./build.sh --reuse-native --install`), log out and in twice, place a
+   call — that is the finalizer fix's hardware test, and the only fix above without one.
+2. Decide the SRTP default (above), then re-measure the `80.145` INVITE size against 1472.
+3. Prompt phase 1 is done on `2.196` — placed, answered, **heard**: not verified; the
+   handset was driven by adb and nobody listened. Do that with a person at each end.
+4. Then phases 3–5: transfer, conference, and video through `2.196` over TCP.
 
 ---
 
@@ -167,11 +238,12 @@ test — ICE off by default (`NatPolicyTest`), ICE off on rows already saved
 way — a codec, an `fmtp` line, a second `m=` line — fails no test. Only a call on hardware
 catches it.
 
-### 3.4 Nothing has been verified on hardware
+### 3.4 ~~Nothing has been verified on hardware~~ — RESOLVED in the evening pass, see §0a
 
 The spec's own rule is *"a calling defect is not fixed until a call has been placed, answered
-and heard."* No APK was built, no call placed. Every item above is "compiles and passes JVM
-tests" and nothing more.
+and heard."* As of the evening of 2026-09-10 an APK has been built, installed, registered,
+and calls have been placed and answered on two servers; the audio INVITE measured 1148–1318
+bytes on the wire against 1472. "Heard" is still owed a person at each end.
 
 ### 3.5 Two things were keeping CI red, and they were not the code under review
 
