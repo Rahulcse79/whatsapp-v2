@@ -373,6 +373,19 @@ private fun AudioCodecChips(
 ) {
     Column {
         Text("Audio codecs", style = MaterialTheme.typography.bodyMedium)
+        // The order is the offer order, and the order is the order of tapping — which
+        // nothing on screen said. The line below shows the list as it will be sent, so
+        // "how do I put Lyra first" answers itself: tap them off, tap them on in order.
+        Text(
+            text = if (draft.audioCodecs.isEmpty()) {
+                "Tap in the order you want them offered. The first is preferred."
+            } else {
+                "Offered in this order: " + draft.audioCodecs.joinToString(", ") { it.payloadName } +
+                    ". Tap off and on again to reorder."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         FlowRow(horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small)) {
             ALL_AUDIO_CODECS.forEach { codec ->
                 val selected = codec in draft.audioCodecs
