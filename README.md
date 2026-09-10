@@ -20,7 +20,7 @@ multi-account SIP registration, Telecom integration, and conferencing against Fr
 | [`docs/module-structure.md`](docs/module-structure.md) | The module graph, package and visibility conventions, and the twelve machine-checked architecture rules |
 | [`docs/system-design.md`](docs/system-design.md) | Beyond the APK — topology, capacity arithmetic, failure domains, observability, rollout |
 | [`docs/native-dependencies.md`](docs/native-dependencies.md) | Every vendored native dependency: version, commit, licence, reason, patches, measured size — plus the pinned toolchain |
-| [`docs/lyra-integration-prompt.md`](docs/lyra-integration-prompt.md) | The prompt for making Lyra work end to end: what pjproject already provides, the `config_site.h` trap that silences a correct build, and the phase that can end the project |
+| [`docs/calling-completeness-prompt.md`](docs/calling-completeness-prompt.md) | The prompt for finishing the calling stack: two bugs traced to root cause, the codec gaps against what the server accepts, video's real blocker, and Lyra |
 | [`docs/reconciliation.md`](docs/reconciliation.md) | Where the documents and the code disagree, with a citation and an owning phase for each |
 
 ## Build policy — CI is the authority; local builds are worth running
