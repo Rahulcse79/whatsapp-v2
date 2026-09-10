@@ -1,5 +1,6 @@
 package com.whatsappv2.feature.dialer
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.whatsappv2.core.common.result.Outcome
@@ -60,6 +61,22 @@ class DialerViewModel @Inject constructor(
      */
     private val camera: CameraAvailability,
     repository: SipAccountRepository,
+
+    /**
+     * Where the chosen account survives leaving the screen.
+     *
+     * The override used to live only in [entry], a plain `MutableStateFlow` in this
+     * ViewModel. Compose Navigation scopes a ViewModel to its destination, so walking to
+     * the call screen and back destroyed it and the selection silently reverted to the
+     * default account — after the user had deliberately picked another one.
+     *
+     * A `SavedStateHandle` is scoped to the destination's back-stack entry, so it survives
+     * both that round trip and process death. It holds an account id and nothing else;
+     * architecture rule 10 forbids reconstructing *call* state this way, and that
+     * reasoning does not extend to which account is selected — a call may have ended while
+     * the process was dead, an account cannot have.
+     */
+    private val savedState: SavedStateHandle,
     registrar: SipRegistrar,
 ) : ViewModel() {
 
@@ -76,7 +93,9 @@ class DialerViewModel @Inject constructor(
         val placing: Boolean = false,
     )
 
-    private val entry = MutableStateFlow(Entry())
+    private val entry = MutableStateFlow(
+        Entry(override = savedState.get<String>(KEY_ACCOUNT_OVERRIDE)?.let(::AccountId)),
+    )
 
     private val eventChannel = Channel<DialerEvent>(Channel.BUFFERED)
     val events: Flow<DialerEvent> = eventChannel.receiveAsFlow()
@@ -158,6 +177,10 @@ class DialerViewModel @Inject constructor(
      * from the work account does not silently become every later call's account too.
      */
     fun onAccountSelected(id: AccountId) {
+        // Written through, not just held: the handle is what makes the choice outlive
+        // this ViewModel. Storing the raw String keeps it to a type SavedStateHandle can
+        // put in a Bundle without AccountId needing to be Parcelable.
+        savedState[KEY_ACCOUNT_OVERRIDE] = id?.value
         entry.update { it.copy(override = id) }
     }
 
@@ -259,6 +282,9 @@ class DialerViewModel @Inject constructor(
 
     internal companion object {
         const val SUBSCRIPTION_TIMEOUT_MILLIS = 5_000L
+
+        /** Where the chosen account id lives in the destination's saved state. */
+        private const val KEY_ACCOUNT_OVERRIDE = "dialer.accountOverride"
 
         /**
          * How many contacts the picker offers.

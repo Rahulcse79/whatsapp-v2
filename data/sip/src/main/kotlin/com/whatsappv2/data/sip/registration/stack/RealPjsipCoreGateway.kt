@@ -837,10 +837,33 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
     }
 
-    private fun StackAccount.toAccountConfig(): AccountConfig = AccountConfig().apply {
-        idUri = "sip:$username@$domain"
+    /**
+     * The `;transport=` URI parameter for an account's transport, or `""` for UDP.
+     *
+     * UDP is SIP's default transport (RFC 3261 §18.1.1), so naming it adds nothing and
+     * costs the ability to upgrade an oversized request — a URI that says `transport=udp`
+     * is a URI PJSIP will keep on UDP even when the message no longer fits a datagram.
+     *
+     * TCP and TLS must be named, because nothing else would select them: neither the
+     * registrar URI nor the account id carries the information otherwise, and the
+     * alternative — pinning `sipConfig.transportId` — silently sends nothing.
+     */
+    private fun transportUriParameter(transport: String): String =
+        when (transport.uppercase()) {
+            TRANSPORT_TCP -> ";transport=tcp"
+            TRANSPORT_TLS -> ";transport=tls"
+            else -> ""
+        }
 
-        regConfig.registrarUri = registrarUri
+    private fun StackAccount.toAccountConfig(): AccountConfig = AccountConfig().apply {
+        // The transport is selected by the URI parameter, which is what RFC 3261 §19.1.1
+        // defines it for — NOT by pinning `sipConfig.transportId`. See the note below on
+        // why the pinned form sent nothing at all.
+        val transportParam = transportUriParameter(transport)
+
+        idUri = "sip:$username@$domain$transportParam"
+
+        regConfig.registrarUri = registrarUri + transportParam
         regConfig.timeoutSec = expirySeconds.toLong()
         regConfig.registerOnAdd = registerEnabled
         pushParameters?.let { push ->
@@ -856,24 +879,27 @@ internal class RealPjsipCoreGateway @Inject constructor(
         )
         proxyUri?.let { sipConfig.proxies.add(it) }
 
-        // UDP is deliberately left unpinned. `transportId` becomes a
-        // PJSIP_TPSELECTOR_TRANSPORT on the dialog (pjsua_init_tpselector in
-        // pjsua_core.c), and that defeats RFC 3261 s18.1.1: PJSIP rewrites the first
-        // destination of a request over 1300 bytes to TCP, then
-        // `pjsip_endpt_acquire_transport2` refuses it because the pinned transport is a
-        // UDP one, and the message falls back to the UDP entry behind it. Every
-        // oversized INVITE this app sent said so - "Unsuitable transport selected
-        // (PJSIP_ETPNOTSUITABLE)" one line before a 1735-byte datagram - and a 1735-byte
-        // datagram is IP-fragmented, which is what a router between us and the registrar
-        // drops. REGISTER at 822 bytes went through the same path untouched.
-        // Unpinned, the account still resolves to UDP by default; it now switches to a
-        // congestion-controlled transport only when the message is too big to send as
-        // one datagram, which is what the RFC asks for.
-        // TCP and TLS stay pinned: the registrar URI carries no `;transport=` parameter,
-        // so nothing else would select them.
-        if (transport.uppercase() != TRANSPORT_UDP) {
-            transports[transport.uppercase()]?.let { sipConfig.transportId = it }
-        }
+        // `sipConfig.transportId` is deliberately NEVER set. Not for UDP, and — this is
+        // the change — not for TCP or TLS either.
+        //
+        // For UDP, pinning defeats RFC 3261 §18.1.1: PJSIP rewrites the destination of a
+        // request over 1300 bytes to TCP, `pjsip_endpt_acquire_transport2` then refuses it
+        // because the pinned transport is a UDP one, and the message falls back to UDP as
+        // one oversized, IP-fragmented datagram that routers drop.
+        //
+        // For TCP and TLS, pinning is worse: it sends **nothing at all**. `transportCreate`
+        // returns the id of a *listener* (a `pjsip_tpfactory`), not of a connected
+        // transport, and `pjsua_acc_config.transport_id` turns that into a
+        // `PJSIP_TPSELECTOR_TRANSPORT` on the dialog. Acquiring a transport for an outbound
+        // request against a selector that names a listener yields nothing usable, so the
+        // REGISTER is never put on the wire. Observed exactly that way: the account sat in
+        // "Registering…" for 32 seconds and timed out, while the registrar's own log showed
+        // **no packet of any kind** from the handset — and a raw TCP connection from the
+        // same device to the same port succeeded. No error, no retry, no datagram.
+        //
+        // The transport is chosen by the `;transport=` URI parameter instead, which is what
+        // RFC 3261 §19.1.1 defines it for. PJSIP resolves it per request, so an account can
+        // still upgrade an oversized message to TCP the way §18.1.1 requires.
 
         // The account's policy, not a constant. This was `= true` regardless of what the
         // account said, which made three settings in the account form do nothing - and
