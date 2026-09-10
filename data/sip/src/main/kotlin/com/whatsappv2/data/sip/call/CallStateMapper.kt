@@ -75,9 +75,17 @@ internal object CallStateMapper {
 
         // The same stack state, two FSM events. An inbound call reaches Connected because
         // *we* accepted it, and CallState.Incoming only accepts LocalAnswered.
-        StackCallState.CONNECTED -> when (direction) {
-            CallDirection.OUTGOING -> CallEvent.RemoteAnswered
-            CallDirection.INCOMING -> CallEvent.LocalAnswered()
+        //
+        // And once only. The gateway reports CONNECTED twice on every answered call —
+        // once for the invite session's CONNECTING (the 200 received, ACK not yet sent),
+        // once for CONFIRMED — and the FSM rejected the second with a warning on every
+        // call in every device log of 2026-09-10. A call that already has controls has
+        // already been answered; the repeat carries no transition, exactly as a repeated
+        // PAUSED does below.
+        StackCallState.CONNECTED -> when {
+            state.controlsOrNull != null -> null
+            direction == CallDirection.OUTGOING -> CallEvent.RemoteAnswered
+            else -> CallEvent.LocalAnswered()
         }
 
         // Media running again means different things depending on what the call was

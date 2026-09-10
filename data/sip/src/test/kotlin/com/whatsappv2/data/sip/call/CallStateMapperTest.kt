@@ -1,5 +1,6 @@
 package com.whatsappv2.data.sip.call
 
+import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.domain.call.CallEvent
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.CallStateMachine
@@ -8,6 +9,7 @@ import com.whatsappv2.domain.call.TransitionResult
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.HangupReason
+import com.whatsappv2.domain.model.SipUri
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -71,6 +73,34 @@ class CallStateMapperTest {
             CallStateMapper.toCallEvent(event(StackCallState.CONNECTED)),
         )
         assertNull(CallStateMapper.toCallEvent(event(StackCallState.STREAMS_RUNNING)))
+    }
+
+    @Test
+    fun `a second CONNECTED for a call that is already established is not a second answer`() {
+        // PJSIP raises on_call_state for CONNECTING (200 in, ACK out) and again for
+        // CONFIRMED, and the gateway maps both to CONNECTED. The FSM rejected the second
+        // one, at WARN, on every answered call. A call with controls has been answered.
+        assertNull(CallStateMapper.toCallEvent(event(StackCallState.CONNECTED), CallState.Connected()))
+        assertNull(
+            CallStateMapper.toCallEvent(
+                event(StackCallState.CONNECTED),
+                CallState.Held(HoldParty.LOCAL),
+                direction = CallDirection.INCOMING,
+            ),
+        )
+        // The first one still answers, in both directions.
+        assertEquals(
+            CallEvent.RemoteAnswered,
+            CallStateMapper.toCallEvent(event(StackCallState.CONNECTED), CallState.Outgoing.Ringing),
+        )
+        assertEquals(
+            CallEvent.LocalAnswered(),
+            CallStateMapper.toCallEvent(
+                event(StackCallState.CONNECTED),
+                CallState.Incoming(REMOTE),
+                direction = CallDirection.INCOMING,
+            ),
+        )
     }
 
     @Test
@@ -321,6 +351,7 @@ class CallStateMapperTest {
     private fun errorEvent(code: Int?) = event(StackCallState.ERROR, statusCode = code)
 
     private companion object {
+        val REMOTE: SipUri = SipUri.parse("sip:bob@sip.example.com").getOrNull()!!
         const val OK = 200
         const val BUSY_HERE = 486
         const val NOT_FOUND = 404
