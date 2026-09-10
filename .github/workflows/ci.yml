@@ -265,20 +265,35 @@ jobs:
       # worked example in docs/testing.md is not mistaken for a real target.
       - name: Assert no test target is committed
         run: |
-          bad=$(git ls-files '*.properties' | xargs -r grep -l -E '^[[:space:]]*sip\.test\.' || true)
+          # Scoped to THIS project's own files. `third_party/` is excluded, and the
+          # exclusion is safe for a specific reason rather than by assumption:
+          #
+          # Vendoring OpenSSL brings in 48 sample certificates and keys under
+          # `third_party/openssl/apps/` — ca-key.pem, server.pem, dsa1024.pem and the rest.
+          # They are upstream's public test fixtures, published in every OpenSSL release
+          # since the 1990s, and they are not secrets of ours.
+          #
+          # What makes skipping them safe is not that they look harmless. It is that
+          # architecture **rule 12** hashes every vendored tree against a recorded manifest,
+          # so the contents of `third_party/` are provably upstream's bytes and not
+          # something somebody slipped in. A secret cannot hide there without changing a
+          # hash and failing the build. Without rule 12 this exclusion would be a hole.
+          ours() { git ls-files "$@" | grep -v '^third_party/' || true; }
+
+          bad=$(ours '*.properties' | xargs -r grep -l -E '^[[:space:]]*sip\.test\.' || true)
           if [ -n "$bad" ]; then
             echo "::error::A properties file in the repo sets sip.test.* — those belong in ~/.gradle/gradle.properties or a CI secret:"
             echo "$bad"
             exit 1
           fi
 
-          certs=$(git ls-files | grep -E '\.(pem|p12|jks|keystore|crt|key)$' || true)
+          certs=$(ours | grep -E '\.(pem|p12|jks|keystore|crt|key)$' || true)
           if [ -n "$certs" ]; then
             echo "::error::A certificate or keystore is committed:"
             echo "$certs"
             exit 1
           fi
-          echo "OK - no host, credential or certificate in the repository."
+          echo "OK - no host, credential or certificate outside the vendored trees."
 
       # Task 2 done-when #2: no Groovy build files anywhere.
       - name: Assert no Groovy build files
@@ -286,8 +301,18 @@ jobs:
           # -type f matters: the Gradle cache DIRECTORY is literally named `.gradle`,
           # and the glob `*.gradle` matches it (the `*` matches an empty string).
           # Without -type f this assertion fails on every build that has run once.
+          # `third_party/` is excluded here and in the assertions below. These check THIS
+          # project's conventions — Kotlin DSL, no inline versions, no permissive
+          # TrustManager — and upstream's code is not subject to them. pjproject ships
+          # eight Groovy `build.gradle` files for its sample apps; that is upstream's
+          # choice and none of them is built here.
+          #
+          # Safe because architecture rule 12 hashes every vendored tree against a
+          # recorded manifest, so `third_party/` provably contains upstream's bytes.
+          # Without that hash this exclusion would be a place to hide things.
           found=$(find . -type f -name "*.gradle" \
                     -not -path "./.git/*" \
+                    -not -path "./third_party/*" \
                     -not -path "*/.gradle/*" \
                     -not -path "*/build/*" || true)
           if [ -n "$found" ]; then
@@ -301,7 +326,7 @@ jobs:
       - name: Assert no inline dependency versions
         run: |
           bad=$(grep -rnE '(implementation|api|classpath|compileOnly|runtimeOnly|ksp|kapt)\s*\(?["'"'"'][^"'"'"']+:[^"'"'"']+:[0-9]' \
-                  --include="*.gradle.kts" . || true)
+                  --include="*.gradle.kts" --exclude-dir=third_party . || true)
           if [ -n "$bad" ]; then
             echo "::error::Inline dependency versions found — they belong in gradle/libs.versions.toml:"
             echo "$bad"

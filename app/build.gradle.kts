@@ -19,7 +19,18 @@ android {
             // own native build, not which .so the APK ends up carrying. Only the ABIs
             // Android still requires are packaged - 32-bit x86 has been dead on real
             // devices for years and only adds to the APK. CI asserts the packaged set.
-            abiFilters += setOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            //
+            // `-Ppjsip.abis` narrows this too, and it MUST. Building one ABI while still
+            // declaring three produces an APK that Android happily installs on an
+            // armeabi-v7a phone — because `lib/armeabi-v7a/` exists, carrying androidx's
+            // libraries — and which then dies on `System.loadLibrary("pjsua2")`. That is
+            // exactly the UnsatisfiedLinkError N-14 exists to remove, reintroduced by a
+            // convenience flag. Narrowing the filter makes the APK honest: it declares
+            // only the ABI it can actually run, so an incompatible device refuses to
+            // install rather than installing and failing on the first call.
+            abiFilters += providers.gradleProperty("pjsip.abis")
+                .map { it.split(",").map(String::trim).filter(String::isNotEmpty).toSet() }
+                .getOrElse(setOf("arm64-v8a", "armeabi-v7a", "x86_64"))
         }
     }
 

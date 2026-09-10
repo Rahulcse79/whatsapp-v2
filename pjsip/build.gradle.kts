@@ -104,6 +104,10 @@ val buildNative = tasks.register<BuildPjsua2Native>("buildPjsua2Native") {
     // This is not a hole in N-6. CI passes no override, so the packaging assertion still
     // sees all three; a locally-built APK with one ABI simply does not install on the other
     // two, which is loud rather than silent.
+    // The same two values :pjsip:api uses, so both stages run one binary by construction.
+    swigExecutable.set(providers.gradleProperty("pjsip.swig").orElse("swig"))
+    expectedSwigVersion.set(providers.gradleProperty("pjsip.swig.version").orElse("4.2.0"))
+
     abis.set(
         providers.gradleProperty("pjsip.abis")
             .map { it.split(",").map(String::trim).filter(String::isNotEmpty) }
@@ -213,7 +217,18 @@ androidComponents {
     }
 }
 
+// The assertion follows the NATIVE BUILD, not `assemble`.
+//
+// It used to be `finalizedBy` on `:pjsip:assemble*`, and that meant it never ran when
+// somebody built the app: `:app:assembleDebug` consumes this module's artifacts without
+// invoking its `assemble` lifecycle task. CI only saw the check because `./gradlew build`
+// runs `assemble` on every module — so N-6's packaging assertion was absent from the one
+// path that matters most, and the digests N-11 needs were never printed either.
+//
+// Hanging it off `buildNative` means every route that produces a `.so` is checked, and
+// there is no entry point left where the libraries are built and not verified.
+buildNative.configure { finalizedBy(assertNativeLibraries) }
+
 tasks.matching { it.name.startsWith("assemble") }.configureEach {
     dependsOn(buildNative)
-    finalizedBy(assertNativeLibraries)
 }

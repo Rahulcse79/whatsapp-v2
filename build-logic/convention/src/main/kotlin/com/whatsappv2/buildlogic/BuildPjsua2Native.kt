@@ -107,6 +107,24 @@ abstract class BuildPjsua2Native @Inject constructor(
     @get:Input
     abstract val ndkRoot: Property<String>
 
+    /**
+     * The `swig` stage 2 must use — **the same one stage 1 used**.
+     *
+     * pjproject's `swig/java/Makefile` runs `swig` from `PATH` to emit the C++ JNI wrapper,
+     * while stage 1 runs it separately to emit the Java. The `.so` exports symbols named
+     * after that Java, so two different versions produce a library and a binding that
+     * disagree — the drift N-13 exists to make impossible, reintroduced through `PATH`.
+     *
+     * An input, so a changed swig rebuilds rather than silently reusing a `.so` built
+     * against different bindings.
+     */
+    @get:Input
+    abstract val swigExecutable: Property<String>
+
+    /** Asserted inside the script, so stage 2 cannot quietly use a different version. */
+    @get:Input
+    abstract val expectedSwigVersion: Property<String>
+
     @TaskAction
     fun build() {
         val ndk = File(ndkRoot.get())
@@ -136,6 +154,8 @@ abstract class BuildPjsua2Native @Inject constructor(
                     "-DANDROID_ABI=$abi",
                     "-DANDROID_PLATFORM=android-$ANDROID_API",
                     "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=${abiOut.absolutePath}",
+                    "-DPJSIP_SWIG=${swigExecutable.get()}",
+                    "-DPJSIP_SWIG_VERSION=${expectedSwigVersion.get()}",
                     // Ninja is not required and is not assumed: the entry point drives
                     // upstream's build systems, so the generator has one custom target to
                     // run and its choice buys nothing.

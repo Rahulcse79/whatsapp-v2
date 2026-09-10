@@ -96,6 +96,15 @@ endif()
 # one packaged is a runtime failure on the devices in between.
 set(ANDROID_API_LEVEL 26)
 
+# Defaults so a direct `cmake -S pjsip -B …` still works without Gradle; the Gradle task
+# passes both explicitly.
+if(NOT DEFINED PJSIP_SWIG)
+    set(PJSIP_SWIG "swig")
+endif()
+if(NOT DEFINED PJSIP_SWIG_VERSION)
+    set(PJSIP_SWIG_VERSION "4.2.0")
+endif()
+
 # The NDK CMake resolved, never the host's. `CMAKE_ANDROID_NDK` is set by the toolchain
 # file, so this is the NDK that is actually compiling — asking the environment instead is
 # how a cached-NDK-with-no-compiler gets used four steps later.
@@ -117,6 +126,11 @@ add_custom_target(pjsua2_native ALL
             "STAGE=${NATIVE_STAGE}"
             "PREFIX=${PREFIX}"
             "OUT_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
+            # The SAME swig stage 1 used. Two swig versions across the two stages produce a
+            # Java class and a .so that disagree about JNI symbol names — the drift N-13
+            # exists to prevent, reintroduced through $PATH. build-native.sh asserts it.
+            "SWIG=${PJSIP_SWIG}"
+            "EXPECTED_SWIG_VERSION=${PJSIP_SWIG_VERSION}"
             bash "${CMAKE_CURRENT_SOURCE_DIR}/build-native.sh"
     COMMENT "Building pjsua2 for ${ANDROID_ABI} from vendored source"
     VERBATIM

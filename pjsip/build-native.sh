@@ -25,6 +25,48 @@ set -euo pipefail
 : "${OPENSSL_TARGET:?}" "${VPX_TARGET:?}" "${VENDOR_ROOT:?}" "${CONFIG_SITE_DIR:?}"
 : "${STAGE:?}" "${PREFIX:?}" "${OUT_DIR:?}"
 
+# ---------------------------------------------------------------- the SWIG both stages use
+#
+# THIS IS A CORRECTNESS REQUIREMENT, not a convenience. There are TWO swig invocations in
+# this build and they must be the same binary:
+#
+#   stage 1  GeneratePjsua2Bindings runs swig to emit the Java   (org.pjsip.pjsua2.*)
+#   stage 2  pjproject's swig/java/Makefile runs swig to emit    (pjsua2_wrap.cpp)
+#            the C++ JNI wrapper that the .so is built from
+#
+# The .so exports `Java_org_pjsip_pjsua2_pjsua2JNI_*` symbols named after the Java the FIRST
+# invocation produced. Two different swig versions therefore produce a Java class and a
+# native library that disagree about symbol names — which is exactly the drift N-13 exists
+# to make structurally impossible, reintroduced through the back door of $PATH.
+#
+# Stage 1 takes its swig as a task property. Stage 2 gets it from $PATH, because it is
+# upstream's Makefile and not ours. So the property is pushed onto $PATH here, and the
+# version is asserted, rather than trusting that whatever the Gradle daemon happened to
+# inherit is the same tool.
+if [ -n "${SWIG:-}" ]; then
+  swig_dir="$(cd "$(dirname "$SWIG")" && pwd)"
+  export PATH="$swig_dir:$PATH"
+fi
+swig_version="$(swig -version 2>/dev/null | sed -n 's/.*SWIG Version \([0-9.]*\).*/\1/p')"
+expected_swig="${EXPECTED_SWIG_VERSION:-4.2.0}"
+if [ "$swig_version" != "$expected_swig" ]; then
+  echo "::error::stage 2 would use swig $swig_version, and this build is pinned to $expected_swig." >&2
+  echo "  swig on PATH: $(command -v swig || echo 'not found')" >&2
+  echo "  The .so exports symbols named after the Java stage 1 generated, so a different" >&2
+  echo "  swig here produces a library whose JNI names do not match the bindings." >&2
+  echo "  Pass -Ppjsip.swig=/path/to/swig-$expected_swig/bin/swig." >&2
+  exit 1
+fi
+swig_lib="$(swig -swiglib 2>/dev/null)"
+if [ ! -d "$swig_lib/java" ]; then
+  echo "::error::swig at $(command -v swig) has no Java typemaps ($swig_lib/java is absent)." >&2
+  echo "  Some distributions package them separately - MacPorts: port install swig-java." >&2
+  echo "  Without them swig fails on java.swg and arrays_java.i, which reads like a corrupt" >&2
+  echo "  source tree rather than a missing package." >&2
+  exit 1
+fi
+echo "stage 2 swig: $(command -v swig) ($swig_version), typemaps at $swig_lib/java"
+
 work="$STAGE/$ABI"
 prefix="$PREFIX/$ABI"
 mkdir -p "$work" "$prefix" "$OUT_DIR"
