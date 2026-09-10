@@ -53,6 +53,7 @@ a model it cannot represent.
  * assemble an APK that dies on the first call (DoD 24).
  */
 import com.whatsappv2.buildlogic.BuildPjsua2Native
+import java.security.MessageDigest
 
 plugins {
     id("whatsappv2.android.library")
@@ -191,9 +192,9 @@ val assertNativeLibraries = tasks.register("assertNativeLibraries") {
             .sortedBy { it.path }
             .forEach { so ->
                 val abi = so.parentFile.name
-                val digest = java.security.MessageDigest.getInstance("SHA-256")
+                val digest = MessageDigest.getInstance("SHA-256")
                     .digest(so.readBytes())
-                    .joinToString("") { "%02x".format(it) }
+                    .joinToString("") { byte -> "%02x".format(byte) }
                 logger.lifecycle("  $abi/${so.name}  ${so.length()} bytes  sha256:$digest")
             }
     }
