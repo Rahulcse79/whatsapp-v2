@@ -124,6 +124,15 @@ data class SipAccountEntity(
     @ColumnInfo(name = "is_default")
     val isDefault: Boolean,
 
+    /**
+     * The user's login intent, kept across process death; see
+     * `SipAccount.registrationWanted`. Added in version 3 with a default of 0: an
+     * account that predates the column was not logged in by anyone this process knows
+     * about, and the next Log in sets it.
+     */
+    @ColumnInfo(name = "registration_wanted", defaultValue = "0")
+    val registrationWanted: Boolean = false,
+
     /** Creation time, so the account list has a stable order that is not the id. */
     @ColumnInfo(name = "created_at_epoch_millis")
     val createdAtEpochMillis: Long,

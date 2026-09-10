@@ -66,6 +66,9 @@ interface SipAccountDao {
         markDefault(id)
     }
 
+    @Query("UPDATE sip_accounts SET registration_wanted = :wanted WHERE id = :id")
+    suspend fun setRegistrationWanted(id: String, wanted: Boolean)
+
     /**
      * Deletes an account and promotes another to default if it was the default one.
      *

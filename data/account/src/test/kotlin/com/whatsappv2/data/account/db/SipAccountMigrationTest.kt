@@ -85,12 +85,45 @@ class SipAccountMigrationTest {
     }
 
     @Test
-    fun `the migration is the one the builder installs`() {
+    fun `version 3 adds the login intent, unset, and keeps everything else`() {
+        // Written as version 1 and carried through both migrations: a device that skipped
+        // an app version takes the whole chain, and the chain is what has to work.
+        writeVersionOne { db ->
+            db.insert("sip_accounts", CONFLICT_FAIL, accountRow(id = "acct-1", iceEnabled = 0))
+        }
+
+        val migrated = openWithMigrations()
+
+        assertEquals(0, migrated.intOf("SELECT registration_wanted FROM sip_accounts WHERE id = 'acct-1'"))
+        assertEquals("alice-acct-1", migrated.stringOf("SELECT username FROM sip_accounts WHERE id = 'acct-1'"))
+    }
+
+    @Test
+    fun `an account saved on the OPTIONAL default is moved to DISABLED, and MANDATORY is not`() {
+        // MIGRATION_1_2's argument, again: OPTIONAL was the draft's opening value, nobody
+        // chose it, and on FreeSWITCH it fails every outgoing call (488, "a=crypto in
+        // RTP/AVP, refer to rfc3711" — measured 2026-09-10). MANDATORY is a choice.
+        writeVersionOne { db ->
+            db.insert("sip_accounts", CONFLICT_FAIL, accountRow(id = "acct-1", iceEnabled = 0, srtp = "OPTIONAL"))
+            db.insert("sip_accounts", CONFLICT_FAIL, accountRow(id = "acct-2", iceEnabled = 0, srtp = "MANDATORY"))
+            db.insert("sip_accounts", CONFLICT_FAIL, accountRow(id = "acct-3", iceEnabled = 0, srtp = "DISABLED"))
+        }
+
+        val migrated = openWithMigrations()
+
+        assertEquals("DISABLED", migrated.stringOf("SELECT srtp_policy FROM sip_accounts WHERE id = 'acct-1'"))
+        assertEquals("MANDATORY", migrated.stringOf("SELECT srtp_policy FROM sip_accounts WHERE id = 'acct-2'"))
+        assertEquals("DISABLED", migrated.stringOf("SELECT srtp_policy FROM sip_accounts WHERE id = 'acct-3'"))
+    }
+
+    @Test
+    fun `the migrations are the ones the builder installs`() {
         // DatabaseModule adds SipAccountDatabase.MIGRATIONS and nothing else, so a
         // migration that exists but is not in the array would pass the tests above and
         // still delete every account on a real device.
         assertTrue(SipAccountDatabase.MIGRATIONS.any { it.startVersion == 1 && it.endVersion == 2 })
-        assertEquals(2, SipAccountDatabase.VERSION)
+        assertTrue(SipAccountDatabase.MIGRATIONS.any { it.startVersion == 2 && it.endVersion == 3 })
+        assertEquals(3, SipAccountDatabase.VERSION)
     }
 
     /**
@@ -151,7 +184,7 @@ class SipAccountMigrationTest {
             cursor.getString(0)
         }
 
-    private fun accountRow(id: String, iceEnabled: Int) = ContentValues().apply {
+    private fun accountRow(id: String, iceEnabled: Int, srtp: String = "OPTIONAL") = ContentValues().apply {
         put("id", id)
         put("label", "Work")
         // Distinct per row: `index_sip_accounts_username_domain` is unique, so three
@@ -164,7 +197,7 @@ class SipAccountMigrationTest {
         put("ice_enabled", iceEnabled)
         put("stun_enabled", 1)
         put("keepalive_interval_seconds", 30)
-        put("srtp_policy", "OPTIONAL")
+        put("srtp_policy", srtp)
         put("audio_codecs", "PCMU")
         put("video_codecs", "")
         put("is_default", 0)

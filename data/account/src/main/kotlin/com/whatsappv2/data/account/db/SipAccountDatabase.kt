@@ -33,7 +33,7 @@ abstract class SipAccountDatabase : RoomDatabase() {
     abstract fun sipAccountDao(): SipAccountDao
 
     companion object {
-        const val VERSION = 2
+        const val VERSION = 3
         const val NAME = "sip-accounts.db"
 
         /**
@@ -63,7 +63,30 @@ abstract class SipAccountDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Two things, one version, both measured on 2026-09-10.
+         *
+         * **A column.** `registration_wanted` records that the user logged an account in
+         * and never logged it out, so a process that died — killed, crashed, reinstalled —
+         * can put the registration back at the next start instead of showing *Offline*
+         * until somebody presses Log in. Default 0: nothing this process knows about was
+         * logged in.
+         *
+         * **A data rewrite, with `MIGRATION_1_2`'s reasoning exactly.** Every account saved
+         * with `srtp_policy = 'OPTIONAL'` carries the draft's opening value, not a choice —
+         * and that value fails 100% of outgoing calls on FreeSWITCH, which refuses
+         * `a=crypto` on an `RTP/AVP` line (`488`, "refer to rfc3711"). It becomes
+         * `DISABLED`, the new default. `MANDATORY` is left alone: that one *is* a choice,
+         * it sends `RTP/SAVP`, and it fails closed on purpose.
+         */
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sip_accounts ADD COLUMN registration_wanted INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE sip_accounts SET srtp_policy = 'DISABLED' WHERE srtp_policy = 'OPTIONAL'")
+            }
+        }
+
         /** Every migration, in order. */
-        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2)
+        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
     }
 }

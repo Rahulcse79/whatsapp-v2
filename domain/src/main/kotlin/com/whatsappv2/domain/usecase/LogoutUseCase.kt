@@ -70,6 +70,9 @@ class LogoutUseCase @Inject constructor(
         val active = calls.activeCalls.value.count { it.accountId == id }
         if (active > 0) return failure(LogoutError.CallInProgress(active))
 
+        // Before the unregister, so a process that dies mid-way stays logged out: a
+        // logout the user asked for must not come back as a registration at next start.
+        repository.setRegistrationWanted(id, wanted = false)
         // Clean unregister: `Expires: 0`, acknowledged by the registrar before this
         // returns, so a caller may stop the service afterwards without cutting it off.
         registrar.unregister(id)

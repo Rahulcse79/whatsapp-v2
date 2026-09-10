@@ -93,6 +93,18 @@ class FakeSipAccountRepository : SipAccountRepository {
         return success(Unit)
     }
 
+    /** Every (id, wanted) written, in order, so a test can assert what a flow recorded. */
+    val registrationWantedWrites: MutableList<Pair<AccountId, Boolean>> = mutableListOf()
+
+    override suspend fun setRegistrationWanted(id: AccountId, wanted: Boolean): Outcome<Unit, AccountRepositoryError> {
+        nextFailure?.let { nextFailure = null; return failure(it) }
+        if (accounts.value.none { it.id == id }) return failure(AccountRepositoryError.NotFound)
+
+        registrationWantedWrites += id to wanted
+        accounts.value = accounts.value.map { if (it.id == id) it.copy(registrationWanted = wanted) else it }
+        return success(Unit)
+    }
+
     override suspend fun credentialsFor(id: AccountId): Outcome<SipCredentials, AccountRepositoryError> {
         nextFailure?.let { nextFailure = null; return failure(it) }
         val secret = secrets[id] ?: return failure(AccountRepositoryError.NotFound)

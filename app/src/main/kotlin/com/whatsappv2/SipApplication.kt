@@ -5,10 +5,14 @@ import com.whatsappv2.audio.CallAudioCoordinator
 import com.whatsappv2.calllog.CallLogWriter
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.data.sip.SipEngineLifecycle
+import com.whatsappv2.di.ApplicationScope
+import com.whatsappv2.domain.usecase.RestoreRegistrationsUseCase
 import com.whatsappv2.push.PushTokenPublisher
 import com.whatsappv2.service.ServiceLauncher
 import com.whatsappv2.telecom.SipPhoneAccount
 import dagger.hilt.android.HiltAndroidApp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /**
@@ -58,6 +62,13 @@ class SipApplication : Application() {
     @Inject
     lateinit var services: ServiceLauncher
 
+    @Inject
+    lateinit var restoreRegistrations: RestoreRegistrationsUseCase
+
+    @Inject
+    @ApplicationScope
+    lateinit var scope: CoroutineScope
+
     override fun onCreate() {
         super.onCreate()
         logger.info(TAG, "Application started")
@@ -82,6 +93,16 @@ class SipApplication : Application() {
         // on a build with no Firebase configuration, which it logs rather than hides
         // (ADR-004, Task 38).
         pushTokens.publishCurrentToken()
+        // Every account the user logged in and never logged out, registered again — the
+        // process died, the intent did not. Before this, every process death left every
+        // account Offline until somebody opened the app and pressed Log in, with no call
+        // able to arrive in between. After the engine and the service launcher, so the
+        // registration has a stack to go to and a service to be kept alive by.
+        scope.launch {
+            restoreRegistrations().forEach { (id, error) ->
+                logger.warn(TAG, "Could not restore the registration of $id: $error")
+            }
+        }
     }
 
     private companion object {

@@ -65,6 +65,7 @@ internal object AccountMapper {
                 srtpPolicy = srtp,
                 codecs = CodecPreferences(audio, video),
                 isDefault = entity.isDefault,
+                registrationWanted = entity.registrationWanted,
             )
             // The domain constructor enforces invariants a stored row could violate after
             // a bad migration. Catching here keeps that a dropped row rather than a crash
@@ -109,6 +110,7 @@ internal object AccountMapper {
         audioCodecs = account.codecs.audio.joinToString(CODEC_SEPARATOR) { it.name },
         videoCodecs = account.codecs.video.joinToString(CODEC_SEPARATOR) { it.name },
         isDefault = account.isDefault,
+        registrationWanted = account.registrationWanted,
         createdAtEpochMillis = createdAtEpochMillis,
     )
 

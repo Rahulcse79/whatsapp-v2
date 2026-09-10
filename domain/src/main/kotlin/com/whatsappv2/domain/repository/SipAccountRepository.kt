@@ -108,6 +108,13 @@ interface SipAccountRepository {
     suspend fun setDefault(id: AccountId): Outcome<Unit, AccountRepositoryError>
 
     /**
+     * Records that the user logged [id] in ([wanted] true) or out (false), so the next
+     * process start can put the registration back without being asked. See
+     * [com.whatsappv2.domain.model.SipAccount.registrationWanted].
+     */
+    suspend fun setRegistrationWanted(id: AccountId, wanted: Boolean): Outcome<Unit, AccountRepositoryError>
+
+    /**
      * Decrypts and returns the credentials for [id].
      *
      * Call this immediately before they are needed — building a REGISTER, say — and do

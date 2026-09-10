@@ -54,7 +54,13 @@ class LoginUseCase @Inject constructor(
         val account = repository.findById(id) ?: return failure(LoginError.NotFound)
 
         return when (val result = registrar.register(account)) {
-            is Outcome.Success -> success(Unit)
+            is Outcome.Success -> {
+                // The intent outlives the process; the registration does not. Recorded
+                // on the request being accepted, not on the registrar's answer: a REGISTER
+                // that times out tonight is still one the user wants retried tomorrow.
+                repository.setRegistrationWanted(id, wanted = true)
+                success(Unit)
+            }
             is Outcome.Failure -> failure(LoginError.Rejected(result.error))
         }
     }
