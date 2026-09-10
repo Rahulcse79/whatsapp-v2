@@ -20,20 +20,25 @@ enum class AudioCodec(val payloadName: String, val isWideband: Boolean) {
      * codec id by prefix — `lyra/16000/1`. `LYRA` would match nothing, silently.
      *
      * **Not in [CodecPreferences.DEFAULT], and that is deliberate.** Three things have to
-     * be true before this negotiates, and only the first is done:
+     * be true before this negotiates, and since ADR-008 closed at Exit A (2026-09-10) all
+     * three are:
      *
      *  1. It is selectable here.
-     *  2. The native library is built with `PJMEDIA_HAS_LYRA_CODEC` — it defaults to `0`,
-     *     and enabling it means cross-compiling Google's Lyra, which pulls in Bazel and
-     *     TensorFlow Lite.
+     *  2. The native library is built with `PJMEDIA_HAS_LYRA_CODEC 1` from the vendored
+     *     closure (`pjsip/lyra/CMakeLists.txt`), and the codec audit on a Zebra TC15 lists
+     *     `lyra/16000/1`.
      *  3. The four model files (`lyra_config.binarypb`, `lyragan.tflite`,
-     *     `quantizer.tflite`, `soundstream_encoder.tflite`) ship on the device and
-     *     `CodecLyraConfig.modelPath` points at them. Without them the codec registers and
-     *     then fails to open a stream.
+     *     `quantizer.tflite`, `soundstream_encoder.tflite`) ship as assets and are copied to
+     *     `filesDir/lyra` at start, where `CodecLyraConfig.modelPath` points. Without them
+     *     the codec registers and then fails to open a stream, which the audit reports as
+     *     `ModelFilesUnusable`.
      *
-     * Until (2) and (3), selecting it is a no-op that the stack logs as "preferred but not
-     * in this build". Marked wideband because the default clock rate is 16 kHz; pjproject
-     * also offers 8, 32 and 48 kHz, and only 16 kHz is enabled by default.
+     * What keeps it out of DEFAULT is the fourth thing, which no build can change: **no
+     * server offers it.** It is not an IETF codec; it negotiates only with another endpoint
+     * running the same PJSIP integration — another install of this app — and only where the
+     * server passes media through untouched. Put first on both accounts, it carries the
+     * call; put last, Opus wins whenever both ends have it, which is always. Marked wideband
+     * because the clock rate is 16 kHz; pjproject builds only that rate by default.
      */
     LYRA("lyra", isWideband = true),
 

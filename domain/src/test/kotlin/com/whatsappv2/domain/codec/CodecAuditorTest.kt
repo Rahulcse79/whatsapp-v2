@@ -34,7 +34,9 @@ class CodecAuditorTest {
 
     @Test
     fun `a declared codec the build never contained is NotCompiled, not a defect`() {
-        // The state H264 and LYRA are in today. A decision, reported at INFO.
+        // The state H264 is in today, and LYRA was in until ADR-008 closed at Exit A. A
+        // decision, reported at INFO — the auditor is told what is compiled and does not care
+        // which year it is.
         val audit = CodecAuditor(declared = setOf(vp8, h264, lyra)).audit(
             registeredAudio = emptyList(),
             registeredVideo = listOf("VP8/90000" to 255),

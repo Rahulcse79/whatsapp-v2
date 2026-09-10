@@ -253,6 +253,15 @@ export ANDROID_NDK_ROOT
 # script, because a step's env does not look like part of the command.
 export TARGET_ABI="$ABI"
 
+# THE API LEVEL. Left unset, `configure-android` derives APP_PLATFORM from the NDK's own
+# minimum (r27c: 21, which its script then raises to 23) — not from this app. OpenSSL, Opus
+# and libvpx above are built with `$ANDROID_API` (26, the app's minSdk) and never used a
+# symbol newer than 23, so a pjproject compiled for 23 linked against them by luck. The
+# Lyra closure is the first library that does not: `strtod_l` and the `_FORTIFY_SOURCE`
+# `__*_chk` functions arrive in bionic at 24-26, and configure's Lyra link test failed on
+# exactly those. One stack, one API level.
+export APP_PLATFORM="$ANDROID_API"
+
 ./configure-android --use-ndk-cflags \
   --with-ssl="$prefix" --with-opus="$prefix" --with-vpx="$prefix" --with-lyra="$prefix"
 
@@ -275,10 +284,15 @@ fi
 # build that goes on without the codec, while config_site.h says it is there (N-8). The
 # link test is the whole closure in one archive; if it fails, the archive is the place to
 # look, and config.log has the linker's actual complaint.
-if ! grep -qi 'checking lyra usability\.\.\. yes' config.log; then
+# Read off what configure WROTE, not what it printed: os-auto.mak carries
+# `AC_NO_LYRA_CODEC=1` when the link test failed and an empty value when it passed, and
+# that variable is the one the codec Makefile branches on. (config.log splits "checking"
+# and "result:" across lines, and the first version of this check grepped for the
+# one-line form and failed on a build that had actually succeeded.)
+if ! grep -qE '^AC_NO_LYRA_CODEC=$' pjmedia/build/os-auto.mak; then
   echo "::error::Lyra is NOT enabled — configure's link test against $prefix/lib/liblyra.a failed." >&2
   echo "::error::config_site.h sets PJMEDIA_HAS_LYRA_CODEC 1; the codec would be declared and absent." >&2
-  grep -n -B2 -A12 'checking lyra usability' config.log | tail -40 >&2 || true
+  grep -n -A14 'checking lyra usability' config.log | tail -30 >&2 || true
   fail=1
 fi
 [ "$fail" -eq 0 ] || exit 1
@@ -348,6 +362,20 @@ cxx_so="$(find "$ANDROID_NDK_ROOT" -path "*/sysroot/usr/lib/$SYSROOT_TRIPLE/libc
 [ -n "$cxx_so" ] || { echo "::error::no libc++_shared.so for $SYSROOT_TRIPLE — the APK would not load" >&2; exit 1; }
 
 cp -f "$jni_so" "$cxx_so" "$OUT_DIR/"
+
+# DWARF off, symbol table kept. The NDK toolchain compiles everything with -g, and with the
+# Lyra closure linked in that is ~80 MB of debug sections in a library whose loadable code
+# is 21 MB — the APK went from 45 MB to 146 MB. AGP would strip at packaging, but only
+# with an NDK configured on the app module, which this project keeps on :pjsip alone.
+# `--strip-debug` rather than `--strip-all`: .symtab stays, so a native tombstone still
+# names the frames, which is what turned the FinalizerDaemon abort into a fix.
+strip_bin="$(command -v llvm-strip || true)"
+if [ -n "$strip_bin" ]; then
+  "$strip_bin" --strip-debug "$OUT_DIR/libpjsua2.so"
+  echo "stripped debug sections: $(du -h "$OUT_DIR/libpjsua2.so" | cut -f1) libpjsua2.so"
+else
+  echo "warning: llvm-strip not on PATH — libpjsua2.so ships its debug sections" >&2
+fi
 
 # 16 KB alignment, asserted rather than printed. This used to be a step that dumped the LOAD
 # headers and could not fail.
