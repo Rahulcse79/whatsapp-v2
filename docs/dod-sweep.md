@@ -16,6 +16,52 @@ packages are measured and which cannot be — does not change.
 
 ---
 
+## The native mandate's items (N-1…N-14, DoD 15-24)
+
+**Added 2026-09-09.** `docs/master-engineering-prompt.md` §12 adds ten binary items to the
+Definition of Done. This is where they stand. The distinction the master prompt §10 insists
+on is kept: **compiled, registered, negotiated and verified-on-hardware are four different
+claims**, and only the last ends an argument.
+
+| # | Item | Result |
+|---|---|---|
+| 15 | **N-1** — no `.aar`/`.so` in the tree that `:pjsip` did not build, and the rule fails on its fixture | **PASS.** Rule 11, two clauses, two fixtures. It caught a real 19 MB AAR during this change |
+| 16 | **N-2, N-3** — the egress-blocked job runs the native stage to completion; the four trees are in-tree at pinned commits | **PARTIAL, and the remaining half matters.** The trees are vendored, pinned and byte-identical from a fresh checkout, and the stack builds from them. The **egress-blocked job has not gone green**, and Opus proved that is not a formality — it fetched a model over the network on every build until §1.3 caught it |
+| 17 | **N-4, N-5** — one `./gradlew` and one Actions run produce the stack from source, no manual step, no typed version | **PASS.** CI run `34423538239` built all three ABIs from vendored source through Gradle, with no manual step and no typed version input |
+| 18 | **N-6** — every ABI carries its full expected `.so` set, asserted at packaging | **PASS.** `assertNativeLibraries` reported *"3 ABIs × 2 libraries, all present"* in CI, and no 16 KB alignment failure was raised for any ABI |
+| 19 | **N-7** — every change to vendored source is a numbered patch; the integrity check passes | **PASS, vacuously — and that is the honest word.** `pjsip/patches/` holds no patch because no vendored file has been changed. Rule 12 passes, and its fixtures prove it *can* fail in all three directions |
+| 20 | **N-9** — the audit reports every declared codec as registered, with an on-device round trip | **NOT VERIFIED.** The audit is written and unit-tested; no device has run it. **On Lyra this item is satisfied by ADR-008**: it is not in the declared set, and the audit reports it as *not compiled* |
+| 21 | **N-10** — `docs/native-dependencies.md` lists exactly the `third_party/` directories with version, commit, licence, reason, patches, size | **PASS.** `verify-pins.sh` is the check, and it runs in CI |
+| 22 | **N-11** — every dependency pinned to a commit, no `branch =`, two builds hash-compared | **PASS, with the answer being "not reproducible".** Pinned, `verify-pins.sh` fails on any `_BRANCH=`, and SWIG is now pinned *and asserted* in both stages. **The two-build comparison has been run**: `libc++_shared.so` is bit-identical across runs on every ABI; `libpjsua2.so` differs in content while matching in size to the byte. N-11 explicitly permits this provided the document says what varies — `docs/native-dependencies.md` §1.5 does |
+| 23 | **N-13** — `git ls-files pjsip/` returns no `.java` | **PASS, and proven faithful.** `git ls-files pjsip/` returns no `.java`, and the generator reproduces the deleted set **exactly**: 318 files, byte-for-byte identical to the 318 that were committed, 0 differing, 0 missing. Deleting them lost nothing |
+| 24 | **N-14** — no `if (aar.exists())`, no fallback; a build with no `.so` fails | **PASS** as written. The condition is gone and `assertNativeLibraries` is the failure. Unexercised until 17 passes |
+
+**Items 17 and 18 are now PASS**, on CI, on Linux, for all three ABIs. The number left to
+watch is **16** — the egress-blocked job — because that is the one that proves the vendored
+tree needs no network, and it is the one Opus already falsified once.
+
+**The evidence behind 17, 18 and 23** — 2026-09-10, macOS 12.7.6, NDK r27c
+(`27.2.12479018`), SWIG 4.2.0:
+
+| Claim | How it was checked |
+|---|---|
+| Bindings reproduce the deleted set | 318 generated, compared file-by-file against `b3716bb^` — **318 identical, 0 differing, 0 missing** |
+| `libpjsua2.so` is the right architecture | `llvm-readelf -h` → `ELF64`, `AArch64` |
+| 16 KB aligned (Play, Android 15+) | every `LOAD` segment `0x4000`. **And the check ran** rather than skipping for want of `llvm-readelf`, which is the failure mode a passing check hides |
+| It is the JNI wrapper, not a lookalike | `Java_org_pjsip_pjsua2_pjsua2JNI_swig_1module_1init` present — pjproject builds more than one `libpjsua2.so` and only one exports this |
+| The declared codecs are actually in it | `opus_encoder_create`, `pjmedia_codec_opus_init`, `vpx_codec_encode`, `SSL_CTX_new` |
+
+**What none of that proves:** `armeabi-v7a`, `x86_64`, Linux, AGP above the script, or a
+handset. Four different claims, and only the first two are a CI run away.
+
+**And one existing item changes meaning.** DoD 1 — *"`clean build` passes from a fresh
+clone"* — was PASS on a build that took the `:pjsip:api` fallback and shipped no `.so`
+(`docs/reconciliation.md` B-8). Under DoD 24 that build now **fails**, which is the intended
+outcome. Do not restore the fallback to make DoD 1 green again; a green build that cannot
+place a call is exactly what this change removes.
+
+---
+
 ## Summary
 
 | # | Item | Result |

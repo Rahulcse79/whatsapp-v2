@@ -30,10 +30,10 @@ dependencyResolutionManagement {
         }
         mavenCentral()
 
-        // No third repository. The previous SIP stack needed one of its own because it
-        // shipped from Belledonne rather than Maven Central; PJSIP ships from nowhere at
-        // all and is built by `.github/workflows/build-pjsip.yml` into `:pjsip`. The
-        // supply chain is narrower for it (ADR-006).
+        // No third repository, and under ADR-007 PJSIP needs none at all: its source is
+        // in this repository under third_party/ and `:pjsip` compiles it. The supply chain
+        // for the component that holds SIP credentials and carries media is a diff here,
+        // which is the strongest security claim the project has (docs/system-design.md §1.2).
     }
 }
 
@@ -51,11 +51,14 @@ include(":data:account")
 include(":data:settings")
 include(":data:sip")
 
-// The PJSIP binaries, wrapped (ADR-006). Not a source module — see pjsip/build.gradle.kts.
+// The native build itself (ADR-007). Compiles the vendored trees under third_party/ with
+// the NDK, through one CMake entry point, and produces libpjsua2.so per ABI. There is no
+// prebuilt AAR and no fallback: a build that produces no .so fails (N-14).
 include(":pjsip")
 
-// The Java half of that AAR, as source, so the tree still compiles when the binary is
-// absent. Used only then; the AAR wins whenever it exists. See pjsip/api/build.gradle.kts.
+// Stage 1 — the pjsua2 Java API, GENERATED from third_party/pjproject on every build by
+// the same build that produces the .so, so the JNI symbol names cannot drift from the
+// binary (N-13). Nothing under pjsip/ is a committed .java. See pjsip/api/build.gradle.kts.
 include(":pjsip:api")
 include(":data:calllog")
 include(":data:contacts")

@@ -1,3 +1,7 @@
+# Vendored native source is upstream's, in upstream's conventions (ADR-007). It is
+# excluded in DetektConventionPlugin as a task exclusion — the authoritative place, because
+# it applies to every Detekt task in every module rather than to whichever rule set happens
+# to be reading this file. Noted here so a reader looking for the exclusion finds it.
 # Overrides on top of detekt's defaults (buildUponDefaultConfig = true).
 # Only rules we deliberately disagree with are listed — everything else stays at
 # detekt's default so a detekt upgrade brings new rules in rather than silently

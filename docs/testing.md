@@ -6,6 +6,33 @@ extensions are reserved so an automated run and a person cannot collide.
 Written for Task 32. The decision behind it is **ADR-005**: integration tests run against
 an already-deployed FreeSWITCH, not a container started per run.
 
+## 0. Running the suites
+
+```bash
+export JAVA_HOME=/path/to/jdk-21
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+
+# Everything that needs no device, no server and no NDK. ~1 minute warm.
+./gradlew :domain:test :data:sip:testDebugUnitTest :test:arch:test :test:arch:detekt \
+  -Ppjsip.native=false
+```
+
+`-Ppjsip.native=false` skips the native cross-compile, which the JVM suites do not need. It
+does **not** give you a runnable APK — packaging fails without the `.so`, deliberately
+(DoD 24), so there is no way to mistake a skipped native stage for a working build.
+
+**Two things will bite before your first run, and neither is your code.**
+
+**Android Studio's Gradle daemon holds the build-logic lock.** A command-line build times
+out after seven minutes with *"Timeout waiting to lock build logic queue"*. Kill the daemon;
+it is not the IDE, and Studio starts a fresh one on its next sync.
+
+**If Studio has written `gradle/gradle-daemon-jvm.properties`, detekt fails with `> 25.0.3`.**
+That file pins Gradle's daemon to JDK 25, and detekt 1.23.8 has no `JvmTarget` for it. The
+message names a version and nothing else. Remove the file, or run on JDK 21.
+
+---
+
 ## 1. Two suites, and only one of them gates a push
 
 | | Runs | Needs a server | Gates every push |

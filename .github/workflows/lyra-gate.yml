@@ -1,0 +1,146 @@
+# ADR-008 — the §2.4 Lyra gate, criterion 1 ONLY.
+#
+# > `liblyra` and its closure build for `arm64-v8a` with NDK r27+, and the resulting
+# > `.so` files are 16 KB aligned.
+#
+# ## Why only criterion 1, and why it is checked first
+#
+# Lyra's README pins NDK **r21.4.7075529**; this project mandates **r27c** for 16 KB page
+# alignment (ADR-006, and Play's requirement for Android 15+). Lyra at r21 and pjproject at
+# r27 is a C++17 libc++ ABI mismatch across the `-llyra` link, and an r21-built `.so` is not
+# 16 KB aligned. Either Lyra's build ports to a modern NDK or the two halves cannot ship in
+# one APK — so everything else in the gate is wasted if this fails.
+#
+# The specific unknown: **the NDK ceiling of Bazel 5.3.2's `android_ndk_repository`.** It is
+# believed to be well below r27. This job is what turns that belief into evidence.
+#
+# ## This is a SPIKE, and it is deliberately not the shipped build
+#
+# It clones google/lyra at build time. That is exactly what N-2 forbids for a shipped
+# dependency — and it is correct here, because the question being answered is *whether Lyra
+# can be vendored at all*. Vendoring 2 GB (TensorFlow v2.11 plus protobuf plus the workspace
+# closure) to discover the NDK conflict would be the expensive way round. Nothing this job
+# produces is consumed by any other job; on Exit A the vendoring happens afterwards, as a
+# reviewed commit.
+#
+# workflow_dispatch only: it is a timeboxed experiment, not a gate on every push.
+name: Lyra gate — criterion 1
+
+on:
+  workflow_dispatch:
+    inputs:
+      ndk-version:
+        description: "NDK to attempt. r27c is the mandate; r21e is the control that shows the build otherwise works."
+        required: true
+        default: "r27c"
+
+permissions:
+  contents: read
+
+jobs:
+  criterion-1:
+    name: "liblyra · arm64-v8a · NDK ${{ inputs.ndk-version }}"
+    runs-on: ubuntu-latest
+    # A failure here is a RESULT, not a broken pipeline. ADR-008's Exit B is a legitimate,
+    # complete outcome, so the job records the evidence and reports rather than going red
+    # in a way that reads as "somebody broke CI".
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record the conflict this job exists to test
+        run: |
+          echo "::group::What is being tested"
+          echo "Lyra upstream : last release v1.3.2, 2022-12-20 — unmaintained ~4 years"
+          echo "Lyra .bazelversion : 5.3.2 (Bazel 5 is end-of-life)"
+          echo "Lyra README NDK    : r21.4.7075529"
+          echo "This project needs  : r27c, for 16 KB page alignment (ADR-006)"
+          echo "Attempting          : ${{ inputs.ndk-version }}"
+          echo "::endgroup::"
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: ${{ inputs.ndk-version }}
+          local-cache: false
+
+      - name: Install Bazel 5.3.2, the version Lyra pins
+        run: |
+          # Bazelisk reads .bazelversion, which is how Lyra's pin is honoured rather than
+          # guessed. Installing "latest Bazel" would test a configuration upstream never
+          # supported and produce a failure that says nothing about criterion 1.
+          sudo curl -fsSL -o /usr/local/bin/bazel \
+            https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
+          sudo chmod +x /usr/local/bin/bazel
+
+      - name: Clone google/lyra at its last release
+        run: |
+          # Pinned to the tag, not to a branch: the two floating deps INSIDE its WORKSPACE
+          # (com_google_glog on master, a gflags fork on a branch) are the finding, and
+          # cloning Lyra itself loosely would add a third.
+          git clone --depth 1 --branch v1.3.2 https://github.com/google/lyra.git lyra
+          echo "::group::The unpinned dependencies — criterion 3 cannot be met until these are fixed"
+          grep -nE 'branch *=' lyra/WORKSPACE || echo "(none — upstream has changed)"
+          echo "::endgroup::"
+
+      - name: Attempt the build — THIS is criterion 1
+        id: build
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -o pipefail
+          cd lyra
+          # --fat_apk_cpu is how Lyra's own README selects the ABI for an Android build.
+          if bazel build -c opt --config=android_arm64 :encoder_main 2>&1 | tee "$RUNNER_TEMP/bazel.log"; then
+            echo "result=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract the verdict, with the evidence ADR-008 needs
+        run: |
+          echo "## Lyra gate — criterion 1" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "NDK attempted: **${{ inputs.ndk-version }}**" >> "$GITHUB_STEP_SUMMARY"
+          echo "Result: **${{ steps.build.outputs.result }}**" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          # The specific line that decides it. android_ndk_repository refuses an NDK above
+          # the revisions Bazel 5 knows about, and says so by name — that message IS the
+          # evidence ADR-008 records, so it is extracted rather than left in a 10 MB log.
+          echo "### The NDK compatibility line" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -iE "android_ndk_repository|ndk revision|not supported|api level|unsupported" \
+            "$RUNNER_TEMP/bazel.log" | head -20 >> "$GITHUB_STEP_SUMMARY" \
+            || echo "(no NDK compatibility message — the failure, if any, is elsewhere)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${{ steps.build.outputs.result }}" = "pass" ]; then
+            echo "### 16 KB alignment" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            # Criterion 1 is TWO claims: it builds, AND the output is 16 KB aligned. A build
+            # that succeeds against an old NDK and produces a 4 KB-aligned .so has not passed.
+            find bazel-bin -name '*.so' -exec sh -c '
+              for so; do
+                echo "--- $so"
+                llvm-readelf -lW "$so" 2>/dev/null | awk "\$1 == \"LOAD\" { print \$NF }" | sort -u
+              done' sh {} + >> "$GITHUB_STEP_SUMMARY" 2>&1 || echo "(no .so found)" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Exit A is possible.** Record the alignment above in ADR-008 before proceeding to criteria 2-4." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Exit B.** Criterion 1 failed, which is a complete and legitimate outcome (§2.4.4)." >> "$GITHUB_STEP_SUMMARY"
+            echo "Update ADR-008 with the line above as the recorded evidence, leave Lyra out of the" >> "$GITHUB_STEP_SUMMARY"
+            echo "declared feature set, and note that the codec audit then reports it as *not compiled*" >> "$GITHUB_STEP_SUMMARY"
+            echo "— which satisfies DoD 20 rather than excusing it." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Keep the full log, because the summary is a summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lyra-gate-${{ inputs.ndk-version }}
+          path: ${{ runner.temp }}/bazel.log
+          if-no-files-found: warn

@@ -1,0 +1,186 @@
+# The checks the native mandate adds (docs/master-engineering-prompt.md §2).
+#
+# Split from ci.yml deliberately: these are cheap, they read files rather than building
+# anything, and every one of them caught a real defect during phase 2a. Putting them behind
+# the Gradle gate would mean a 141 MB vendoring mistake is only discovered after AGP has
+# resolved its dependencies.
+name: Native mandate
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# One run per branch. Without this, every push spawns a full set and they all survive: four
+# `Native mandate` runs were live at once, each doing the same ~15-minute egress-blocked
+# cross-compile, on a branch where only the newest commit matters. That is runner minutes
+# spent proving something about code nobody will merge.
+#
+# `main` is excluded from cancellation deliberately — a run on `main` is a record of whether
+# that commit was good, and cancelling it destroys the record. Only branch and PR runs are
+# superseded.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  provenance:
+    name: Provenance and vendored-tree integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # N-10. The document and tools/vendor/pins.sh are the same facts twice, and they must
+      # agree; and no dependency may be pinned to a branch, because an unpinned input makes
+      # N-11 unmeasurable before it can be violated.
+      - name: docs/native-dependencies.md agrees with the pins
+        run: ./tools/vendor/verify-pins.sh
+
+      # Caught 348 silently-dropped files on the first vendoring attempt. `.gitignore`'s
+      # `build/` rule matched third_party/pjproject/build/, which is the make-based build
+      # system every target includes, not build output.
+      - name: Every vendored file is tracked
+        run: ./tools/vendor/verify-vendored.sh
+
+      # The OpenSSL test/ prune is 89 MB and is safe only while build.info guards
+      # SUBDIRS=test AND every Configure passes no-tests. Both are asserted.
+      - name: The OpenSSL prune is still safe
+        run: ./tools/vendor/verify-openssl-prune.sh
+
+      # The first prune rule was "remove tests, docs and build scratch", and it broke the
+      # build three times: an autotools project DECLARES those directories, and declaring
+      # one is enough to require it. This asks the question in seconds instead.
+      - name: No pruned directory is one its own build files name
+        run: ./tools/vendor/verify-prune.sh
+
+      # A vendored tree that wgets at build time defeats N-2, and every runner has
+      # wget, so it would download silently for ever. Opus did exactly this.
+      - name: No vendored tree fetches at build time (N-2)
+        run: ./tools/vendor/verify-no-fetch.sh
+
+      # DoD 23, as a command. The bindings are generated from third_party/pjproject on every
+      # build; a committed .java under pjsip/ is the drift N-13 removes.
+      - name: No committed Java under pjsip/ (N-13)
+        run: |
+          found="$(git ls-files pjsip/ | grep '\.java$' || true)"
+          if [ -n "$found" ]; then
+            echo "::error::pjsip/ carries committed Java. The bindings are generated (N-13):"
+            printf '  %s\n' $found
+            exit 1
+          fi
+          echo "git ls-files pjsip/ carries no .java"
+
+      # DoD 15 / N-1. Architecture rule 11 checks this too, inside the Gradle gate; here it
+      # is checked before anything expensive runs, because the fix is a revert.
+      - name: No committed native binary (N-1)
+        run: |
+          found="$(git ls-files | grep -E '\.(aar|so)$' \
+            | grep -v '^test/arch/src/test/resources/violations/' || true)"
+          if [ -n "$found" ]; then
+            echo "::error::a native binary is committed. :pjsip must build it from source (N-1):"
+            printf '  %s\n' $found
+            exit 1
+          fi
+          echo "no committed .aar or .so outside the rule 11 fixture"
+
+  offline:
+    name: The native stage runs with egress blocked (N-2, §2.1.2)
+    runs-on: ubuntu-latest
+
+    # The whole job is ~10 minutes: NDK download, a SWIG run, one cross-compile. A cap well
+    # above that turns a hang into a fast, obvious failure instead of a slow, ambiguous one.
+    #
+    # This is not hypothetical. `nttld/setup-ndk` hung for 45 minutes on run 34429022472 -
+    # the step never recorded a conclusion, the job reported `failure`, and nothing in the
+    # UI said "the NDK download stalled". It read as though the offline test itself had
+    # failed, which is a far more alarming claim than the truth. Twice the expected wall
+    # clock is enough headroom for a slow runner and short enough to be honest about a hang.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # Everything the native stage needs, installed BEFORE egress is cut. This is the
+      # toolchain, and §2.1.1 exempts it: the test is that the native stage needs no
+      # network, not that apt does.
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y swig build-essential autoconf libtool pkg-config
+
+      # `local-cache: false` forces a fresh ~1 GB download on every run. That is the right
+      # trade when it works - a cached NDK once restored a tree with `toolchains/llvm/
+      # prebuilt` and nothing inside it - but it is also the step that hung, and four of
+      # these jobs used to run at once, each pulling the same gigabyte. The concurrency
+      # group above means one now.
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        timeout-minutes: 12
+        with:
+          ndk-version: r27c
+          local-cache: false
+
+      # The proof is a job that FAILS when a process opens a socket. A promise in a
+      # document is not the proof.
+      #
+      # Loopback and the runner's own DNS stay up — the point is that nothing fetches a
+      # dependency, not that the machine is unplugged from itself.
+      - name: Block egress
+        run: |
+          sudo iptables -P OUTPUT DROP
+          sudo iptables -A OUTPUT -o lo -j ACCEPT
+          sudo iptables -A OUTPUT -d 127.0.0.0/8 -j ACCEPT
+          echo "egress blocked; verifying it actually is"
+          if timeout 10 curl -fsS https://github.com >/dev/null 2>&1; then
+            echo "::error::egress is NOT blocked — this job would pass vacuously"
+            exit 1
+          fi
+          echo "confirmed: outbound HTTPS fails"
+
+      # Stage 1 with no network at all. It reads third_party/pjproject and writes Java.
+      - name: Stage 1 — SWIG, offline
+        run: |
+          set -euo pipefail
+          out="$(mktemp -d)/bindings"
+          mkdir -p "$out/org/pjsip/pjsua2"
+          cd third_party/pjproject/pjsip-apps/src/swig
+          swig -I"$GITHUB_WORKSPACE/pjsip/config" \
+               -I../../../pjlib/include -I../../../pjlib-util/include \
+               -I../../../pjmedia/include -I../../../pjsip/include \
+               -I../../../pjnath/include \
+               -c++ -D__ANDROID__ -java -package org.pjsip.pjsua2 \
+               -outdir "$out/org/pjsip/pjsua2" -o "$(mktemp -d)/pjsua2_wrap.cpp" pjsua2.i
+          count="$(find "$out" -name '*.java' | wc -l)"
+          echo "generated $count Java files with no network"
+          [ "$count" -gt 0 ] || { echo "::error::SWIG produced nothing"; exit 1; }
+
+      # Stage 2, one ABI. Three ABIs is the same proof three times over; arm64-v8a is the
+      # one every current handset runs, so it is the one that answers the question.
+      - name: Stage 2 — cross-compile arm64-v8a, offline
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+          ANDROID_API: "26"
+          ABI: arm64-v8a
+          HOST_TRIPLE: aarch64-linux-android
+          SYSROOT_TRIPLE: aarch64-linux-android
+          OPENSSL_TARGET: android-arm64
+          VPX_TARGET: arm64-android-gcc
+        run: |
+          set -euo pipefail
+          export VENDOR_ROOT="$GITHUB_WORKSPACE/third_party"
+          export CONFIG_SITE_DIR="$GITHUB_WORKSPACE/pjsip/config"
+          export STAGE="$RUNNER_TEMP/native"
+          export PREFIX="$STAGE/prefix"
+          export OUT_DIR="$RUNNER_TEMP/out"
+          bash pjsip/build-native.sh
+
+      - name: Prove it produced the expected library set (N-6)
+        run: |
+          for lib in libpjsua2.so libc++_shared.so; do
+            test -f "$RUNNER_TEMP/out/$lib" \
+              || { echo "::error::$lib is missing from the offline build"; exit 1; }
+          done
+          ls -la "$RUNNER_TEMP/out"
+          echo "the native stage completed with egress blocked (N-2)"

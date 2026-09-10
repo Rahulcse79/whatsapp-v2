@@ -5,6 +5,16 @@ build/
 !gradle/wrapper/gradle-wrapper.properties
 local.properties
 
+# ...but NOT inside the vendored trees (N-2). `build/` above is Gradle's output directory;
+# in pjproject and libvpx it is the *build system itself* — `third_party/pjproject/build/`
+# holds the .mak files every target includes. Without these negations git silently drops
+# nine directories and the vendored tree cannot build, with no error saying why.
+#
+# Verified with `git check-ignore -v`, and `tools/vendor/verify-vendored.sh` fails the
+# build if the file count on disk and the count git tracks ever diverge again.
+!third_party/**/build/
+!third_party/**/build/**
+
 # Android
 *.apk
 *.aab
@@ -16,10 +26,11 @@ captures/
 .cxx/
 output.json
 
-# PJSIP binaries (ADR-006). Built by .github/workflows/build-pjsip.yml and fetched from
-# its artifact; ~30 MB of native code that changes with every pjproject or NDK bump, and
-# not something git should be carrying. See docs/pjsip-migration.md P-2.
-pjsip/libs/*.aar
+# No PJSIP binary is ignored here any more, because none exists (ADR-007, N-1). The
+# native stack is built from third_party/ by `:pjsip`, and its output lands under
+# `build/` like every other build output. Architecture rule 11 fails the build on a
+# committed .aar or .so — an ignore rule is a convention that `git add -f` defeats
+# silently, and a rule is not.
 
 # Keystores & secrets — never commit (ADR-005 / §7)
 *.jks

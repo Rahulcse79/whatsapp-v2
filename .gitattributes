@@ -13,3 +13,24 @@ gradlew         text eol=lf
 gradle/wrapper/gradle-wrapper.jar binary linguist-vendored
 gradlew                           linguist-vendored
 gradlew.bat                       linguist-vendored
+
+# ---------------------------------------------------------------------------
+# Vendored native source (N-2). Byte-for-byte upstream, and git must not touch it.
+#
+# `* text=auto eol=lf` above normalises line endings on checkin, which is right for this
+# repository's own sources and WRONG for a vendored tree: 188 files in pjproject and
+# libvpx ship with CRLF, and normalising them means the committed bytes are not upstream's
+# bytes. Two things then break at once — architecture rule 12's tree hash differs between
+# the machine that vendored and a fresh checkout, and `the vendored tree equals
+# upstream-plus-patches` (N-7) stops being true in a way no diff shows.
+#
+# `-text` disables all line-ending conversion. `-diff` keeps `git log -p` on a 141 MB
+# import readable; the trees are reviewed as an import and as patches, never as a diff.
+third_party/** -text
+third_party/** linguist-vendored
+
+# The one thing that must still be examinable, because it is what a licence review reads.
+third_party/*/COPYING   -text linguist-vendored
+third_party/*/LICENSE   -text linguist-vendored
+third_party/*/LICENSE.* -text linguist-vendored
+

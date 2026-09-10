@@ -1,7 +1,9 @@
 package com.whatsappv2.data.sip.registration
 
 import com.whatsappv2.data.sip.network.TransportRebinder
+import com.whatsappv2.domain.codec.CodecAudit
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * The seam between this module and the SIP stack.
@@ -19,6 +21,21 @@ internal interface SipCoreGateway : TransportRebinder {
 
     /** Registration state changes, as the stack reports them. */
     val registrationEvents: Flow<StackRegistrationEvent>
+
+    /**
+     * What the running library actually registered, once per [start] (N-9, §2.5).
+     *
+     * `null` until the stack has started — absent evidence, which is not the same as "no
+     * codecs" and must not be rendered as it.
+     *
+     * **Why this crosses the seam at all.** N-9 is not satisfied by a build log: *compiled*,
+     * *registered* and *negotiated* are three different claims. A codec can be compiled in
+     * and fail to register, and one can register and be refused by every peer — the state
+     * Opus is in against the deployed server today. Only the adapter can ask
+     * `Endpoint.codecEnum2()`, and only the UI can tell the user, so the answer has to be a
+     * `:domain` value that travels between them.
+     */
+    val codecAudit: StateFlow<CodecAudit?>
 
     /** Starts the stack. Idempotent: calling it twice must not create a second core. */
     fun start()

@@ -1,6 +1,7 @@
 package com.whatsappv2.data.sip.registration.stack
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.hardware.camera2.CameraManager
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.data.sip.call.SipCallGateway
@@ -17,11 +18,15 @@ import com.whatsappv2.data.sip.registration.StackMediaEncryption
 import com.whatsappv2.data.sip.registration.StackPushParameters
 import com.whatsappv2.data.sip.registration.StackRegistrationEvent
 import com.whatsappv2.data.sip.registration.StackRegistrationState
+import com.whatsappv2.domain.codec.CodecAudit
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.pjsip.PjCameraInfo2
 import org.pjsip.pjsua2.Account
 import org.pjsip.pjsua2.AccountConfig
@@ -156,6 +161,74 @@ internal class RealPjsipCoreGateway @Inject constructor(
     private val pjsip = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, PJSIP_THREAD).apply { isDaemon = true }
     }
+
+    /**
+     * Enforces the thread-confinement invariant instead of documenting it (DoD 4).
+     *
+     * ## The invariant
+     *
+     * pjsua2 requires every thread that calls into it to be **registered with the library
+     * first**, and `Endpoint::libRegisterThread` allocates a thread descriptor that is
+     * *"only freed when the library is destroyed"*. The adapter's answer is this
+     * single-threaded executor: `libCreate` registers its own caller, every call is posted
+     * through the same executor, so exactly one thread ever calls in and no descriptor
+     * leaks (`docs/pjsip-migration.md:36-60`).
+     *
+     * ## Why an assertion and not a comment
+     *
+     * That design is correct and was, until now, held in place by everyone remembering it.
+     * Calling in from an unregistered thread is **undefined behaviour**: it does not throw,
+     * it does not log, and it surfaces later as a `SIGSEGV` in a stack trace with no Kotlin
+     * frames — the top source of native crashes in pjsua2 apps, and silent until it is
+     * fatal. Owning the build makes this more important rather than less: a stack you
+     * patched is a stack whose crashes are yours to explain.
+     *
+     * ## Debug only, deliberately
+     *
+     * A release build does nothing here. The check must never be the thing that ends a
+     * shipped call — the underlying bug is a crash either way, and turning a maybe-crash
+     * into a definite one in front of a user buys nothing.
+     *
+     * O(1): one reference comparison per call into the library.
+     *
+     * `FLAG_DEBUGGABLE` rather than `BuildConfig.DEBUG`: this module does not generate a
+     * `BuildConfig` (AGP 8 made that opt-in), and turning the feature on for one boolean
+     * would add a generated class to every variant of a library that has managed without
+     * one. The manifest flag is the same fact, already present.
+     *
+     * @throws IllegalStateException in a debug build, naming both threads.
+     */
+    private fun assertOnPjsipThread(operation: String) {
+        if (!isDebuggable) return
+        val current = Thread.currentThread()
+        check(current.name == PJSIP_THREAD) {
+            "$operation called pjsua2 from '${current.name}', not '$PJSIP_THREAD'.\n" +
+                "  Every thread that calls into pjsua2 must be registered with the library " +
+                "first, and libRegisterThread leaks a descriptor for the life of the " +
+                "process. Post through the pjsip executor instead.\n" +
+                "  Calling in unregistered is undefined behaviour: it does not throw at the " +
+                "boundary, it becomes a SIGSEGV later with no Kotlin frames."
+        }
+    }
+
+    /**
+     * Whether this is a debuggable build, read once.
+     *
+     * The flag the platform sets from the manifest, which is exactly "is this a debug
+     * build" without needing a generated `BuildConfig` in this module.
+     */
+    private val isDebuggable: Boolean =
+        (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
+    /**
+     * The codec audit (N-9, §2.5), recomputed once per successful [start].
+     *
+     * `null` until the stack has started. A `StateFlow` rather than a one-shot because the
+     * endpoint can be stopped and started again — a network change, a settings change — and
+     * the answer is a property of the running library, not of the process.
+     */
+    private val audit = MutableStateFlow<CodecAudit?>(null)
+    override val codecAudit: StateFlow<CodecAudit?> = audit.asStateFlow()
 
     private var endpoint: Endpoint? = null
 
@@ -764,10 +837,33 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
     }
 
-    private fun StackAccount.toAccountConfig(): AccountConfig = AccountConfig().apply {
-        idUri = "sip:$username@$domain"
+    /**
+     * The `;transport=` URI parameter for an account's transport, or `""` for UDP.
+     *
+     * UDP is SIP's default transport (RFC 3261 §18.1.1), so naming it adds nothing and
+     * costs the ability to upgrade an oversized request — a URI that says `transport=udp`
+     * is a URI PJSIP will keep on UDP even when the message no longer fits a datagram.
+     *
+     * TCP and TLS must be named, because nothing else would select them: neither the
+     * registrar URI nor the account id carries the information otherwise, and the
+     * alternative — pinning `sipConfig.transportId` — silently sends nothing.
+     */
+    private fun transportUriParameter(transport: String): String =
+        when (transport.uppercase()) {
+            TRANSPORT_TCP -> ";transport=tcp"
+            TRANSPORT_TLS -> ";transport=tls"
+            else -> ""
+        }
 
-        regConfig.registrarUri = registrarUri
+    private fun StackAccount.toAccountConfig(): AccountConfig = AccountConfig().apply {
+        // The transport is selected by the URI parameter, which is what RFC 3261 §19.1.1
+        // defines it for — NOT by pinning `sipConfig.transportId`. See the note below on
+        // why the pinned form sent nothing at all.
+        val transportParam = transportUriParameter(transport)
+
+        idUri = "sip:$username@$domain$transportParam"
+
+        regConfig.registrarUri = registrarUri + transportParam
         regConfig.timeoutSec = expirySeconds.toLong()
         regConfig.registerOnAdd = registerEnabled
         pushParameters?.let { push ->
@@ -783,24 +879,27 @@ internal class RealPjsipCoreGateway @Inject constructor(
         )
         proxyUri?.let { sipConfig.proxies.add(it) }
 
-        // UDP is deliberately left unpinned. `transportId` becomes a
-        // PJSIP_TPSELECTOR_TRANSPORT on the dialog (pjsua_init_tpselector in
-        // pjsua_core.c), and that defeats RFC 3261 s18.1.1: PJSIP rewrites the first
-        // destination of a request over 1300 bytes to TCP, then
-        // `pjsip_endpt_acquire_transport2` refuses it because the pinned transport is a
-        // UDP one, and the message falls back to the UDP entry behind it. Every
-        // oversized INVITE this app sent said so - "Unsuitable transport selected
-        // (PJSIP_ETPNOTSUITABLE)" one line before a 1735-byte datagram - and a 1735-byte
-        // datagram is IP-fragmented, which is what a router between us and the registrar
-        // drops. REGISTER at 822 bytes went through the same path untouched.
-        // Unpinned, the account still resolves to UDP by default; it now switches to a
-        // congestion-controlled transport only when the message is too big to send as
-        // one datagram, which is what the RFC asks for.
-        // TCP and TLS stay pinned: the registrar URI carries no `;transport=` parameter,
-        // so nothing else would select them.
-        if (transport.uppercase() != TRANSPORT_UDP) {
-            transports[transport.uppercase()]?.let { sipConfig.transportId = it }
-        }
+        // `sipConfig.transportId` is deliberately NEVER set. Not for UDP, and — this is
+        // the change — not for TCP or TLS either.
+        //
+        // For UDP, pinning defeats RFC 3261 §18.1.1: PJSIP rewrites the destination of a
+        // request over 1300 bytes to TCP, `pjsip_endpt_acquire_transport2` then refuses it
+        // because the pinned transport is a UDP one, and the message falls back to UDP as
+        // one oversized, IP-fragmented datagram that routers drop.
+        //
+        // For TCP and TLS, pinning is worse: it sends **nothing at all**. `transportCreate`
+        // returns the id of a *listener* (a `pjsip_tpfactory`), not of a connected
+        // transport, and `pjsua_acc_config.transport_id` turns that into a
+        // `PJSIP_TPSELECTOR_TRANSPORT` on the dialog. Acquiring a transport for an outbound
+        // request against a selector that names a listener yields nothing usable, so the
+        // REGISTER is never put on the wire. Observed exactly that way: the account sat in
+        // "Registering…" for 32 seconds and timed out, while the registrar's own log showed
+        // **no packet of any kind** from the handset — and a raw TCP connection from the
+        // same device to the same port succeeded. No error, no retry, no datagram.
+        //
+        // The transport is chosen by the `;transport=` URI parameter instead, which is what
+        // RFC 3261 §19.1.1 defines it for. PJSIP resolves it per request, so an account can
+        // still upgrade an oversized message to TCP the way §18.1.1 requires.
 
         // The account's policy, not a constant. This was `= true` regardless of what the
         // account said, which made three settings in the account form do nothing - and
@@ -884,6 +983,8 @@ internal class RealPjsipCoreGateway @Inject constructor(
             TAG,
             "Codecs for ${account.key}: audio=${account.audioCodecs} video=${account.videoCodecs}",
         )
+
+        audit.value = auditCodecs(logger)
     }
 
     private inline fun applyPriorities(
@@ -1506,10 +1607,31 @@ internal class RealPjsipCoreGateway @Inject constructor(
      */
     private fun onPjsip(what: String, block: () -> Unit) {
         pjsip.execute {
+            // DoD 4. Every pjsua2 call in this class arrives through here, so this one line
+            // is the whole enforcement point for the thread-confinement invariant. It is a
+            // tautology today - `pjsip` is single-threaded, so the check cannot fail - and
+            // that is exactly the point: the day somebody adds a second executor, or posts
+            // one operation to Dispatchers.IO to "just get it working", this fails in the
+            // debug build instead of becoming a SIGSEGV with no Kotlin frames weeks later.
+            assertOnPjsipThread(what)
+
             // The throwable, not just its message. A message alone cannot say which frame
             // in a JNI call threw, and for an UnsatisfiedLinkError the frame is the answer.
             runCatching(block).onFailure { logger.error(TAG, "$what failed: ${it.message}", it) }
         }
+    }
+
+    /**
+     * Runs [block] on the caller's thread, having first asserted it is the PJSIP one.
+     *
+     * For the paths that are ALREADY on the executor — a SWIG director callback, which
+     * pjsua2 raises on its own registered thread — where re-posting through [onPjsip] would
+     * deadlock or reorder. Visible to tests so DoD 4's "proven by a test that trips it
+     * deliberately" has something to trip.
+     */
+    internal fun <T> requirePjsipThread(what: String, block: () -> T): T {
+        assertOnPjsipThread(what)
+        return block()
     }
 
     private companion object {

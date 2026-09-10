@@ -58,6 +58,7 @@ import com.whatsappv2.domain.repository.AppSettingsRepository
 import com.whatsappv2.domain.repository.SipAccountRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -276,12 +277,20 @@ internal class PjsipSipEngine @Inject constructor(
     private val videoOffers = MutableSharedFlow<VideoRequest>(
         replay = 0,
         extraBufferCapacity = INCOMING_BUFFER,
+        // Stated, not inherited. On overflow the emitter suspends; because this one is
+        // published with tryEmit from a non-suspend path, [emitOrReport] turns a refusal
+        // into a WARN rather than nothing. A dropped offer is recoverable —
+        // pendingVideoRequests still holds it — so a reported drop is the right trade here.
+        onBufferOverflow = BufferOverflow.SUSPEND,
     )
     override val videoRequests: Flow<VideoRequest> = videoOffers.asSharedFlow()
 
     private val transfers = MutableSharedFlow<TransferEvent>(
         replay = 0,
         extraBufferCapacity = INCOMING_BUFFER,
+        // A dropped transfer event loses the OUTCOME, never the call: the state machine has
+        // already advanced and the call is correct either way. Reported, not fatal.
+        onBufferOverflow = BufferOverflow.SUSPEND,
     )
     override val transferEvents: Flow<TransferEvent> = transfers.asSharedFlow()
 
@@ -319,7 +328,7 @@ internal class PjsipSipEngine @Inject constructor(
         pendingVideoRequests -= callId
         transferTypes -= callId
         platform.onEnded(callId, reason)
-        ending?.let(ended::tryEmit)
+        ending?.let { ended.emitOrReport(logger, it, "endedCalls") }
     }
 
     /**
@@ -334,6 +343,10 @@ internal class PjsipSipEngine @Inject constructor(
     private val incoming = MutableSharedFlow<IncomingCall>(
         replay = 0,
         extraBufferCapacity = INCOMING_BUFFER,
+        // The one stream that must never drop, and the only one published with a suspending
+        // `emit` (see the emit site). A dropped inbound call is a call that never rang and
+        // never reached the log — the single worst loss in the app.
+        onBufferOverflow = BufferOverflow.SUSPEND,
     )
     override val incomingCalls: Flow<IncomingCall> = incoming.asSharedFlow()
 
@@ -347,6 +360,11 @@ internal class PjsipSipEngine @Inject constructor(
     private val ended = MutableSharedFlow<CallSnapshot>(
         replay = 0,
         extraBufferCapacity = INCOMING_BUFFER,
+        // The call log writes one row per emission, so a drop is a call that happened and is
+        // not in the history. [endCall] is not a suspend function, so this cannot suspend at
+        // its only emit site; [emitOrReport] makes the loss visible instead of silent, which
+        // is the difference between a bug that can be diagnosed and one that cannot.
+        onBufferOverflow = BufferOverflow.SUSPEND,
     )
     override val endedCalls: Flow<CallSnapshot> = ended.asSharedFlow()
 
@@ -468,7 +486,7 @@ internal class PjsipSipEngine @Inject constructor(
                     advanceTransfer(id, CallEvent.TransferSucceeded)
                     // Published before the call is dropped, so a collector watching this
                     // call is told why it went rather than merely that it did.
-                    transfers.tryEmit(mapped)
+                    transfers.emitOrReport(logger, mapped, "transferEvents")
                     endCall(id, HangupReason.LOCAL_HANGUP)
                     return@collect
                 }
@@ -481,7 +499,7 @@ internal class PjsipSipEngine @Inject constructor(
 
                 is TransferEvent.Accepted, is TransferEvent.Progressing -> Unit
             }
-            transfers.tryEmit(mapped)
+            transfers.emitOrReport(logger, mapped, "transferEvents")
         }
     }
 
@@ -716,7 +734,7 @@ internal class PjsipSipEngine @Inject constructor(
             receivedAtEpochMillis = clock.nowEpochMillis(),
         )
         pendingVideoRequests[id] = request
-        videoOffers.tryEmit(request)
+        videoOffers.emitOrReport(logger, request, "videoRequests")
     }
 
     /**
