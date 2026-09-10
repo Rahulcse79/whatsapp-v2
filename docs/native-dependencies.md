@@ -205,8 +205,17 @@ So N-2, N-4, N-5 and N-6 are demonstrated: the vendored source compiles, through
 - **The egress-blocked offline job of §2.1.2 has not gone green.** Until it does, "the
   vendored tree needs no network" is an argument, not a result — and Opus proved that
   argument wrong once already (§1.3).
-- **Reproducibility (N-11) has not been measured.** Two builds of the same commit have not
-  been hash-compared. `pjsip/build-native.sh`
+- **Reproducibility (N-11) has not been measured**, and until now it was not *measurable*:
+  nothing recorded what a build produced. `assertNativeLibraries` now prints a SHA-256 per
+  `.so` per ABI, so comparing two runs of the same commit is a diff of two logs.
+
+  **It is printed, not asserted, and that is deliberate.** Whether these binaries are
+  bit-identical across runs is a question with a likely answer of *no*: pjproject links with
+  `-Wl,--build-id=sha1` and autotools bakes absolute paths into its output, so two runs in
+  different directories will differ for reasons that have nothing to do with the source.
+  N-11 permits exactly that — *"or the document states precisely why they cannot and what
+  varies"* — and asserting equality before anyone has looked would either be a lie or a
+  permanently red build. `pjsip/build-native.sh`
 carries the TLS/Opus/VPX assertions and the 16 KB alignment assertion, ported flag-for-flag
 from the green workflow, and `.github/workflows/native-mandate.yml` runs the whole native
 stage with **egress blocked** (§2.1.2). Until that job is green, the honest claim is

@@ -175,6 +175,27 @@ val assertNativeLibraries = tasks.register("assertNativeLibraries") {
                 "  Every supported ABI must carry its full expected set (N-6)."
         }
         logger.lifecycle("native libraries: ${abis.size} ABIs × ${expected.size} libraries, all present")
+
+        // N-11 needs two builds of the same commit compared, and that is impossible if
+        // nothing ever writes down what a build produced. Printing the digests costs
+        // milliseconds and turns "are these reproducible?" into a diff of two logs.
+        //
+        // It is deliberately NOT an assertion. Whether these binaries are bit-identical
+        // across runs is a QUESTION, and the honest answer today is that nobody has
+        // checked — pjproject embeds a build id (`-Wl,--build-id=sha1`) and autotools
+        // records paths, so the likely answer is "no, and here is exactly why", which is
+        // what N-11 asks the document to state.
+        logger.lifecycle("--- native library digests (N-11) ---")
+        root.walkTopDown()
+            .filter { it.isFile && it.name in expected }
+            .sortedBy { it.path }
+            .forEach { so ->
+                val abi = so.parentFile.name
+                val digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(so.readBytes())
+                    .joinToString("") { "%02x".format(it) }
+                logger.lifecycle("  $abi/${so.name}  ${so.length()} bytes  sha256:$digest")
+            }
     }
 }
 
