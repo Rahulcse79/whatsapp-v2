@@ -66,6 +66,7 @@ import org.pjsip.pjsua2.pjsua_call_vid_strm_op
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -156,7 +157,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
      *
      * A daemon thread, so it cannot hold the process up if [stop] is never reached.
      */
-    private val pjsip = Executors.newSingleThreadExecutor { runnable ->
+    private val pjsip = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, PJSIP_THREAD).apply { isDaemon = true }
     }
 
@@ -604,8 +605,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
             accounts.values.forEach { account ->
                 runCatching { account.setRegistration(false) }
-                runCatching { account.shutdown() }
-                account.release()
+                account.finishRemoval("stop")
             }
             accounts.clear()
             // Deleted while the library is still up: `Call::~Call` touches the call slot
@@ -781,8 +781,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // Best effort, and unchecked on purpose: the reason we are here is usually
             // that the registrar is not answering, so neither of these can be relied on.
             runCatching { stale.setRegistration(false) }
-            runCatching { stale.shutdown() }
-            stale.release()
+            stale.finishRemoval("rebuilt")
         }
 
         runCatching {
@@ -807,11 +806,32 @@ internal class RealPjsipCoreGateway @Inject constructor(
             val account = accounts.remove(accountKey) ?: return@onPjsip
             accountConfigs -= accountKey
             // Unregister before shutdown so the registrar hears `Expires: 0` rather than
-            // simply losing the binding when it lapses.
-            runCatching { account.setRegistration(false) }
-            runCatching { account.shutdown() }
-                .onFailure { logger.warn(TAG, "shutdown of $accountKey failed: ${it.message}") }
-            account.release()
+            // simply losing the binding when it lapses — and shut down only once the
+            // registrar has answered, because a deleted account has no callback left to
+            // report the answer through.
+            //
+            // This used to shut the account down on the very next line. Measured on a
+            // TC15, 2026-09-10: `Expires: 0` sent at :02.066, "Deleting account 0" at
+            // :02.067, the registrar's 200 at :02.112 — forty-five milliseconds too late
+            // for anyone to hear it. The engine, promised a CLEARED event by this
+            // interface, waited its full five seconds on every logout and every policy
+            // edit and then logged "not acknowledged; dropping it locally". The wire was
+            // always fine; the report was thrown away.
+            account.leaving = true
+            val sent = runCatching { account.setRegistration(false) }.isSuccess
+            if (!sent) {
+                // Nothing registered, so nothing to wait for. PJSIP says so as an error.
+                account.finishRemoval("not registered")
+                return@onPjsip
+            }
+            // A registrar that never answers must not keep the credentials in memory
+            // for the life of the process (Task 29). Longer than the engine's own wait,
+            // so that the ordinary case is the answer and not this.
+            pjsip.schedule(
+                { account.finishRemoval("no answer in ${UNREGISTER_GRACE_MILLIS} ms") },
+                UNREGISTER_GRACE_MILLIS,
+                TimeUnit.MILLISECONDS,
+            )
         }
     }
 
@@ -1318,6 +1338,16 @@ internal class RealPjsipCoreGateway @Inject constructor(
     /** One configured identity, and the callbacks PJSIP raises for it. */
     private inner class PjAccount(val accountKey: String) : Account() {
 
+        /**
+         * True once [removeAccount] has sent the un-REGISTER: the next registration
+         * answer is the one that finishes the removal.
+         */
+        @Volatile
+        var leaving: Boolean = false
+
+        /** PJSIP thread only: [finishRemoval] runs once, whichever caller gets there first. */
+        private var finished = false
+
         override fun onRegState(prm: OnRegStateParam) {
             val code = prm.code
             events.tryEmit(
@@ -1330,6 +1360,24 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     message = prm.reason,
                 ),
             )
+            // Posted, not done here: this callback runs in the account's own native
+            // frame, and deleting the object under it is the same crash as deleting a
+            // call inside its callback. Whatever the answer was — a 2xx or a failure —
+            // the registrar has spoken, and the account is done.
+            if (leaving) onPjsip("finishRemoval") { finishRemoval("unregistration answered $code") }
+        }
+
+        /**
+         * Shuts the account down and frees its native peer. Idempotent, so the answer
+         * and the fallback timer can both call it.
+         */
+        fun finishRemoval(why: String) {
+            if (finished) return
+            finished = true
+            logger.debug(TAG, "Releasing account $accountKey: $why")
+            runCatching { shutdown() }
+                .onFailure { logger.warn(TAG, "shutdown of $accountKey failed: ${it.message}") }
+            release()
         }
 
         override fun onIncomingCall(prm: OnIncomingCallParam) {
@@ -1736,6 +1784,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
         /** Whatever `AccountConfig.videoConfig.defaultCaptureDevice` resolved to. */
         const val CAPTURE_DEVICE_DEFAULT = -1
+
+        /**
+         * How long a removed account may wait for its un-REGISTER to be answered before
+         * it is shut down regardless. Longer than `PjsipSipEngine`'s five-second wait,
+         * so the ordinary path is the answer and this is only ever a registrar that has
+         * gone away.
+         */
+        const val UNREGISTER_GRACE_MILLIS = 8_000L
     }
 }
 
