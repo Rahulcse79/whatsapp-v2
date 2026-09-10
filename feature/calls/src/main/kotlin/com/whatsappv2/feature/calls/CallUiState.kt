@@ -108,10 +108,14 @@ data class CallControlAvailability(
             // Everything except an inbound call that has not been answered - that one is
             // rejected rather than hung up, and the two send different responses.
             canHangUp = phase != CallPhase.ENDED && phase != CallPhase.INCOMING,
-            // Mute and routing need media, which exists from the moment the call is
-            // answered and not before. Muting a ringing call mutes nothing.
+            // Mute needs media, which exists from the moment the call is answered and not
+            // before. Muting a ringing call mutes nothing.
             canMute = phase.hasMedia,
-            canChangeRoute = phase.hasMedia,
+            // Routing does not: the platform routes the ringback and any early media from
+            // the moment it has the call, and a Speaker press while the far end rings is
+            // the most natural time to make one. Measured disabled here on a TC15,
+            // 2026-09-10 — the press went nowhere and the call came up on the earpiece.
+            canChangeRoute = phase != CallPhase.ENDED,
             // Hold is a re-INVITE on an established dialog. Before Connected there is no
             // dialog to re-INVITE, which is why this is a state question and not a flag.
             canHold = phase == CallPhase.CONNECTED,
@@ -339,7 +343,10 @@ internal fun CallSnapshot.toDisplay(nowEpochMillis: Long, contact: Contact? = nu
         photoUri = contact?.photoUri,
         direction = direction,
         phase = CallPhase.of(state),
-        controls = state.controlsOrNull ?: CallControls.DEFAULT,
+        // Before media the controls are defaults — except the route, which the user may
+        // already have chosen and which the platform is already honouring.
+        controls = state.controlsOrNull
+            ?: CallControls.DEFAULT.copy(audioRoute = requestedAudioRoute ?: CallControls.DEFAULT.audioRoute),
         durationSeconds = durationMillis(nowEpochMillis)?.let { it / MILLIS_PER_SECOND },
         videoOffered = media.hasVideo,
         videoActive = media.hasVideo,

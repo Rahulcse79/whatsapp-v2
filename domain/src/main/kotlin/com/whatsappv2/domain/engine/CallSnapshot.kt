@@ -1,5 +1,6 @@
 package com.whatsappv2.domain.engine
 
+import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
@@ -52,6 +53,18 @@ data class CallSnapshot(
 
     /** True while this call is part of a conference (§2.2). */
     val isConference: Boolean = false,
+
+    /**
+     * A route the user asked for before the call had controls to hold it, or null.
+     *
+     * The audio route is the one control that exists before media does: the platform
+     * routes the ringback and any early media, and a user who presses Speaker while the
+     * far end is still ringing means it. [CallState.Outgoing] and [CallState.Incoming]
+     * carry no [com.whatsappv2.domain.call.CallControls], so the request lives here until
+     * the call is established, is folded into the controls at that moment, and is null
+     * from then on — a reader wanting the route asks the controls first and this second.
+     */
+    val requestedAudioRoute: AudioRoute? = null,
 ) {
     /** True when the call has been answered and media has flowed at least once. */
     val wasAnswered: Boolean get() = connectedAtEpochMillis != null

@@ -17,6 +17,8 @@ import com.whatsappv2.domain.engine.CallSnapshot
 import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.engine.SipMediaController
 import com.whatsappv2.domain.model.CallId
+import com.whatsappv2.domain.model.PreferredAudioRoute
+import com.whatsappv2.domain.repository.AppSettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -46,6 +48,7 @@ class CallAudioCoordinator @Inject constructor(
     private val calls: SipCallController,
     private val media: SipMediaController,
     private val proximity: ProximityLock,
+    private val settings: AppSettingsRepository,
     @ApplicationScope private val scope: CoroutineScope,
     private val logger: Logger,
 ) {
@@ -57,6 +60,16 @@ class CallAudioCoordinator @Inject constructor(
 
     /** The route the user last asked for, so a device change does not silently undo it. */
     private var chosenRoute: AudioRoute? = null
+
+    /**
+     * Settings → Audio route, as last observed.
+     *
+     * Held rather than read per decision: [applyRoute] runs from a device callback on the
+     * main thread, which is no place for a DataStore read. It was collected by nothing
+     * until now — the control said "where calls start" and changed where no call started.
+     */
+    @Volatile
+    private var preference: PreferredAudioRoute = PreferredAudioRoute.AUTOMATIC
 
     /** True when focus loss muted the call, so regaining it can unmute exactly that. */
     private var mutedByFocusLoss = false
@@ -102,6 +115,9 @@ class CallAudioCoordinator @Inject constructor(
      */
     fun start() {
         scope.launch {
+            settings.observeSettings().collect { preference = it.preferredAudioRoute }
+        }
+        scope.launch {
             calls.activeCalls.collect { active ->
                 val call = active.firstOrNull { it.needsAudio }
                 when {
@@ -112,6 +128,15 @@ class CallAudioCoordinator @Inject constructor(
             }
         }
     }
+
+    /**
+     * The route this call is on, or has asked for before it had controls to be on.
+     *
+     * Controls first, the pre-media request second: the engine folds the request into the
+     * controls the moment they exist and clears it, so the two never disagree.
+     */
+    private val CallSnapshot.chosenAudioRoute: AudioRoute?
+        get() = state.controlsOrNull?.audioRoute ?: requestedAudioRoute
 
     /**
      * True once this call has audio to route.
@@ -133,7 +158,7 @@ class CallAudioCoordinator @Inject constructor(
      * makes it impossible.
      */
     private fun follow(call: CallSnapshot) {
-        val current = call.state.controlsOrNull?.audioRoute ?: return
+        val current = call.chosenAudioRoute ?: return
 
         // Video is read first and on every emission, because it moves on its own. An
         // escalation turns a voice call into a video call without touching the audio
@@ -158,11 +183,17 @@ class CallAudioCoordinator @Inject constructor(
         // Seeded from the call rather than cleared, and that is the fix for "the speaker
         // button does nothing". Audio starts following a call the moment it has audio to
         // route — on answer, or on early media — but the speaker button is on screen from
-        // the first ring, and a route chosen in that window is already on the call by the
-        // time this runs. Clearing it here threw that choice away and then re-derived a
-        // route from the devices alone, which is the earpiece: the user pressed Speaker
-        // while it rang, the call connected, and the audio snapped back to their ear.
-        chosenRoute = call.state.controlsOrNull?.audioRoute
+        // the first ring, and a route chosen in that window has to survive into here.
+        // Clearing it threw that choice away and then re-derived a route from the devices
+        // alone, which is the earpiece: the user pressed Speaker while it rang, the call
+        // connected, and the audio snapped back to their ear.
+        //
+        // "Survive into here" needs `chosenAudioRoute`, not the controls alone. A ringing
+        // call has no controls — `CallState.Outgoing` cannot hold a route — so the
+        // controls-only version of this line was a fix that could not work, and the
+        // handset showed it: two USER_SWITCH_EARPIECE in Telecom's log at the moment this
+        // ran, overriding the press. The request lives on the snapshot until then.
+        chosenRoute = call.chosenAudioRoute
         lastApplied = null
         mutedByFocusLoss = false
         // Before `applyRoute`, which reads it to decide the proximity lock.
@@ -194,7 +225,7 @@ class CallAudioCoordinator @Inject constructor(
 
     private fun applyRoute(arrived: AudioRoute?) {
         val callId = activeCall ?: return
-        val route = AudioRoutePolicy.routeAfterDeviceChange(currentDevices(), chosenRoute, arrived)
+        val route = AudioRoutePolicy.routeAfterDeviceChange(currentDevices(), chosenRoute, arrived, preference)
         lastApplied = route
 
         scope.launch {

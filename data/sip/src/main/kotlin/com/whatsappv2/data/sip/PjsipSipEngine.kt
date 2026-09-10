@@ -576,7 +576,7 @@ internal class PjsipSipEngine @Inject constructor(
         val justConnected = current.connectedAtEpochMillis == null &&
             CallStateMapper.isConnected(event.state)
         reportToPlatform(id, current, next, justConnected)
-        store(id, current, next, event, justConnected)
+        store(id, current, withRequestedRoute(current, next), event, justConnected)
         if (justConnected) adoptNegotiatedVideo(id)
     }
 
@@ -668,25 +668,13 @@ internal class PjsipSipEngine @Inject constructor(
                     media = negotiatedMedia(current, event),
                     connectedAtEpochMillis = current.connectedAtEpochMillis
                         ?: clock.nowEpochMillis().takeIf { justConnected },
+                    // Consumed by the controls the moment they exist; see withRequestedRoute.
+                    requestedAudioRoute = current.requestedAudioRoute
+                        .takeIf { next?.controlsOrNull == null },
                 )
                 )
         }
     }
-
-    /**
-     * What is actually negotiated, not what was asked for when the call was placed.
-     *
-     * This is the only place a re-INVITE that added or dropped video reaches the screen
-     * (Task 54). Read only once media is running: before that the stack's params describe
-     * an offer nobody has answered, and taking them as the negotiated truth would show a
-     * video call as audio for the length of its ring.
-     */
-    private fun negotiatedMedia(current: CallSnapshot, event: StackCallEvent): MediaProfile =
-        if (CallStateMapper.isConnected(event.state)) {
-            MediaProfile.of(audio = true, video = event.videoActive) ?: current.media
-        } else {
-            current.media
-        }
 
     /**
      * Drops a call whose media is not encrypted when the account requires it (Task 62).
@@ -1037,13 +1025,34 @@ internal class PjsipSipEngine @Inject constructor(
      * The route reaches the FSM only once the platform has accepted it, which is what
      * keeps the in-call screen showing where audio actually is rather than where it was
      * asked to go.
+     *
+     * ## Before media, the request is kept rather than refused
+     *
+     * The route is the one control that exists before the call does: Telecom routes the
+     * ringback and any early media from the moment it has the connection, and a user who
+     * presses Speaker while the far end is still ringing has said where they want the
+     * call. The FSM cannot hold that yet — `Outgoing` and `Incoming` carry no controls,
+     * and rightly, because mute and video have nothing to act on — so the accepted route
+     * is kept on the snapshot as [CallSnapshot.requestedAudioRoute] and folded into the
+     * controls by [advance] on the transition that creates them.
+     *
+     * Measured on a Zebra TC15 on 2026-09-10, before this: a Speaker press between the
+     * 183 and the 200 reached nothing and logged nothing, and the answered call came up
+     * on the earpiece. The same press a few seconds later, on the connected call, worked
+     * at once — which is the "it only works after a Settings round trip" that was
+     * reported: the round trip was the time it took the call to connect.
      */
     override suspend fun setAudioRoute(callId: CallId, route: AudioRoute): Outcome<Unit, SipError> {
         if (!started) return failure(SipError.EngineUnavailable)
-        if (callId !in calls.value) return failure(SipError.UnknownCall)
+        val call = calls.value[callId] ?: return failure(SipError.UnknownCall)
+        if (!call.state.isActive) return failure(SipError.InvalidState("call is ${call.state}"))
 
         if (!platform.requestAudioRoute(callId, route)) {
             return failure(SipError.InvalidState("$route is not available"))
+        }
+        if (call.state.controlsOrNull == null) {
+            updateCalls { it + (callId to call.copy(requestedAudioRoute = route)) }
+            return success(Unit)
         }
         return applyControl(callId, CallEvent.SetAudioRoute(route))
     }
@@ -1429,3 +1438,37 @@ internal class PjsipSipEngine @Inject constructor(
 /** Whether Telecom should show this call as held: see `PjsipSipEngine.reportToPlatform`. */
 private val CallState.isHeldForPlatform: Boolean
     get() = this is CallState.Held || this is CallState.Resuming
+
+/**
+ * Folds a route requested before the call had controls into the controls it now has.
+ *
+ * Applied by `PjsipSipEngine.advance` before `store` emits, and not afterwards:
+ * `CallAudioCoordinator.begin` runs on the first established snapshot it sees and seeds
+ * its own idea of the chosen route from that snapshot's controls. A route applied one
+ * emission later would be a route the coordinator had already overridden with the
+ * earpiece. The same reason `adoptNegotiatedVideo` is only safe *after* the store — it
+ * reads the stored call — is the reason this has to be before it.
+ */
+private fun withRequestedRoute(current: CallSnapshot, next: CallState?): CallState? {
+    val route = current.requestedAudioRoute ?: return next
+    if (next == null || next.controlsOrNull == null) return next
+    return when (val folded = CallStateMachine.transition(next, CallEvent.SetAudioRoute(route))) {
+        is TransitionResult.Moved -> folded.state
+        is TransitionResult.Rejected -> next
+    }
+}
+
+/**
+ * What is actually negotiated, not what was asked for when the call was placed.
+ *
+ * This is the only place a re-INVITE that added or dropped video reaches the screen
+ * (Task 54). Read only once media is running: before that the stack's params describe
+ * an offer nobody has answered, and taking them as the negotiated truth would show a
+ * video call as audio for the length of its ring.
+ */
+private fun negotiatedMedia(current: CallSnapshot, event: StackCallEvent): MediaProfile =
+    if (CallStateMapper.isConnected(event.state)) {
+        MediaProfile.of(audio = true, video = event.videoActive) ?: current.media
+    } else {
+        current.media
+    }

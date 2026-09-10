@@ -45,6 +45,8 @@ import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -57,6 +59,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -544,6 +547,73 @@ class PjsipSipEngineMediaTest : PjsipSipEngineFixture() {
             )
             engine.stop()
         }
+
+    @Test
+    fun `a route chosen while the far end rings is kept, and is on the call when it connects`() =
+        runTest {
+            // Measured on a TC15, 2026-09-10: a Speaker press between the 183 and the 200
+            // reached nothing, and the answered call came up on the earpiece. The route
+            // is the one control that exists before media — Telecom routes the ringback —
+            // so the press is accepted, sent to the platform, and folded into the
+            // controls on the very emission that creates them, which is what the audio
+            // coordinator seeds its choice from.
+            val engine = registeredEngine()
+            val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+            runCurrent()
+            gateway.emitCall(callId.value, StackCallState.OUTGOING_EARLY_MEDIA)
+            runCurrent()
+
+            assertTrue(engine.setAudioRoute(callId, AudioRoute.SPEAKER) is Outcome.Success)
+            assertEquals(listOf(callId to AudioRoute.SPEAKER), platform.requestedRoutes)
+            val ringing = engine.activeCalls.value.single()
+            assertIs<CallState.Outgoing.EarlyMedia>(ringing.state)
+            assertEquals(AudioRoute.SPEAKER, ringing.requestedAudioRoute)
+
+            // The first established snapshot already carries it: nothing between the
+            // answer and this could have seen a Connected call on the earpiece.
+            val firstConnected = async {
+                engine.activeCalls.first { calls -> calls.any { it.state.controlsOrNull != null } }.single()
+            }
+            gateway.emitCall(callId.value, StackCallState.CONNECTED)
+            runCurrent()
+
+            val connected = firstConnected.await()
+            assertEquals(AudioRoute.SPEAKER, connected.state.controlsOrNull?.audioRoute)
+            assertNull(connected.requestedAudioRoute, "consumed by the controls, not carried twice")
+            engine.stop()
+        }
+
+    @Test
+    fun `a route the platform refuses while ringing is refused, not remembered`() = runTest {
+        val engine = registeredEngine()
+        val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+        platform.availableRoutes = setOf(AudioRoute.EARPIECE, AudioRoute.SPEAKER)
+
+        assertIs<SipError.InvalidState>(engine.setAudioRoute(callId, AudioRoute.BLUETOOTH).errorOrNull())
+        assertNull(engine.activeCalls.value.single().requestedAudioRoute)
+        engine.stop()
+    }
+
+    @Test
+    fun `the last route chosen while ringing is the one that lands`() = runTest {
+        // The coordinator asks for the earpiece on early media; the user presses Speaker
+        // after it. Whoever spoke last is right, exactly as on a connected call.
+        val engine = registeredEngine()
+        val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+
+        engine.setAudioRoute(callId, AudioRoute.EARPIECE)
+        engine.setAudioRoute(callId, AudioRoute.SPEAKER)
+        gateway.emitCall(callId.value, StackCallState.CONNECTED)
+        runCurrent()
+
+        assertEquals(
+            AudioRoute.SPEAKER,
+            engine.activeCalls.value.single().state.controlsOrNull?.audioRoute,
+        )
+        engine.stop()
+    }
 
     // ---------------------------------------------------------------- hold (Task 41)
 
