@@ -11,6 +11,18 @@ on:
   pull_request:
   workflow_dispatch:
 
+# One run per branch. Without this, every push spawns a full set and they all survive: four
+# `Native mandate` runs were live at once, each doing the same ~15-minute egress-blocked
+# cross-compile, on a branch where only the newest commit matters. That is runner minutes
+# spent proving something about code nobody will merge.
+#
+# `main` is excluded from cancellation deliberately — a run on `main` is a record of whether
+# that commit was good, and cancelling it destroys the record. Only branch and PR runs are
+# superseded.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 permissions:
   contents: read
 
