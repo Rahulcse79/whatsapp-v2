@@ -290,7 +290,92 @@ posture, not a convenience.
 
 ---
 
-## 7. Order of work, with a gate after each
+## 7. Diagnosing video, step by step — and four pieces of general advice that are wrong here
+
+A generic PJSIP video checklist was put to this project. Most of it is sound; four items do
+not apply and one omission is the actual cause. Both halves are recorded because the next
+person will be handed the same checklist.
+
+### 7.1 What to check, in this order, on this build
+
+1. **Is video compiled in?** Already answered: `PJMEDIA_HAS_VIDEO 1` and
+   `PJMEDIA_HAS_VPX_CODEC 1` (§3). Do not re-derive it.
+2. **What video codecs actually registered?** Already answered every launch, on the device:
+   `CodecAuditReporter` logs `videoCodecEnum2()` verbatim with priorities. The measured
+   registry is `VP8/102`, `H264/99`, `VP8/103`, `VP9/106`. **A codec at priority 0 is
+   registered and will never be offered** — the number matters as much as the id, which is why
+   it is logged.
+   ```bash
+   adb -s <serial> logcat | grep "Codec audit"
+   ```
+3. **Does the offer contain `m=video`?** Turn the SIP trace **on in Settings** (§7.2 item 2),
+   place a video call, and read the INVITE. `m=video` present with a non-zero port and the far
+   end answering `m=video 0` is a rejection; `m=video` missing is the app not offering video at
+   all.
+4. **Did the INVITE arrive?** — **this is the one the checklist has no step for, and it is the
+   cause here.** Against `192.168.80.145` an audio+video INVITE is ~2700 bytes, the path
+   carries 1472 and drops IP fragments silently, and TCP 5060 refuses connections. The offer is
+   correct, `m=video` is there, the camera is fine, the codecs are fine — **and nothing ever
+   reaches the server.** The observable is a request retransmitted seven times over 32 seconds
+   with no response of any kind, ending at Timer B. §1 and `SdpBudget` carry the measurement.
+   Check this *before* items 5-8, because every one of them will look broken and none of them
+   will be.
+5. **Camera.** Already declared (`AndroidManifest.xml:75`) and requested in onboarding, with
+   the documented policy that declining it keeps a working phone. `PlaceCallUseCase` downgrades
+   a video call to audio when the camera is unusable and says so — so "video became audio" is a
+   *reported* downgrade, not a failure. Check the snackbar before the camera.
+6. **RTP.** If the call connects with `m=video` accepted and no video RTP flows, that is a
+   media-transport problem and now you are in the right place. Not before.
+7. **ICE.** `NatPolicy.DEFAULT.iceEnabled` is **false** here, deliberately — ICE costs 198
+   bytes of an offer that did not fit, and no STUN server ever reaches the stack anyway, so it
+   could only ever gather host candidates. "Check that ICE completed" does not apply to a
+   default account; if you turn ICE on to test something, re-measure the offer size.
+
+### 7.2 The four instructions that do not apply, and what to do instead
+
+1. **`pjsua --version`.** There is no `pjsua` binary in this project. It builds `libpjsua2.so`
+   plus SWIG bindings for Android; nothing is runnable from a shell. The equivalent — better,
+   because it is the *running* library on the *actual* device — is the codec audit log above.
+   For the version, the vendored pjproject's own tree is the answer, pinned in
+   `tools/vendor/pins.sh` and documented in `docs/native-dependencies.md`.
+2. **`PJ_LOG_MAX_LEVEL=6`.** Not an environment variable. It is a compile-time constant,
+   default **5** (`pjlib/include/pj/config.h:417`), not overridden in `config_site.h` —
+   changing it means editing that file and rebuilding the native stack. You almost certainly
+   do not need to: **this app already has a runtime SIP trace toggle**, in Settings, wired
+   through `PjsipSipEngine.kt:412` → `gateway.setTraceEnabled` → `RealPjsipCoreGateway.kt:808`.
+   The device log says `SIP trace disabled` at startup precisely because it is off by default.
+   Turn it on there.
+3. **"Compare with the official `pjsua` sample."** Good instinct, wrong binary. The comparator
+   that exists is pjproject's own Android sample under
+   `third_party/pjproject/pjsip-apps/src/swig/java/android`, built from the same vendored
+   source. It is a real control and worth using — if video fails there too, the problem is the
+   build or the network, not this app.
+4. **"Request the camera permission at runtime on Android 6.0+."** Done. See item 5 above.
+
+### 7.3 The Lyra advice that is backwards
+
+Two corrections to the commonly-given Lyra recipe, both verified in the tree, both expensive
+to discover by experiment:
+
+- **`./configure --with-lyra=…` *or* `#define PJMEDIA_HAS_LYRA_CODEC 1` is wrong: it is
+  *and*.** §5.2 has the mechanism. Passing the configure flag alone gives a green build that
+  registers nothing, because `config_site.h`'s `0` is seen first and `pjmedia-codec/config.h`
+  guards the flag with `#ifndef`.
+- **`pjmedia_codec_lyra_set_config` goes *after* `pjmedia_codec_lyra_init`, not before.**
+  `lyra.cpp:199-203` writes the default bit rate and the default model path into the static
+  config **at the end of init**, so anything set beforehand is overwritten. Configure first and
+  you get the default relative path `"model_coeffs"`, codec creation fails on every call, and
+  the codec still shows up in the registry — which reads as a negotiation problem and is not
+  one.
+
+And one thing that recipe gets right and is worth repeating: **Lyra is audio-only, it is
+experimental in PJSIP, and it is not an IETF codec** — it interoperates only with another
+endpoint running the same PJSIP Lyra integration. That is the same conclusion §1 reaches from
+the server's codec list, by a different route.
+
+---
+
+## 8. Order of work, with a gate after each
 
 | # | Phase | Gate |
 |---|---|---|
@@ -299,14 +384,14 @@ posture, not a convenience.
 | 2 | **Raise with the server operator:** `mod_opus`, a TCP 5060 listener, `mod_conference` | Their answers decide phases 4 and 6 |
 | 3 | **Conferencing and transfer on hardware** | Each verified, including one failure path |
 | 4 | **Codec gaps** — G.729 decision, Opus once the server has it | Offer re-measured against `SdpBudget` |
-| 5 | **Video** — server TCP, or the §6.3 direct path | A video call seen and heard |
+| 5 | **Video** — server TCP, or the §6.3 direct path. **Diagnose with §7, in that order** | A video call seen and heard |
 | 6 | **Lyra** — §5, and `docs/lyra-criterion-1.md` phase 0 first | TFLite v2.11.0 for `arm64-v8a` under NDK r27c. **If it fails that is ADR-008 Exit B: write it up, ship no code.** That is a successful outcome, not a failure to report |
 
 Phases 0-3 need no server change and no new dependency. **Do not start phase 6 before phase 1.**
 
 ---
 
-## 8. Definition of done — each item binary
+## 9. Definition of done — each item binary
 
 1. Hold, then resume, works on a handset, twice, and a mapper-level regression test fails on the
    parent commit.
@@ -326,7 +411,7 @@ Phases 0-3 need no server change and no new dependency. **Do not start phase 6 b
 
 ---
 
-## 9. How to work
+## 10. How to work
 
 - **Measure before diagnosing.** Three diagnoses in this project were reached by reading code
   and the device disproved all three. §2.2 is explicitly one of these.
