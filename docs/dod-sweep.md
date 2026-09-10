@@ -26,9 +26,9 @@ claims**, and only the last ends an argument.
 | # | Item | Result |
 |---|---|---|
 | 15 | **N-1** — no `.aar`/`.so` in the tree that `:pjsip` did not build, and the rule fails on its fixture | **PASS.** Rule 11, two clauses, two fixtures. It caught a real 19 MB AAR during this change |
-| 16 | **N-2, N-3** — the egress-blocked job runs the native stage to completion; the four trees are in-tree at pinned commits | **PARTIAL.** The trees are vendored, pinned and verified byte-identical from a fresh checkout. The egress-blocked job is written and **has not gone green yet** |
-| 17 | **N-4, N-5** — one `./gradlew` and one Actions run produce the stack from source, no manual step, no typed version | **PARTIAL, with evidence.** `build-native.sh` produced a verified `libpjsua2.so` for `arm64-v8a` on 2026-09-10 (§below). Unproven: the other two ABIs, Linux, and the Gradle task above the script — that run drove the script directly |
-| 18 | **N-6** — every ABI carries its full expected `.so` set, asserted at packaging | **PARTIAL.** Both libraries were produced for `arm64-v8a` and verified. `assertNativeLibraries` remains unexercised on three ABIs until 17 passes |
+| 16 | **N-2, N-3** — the egress-blocked job runs the native stage to completion; the four trees are in-tree at pinned commits | **PARTIAL, and the remaining half matters.** The trees are vendored, pinned and byte-identical from a fresh checkout, and the stack builds from them. The **egress-blocked job has not gone green**, and Opus proved that is not a formality — it fetched a model over the network on every build until §1.3 caught it |
+| 17 | **N-4, N-5** — one `./gradlew` and one Actions run produce the stack from source, no manual step, no typed version | **PASS.** CI run `34423538239` built all three ABIs from vendored source through Gradle, with no manual step and no typed version input |
+| 18 | **N-6** — every ABI carries its full expected `.so` set, asserted at packaging | **PASS.** `assertNativeLibraries` reported *"3 ABIs × 2 libraries, all present"* in CI, and no 16 KB alignment failure was raised for any ABI |
 | 19 | **N-7** — every change to vendored source is a numbered patch; the integrity check passes | **PASS, vacuously — and that is the honest word.** `pjsip/patches/` holds no patch because no vendored file has been changed. Rule 12 passes, and its fixtures prove it *can* fail in all three directions |
 | 20 | **N-9** — the audit reports every declared codec as registered, with an on-device round trip | **NOT VERIFIED.** The audit is written and unit-tested; no device has run it. **On Lyra this item is satisfied by ADR-008**: it is not in the declared set, and the audit reports it as *not compiled* |
 | 21 | **N-10** — `docs/native-dependencies.md` lists exactly the `third_party/` directories with version, commit, licence, reason, patches, size | **PASS.** `verify-pins.sh` is the check, and it runs in CI |
@@ -36,8 +36,9 @@ claims**, and only the last ends an argument.
 | 23 | **N-13** — `git ls-files pjsip/` returns no `.java` | **PASS, and proven faithful.** `git ls-files pjsip/` returns no `.java`, and the generator reproduces the deleted set **exactly**: 318 files, byte-for-byte identical to the 318 that were committed, 0 differing, 0 missing. Deleting them lost nothing |
 | 24 | **N-14** — no `if (aar.exists())`, no fallback; a build with no `.so` fails | **PASS** as written. The condition is gone and `assertNativeLibraries` is the failure. Unexercised until 17 passes |
 
-**The one number to watch is still item 17**, and it has moved from *written* to *one ABI
-proven*. Every "unexercised until" above hangs off the remaining two.
+**Items 17 and 18 are now PASS**, on CI, on Linux, for all three ABIs. The number left to
+watch is **16** — the egress-blocked job — because that is the one that proves the vendored
+tree needs no network, and it is the one Opus already falsified once.
 
 **The evidence behind 17, 18 and 23** — 2026-09-10, macOS 12.7.6, NDK r27c
 (`27.2.12479018`), SWIG 4.2.0:

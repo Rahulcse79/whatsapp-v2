@@ -181,12 +181,32 @@ trusted. Three of the four caught a real defect on the first vendoring attempt.
 | JNI entry point | `Java_org_pjsip_pjsua2_pjsua2JNI_swig_1module_1init` present |
 | Declared codecs linked in | `opus_encoder_create`, `pjmedia_codec_opus_init`, `vpx_codec_encode`, `SSL_CTX_new` |
 
-**What that does NOT prove**, and the distinction is the one master prompt §10 insists on:
-it is one ABI of three, on macOS rather than the Linux CI runs on, and nothing has run on a
-handset. `armeabi-v7a` and `x86_64` are unproven, and so is the Gradle wiring that invokes
-this script — the script was driven directly.
+**And CI has now built all three ABIs on Linux, through Gradle.** Run `34423538239`,
+2026-09-10, NDK r27c (pin asserted against `Pkg.Revision`), from vendored source:
 
-**Still owed: one green CI run that compiles FROM the vendored trees.** `pjsip/build-native.sh`
+```
+pjsua2: configuring / building   arm64-v8a
+pjsua2: configuring / building   armeabi-v7a
+pjsua2: configuring / building   x86_64
+native libraries: 3 ABIs × 2 libraries, all present
+```
+
+That last line is `assertNativeLibraries` — **N-6 satisfied at packaging time**, not inferred
+from a green tick. No 16 KB alignment failure was reported for any ABI. `Build`, `Static
+analysis` and `Architecture rules` all passed in the same run.
+
+So N-2, N-4, N-5 and N-6 are demonstrated: the vendored source compiles, through one
+`./gradlew`, with no manual step, for every supported ABI, on the platform CI runs.
+
+**What is still NOT proven**, and the distinction is the one master prompt §10 insists on:
+
+- **Nothing has run on a handset.** Not one call has been placed with these binaries. N-9's
+  on-device codec round trip and every §9 budget remain unmeasured.
+- **The egress-blocked offline job of §2.1.2 has not gone green.** Until it does, "the
+  vendored tree needs no network" is an argument, not a result — and Opus proved that
+  argument wrong once already (§1.3).
+- **Reproducibility (N-11) has not been measured.** Two builds of the same commit have not
+  been hash-compared. `pjsip/build-native.sh`
 carries the TLS/Opus/VPX assertions and the 16 KB alignment assertion, ported flag-for-flag
 from the green workflow, and `.github/workflows/native-mandate.yml` runs the whole native
 stage with **egress blocked** (§2.1.2). Until that job is green, the honest claim is
