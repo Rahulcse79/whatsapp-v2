@@ -204,6 +204,26 @@ jobs:
           keytool -list -keystore "$store" \
             -storepass "${DEBUG_KEYSTORE_PASSWORD:-android}" | grep -i "SHA-256" || true
 
+      # The Lyra closure (ADR-008, Exit A) costs ~25 minutes of TensorFlow Lite compile
+      # per ABI, and build-native.sh stamps the result by a content hash of the nineteen
+      # vendored trees plus pjsip/lyra/CMakeLists.txt. The stamp is content-based, not
+      # mtime-based, so a restored prefix on a fresh checkout is recognised as up to date
+      # and the stage is skipped. Only the installed prefix and the stamp are cached —
+      # the ~200 MB archive per ABI, not the build tree. The key is the same input set the
+      # stamp hashes; a bumped tree or an edited CMake file misses and rebuilds.
+      - name: Restore the Lyra closure from cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            pjsip/build/tmp/buildPjsua2Native/cmake/*/native/prefix/*/lib/liblyra.a
+            pjsip/build/tmp/buildPjsua2Native/cmake/*/native/prefix/*/lyra_encoder.h
+            pjsip/build/tmp/buildPjsua2Native/cmake/*/native/prefix/*/lyra_decoder.h
+            pjsip/build/tmp/buildPjsua2Native/cmake/*/native/prefix/*/lyra
+            pjsip/build/tmp/buildPjsua2Native/cmake/*/native/prefix/*/include
+            pjsip/build/tmp/buildPjsua2Native/cmake/*/native/prefix/*/model_coeffs
+            pjsip/build/tmp/buildPjsua2Native/cmake/*/native/*/.lyra.stamp
+          key: lyra-closure-${{ runner.os }}-${{ hashFiles('pjsip/lyra/CMakeLists.txt', 'third_party/lyra/**', 'third_party/tensorflow/**', 'third_party/abseil-cpp/**', 'third_party/cpuinfo/**', 'third_party/eigen/**', 'third_party/farmhash/**', 'third_party/fft2d/**', 'third_party/flatbuffers/**', 'third_party/FP16/**', 'third_party/FXdiv/**', 'third_party/gemmlowp/**', 'third_party/neon2sse/**', 'third_party/psimd/**', 'third_party/pthreadpool/**', 'third_party/ruy/**', 'third_party/xnnpack/**', 'third_party/audio_dsp/**', 'third_party/glog/**', 'third_party/gulrak-filesystem/**') }}
+
       - name: Build
         # warningsAsErrors is CI-only: locally a deprecation warning should not stop
         # work, but in CI warnings must not be allowed to accumulate.
