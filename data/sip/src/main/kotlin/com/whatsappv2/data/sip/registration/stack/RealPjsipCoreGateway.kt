@@ -45,6 +45,7 @@ import org.pjsip.pjsua2.OnCallMediaStateParam
 import org.pjsip.pjsua2.OnCallRxReinviteParam
 import org.pjsip.pjsua2.OnCallStateParam
 import org.pjsip.pjsua2.OnCallTransferStatusParam
+import org.pjsip.pjsua2.OnCallTsxStateParam
 import org.pjsip.pjsua2.OnIncomingCallParam
 import org.pjsip.pjsua2.OnRegStateParam
 import org.pjsip.pjsua2.TlsConfig
@@ -55,6 +56,7 @@ import org.pjsip.pjsua2.pjmedia_dir
 import org.pjsip.pjsua2.pjmedia_tp_proto
 import org.pjsip.pjsua2.pjmedia_type
 import org.pjsip.pjsua2.pjsip_inv_state
+import org.pjsip.pjsua2.pjsip_role_e
 import org.pjsip.pjsua2.pjsip_ssl_method
 import org.pjsip.pjsua2.pjsip_status_code
 import org.pjsip.pjsua2.pjsip_transport_type_e
@@ -1031,12 +1033,38 @@ internal class RealPjsipCoreGateway @Inject constructor(
     override fun resumeCall(callKey: String) {
         onPjsip("resumeCall") {
             val call = calls[callKey] ?: return@onPjsip
-            // PJSUA_CALL_UNHOLD is what makes this a resume rather than an ordinary
-            // re-INVITE; without the flag the offer keeps the `sendonly` direction and
-            // the far end stays held.
-            call.reinvite(
-                CallOpParam(true).apply { options = pjsua_call_flag.PJSUA_CALL_UNHOLD.toLong() },
-            )
+
+            // This is the producer RESUMING had been missing since the state was written.
+            // Without it the FSM never leaves Held(LOCAL): media comes back as
+            // PJSUA_CALL_MEDIA_ACTIVE, the mapper is asked what STREAMS_RUNNING means
+            // from Held(LOCAL), and `resumeEventFor` has no arm for it because the arm
+            // it has is `Resuming` — the state only this line can produce. The re-INVITE
+            // went out, the far end answered, the audio came back, and the app stayed
+            // held for the rest of the call. Hold worked; resume was unreachable.
+            //
+            // Published *before* the send, on this thread. The answer is published from
+            // PJSIP's worker thread, and publishing RESUMING after `reinvite` returned
+            // would race it: a 200 OK processed in the gap would put STREAMS_RUNNING
+            // ahead of RESUMING in the flow, and the FSM would read that as nothing and
+            // then as a resume that never lands. Before the send there is no gap. What
+            // it costs is a Resuming that lasts the length of a synchronous call that
+            // either sends or throws — and a throw is answered below.
+            //
+            // A hold has no equivalent because it needs none: PJSIP reports
+            // PJSUA_CALL_MEDIA_LOCAL_HOLD on its own and the mapper turns that into
+            // LocalHold.
+            call.pendingResume.begin()
+            call.publish(StackCallState.RESUMING)
+
+            runCatching {
+                call.reinvite(call.info.resumeParams())
+            }.onFailure {
+                // Never left this device — a re-INVITE already in flight, most likely.
+                // The call is exactly where it was, and the FSM has to be told so, or
+                // the Resuming just published is the stuck state under a new name.
+                call.pendingResume.cancel()
+                call.publish(StackCallState.RESUME_FAILED)
+            }.getOrThrow()
         }
     }
 
@@ -1308,6 +1336,15 @@ internal class RealPjsipCoreGateway @Inject constructor(
         @Volatile
         var reinvitePending: Boolean = false
 
+        /**
+         * Our resume re-INVITE, between going out and being answered.
+         *
+         * Read by [onCallTsxState], which is otherwise told about every transaction on
+         * the call and has no way to know which one anybody is waiting for. The rule
+         * for what settles it is [PendingResume]'s, where it has a test.
+         */
+        val pendingResume = PendingResume()
+
         constructor(callKey: String, account: PjAccount) : super(account) {
             this.callKey = callKey
             this.accountKey = account.accountKey
@@ -1323,6 +1360,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             publish(callStateOf(info), info)
 
             if (info.state == pjsip_inv_state.PJSIP_INV_STATE_DISCONNECTED) {
+                pendingResume.cancel()
                 // Only now. The native peer is finished with this director, and holding it
                 // any longer is the leak; releasing it any earlier is a crash.
                 calls -= callKey
@@ -1367,7 +1405,37 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     }
                 }
             }
-            publish(callStateOf(info), info)
+            val state = callStateOf(info)
+            // Media running again is our resume landing; anything else, LOCAL_HOLD
+            // restated mid-flight included, leaves it outstanding.
+            pendingResume.onMediaState(state)
+            publish(state, info)
+        }
+
+        /**
+         * Notices the resume re-INVITE the far end refused (§2.1).
+         *
+         * The only signal there is: PJSIP reports a refused re-INVITE through no other
+         * callback, for the reasons [PendingResume] gives. A call that moved to
+         * `Resuming` on the strength of the request going out would otherwise stay
+         * there for the rest of its life.
+         *
+         * The event body is only a transaction for a transaction-state event; pjsua2
+         * leaves it default-constructed for the others, which is an empty method and
+         * a status of 0, and [PendingResume.refusedBy] does not match either.
+         */
+        override fun onCallTsxState(prm: OnCallTsxStateParam) {
+            if (!pendingResume.isOutstanding) return
+            val tsx = runCatching { prm.e.body.tsxState.tsx }.getOrNull() ?: return
+            val refused = pendingResume.refusedBy(
+                isClient = tsx.role == pjsip_role_e.PJSIP_ROLE_UAC,
+                method = tsx.method,
+                statusCode = tsx.statusCode,
+            )
+            if (!refused) return
+
+            logger.warn(TAG, "Resume refused on $callKey with ${tsx.statusCode}; the call is still held")
+            publish(StackCallState.RESUME_FAILED)
         }
 
         /**
@@ -1485,60 +1553,6 @@ internal class RealPjsipCoreGateway @Inject constructor(
          * fractionally after the native object goes.
          */
         private fun infoOrNull(): CallInfo? = runCatching { info }.getOrNull()
-    }
-
-    // ------------------------------------------------------------------ mapping
-
-    /**
-     * PJSIP's invite state as the app's, or null for one that maps to nothing.
-     *
-     * `CONNECTING` is deliberately absent: it is the moment between the 200 and the ACK,
-     * and the app has nothing different to do during it.
-     */
-    private fun callStateOf(info: CallInfo): StackCallState = when (info.state) {
-        pjsip_inv_state.PJSIP_INV_STATE_CALLING -> StackCallState.OUTGOING_INIT
-        pjsip_inv_state.PJSIP_INV_STATE_INCOMING -> StackCallState.INCOMING_RECEIVED
-        // 180 is ringing; 183 with SDP is early media, and the difference is audible.
-        pjsip_inv_state.PJSIP_INV_STATE_EARLY ->
-            if (info.lastStatusCode == SIP_PROGRESS) {
-                StackCallState.OUTGOING_EARLY_MEDIA
-            } else {
-                StackCallState.OUTGOING_RINGING
-            }
-
-        pjsip_inv_state.PJSIP_INV_STATE_CONFIRMED -> confirmedStateOf(info)
-        pjsip_inv_state.PJSIP_INV_STATE_DISCONNECTED ->
-            if (info.lastStatusCode >= SIP_ERROR_FLOOR) StackCallState.ERROR else StackCallState.ENDED
-
-        else -> StackCallState.CONNECTED
-    }
-
-    /**
-     * A confirmed call is running, held, or held by the far end, and only its media says
-     * which. PJSIP reports hold per stream rather than per call, so the audio stream is
-     * what is asked.
-     */
-    private fun confirmedStateOf(info: CallInfo): StackCallState {
-        val audio = info.media.firstOrNull { it.type == pjmedia_type.PJMEDIA_TYPE_AUDIO }
-        return when (audio?.status) {
-            pjsua_call_media_status.PJSUA_CALL_MEDIA_LOCAL_HOLD -> StackCallState.PAUSED
-            pjsua_call_media_status.PJSUA_CALL_MEDIA_REMOTE_HOLD -> StackCallState.PAUSED_BY_REMOTE
-            pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE -> StackCallState.STREAMS_RUNNING
-            else -> StackCallState.CONNECTED
-        }
-    }
-
-    /**
-     * A registration status code as the app's state.
-     *
-     * `expiration == 0` on a 2xx is an unregister the server accepted, not a registration —
-     * the same response code means opposite things depending on what was asked.
-     */
-    private fun registrationStateOf(code: Int, expiration: Long): StackRegistrationState = when {
-        code in SIP_OK until SIP_ERROR_FLOOR && expiration == 0L -> StackRegistrationState.CLEARED
-        code in SIP_OK until SIP_ERROR_FLOOR -> StackRegistrationState.OK
-        code >= SIP_ERROR_FLOOR -> StackRegistrationState.FAILED
-        else -> StackRegistrationState.PROGRESS
     }
 
     private fun callParams(videoEnabled: Boolean) = CallOpParam(true).apply {
@@ -1679,9 +1693,96 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
         /** Whatever `AccountConfig.videoConfig.defaultCaptureDevice` resolved to. */
         const val CAPTURE_DEVICE_DEFAULT = -1
-
-        const val SIP_OK = 200
-        const val SIP_PROGRESS = 183
-        const val SIP_ERROR_FLOOR = 300
     }
+}
+
+private const val SIP_OK = 200
+private const val SIP_PROGRESS = 183
+private const val SIP_ERROR_FLOOR = 300
+
+// ---------------------------------------------------------------------- mapping
+//
+// Pure functions of pjsua2 values, kept outside the class: they read no gateway state,
+// and detekt's LargeClass limit is the budget the class spends on the things that do.
+
+/**
+ * PJSIP's invite state as the app's, or null for one that maps to nothing.
+ *
+ * `CONNECTING` is deliberately absent: it is the moment between the 200 and the ACK,
+ * and the app has nothing different to do during it.
+ */
+private fun callStateOf(info: CallInfo): StackCallState = when (info.state) {
+    pjsip_inv_state.PJSIP_INV_STATE_CALLING -> StackCallState.OUTGOING_INIT
+    pjsip_inv_state.PJSIP_INV_STATE_INCOMING -> StackCallState.INCOMING_RECEIVED
+    // 180 is ringing; 183 with SDP is early media, and the difference is audible.
+    pjsip_inv_state.PJSIP_INV_STATE_EARLY ->
+        if (info.lastStatusCode == SIP_PROGRESS) {
+            StackCallState.OUTGOING_EARLY_MEDIA
+        } else {
+            StackCallState.OUTGOING_RINGING
+        }
+
+    pjsip_inv_state.PJSIP_INV_STATE_CONFIRMED -> confirmedStateOf(info)
+    pjsip_inv_state.PJSIP_INV_STATE_DISCONNECTED ->
+        if (info.lastStatusCode >= SIP_ERROR_FLOOR) StackCallState.ERROR else StackCallState.ENDED
+
+    else -> StackCallState.CONNECTED
+}
+
+/**
+ * A confirmed call is running, held, or held by the far end, and only its media says
+ * which. PJSIP reports hold per stream rather than per call, so the audio stream is
+ * what is asked.
+ */
+private fun confirmedStateOf(info: CallInfo): StackCallState {
+    val audio = info.media.firstOrNull { it.type == pjmedia_type.PJMEDIA_TYPE_AUDIO }
+    return when (audio?.status) {
+        pjsua_call_media_status.PJSUA_CALL_MEDIA_LOCAL_HOLD -> StackCallState.PAUSED
+        pjsua_call_media_status.PJSUA_CALL_MEDIA_REMOTE_HOLD -> StackCallState.PAUSED_BY_REMOTE
+        pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE -> StackCallState.STREAMS_RUNNING
+        else -> StackCallState.CONNECTED
+    }
+}
+
+/**
+ * A registration status code as the app's state.
+ *
+ * `expiration == 0` on a 2xx is an unregister the server accepted, not a registration —
+ * the same response code means opposite things depending on what was asked.
+ */
+private fun registrationStateOf(code: Int, expiration: Long): StackRegistrationState = when {
+    code in SIP_OK until SIP_ERROR_FLOOR && expiration == 0L -> StackRegistrationState.CLEARED
+    code in SIP_OK until SIP_ERROR_FLOOR -> StackRegistrationState.OK
+    code >= SIP_ERROR_FLOOR -> StackRegistrationState.FAILED
+    else -> StackRegistrationState.PROGRESS
+}
+
+/**
+ * The re-INVITE that lifts our hold, and only that.
+ *
+ * `PJSUA_CALL_UNHOLD` goes on `opt.flag`. It used to go on `CallOpParam.options`,
+ * which `Call::reinvite` never reads — pjsua2 passes only `prm.opt` to
+ * `pjsua_call_reinvite2` (`third_party/pjproject/pjsip/src/pjsua2/call.cpp:810-816`);
+ * `options` is read by `setHold` and `xferReplaces` alone. With the flag missing,
+ * `pjsua_call_reinvite2` took the `local_hold` branch and built the SDP *of a hold*
+ * (`pjsua_call.c:3531-3532`), so the resume went out as `a=sendonly` — a second hold.
+ *
+ * The setting is the call's own, not `CallSetting(true)`. The default setting is
+ * `aud_cnt=1, vid_cnt=1, txt_cnt=1` (`pjsua_call.c:656-670`), and `apply_call_setting`
+ * replaces the call's setting and re-initialises its media to match
+ * (`pjsua_call.c:699-745`) — which put an `m=video` and an `m=text` line into the
+ * resume of an audio call. Measured on the handset on 2026-09-10: the hold re-INVITE
+ * was answered 200 in 280 ms; the resume was 1852 bytes, escalated to TCP per
+ * RFC 3261 §18.1.1, was refused there, fell back to an 1846-byte UDP datagram, and
+ * got no response of any kind through seven retransmissions. Both halves of the
+ * handoff's diagnosis — "the re-INVITE is sent and the media does resume on the
+ * wire" — were wrong; nothing resumed, because nothing arrived.
+ *
+ * `CallInfo.setting` is `call->opt` verbatim (`pjsua_call.c:2556`), so the counts
+ * this call was placed or answered with are exactly what is re-offered.
+ */
+private fun CallInfo.resumeParams(): CallOpParam {
+    val resume = setting
+    resume.flag = pjsua_call_flag.PJSUA_CALL_UNHOLD.toLong()
+    return CallOpParam().apply { opt = resume }
 }

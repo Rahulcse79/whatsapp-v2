@@ -199,6 +199,9 @@ open class PjsipSipEngineFixture {
 
         /** 486 Busy Here, named so the assertions read as intent rather than arithmetic. */
         const val BUSY_HERE = 486
+
+        /** 488 Not Acceptable Here: the answer to a re-INVITE whose offer was refused. */
+        const val NOT_ACCEPTABLE_HERE = 488
     }
 }
 
@@ -571,21 +574,54 @@ class PjsipSipEngineMediaTest : PjsipSipEngineFixture() {
     @Test
     fun `resuming goes through Resuming and only reaches Connected when media runs again`() =
         runTest {
+            // RESUMING is the gateway's to report as the re-INVITE goes out — the fake
+            // does, per the SipCallGateway contract — and nothing here emits it by
+            // hand. This test used to, which is how a real gateway that never reported
+            // it passed every test and stranded every resumed call in Held(LOCAL).
             val engine = heldCall()
             val callId = engine.activeCalls.value.single().callId
 
             assertTrue(engine.setHold(callId, held = false) is Outcome.Success)
             assertEquals(callId.value to false, gateway.holdRequests.last())
-
-            gateway.emitCall(callId.value, StackCallState.RESUMING)
             runCurrent()
             assertIs<CallState.Resuming>(engine.activeCalls.value.single().state)
+            // Telecom is not told yet either: the media is still paused, and the far end
+            // can still say no.
+            assertEquals(listOf(callId to true), platform.holdChanges)
 
             gateway.emitCall(callId.value, StackCallState.STREAMS_RUNNING)
             runCurrent()
 
             assertIs<CallState.Connected>(engine.activeCalls.value.single().state)
             assertEquals(listOf(callId to true, callId to false), platform.holdChanges)
+            engine.stop()
+        }
+
+    @Test
+    fun `a resume the far end refuses returns the call to held, not stuck resuming`() =
+        runTest {
+            // PJSIP reports a refused re-INVITE through no media or call state; the
+            // gateway reads it off the transaction and reports RESUME_FAILED. Without
+            // that event the call would show "resuming" for the rest of its life, and
+            // the hold button would be as dead as it was before RESUMING existed.
+            val engine = heldCall()
+            val callId = engine.activeCalls.value.single().callId
+
+            engine.setHold(callId, held = false)
+            runCurrent()
+            assertIs<CallState.Resuming>(engine.activeCalls.value.single().state)
+
+            gateway.emitCall(callId.value, StackCallState.RESUME_FAILED, statusCode = NOT_ACCEPTABLE_HERE)
+            runCurrent()
+
+            assertEquals(CallState.Held(HoldParty.LOCAL), engine.activeCalls.value.single().state)
+            // Still held as far as Telecom is concerned: the one hold change is the
+            // original, and nothing said the call came back.
+            assertEquals(listOf(callId to true), platform.holdChanges)
+
+            // And the user can try again — a second resume must not be refused as an
+            // illegal transition from the state the failure left behind.
+            assertTrue(engine.setHold(callId, held = false) is Outcome.Success)
             engine.stop()
         }
 
@@ -631,7 +667,6 @@ class PjsipSipEngineMediaTest : PjsipSipEngineFixture() {
         assertEquals(CallState.Held(HoldParty.BOTH), engine.activeCalls.value.single().state)
 
         engine.setHold(callId, held = false)
-        gateway.emitCall(callId.value, StackCallState.RESUMING)
         runCurrent()
 
         assertEquals(CallState.Held(HoldParty.REMOTE), engine.activeCalls.value.single().state)

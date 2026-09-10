@@ -134,6 +134,12 @@ object CallStateMachine {
 
     private fun fromResuming(state: CallState.Resuming, event: CallEvent): TransitionResult = when (event) {
         is CallEvent.ResumeConfirmed -> moved(CallState.Connected(state.controls))
+        // Refused. The call is where it was — held by us — and only this returns it
+        // there: LocalHold is rejected from Resuming, and nothing else the stack
+        // reports distinguishes "still holding, resume in flight" from "still holding,
+        // resume refused". Resuming is only ever entered from Held(LOCAL), so LOCAL is
+        // the party to restore rather than a value to carry.
+        is CallEvent.ResumeFailed -> moved(CallState.Held(HoldParty.LOCAL, state.controls))
         // The far end can hold us while our own resume is still in flight.
         is CallEvent.RemoteHold -> moved(CallState.Held(HoldParty.REMOTE, state.controls))
         else -> reject(state, event)

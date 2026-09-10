@@ -70,6 +70,7 @@ class CallStateMachineTest {
         Legal(CallState.Held(HoldParty.BOTH), CallEvent.LocalResume, CallState.Held(HoldParty.REMOTE)),
         Legal(CallState.Held(HoldParty.BOTH), CallEvent.RemoteResume, CallState.Held(HoldParty.LOCAL)),
         Legal(CallState.Resuming(), CallEvent.ResumeConfirmed, CallState.Connected()),
+        Legal(CallState.Resuming(), CallEvent.ResumeFailed, CallState.Held(HoldParty.LOCAL)),
         Legal(CallState.Resuming(), CallEvent.RemoteHold, CallState.Held(HoldParty.REMOTE)),
 
         // --- transfer
@@ -186,6 +187,7 @@ class CallStateMachineTest {
         CallEvent.RemoteHold,
         CallEvent.LocalResume,
         CallEvent.ResumeConfirmed,
+        CallEvent.ResumeFailed,
         CallEvent.RemoteResume,
         CallEvent.StartTransfer(TransferType.BLIND),
         CallEvent.TransferSucceeded,
@@ -291,6 +293,18 @@ class CallStateMachineTest {
     }
 
     // ---------------------------------------------------------------- controls
+
+    @Test
+    fun `a refused resume returns the call to our hold, and the user can try again`() {
+        // The far end answered the re-INVITE with a failure. The call is exactly where
+        // it was — held by us, media still paused — so that is the state to show, and
+        // it must accept another LocalResume rather than reject one from a dead end.
+        var state: CallState = CallState.Held(HoldParty.LOCAL, busyControls)
+        state = move(state, CallEvent.LocalResume)
+        state = move(state, CallEvent.ResumeFailed)
+        assertEquals(CallState.Held(HoldParty.LOCAL, busyControls), state)
+        assertEquals(CallState.Resuming(busyControls), move(state, CallEvent.LocalResume))
+    }
 
     @Test
     fun `controls survive a hold and resume cycle`() {

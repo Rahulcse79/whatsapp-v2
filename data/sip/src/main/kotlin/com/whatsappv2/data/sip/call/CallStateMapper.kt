@@ -94,6 +94,12 @@ internal object CallStateMapper {
         // than showing a held call that appears to have ignored the button.
         StackCallState.RESUMING -> resumeStartedEventFor(state)
 
+        // And the answer to it, when the answer is no. Only from Resuming: the stack
+        // reports a failed transaction for whatever it was doing, and a call that is
+        // not resuming has no resume to fail.
+        StackCallState.RESUME_FAILED ->
+            if (state is CallState.Resuming) CallEvent.ResumeFailed else null
+
         // An escalation the far end is asking for (Task 54). No transition: the call is
         // exactly where it was, and stays there until somebody answers the prompt. The
         // engine handles this state by deferring the stack's answer and publishing a

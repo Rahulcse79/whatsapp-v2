@@ -234,6 +234,42 @@ class CallStateMapperTest {
     }
 
     @Test
+    fun `a refused resume is an event only from Resuming, where it returns the call to held`() {
+        // The stack reports the refusal off the INVITE transaction, and the gateway only
+        // does so while a resume is outstanding — but the mapper holds the line too: a
+        // call that is not resuming has no resume to fail, and the FSM rejects the
+        // event from anywhere else.
+        assertEquals(
+            CallEvent.ResumeFailed,
+            CallStateMapper.toCallEvent(event(StackCallState.RESUME_FAILED), CallState.Resuming()),
+        )
+        assertNull(CallStateMapper.toCallEvent(event(StackCallState.RESUME_FAILED), CallState.Held(HoldParty.LOCAL)))
+        assertNull(CallStateMapper.toCallEvent(event(StackCallState.RESUME_FAILED), CallState.Connected()))
+    }
+
+    @Test
+    fun `resuming a held call needs the stack to say it started, or media coming back means nothing`() {
+        // The §2.1 bug, stated at the level it can be stated on the JVM. From
+        // Held(LOCAL), running media on its own is not a resume — the mapper has no
+        // event for it and the FSM has no single transition to Connected — so a stack
+        // that reports the end of a resume without its beginning strands the call held.
+        // The gateway is what reports the beginning, which is the fix, and the
+        // SipCallGateway contract is what now requires it; the fake honours it and
+        // PjsipSipEngineMediaTest asserts the whole path. This test is the reason the
+        // contract has to say so.
+        val held = CallState.Held(HoldParty.LOCAL)
+        assertNull(CallStateMapper.toCallEvent(event(StackCallState.STREAMS_RUNNING), held))
+
+        val reported = listOf(StackCallState.RESUMING, StackCallState.STREAMS_RUNNING)
+        val reached = reported.fold<StackCallState, CallState>(held) { state, stackState ->
+            val mapped = CallStateMapper.toCallEvent(event(stackState), state)
+            assertTrue(mapped != null, "$stackState carries no transition from $state")
+            assertIs<TransitionResult.Moved>(CallStateMachine.transition(state, mapped)).state
+        }
+        assertEquals(CallState.Connected(), reached)
+    }
+
+    @Test
     fun `media running again means whatever the call was doing before it`() {
         // One stack state, three meanings. Getting this wrong either loses the resume or
         // reports a second transition out of a state that never moved.
@@ -264,6 +300,7 @@ class CallStateMapperTest {
             StackCallState.PAUSED,
             StackCallState.PAUSED_BY_REMOTE,
             StackCallState.RESUMING,
+            StackCallState.RESUME_FAILED,
             StackCallState.STREAMS_RUNNING,
         )
 

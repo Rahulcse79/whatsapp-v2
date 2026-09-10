@@ -633,6 +633,12 @@ internal class PjsipSipEngine @Inject constructor(
      * display or a lock screen must show a resume button rather than a hold one. Reported
      * only on a change, because setting the same state again is a no-op the platform still
      * has to process (Task 41).
+     *
+     * `Resuming` counts as held here. The media is still paused while the re-INVITE is in
+     * flight, and the far end can refuse it — in which case the call returns to `Held`
+     * and, if Telecom had been told "active" on the way out, would now have to be told
+     * "held" again for a call that never moved. Telecom learns the call is active when
+     * media is, which is the same rule the state machine applies for `Connected`.
      */
     private fun reportToPlatform(
         id: CallId,
@@ -642,8 +648,8 @@ internal class PjsipSipEngine @Inject constructor(
     ) {
         if (justConnected) platform.onConnected(id)
 
-        val wasHeld = current.state is CallState.Held
-        val isHeld = next is CallState.Held
+        val wasHeld = current.state.isHeldForPlatform
+        val isHeld = next?.isHeldForPlatform == true
         if (next != null && wasHeld != isHeld) platform.onHoldChanged(id, isHeld)
     }
 
@@ -1419,3 +1425,7 @@ internal class PjsipSipEngine @Inject constructor(
         const val UNREGISTER_ACK_TIMEOUT_MILLIS = 5_000L
     }
 }
+
+/** Whether Telecom should show this call as held: see `PjsipSipEngine.reportToPlatform`. */
+private val CallState.isHeldForPlatform: Boolean
+    get() = this is CallState.Held || this is CallState.Resuming

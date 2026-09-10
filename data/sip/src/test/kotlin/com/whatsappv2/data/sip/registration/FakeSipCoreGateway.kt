@@ -246,6 +246,12 @@ internal class FakeSipCoreGateway :
 
     override fun resumeCall(callKey: String) {
         holdRequests += callKey to false
+        // The contract: RESUMING as the re-INVITE goes out. The fake honours it because
+        // the real gateway did not, for as long as the state existed, and every engine
+        // test emitted RESUMING by hand — so the engine passed against a stack that
+        // did not exist. What follows (media running, or a refusal) is the test's to
+        // emit, exactly as the answer to a hold is.
+        emitCall(callKey, StackCallState.RESUMING)
     }
 
     override fun sendDtmf(callKey: String, digit: Char, useInfo: Boolean) {

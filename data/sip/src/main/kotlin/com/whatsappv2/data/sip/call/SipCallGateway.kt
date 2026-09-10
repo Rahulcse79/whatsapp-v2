@@ -90,7 +90,18 @@ internal interface SipCallGateway {
      */
     fun pauseCall(callKey: String)
 
-    /** Resumes a call this app holds. A no-op for a call the far end is holding. */
+    /**
+     * Resumes a call this app holds, by re-INVITE. A no-op for a call the far end is
+     * holding.
+     *
+     * Reports [StackCallState.RESUMING] as the re-INVITE goes out, and then exactly one
+     * of [StackCallState.STREAMS_RUNNING] — media is back — or
+     * [StackCallState.RESUME_FAILED] — the far end refused it, or it could not be sent,
+     * and the call is still held. Part of the contract rather than a detail of one
+     * implementation: `CallStateMapper` can only turn running media into a resume from a
+     * call it has already seen *start* resuming, and a stack that reported the end of a
+     * resume without its beginning left every held call held for the rest of its life.
+     */
     fun resumeCall(callKey: String)
 
     /**

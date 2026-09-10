@@ -64,6 +64,7 @@ internal object TransferEventMapper {
             StackCallState.PAUSED,
             StackCallState.PAUSED_BY_REMOTE,
             StackCallState.RESUMING,
+            StackCallState.RESUME_FAILED,
             StackCallState.UPDATED_BY_REMOTE,
             StackCallState.REFERRED,
             -> null
