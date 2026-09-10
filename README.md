@@ -43,6 +43,15 @@ slow, and green on macOS proves little about Linux.
 ### Building it yourself
 
 ```bash
+./build.sh            # arm64-v8a debug APK, native stack compiled from source
+./build.sh --help     # ABIs, --install, and what to do when swig is incomplete
+```
+
+It finds the NDK, checks the two toolchain preconditions whose Gradle-level errors read as
+something else entirely, prints the APK's path and lists the native libraries actually
+inside it. The long form, and what it is doing:
+
+```bash
 export JAVA_HOME=/path/to/jdk-21
 export ANDROID_HOME="$HOME/Library/Android/sdk"      # or wherever your SDK lives
 
