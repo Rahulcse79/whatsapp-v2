@@ -175,12 +175,19 @@ class DialerViewModel @Inject constructor(
      *
      * Per call, not a setting: it is cleared once the call is placed, so a one-off call
      * from the work account does not silently become every later call's account too.
+     *
+     * It does, however, survive **leaving the screen**. Those are different lifetimes and
+     * conflating them was the bug: the choice used to live only in [entry], which Compose
+     * Navigation discards when the destination leaves the back stack, so walking to the
+     * call screen and back reverted to the default account after the user had deliberately
+     * picked another. [savedState] carries it across that round trip and no further —
+     * `place` clears both.
      */
     fun onAccountSelected(id: AccountId) {
         // Written through, not just held: the handle is what makes the choice outlive
         // this ViewModel. Storing the raw String keeps it to a type SavedStateHandle can
         // put in a Bundle without AccountId needing to be Parcelable.
-        savedState[KEY_ACCOUNT_OVERRIDE] = id?.value
+        savedState[KEY_ACCOUNT_OVERRIDE] = id.value
         entry.update { it.copy(override = id) }
     }
 
@@ -253,7 +260,16 @@ class DialerViewModel @Inject constructor(
                 }
                 // Cleared only on success: a call that was refused leaves what was typed
                 // on screen, because the user is about to correct it or try again.
-                if (result is Outcome.Success) entry.value = Entry()
+                //
+                // The saved handle is cleared with it, and it MUST be: this override is
+                // documented as per-call, not a setting, and persisting it across
+                // navigation (which is what the handle is for) would otherwise turn it
+                // into one — the next call would silently go out on an account chosen for
+                // the last one. Two places hold this value, so both are cleared here.
+                if (result is Outcome.Success) {
+                    savedState[KEY_ACCOUNT_OVERRIDE] = null
+                    entry.value = Entry()
+                }
             } finally {
                 entry.update { it.copy(placing = false) }
             }
@@ -266,6 +282,11 @@ class DialerViewModel @Inject constructor(
             is PlaceCallError.NoAccountAvailable -> DialerEvent.NoAccount
             is PlaceCallError.UnknownAccount -> DialerEvent.Refused("That account is no longer configured")
             is PlaceCallError.InvalidTarget -> DialerEvent.InvalidTarget(target)
+            // The account was not registered, the app tried to register it, and the server
+            // did not answer inside PlaceCallUseCase's bound. Worded as what happened rather
+            // than as "not registered", because by now that is only half the story.
+            is PlaceCallError.NotRegistered ->
+                DialerEvent.Refused("Could not reach the server for that account")
             is PlaceCallError.Rejected -> reason.cause.toEvent()
         }
     }

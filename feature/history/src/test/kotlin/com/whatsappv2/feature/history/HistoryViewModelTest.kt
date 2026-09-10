@@ -60,7 +60,7 @@ class HistoryViewModelTest {
     fun tearDown() = Dispatchers.resetMain()
 
     private fun viewModel(camera: CameraAvailability = CameraPresent) =
-        HistoryViewModel(repository, PlaceCallUseCase(accounts, engine, camera), camera)
+        HistoryViewModel(repository, PlaceCallUseCase(accounts, engine, camera, engine), camera)
 
     @Test
     fun `the filter starts on everything, because that is what a log is for`() = runTest {

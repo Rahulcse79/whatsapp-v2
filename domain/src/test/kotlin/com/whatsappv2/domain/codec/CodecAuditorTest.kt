@@ -5,6 +5,7 @@ import com.whatsappv2.domain.model.VideoCodec
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -60,23 +61,48 @@ class CodecAuditorTest {
     }
 
     @Test
-    fun `a registered codec with no peer is stranded, not missing and not broken`() {
-        // Opus against the deployed FreeSWITCH, measured 2026-09-09: registered here,
-        // offered by nobody there.
+    fun `a stranded codec is reported with a reason AND left in the registry`() {
+        // Opus against the deployed server, recorded 2026-09-09: registered here, not
+        // offered there. Both halves have to be sayable at once.
         val audit = CodecAuditor(
             declared = setOf(opus, pcmu),
             knownUnnegotiable = setOf("opus"),
+            knownUnnegotiableSource = "recorded from show codec, 2026-09-09",
         ).audit(
             registeredAudio = listOf("opus/48000/2" to 255, "PCMU/8000/1" to 254),
             registeredVideo = emptyList(),
             compiledIn = setOf("opus", "pcmu"),
         )
 
-        assertEquals(AbsenceReason.NoPeerAccepts, audit.absent[opus])
         assertEquals(setOf(opus), audit.strandedByPeer)
-        assertTrue(audit.defects.isEmpty(), "no peer is not a defect in this app")
-        // It is genuinely registered, so it must not be reported as a working choice either.
-        assertEquals(listOf("pcmu"), audit.registeredAudio.map { it.name })
+        assertTrue(audit.defects.isEmpty(), "an absent peer is not a defect in this app")
+
+        // THE REGRESSION THIS PINS. The registry used to have stranded codecs filtered out
+        // of it before anything could read it, so the "registered codecs" log line was a
+        // subset of the registry while claiming to be the registry. On 2026-09-10 that line
+        // was read as proof this build registers no Opus, and an INVITE off the same handset
+        // carried `a=rtpmap:96 opus/48000/2`. The list is verbatim or it is not evidence.
+        assertEquals(listOf("opus", "pcmu"), audit.registeredAudio.map { it.name })
+    }
+
+    @Test
+    fun `the reason for strandedness carries the evidence it rests on`() {
+        // It was `NoPeerAccepts`, which asserts something about every peer that nothing here
+        // has ever measured. What exists is one hand-maintained list from one server on one
+        // day, and the reason has to say so or nobody can weigh it.
+        val audit = CodecAuditor(
+            declared = setOf(opus),
+            knownUnnegotiable = setOf("opus"),
+            knownUnnegotiableSource = "recorded from show codec, 2026-09-09",
+        ).audit(
+            registeredAudio = listOf("opus/48000/2" to 255),
+            registeredVideo = emptyList(),
+            compiledIn = setOf("opus"),
+        )
+
+        val reason = audit.absent[opus]
+        assertIs<AbsenceReason.ExpectedUnsupportedByServer>(reason)
+        assertEquals("recorded from show codec, 2026-09-09", reason.source)
     }
 
     @Test

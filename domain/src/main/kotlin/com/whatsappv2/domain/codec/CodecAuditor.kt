@@ -38,6 +38,15 @@ class CodecAuditor(
      * claim that a codec works.
      */
     private val knownUnnegotiable: Set<String> = emptySet(),
+
+    /**
+     * Where [knownUnnegotiable] came from, in a phrase a log line can carry.
+     *
+     * Travels with the claim so a reader can weigh it. "Recorded from `show codec` on the
+     * reference server, 2026-09-09" and "observed on this connection" deserve very different
+     * confidence, and a reason that cannot say which is a reason nobody can check.
+     */
+    private val knownUnnegotiableSource: String = "no evidence recorded",
 ) {
 
     /**
@@ -66,7 +75,7 @@ class CodecAuditor(
                 // this state is present in the registry — every later branch would miss it,
                 // and it is the state Opus is in today.
                 codec.name in registeredNames && codec.name in unnegotiable ->
-                    AbsenceReason.NoPeerAccepts
+                    AbsenceReason.ExpectedUnsupportedByServer(knownUnnegotiableSource)
 
                 codec.name in registeredNames -> null
 
@@ -80,15 +89,18 @@ class CodecAuditor(
             reason?.let { codec to it }
         }.toMap()
 
-        // A stranded codec IS registered, so it must not also appear in the registered lists
-        // handed to CodecAudit — its own invariant would reject that, correctly. It is
-        // reported as absent-with-a-reason because that is what the UI has to say about it.
-        val strandedNames = absent.filterValues { it == AbsenceReason.NoPeerAccepts }
-            .keys.map { it.name }.toSet()
-
+        // The registry goes back UNFILTERED, and that is the fix rather than an oversight.
+        //
+        // A stranded codec is registered — that is what makes it stranded rather than
+        // missing — so removing it from these lists produced a "registered codecs" log line
+        // that was a subset of the registry while claiming to be the registry. On 2026-09-10
+        // that line was read as proof this build contains no Opus and no G.722, and a real
+        // INVITE off the same handset carried both. One filtered list, one whole wrong
+        // diagnosis. Strandedness travels in [CodecAudit.absent], where it can be read as
+        // the expectation it is.
         return CodecAudit(
-            registeredAudio = audio.filterNot { it.name in strandedNames },
-            registeredVideo = video.filterNot { it.name in strandedNames },
+            registeredAudio = audio,
+            registeredVideo = video,
             absent = absent,
         )
     }

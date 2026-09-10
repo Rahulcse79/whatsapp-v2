@@ -62,3 +62,8 @@ lint-results*.xml
 # anybody clones this repository to read; docs/ holds what an outside reader needs.
 tasks.md
 tasks-v*.md
+
+# Eclipse / IDE class output. These duplicate every source file, and the architecture
+# test walks the source tree — so a stale `bin/` makes it scan the deliberate violation
+# fixtures under test/arch and fail every rule at once, locally and only locally.
+bin/

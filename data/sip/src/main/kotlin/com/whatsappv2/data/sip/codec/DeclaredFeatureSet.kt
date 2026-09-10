@@ -86,4 +86,15 @@ object DeclaredFeatureSet {
      * this is the thing it feeds.
      */
     val unnegotiableOnThisDeployment: Set<String> = setOf("opus", "g722")
+
+    /**
+     * Where [unnegotiableOnThisDeployment] came from, so the claim travels with its warrant.
+     *
+     * It is a **record**, not a measurement made by this app, and saying so is the whole
+     * point: `AbsenceReason.ExpectedUnsupportedByServer` used to be called `NoPeerAccepts`,
+     * which asserts something about every peer that nothing here has ever checked.
+     */
+    const val UNNEGOTIABLE_SOURCE: String =
+        "recorded from `fs_cli -x \"show codec\"` on the reference server, 2026-09-09"
+
 }

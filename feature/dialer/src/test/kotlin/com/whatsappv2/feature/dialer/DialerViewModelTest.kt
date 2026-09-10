@@ -1,5 +1,6 @@
 package com.whatsappv2.feature.dialer
 
+import androidx.lifecycle.SavedStateHandle
 import app.cash.turbine.test
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
@@ -65,12 +66,23 @@ class DialerViewModelTest {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
+    /**
+     * The destination's saved state.
+     *
+     * Held by the test rather than created per ViewModel, because that is what Compose
+     * Navigation does: the handle belongs to the back-stack entry and outlives the
+     * ViewModel scoped to it. Building a second [DialerViewModel] over the same handle is
+     * exactly "leave the dialer and come back", with no navigation library in the test.
+     */
+    private var savedState = SavedStateHandle()
+
     private fun viewModel(camera: CameraAvailability = CameraPresent) = DialerViewModel(
-        placeCall = PlaceCallUseCase(repository, engine, camera),
+        placeCall = PlaceCallUseCase(repository, engine, camera, engine),
         recentDials = recents,
         contacts = contacts,
         camera = camera,
         repository = repository,
+        savedState = savedState,
         registrar = engine,
     )
 
@@ -215,9 +227,12 @@ class DialerViewModelTest {
     }
 
     @Test
-    fun `an unregistered account produces a message that names the problem`() = runTest {
-        // Not a disabled button: "that account is not registered yet" tells the user what
-        // to fix, and a control that does nothing tells them nothing at all.
+    fun `an unregistered account is registered and the call goes through`() = runTest {
+        // Changed deliberately (Task 76). This used to assert a refusal saying "that account
+        // is not registered yet", which told the user to fix by hand something the app can
+        // fix in well under a second — against the reference server a REGISTER completes in
+        // 57 ms. PlaceCallUseCase now registers first and dials, so the dialler's job here
+        // is to show a placed call rather than a refusal.
         given(work, registered = false)
         val viewModel = ready(viewModel())
 
@@ -227,11 +242,33 @@ class DialerViewModelTest {
             viewModel.onCall()
             runCurrent()
 
-            val event = assertIs<DialerEvent.Refused>(awaitItem())
-            assertTrue(event.message.contains("not registered"))
+            assertIs<DialerEvent.CallPlaced>(awaitItem())
             cancelAndIgnoreRemainingEvents()
         }
     }
+
+    @Test
+    fun `an account that will not register is refused in words that name what happened`() =
+        runTest {
+            // The other half of Task 76's decision. The recovery is bounded, and when it runs
+            // out the user is told what actually happened — the app tried to reach the server
+            // and could not — rather than the bare "not registered" that was true before the
+            // attempt and misleading after it.
+            given(work, registered = false)
+            engine.alwaysFail(FakeSipEngine.Operation.REGISTER, SipError.Timeout)
+            val viewModel = ready(viewModel())
+
+            viewModel.events.test {
+                viewModel.onInputChanged("1001")
+                runCurrent()
+                viewModel.onCall()
+                runCurrent()
+
+                val event = assertIs<DialerEvent.Refused>(awaitItem())
+                assertEquals("Could not reach the server for that account", event.message)
+                cancelAndIgnoreRemainingEvents()
+            }
+        }
 
     @Test
     fun `a call refused because the phone is on another call says exactly that`() = runTest {
@@ -299,6 +336,70 @@ class DialerViewModelTest {
             // What was typed stays put: the user is about to try again.
             assertEquals("1001", viewModel.uiState.value.input)
         }
+
+    @Test
+    fun `the selected account survives leaving the dialler and coming back`() = runTest {
+        // The reported defect. Compose Navigation scopes a ViewModel to its destination, so
+        // walking to the call screen and back destroyed the override and the selection
+        // reverted to the default account after the user had deliberately picked another.
+        given(work, home)
+        val first = ready(viewModel())
+
+        first.onAccountSelected(home.id)
+        runCurrent()
+        assertEquals(home.id, first.uiState.value.selectedAccount?.id)
+
+        // A new ViewModel over the same back-stack entry: the screen, left and re-entered.
+        val second = ready(viewModel())
+
+        assertEquals(home.id, second.uiState.value.selectedAccount?.id, "still the chosen one")
+        assertTrue(second.uiState.value.isOverridden)
+    }
+
+    @Test
+    fun `the selection does NOT survive a placed call, so a per-call override stays per call`() =
+        runTest {
+            // The trap in the fix. Two lifetimes are being conflated: surviving navigation is
+            // what was asked for, surviving a placed call is what the design deliberately
+            // refuses. Persisting it somewhere `place` does not clear would turn a one-off
+            // call from the work account into every later call's account — a worse bug than
+            // the one being fixed.
+            given(work, home)
+            val first = ready(viewModel())
+
+            first.onAccountSelected(home.id)
+            first.onInputChanged("1001")
+            runCurrent()
+            first.onCall()
+            runCurrent()
+
+            assertTrue(!first.uiState.value.isOverridden)
+
+            val second = ready(viewModel())
+            assertEquals(
+                work.id,
+                second.uiState.value.selectedAccount?.id,
+                "back to the default, on the screen as well as in the handle",
+            )
+        }
+
+    @Test
+    fun `a refused call keeps the selection, because the user is about to try again`() = runTest {
+        // The override is cleared on success only, and the saved handle has to agree with
+        // that rather than having a rule of its own.
+        given(work, home)
+        engine.failNext(FakeSipEngine.Operation.PLACE_CALL, SipError.Busy(BUSY_HERE))
+        val first = ready(viewModel())
+
+        first.onAccountSelected(home.id)
+        first.onInputChanged("1001")
+        runCurrent()
+        first.onCall()
+        runCurrent()
+
+        val second = ready(viewModel())
+        assertEquals(home.id, second.uiState.value.selectedAccount?.id)
+    }
 
     @Test
     fun `backspace and clear edit what was typed`() = runTest {

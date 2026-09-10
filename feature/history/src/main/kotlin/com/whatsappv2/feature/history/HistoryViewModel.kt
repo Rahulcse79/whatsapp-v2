@@ -202,6 +202,9 @@ class HistoryViewModel @Inject constructor(
         is PlaceCallError.NoAccountAvailable -> "That account is no longer set up"
         is PlaceCallError.UnknownAccount -> "That account is no longer set up"
         is PlaceCallError.InvalidTarget -> "That address could not be dialled"
+        // Attempted and not finished, which is a different sentence from "not registered":
+        // the app has already tried to fix it and the server has not answered yet.
+        is PlaceCallError.NotRegistered -> "Could not reach the server for that account"
     }
 
     private fun pagerFor(filter: CallLogFilter): Flow<PagingData<HistoryRow>> =

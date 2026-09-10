@@ -19,6 +19,7 @@ import com.whatsappv2.data.sip.registration.StackPushParameters
 import com.whatsappv2.data.sip.registration.StackRegistrationEvent
 import com.whatsappv2.data.sip.registration.StackRegistrationState
 import com.whatsappv2.domain.codec.CodecAudit
+import com.whatsappv2.domain.codec.CodecPriorities
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
@@ -48,6 +49,9 @@ import org.pjsip.pjsua2.OnCallStateParam
 import org.pjsip.pjsua2.OnCallTransferStatusParam
 import org.pjsip.pjsua2.OnIncomingCallParam
 import org.pjsip.pjsua2.OnRegStateParam
+import org.pjsip.pjsua2.SrtpCrypto
+import org.pjsip.pjsua2.SrtpCryptoVector
+import org.pjsip.pjsua2.SrtpOpt
 import org.pjsip.pjsua2.TlsConfig
 import org.pjsip.pjsua2.TransportConfig
 import org.pjsip.pjsua2.VideoWindowHandle
@@ -933,6 +937,36 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
         mediaConfig.srtpSecureSignaling = if (mediaEncryption == StackMediaEncryption.MANDATORY) 1 else 0
 
+        // Two suites, not the four PJSIP offers by default, and this is a size decision
+        // rather than a security one (§18.1.1, `SdpBudget`).
+        //
+        // Every `a=crypto:` line carries a base64 key sized by its suite, so the two AES_256
+        // suites cost 116 bytes each against 76 for the AES_128 pair — 232 bytes of an offer
+        // that was measured at 270 bytes OVER what the network delivers. A 1742-byte INVITE
+        // off this handset was retransmitted seven times across 32 seconds and drew no
+        // response of any kind, because the path drops IP-fragmented datagrams and the
+        // server refuses the TCP that RFC 3261 §18.1.1 would otherwise escalate to. The
+        // 781-byte INVITE sent minutes earlier was answered on the first attempt.
+        //
+        // What is given up is nothing a peer needs. RFC 4568 §6.2 makes
+        // AES_CM_128_HMAC_SHA1_80 mandatory to implement and the _32 variant its
+        // low-bandwidth companion; the AES_256 suites are an extension, and the reference
+        // server does not offer them. An account set to MANDATORY still gets real SRTP —
+        // 128-bit AES in counter mode with an 80-bit tag — so this narrows the offer without
+        // weakening the guarantee (§7, DoD 13).
+        if (mediaEncryption != StackMediaEncryption.NONE) {
+            mediaConfig.srtpOpt = SrtpOpt().apply {
+                cryptos = SrtpCryptoVector().apply {
+                    OFFERED_CRYPTO_SUITES.forEach { suite ->
+                        // An empty key means PJSIP generates a random one per session, which
+                        // is the only correct answer: a key written here would be the same
+                        // for every call this build ever places.
+                        add(SrtpCrypto().apply { name = suite })
+                    }
+                }
+            }
+        }
+
         // Nothing automatic. `autoTransmitOutgoing` left on would add a camera stream to
         // every call somebody places, and the Task 54 escalation prompt exists precisely
         // because the far end asking for video is a question, not an instruction.
@@ -967,16 +1001,25 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * `codecId.startsWith(name)` is the comparison, case-insensitively.
      */
     private fun Endpoint.applyCodecs(account: StackAccount) {
+        // Every OTHER configured account's preferences. PJSIP's priorities are endpoint-wide,
+        // so without this the last account to register decides what the rest may negotiate.
+        val otherAudio = otherAccountPreferences(account.key) { it.audioCodecs }
+        val otherVideo = otherAccountPreferences(account.key) { it.videoCodecs }
+
         applyPriorities(
             kind = "Audio",
+            accountKey = account.key,
             available = codecEnum2().map { it.codecId },
             preferred = account.audioCodecs,
+            alsoRequired = otherAudio,
         ) { id, priority -> codecSetPriority(id, priority) }
 
         applyPriorities(
             kind = "Video",
+            accountKey = account.key,
             available = videoCodecEnum2().map { it.codecId },
             preferred = account.videoCodecs,
+            alsoRequired = otherVideo,
         ) { id, priority -> videoCodecSetPriority(id, priority) }
 
         logger.info(
@@ -987,31 +1030,73 @@ internal class RealPjsipCoreGateway @Inject constructor(
         audit.value = auditCodecs(logger)
     }
 
+    /** What every account except [exceptKey] needs kept enabled. See [applyCodecs]. */
+    private fun otherAccountPreferences(
+        exceptKey: String,
+        select: (StackAccount) -> List<String>,
+    ): Set<String> = accountConfigs
+        .filterKeys { it != exceptKey }
+        .values
+        .flatMapTo(mutableSetOf(), select)
+
+    /**
+     * Writes one kind of codec priority, having asked [CodecPriorities] what it should be.
+     *
+     * The ranking itself is a pure function in `:domain` and is tested there. What is left
+     * here is the two things only the adapter can do: read the registry, and write the
+     * numbers back one `runCatching` at a time so one codec refusing a priority does not
+     * cost the others theirs.
+     *
+     * ## The refusal that matters
+     *
+     * [CodecPriorities.Assignment.wouldDisableEverything] is the guard against the defect of
+     * 2026-09-10: an account saved with `audio=[lyra]` — a codec this build does not contain
+     * — matched nothing, so the previous version of this function set **every** registered
+     * audio codec to priority 0, endpoint-wide. `pjmedia_endpt_create_audio_sdp` then built
+     * an m-line with no formats in it, and pjsua deactivated the line. Outgoing offers went
+     * out as `m=audio 0 RTP/AVP 0`; inbound calls rang and then died on
+     * `PJMEDIA_SDPNEG_ENOMEDIA` the moment the user answered, with this app sending itself a
+     * `488 Unable to create media session`.
+     *
+     * The assignment comes back empty in that case, so applying it is already a no-op. This
+     * says so at ERROR rather than relying on that: a preference list nothing can honour is
+     * a configuration the user has to fix, and until it is fixed the endpoint keeps the
+     * priorities pjmedia registered rather than losing its voice.
+     */
     private inline fun applyPriorities(
         kind: String,
+        accountKey: String,
         available: List<String>,
         preferred: List<String>,
+        alsoRequired: Set<String>,
         set: (String, Short) -> Unit,
     ) {
-        available.forEach { codecId ->
-            val rank = preferred.indexOfFirst { codecId.startsWith(it, ignoreCase = true) }
-            // Descending from the top so the first preference outranks the second, and
-            // everything unnamed is disabled rather than left at whatever PJSIP chose.
-            val priority = if (rank < 0) CODEC_DISABLED else (CODEC_TOP - rank).toShort()
+        val assignment = CodecPriorities.assign(available, preferred, alsoRequired)
+
+        if (assignment.wouldDisableEverything) {
+            logger.error(
+                TAG,
+                "$kind codecs for $accountKey match nothing this build registered " +
+                    "($preferred); keeping the library's own priorities, because disabling " +
+                    "them all makes every call fail to negotiate media",
+            )
+            return
+        }
+
+        assignment.priorities.forEach { (codecId, priority) ->
             runCatching { set(codecId, priority) }
         }
 
-        // A preference the build cannot honour is not an error - the call still connects
-        // on whatever else was offered - but it is never what the author meant, and until
-        // now it was invisible. `CodecPreferences.DEFAULT` names H264 while the native
-        // build sets PJMEDIA_HAS_OPENH264_CODEC to 0, so H264 is silently never
-        // negotiated and an H264-only peer gets no video at all. Said out loud, once per
-        // account, rather than discovered on a call that half worked.
-        val missing = preferred.filter { name ->
-            available.none { it.startsWith(name, ignoreCase = true) }
-        }
-        if (missing.isNotEmpty()) {
-            logger.warn(TAG, "$kind codecs preferred but not in this build: $missing")
+        // A preference the build cannot honour is not an error on its own - the call still
+        // connects on whatever else was offered - but it is never what the author meant, and
+        // it used to be invisible. `CodecPreferences.DEFAULT` names H264 while the native
+        // build sets PJMEDIA_HAS_OPENH264_CODEC to 0, so H264 was silently never negotiated
+        // and an H264-only peer got no video at all.
+        if (assignment.unmatchedPreferences.isNotEmpty()) {
+            logger.warn(
+                TAG,
+                "$kind codecs preferred but not in this build: ${assignment.unmatchedPreferences}",
+            )
         }
     }
 
@@ -1721,15 +1806,24 @@ internal class RealPjsipCoreGateway @Inject constructor(
         const val VIDEO_START_KEYFRAMES = 3L
         const val VIDEO_START_KEYFRAME_INTERVAL_MS = 1_000L
 
-        /** PJSIP priorities run 0 (disabled) to 255 (first choice). */
-        const val CODEC_TOP = 255
-        const val CODEC_DISABLED: Short = 0
-
         /** `PJSUA_DTMF_METHOD_SIP_INFO`; RFC 2833 is method 0 and is `dialDtmf`'s default. */
         const val DTMF_METHOD_SIP_INFO = 1
 
         /** Whatever `AccountConfig.videoConfig.defaultCaptureDevice` resolved to. */
         const val CAPTURE_DEVICE_DEFAULT = -1
+
+        /**
+         * The SRTP suites this app offers, in preference order.
+         *
+         * RFC 4568 §6.2: `AES_CM_128_HMAC_SHA1_80` is mandatory to implement, and the `_32`
+         * variant is its low-bandwidth companion. PJSIP would otherwise offer the two
+         * AES_256_CM suites in front of these, costing 232 bytes of an SDP that has none to
+         * spare — see the note beside `mediaConfig.srtpOpt` and `SdpBudget`.
+         */
+        val OFFERED_CRYPTO_SUITES = listOf(
+            "AES_CM_128_HMAC_SHA1_80",
+            "AES_CM_128_HMAC_SHA1_32",
+        )
 
         const val SIP_OK = 200
         const val SIP_PROGRESS = 183

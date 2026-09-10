@@ -886,13 +886,13 @@ compiler invocation in the arm64-v8a job log, which is the only source that cann
 |---|---|---|---|
 | `PJMEDIA_HAS_VIDEO` | **1** | Video calling at all. Off by default upstream | `:feature:calls`, `SipVideoGateway` |
 | `PJSIP_HAS_TLS_TRANSPORT` | **1** | TLS accounts. DoD 13 and `docs/security.md` §Transport | `RealPjsipCoreGateway` transport setup |
-| `PJMEDIA_HAS_OPUS_CODEC` | **1** | The only wideband audio codec in the build. **Registered, and no peer accepts it** — `docs/reconciliation.md` A-1b | `CodecPreferences.DEFAULT` |
+| `PJMEDIA_HAS_OPUS_CODEC` | **1** | The only wideband audio codec in the build. **Registered and offered on the wire** — corrected 2026-09-10, see below | `CodecPreferences.DEFAULT` |
 | `PJMEDIA_HAS_VPX_CODEC` | **1** | **VP8** — the only video codec both ends can negotiate | `CodecPreferences.DEFAULT` video |
 | `PJMEDIA_HAS_OPENH264_CODEC` | **0** | — **and `CodecPreferences.DEFAULT` names H264 anyway.** The mismatch is silent: `applyPriorities` iterates registered codecs, so an absent H264 is skipped. `docs/reconciliation.md` A-1 | Nothing. This is the defect |
 | `PJMEDIA_HAS_LYRA_CODEC` | **0** | — Gate-dependent, ADR-008 | Nothing |
 | `PJMEDIA_HAS_WEBRTC_AEC` | **1** | **Acoustic echo cancellation** — the difference between a usable speakerphone and feedback | Every call on the loudspeaker route |
 | `PJMEDIA_HAS_WEBRTC_AEC3` | **0** | — The older AEC is the one in use | — |
-| `PJMEDIA_HAS_ANDROID_MEDIACODEC` | **1** | Hardware video encode/decode | Video calls |
+| `PJMEDIA_HAS_ANDROID_MEDIACODEC` | **1** | Hardware video encode/decode — **and this is what registers `H264/99`**, which `PJMEDIA_HAS_OPENH264_CODEC 0` would otherwise say is absent | Video calls; `H264` in `CodecPreferences.DEFAULT` |
 | `PJMEDIA_VIDEO_DEV_HAS_ANDROID` | **1** | Camera capture | `PjCameraInfo2`, the local preview |
 | `PJMEDIA_VIDEO_DEV_HAS_ANDROID_OPENGL` | **1** | Rendering into the `SurfaceView` (ADR-006) | `CallVideo.kt` |
 | `PJMEDIA_HAS_LIBYUV` | **1** | Colour-space conversion between the camera and the encoder | Video calls |
@@ -901,11 +901,88 @@ compiler invocation in the arm64-v8a job log, which is the only source that cann
 | `PJMEDIA_RESAMPLE_IMP` | `LIBRESAMPLE` | Sample-rate conversion between codec and device rates | Every call |
 | `PJMEDIA_AUDIO_DEV_HAS_WMME` | **0** | Windows audio. Correctly off | — |
 
-**Two rows are decisions rather than settings, and both are open:**
+#### Corrections of 2026-09-10, from a device trace and a direct probe of the server
 
-- **`PJMEDIA_HAS_OPENH264_CODEC 0` against a `DEFAULT` that names H264.** Either OpenH264
-  enters the feature set — a fourth native dependency plus Cisco's licensing terms, which is
-  a product decision — or H264 leaves `CodecPreferences.DEFAULT`. **DECIDE, unanswered.**
+Three claims in the table above were wrong, and each was wrong in the same way: read out of
+a log line or a config flag rather than off the wire.
+
+**1. Opus and G.722 register, and are offered.** The row above said Opus was "registered and
+no peer accepts it", sourced from the codec audit's own log line. That line was **filtered**
+— `CodecAuditor` removed every codec named in `DeclaredFeatureSet.unnegotiableOnThisDeployment`
+before printing — so it under-reported the registry while claiming to be it. A real INVITE
+off the handset carries `a=rtpmap:96 opus/48000/2` and `a=rtpmap:9 G722/8000`. The audit now
+prints the registry verbatim, with each codec's priority beside it, and reports strandedness
+separately through `AbsenceReason.ExpectedUnsupportedByServer` — renamed from `NoPeerAccepts`
+because nothing in this app has ever measured what peers accept.
+
+**2. H264 is registered, by `MediaCodec`.** `PJMEDIA_HAS_OPENH264_CODEC 0` is about OpenHH264
+only. `PJMEDIA_HAS_ANDROID_MEDIACODEC 1` registers `H264/99` through the platform encoder, and
+the device's video registry reads `VP8/102, H264/99, VP8/103, VP9/106`. **So the DECIDE below
+is answered: H264 stays in `CodecPreferences.DEFAULT`, and OpenH264 stays out of the feature
+set.** The rejected alternative was removing H264 from the defaults, which would have given up
+a working hardware codec to satisfy a flag that does not govern it.
+
+**3. Codec priorities are endpoint-wide, and an unmatchable preference list disabled the
+endpoint.** `applyPriorities` assigned priority `0` to every registered codec no preference
+named. An account saved with `audio=[lyra]` — not in this build — therefore matched nothing
+and disabled **all** audio, for every account, persistently. `pjmedia_endpt_create_audio_sdp`
+stops at the first disabled codec, so offers went out as `m=audio 0 RTP/AVP 0` and answering
+an inbound call produced `PJMEDIA_SDPNEG_ENOMEDIA` and a `488` this app sent itself — which is
+the reported "the call disconnects when I answer it". The decision now lives in
+`domain/…/codec/CodecPriorities.kt`: a preference set that matches nothing changes no
+priority at all, and one account cannot disable a codec another account requires.
+
+#### 4.11.1 The SDP size budget — a decision the network forced
+
+**Measured 2026-09-10.** The reference server answers SIP `OPTIONS` up to **1472 bytes** and
+does not answer at 1475. 1472 + 8 (UDP) + 20 (IPv4) = **1500**, the Ethernet MTU: the path
+drops IP-fragmented datagrams silently. TCP 5060 refuses connections and TLS 5061 is closed,
+so RFC 3261 §18.1.1's escalation has nowhere to go — the trace shows PJSIP attempting TCP for
+a 1748-byte INVITE and falling back to a 1742-byte UDP datagram that was retransmitted seven
+times across 32 seconds and never answered.
+
+**Decision: narrow the SRTP offer to the two AES_CM_128 suites.** RFC 4568 §6.2 makes
+`AES_CM_128_HMAC_SHA1_80` mandatory to implement and the `_32` variant its low-bandwidth
+companion; PJSIP additionally offers two AES_256_CM suites at 116 bytes each. Dropping those
+two, with ICE off, brings the audio offer from 1092 SDP bytes to 662:
+
+| | SDP | + headers | over the 1472 hard limit | over the 1272 safe bound |
+|---|---|---|---|---|
+| as measured | 1092 | **1742** | **270** | 470 |
+| trimmed | 662 | **1312** | **0** | **40** |
+
+**So the datagram is no longer fragmented and is no longer dropped, which is the whole of the
+reported defect — and it is still 40 bytes short of §18.1.1's 200-byte headroom.** Both
+numbers are stated because only the first one is a fix. Closing the remaining 40 bytes means
+one `telephone-event` clock rate instead of two (`PJMEDIA_TELEPHONE_EVENT_ALL_CLOCKRATES`,
+worth about 52 bytes), which is a native rebuild and has not been done.
+`domain/…/sdp/SdpBudget.kt` holds the arithmetic and two tests pin both rows.
+
+**Rejected alternative: leave the offer as it was and treat the failures as a server problem.**
+The server is half the problem and the offer is the half this repository controls.
+
+**Open, and it blocks video.** The same arithmetic says a full audio+video offer is roughly
+2700 bytes and does not fit even after every trim, because a second `m=` line brings its own
+crypto block, ICE candidates and `rtcp-fb` attributes. **Video calling therefore requires a
+TCP listener on the server.** That is not a change in this repository and must be raised with
+whoever operates it. Until then, video INVITEs are dropped by the network and the app cannot
+make them arrive. **DECIDE — owner: whoever operates `192.168.80.145`.**
+
+#### 4.11.2 Placing a call on an unregistered account (item 7)
+
+**Decision: register, then dial, with a bounded wait of 5 seconds** (`PlaceCallUseCase.
+REGISTRATION_WAIT_MILLIS`). Against the reference server a REGISTER completes in 57 ms
+including the 401 digest round trip, so the bound is sized for a lost packet rather than a
+slow server: SIP Timer A retransmits at 500 ms, 1 s and 2 s, and 5 s covers three attempts.
+
+**Rejected alternative: refuse immediately with a new error.** Honest and instant, but it
+makes the user do by hand what the app can do in well under a second — and the reported
+defect is precisely that nothing tried.
+
+**Also rejected: dial anyway.** That is the defect. The INVITE dies at Timer B 32 seconds
+later with nothing to explain it.
+
+**One row remains a decision rather than a setting, and it is open:**
 - **`PJMEDIA_HAS_LYRA_CODEC 0`.** ADR-008.
 
 **And one row is a finding about the server, not the build:** the deployed FreeSWITCH offers
