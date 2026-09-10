@@ -47,6 +47,25 @@ class CodecAuditorTest {
     }
 
     @Test
+    fun `a registered codec whose model files are unusable says so, ahead of any peer`() {
+        // Lyra on Exit A: the codec registers from the library alone, and only fails when
+        // a stream opens and the weights are not where it was told. That is worse than
+        // NotCompiled — it is in every offer — and it must not be softened into "no peer".
+        val audit = CodecAuditor(declared = setOf(lyra), knownUnnegotiable = setOf("lyra")).audit(
+            registeredAudio = listOf("lyra/16000/1" to 200),
+            registeredVideo = emptyList(),
+            compiledIn = setOf("lyra"),
+            modelFilesUnusable = mapOf("lyra" to "lyragan.tflite missing from /data/user/0/x/files/lyra"),
+        )
+
+        assertEquals(
+            AbsenceReason.ModelFilesUnusable("lyragan.tflite missing from /data/user/0/x/files/lyra"),
+            audit.absent[lyra],
+        )
+        assertEquals(listOf("lyra"), audit.registeredAudio.map { it.name }, "still in the registry")
+    }
+
+    @Test
     fun `compiled in and not registered is a build defect`() {
         // The one case a build log cannot show: the flag said 1 and the library did not
         // register it. This is what the audit exists for.

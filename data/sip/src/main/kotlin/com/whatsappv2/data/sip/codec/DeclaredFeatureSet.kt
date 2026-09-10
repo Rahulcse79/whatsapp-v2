@@ -39,6 +39,7 @@ object DeclaredFeatureSet {
         DeclaredCodec("g722", DeclaredCodec.Kind.AUDIO),
         DeclaredCodec("pcmu", DeclaredCodec.Kind.AUDIO),
         DeclaredCodec("pcma", DeclaredCodec.Kind.AUDIO),
+        DeclaredCodec("lyra", DeclaredCodec.Kind.AUDIO),
         DeclaredCodec("vp8", DeclaredCodec.Kind.VIDEO),
     )
 
@@ -49,11 +50,13 @@ object DeclaredFeatureSet {
      * a **build defect**. Without it every absence collapses into one indistinguishable
      * case, which is the state the project was in before the audit existed.
      *
-     * `h264` and `lyra` are deliberately absent: `PJMEDIA_HAS_OPENH264_CODEC 0` and
-     * `PJMEDIA_HAS_LYRA_CODEC 0` (ADR-008). G.711 and G.722 carry no flag — pjmedia always
-     * builds them — which is why they are here without a corresponding `#define`.
+     * `h264` is deliberately absent: `PJMEDIA_HAS_OPENH264_CODEC 0`. `lyra` is present since
+     * ADR-008 closed at Exit A (2026-09-10): `PJMEDIA_HAS_LYRA_CODEC 1`, the closure is
+     * vendored and built by `pjsip/lyra/CMakeLists.txt`, and it registers as
+     * `lyra/16000/1`. G.711 and G.722 carry no flag — pjmedia always builds them — which is
+     * why they are here without a corresponding `#define`.
      */
-    val compiledIn: Set<String> = setOf("opus", "g722", "pcmu", "pcma", "vp8")
+    val compiledIn: Set<String> = setOf("opus", "g722", "pcmu", "pcma", "lyra", "vp8")
 
     /**
      * Flags that must read `1` in `config_site.h` for [compiledIn] to be true.
@@ -64,12 +67,12 @@ object DeclaredFeatureSet {
     val requiredFlags: Map<String, String> = mapOf(
         "opus" to "PJMEDIA_HAS_OPUS_CODEC",
         "vp8" to "PJMEDIA_HAS_VPX_CODEC",
+        "lyra" to "PJMEDIA_HAS_LYRA_CODEC",
     )
 
     /** Flags that must read `0`, so a codec silently arriving is caught too. */
     val forbiddenFlags: Map<String, String> = mapOf(
         "h264" to "PJMEDIA_HAS_OPENH264_CODEC",
-        "lyra" to "PJMEDIA_HAS_LYRA_CODEC",
     )
 
     /**
@@ -80,12 +83,17 @@ object DeclaredFeatureSet {
      * G.711 while the app lists a wideband codec first, and until the audit existed nothing
      * said so (`docs/reconciliation.md` A-1b).
      *
+     * `lyra` joined the set on 2026-09-10, the day it was compiled in: no FreeSWITCH offers
+     * it and none can — it is not an IETF codec and interoperates only with another
+     * endpoint running the same PJSIP integration, which means another install of this
+     * app, with the server passing media through untouched.
+     *
      * A fact about a **deployment**, not about this build: installing `mod_opus` server-side
-     * empties this set with no change here. It is a constant only because there is no
+     * shrinks this set with no change here. It is a constant only because there is no
      * server-driven codec configuration yet (`docs/system-design.md` §5.1) — when there is,
      * this is the thing it feeds.
      */
-    val unnegotiableOnThisDeployment: Set<String> = setOf("opus", "g722")
+    val unnegotiableOnThisDeployment: Set<String> = setOf("opus", "g722", "lyra")
 
     /**
      * Where [unnegotiableOnThisDeployment] came from, so the claim travels with its warrant.

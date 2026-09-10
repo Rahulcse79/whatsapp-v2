@@ -57,10 +57,17 @@ class CodecAuditor(
      *   it every absence collapses into one indistinguishable case, which is the state the
      *   project is in today.
      */
+    /**
+     * @param modelFilesUnusable per codec name, why its model files cannot be used — for a
+     *   codec that registers and then fails when a stream opens, which is worse than one
+     *   that never registered. Lyra is the only such codec today. Checked before the peer,
+     *   because a codec whose weights are missing has no call to be stranded on.
+     */
     fun audit(
         registeredAudio: List<Pair<String, Int>>,
         registeredVideo: List<Pair<String, Int>>,
         compiledIn: Set<String>,
+        modelFilesUnusable: Map<String, String> = emptyMap(),
     ): CodecAudit {
         val audio = registeredAudio.map { (id, priority) -> RegisteredCodec.parse(id, priority) }
         val video = registeredVideo.map { (id, priority) -> RegisteredCodec.parse(id, priority) }
@@ -68,12 +75,18 @@ class CodecAuditor(
         val registeredNames = (audio + video).map { it.name }.toSet()
         val compiled = compiledIn.map { it.lowercase() }.toSet()
         val unnegotiable = knownUnnegotiable.map { it.lowercase() }.toSet()
+        val unusableModels = modelFilesUnusable.mapKeys { it.key.lowercase() }
 
         val absent = declared.mapNotNull { codec ->
             val reason = when {
-                // Registered and known to have no peer. Checked FIRST, because a codec in
-                // this state is present in the registry — every later branch would miss it,
-                // and it is the state Opus is in today.
+                // Registered, and the weights it needs at stream time are not there. The
+                // one absence that advertises itself in every offer.
+                codec.name in registeredNames && codec.name in unusableModels ->
+                    AbsenceReason.ModelFilesUnusable(unusableModels.getValue(codec.name))
+
+                // Registered and known to have no peer. Checked before the build cases,
+                // because a codec in this state is present in the registry — every later
+                // branch would miss it, and it is the state Opus is in today.
                 codec.name in registeredNames && codec.name in unnegotiable ->
                     AbsenceReason.ExpectedUnsupportedByServer(knownUnnegotiableSource)
 

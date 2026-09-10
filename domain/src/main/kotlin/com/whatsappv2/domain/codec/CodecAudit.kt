@@ -169,8 +169,8 @@ sealed interface AbsenceReason {
     /**
      * The build was configured without it. A **decision**, not a defect.
      *
-     * True today of `H264` (`PJMEDIA_HAS_OPENH264_CODEC 0`) and `LYRA`
-     * (`PJMEDIA_HAS_LYRA_CODEC 0`, ADR-008). Reported at INFO. Owner: whoever decides the
+     * True today of `H264` (`PJMEDIA_HAS_OPENH264_CODEC 0`); no longer of `LYRA`, which
+     * ADR-008 compiled in at Exit A on 2026-09-10. Reported at INFO. Owner: whoever decides the
      * feature set.
      */
     data object NotCompiled : AbsenceReason

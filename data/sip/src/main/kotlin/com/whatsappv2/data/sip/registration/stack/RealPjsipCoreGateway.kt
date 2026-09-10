@@ -63,6 +63,7 @@ import org.pjsip.pjsua2.pjsip_transport_type_e
 import org.pjsip.pjsua2.pjsua_call_flag
 import org.pjsip.pjsua2.pjsua_call_media_status
 import org.pjsip.pjsua2.pjsua_call_vid_strm_op
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -227,6 +228,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * the answer is a property of the running library, not of the process.
      */
     private val audit = MutableStateFlow<CodecAudit?>(null)
+
+    /**
+     * Why Lyra's model files cannot be used, or null. Set once by [start] and read by
+     * every audit after it, so a codec that registered without its weights is reported
+     * as such on every account rather than only at the moment the copy failed.
+     */
+    @Volatile
+    private var lyraModelProblem: String? = null
     override val codecAudit: StateFlow<CodecAudit?> = audit.asStateFlow()
 
     private var endpoint: Endpoint? = null
@@ -388,6 +397,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
         // configuring later changes nothing until the next call.
         created.tuneOpus()
         created.tuneVideoCodecs()
+        lyraModelProblem = created.tuneLyra(context, logger)
 
         // All three, once, at startup. PJSIP binds an account to a transport by id,
         // so the transport an account needs has to exist before the account does —
@@ -958,7 +968,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             "Codecs for ${account.key}: audio=${account.audioCodecs} video=${account.videoCodecs}",
         )
 
-        audit.value = auditCodecs(logger)
+        audit.value = auditCodecs(logger, lyraModelProblem)
     }
 
     /** What every account except [exceptKey] needs kept enabled. See [applyCodecs]. */
@@ -1885,3 +1895,40 @@ private fun CallInfo.resumeParams(): CallOpParam {
     resume.flag = pjsua_call_flag.PJSUA_CALL_UNHOLD.toLong()
     return CallOpParam().apply { opt = resume }
 }
+
+/**
+ * Points the Lyra codec at its model files (ADR-008, Exit A).
+ *
+ * After `libInit`, which is when the codec registers and writes its *default* path —
+ * the relative string `"model_coeffs"`, which exists nowhere on a device — and before
+ * `libStart`. `lyra.cpp:199-203` writes that default at the end of init, so a path set
+ * earlier is overwritten; a path set later is not read until the next stream.
+ *
+ * Returns what is wrong, or null. A problem is not fatal to the stack — every other
+ * codec still works — but it is fatal to *this* codec in a way the registry cannot
+ * show: `lyra/16000/1` registers from the library alone and then fails when a stream
+ * opens. The audit carries the problem against the codec for exactly that reason.
+ */
+private fun Endpoint.tuneLyra(context: Context, logger: Logger): String? {
+    val dir = File(context.filesDir, LyraModels.ASSET_DIR)
+    val installed = LyraModels.install(
+        open = { name -> runCatching { context.assets.open("${LyraModels.ASSET_DIR}/$name") }.getOrNull() },
+        dir = dir,
+    )
+    if (installed != null) {
+        logger.error(LYRA_TAG, "Lyra model files unusable: $installed")
+        return installed
+    }
+    return runCatching {
+        val lyra = codecLyraConfig
+        lyra.modelPath = dir.absolutePath
+        codecLyraConfig = lyra
+    }.exceptionOrNull()?.let { failure ->
+        // The library was built without PJMEDIA_HAS_LYRA_CODEC, or the setter refused
+        // the path. Either way the codec cannot be used and config_site.h says it can.
+        logger.error(LYRA_TAG, "Lyra not configured — is it compiled in? ${failure.message}")
+        "pjsua2 refused the Lyra configuration: ${failure.message}"
+    }
+}
+
+private const val LYRA_TAG = "PjsipGateway"

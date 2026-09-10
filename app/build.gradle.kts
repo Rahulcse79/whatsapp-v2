@@ -4,6 +4,38 @@ plugins {
     id("whatsappv2.hilt")
 }
 
+// The four Lyra weight files, staged under build/ so they land in the APK as assets/lyra/*
+// (ADR-008, Exit A). Sourced from the vendored tree rather than copied into app/src: the
+// weights have one home, the pin in tools/vendor/pins.sh, and `LyraModels.VERSION` names
+// the same commit. A task of its own rather than a raw asset srcDir on model_coeffs: a
+// srcDir contributes its contents at the asset root, and the codec is handed a directory,
+// not four files — and AGP's variant API wants a task it can wire, not a path.
+abstract class StageLyraAssets : DefaultTask() {
+    @get:InputDirectory
+    abstract val modelDir: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val output: DirectoryProperty
+
+    @TaskAction
+    fun stage() {
+        val target = output.get().asFile.resolve("lyra").apply { mkdirs() }
+        listOf("lyra_config.binarypb", "lyragan.tflite", "quantizer.tflite", "soundstream_encoder.tflite")
+            .forEach { name -> modelDir.get().asFile.resolve(name).copyTo(target.resolve(name), overwrite = true) }
+    }
+}
+
+val lyraAssets = tasks.register<StageLyraAssets>("stageLyraAssets") {
+    modelDir.set(rootProject.layout.projectDirectory.dir("third_party/lyra/lyra/model_coeffs"))
+    output.set(layout.buildDirectory.dir("generated/lyra-assets"))
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(lyraAssets, StageLyraAssets::output)
+    }
+}
+
 android {
     namespace = "com.whatsappv2"
 

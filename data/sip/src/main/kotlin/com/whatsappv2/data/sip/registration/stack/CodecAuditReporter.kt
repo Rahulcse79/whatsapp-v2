@@ -26,7 +26,12 @@ import org.pjsip.pjsua2.Endpoint
  *
  * O(n) over ≤ ~30 codecs, once per endpoint start. Never in the call path.
  */
-internal fun Endpoint.auditCodecs(logger: Logger): CodecAudit {
+/**
+ * @param lyraModelProblem why Lyra's model files are unusable, or null; see
+ *   `RealPjsipCoreGateway.tuneLyra`. Reported against the codec as
+ *   [com.whatsappv2.domain.codec.AbsenceReason.ModelFilesUnusable].
+ */
+internal fun Endpoint.auditCodecs(logger: Logger, lyraModelProblem: String? = null): CodecAudit {
     val auditor = CodecAuditor(
         declared = DeclaredFeatureSet.declared,
         knownUnnegotiable = DeclaredFeatureSet.unnegotiableOnThisDeployment,
@@ -37,6 +42,7 @@ internal fun Endpoint.auditCodecs(logger: Logger): CodecAudit {
         registeredAudio = codecEnum2().map { it.codecId to it.priority.toInt() },
         registeredVideo = videoCodecEnum2().map { it.codecId to it.priority.toInt() },
         compiledIn = DeclaredFeatureSet.compiledIn,
+        modelFilesUnusable = lyraModelProblem?.let { mapOf("lyra" to it) }.orEmpty(),
     )
 
     // INFO once per start: the codec list the running library ACTUALLY registered, verbatim
@@ -73,10 +79,14 @@ internal fun Endpoint.auditCodecs(logger: Logger): CodecAudit {
         // and N-9 requires it be reported as one — at ERROR, once, with the codec id.
         // Everything else is a decision, or a fact about the deployment; reporting those at
         // ERROR is how people learn to ignore the log.
-        if (reason == AbsenceReason.RegistrationFailed) {
-            logger.error(TAG, "$line — the build declared it and the library did not register it")
-        } else {
-            logger.info(TAG, line)
+        when (reason) {
+            AbsenceReason.RegistrationFailed ->
+                logger.error(TAG, "$line — the build declared it and the library did not register it")
+            // Registered without its weights: every offer advertises a codec that fails
+            // when the stream opens. As loud as a missing registration, for that reason.
+            is AbsenceReason.ModelFilesUnusable ->
+                logger.error(TAG, "$line — the codec is in every offer and cannot open a stream")
+            else -> logger.info(TAG, line)
         }
     }
 
