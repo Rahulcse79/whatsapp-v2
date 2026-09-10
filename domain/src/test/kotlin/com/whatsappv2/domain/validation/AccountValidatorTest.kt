@@ -50,7 +50,8 @@ class AccountValidatorTest {
         assertEquals(Transport.UDP, account.transport)
         assertEquals(SipAccount.DEFAULT_EXPIRY_SECONDS, account.registrationExpirySeconds)
         assertEquals(NatPolicy.DEFAULT_KEEPALIVE_SECONDS, account.natPolicy.keepaliveIntervalSeconds)
-        assertEquals(SrtpPolicy.OPTIONAL, account.srtpPolicy)
+        // DISABLED since 2026-09-10: OPTIONAL failed every outgoing call on FreeSWITCH.
+        assertEquals(SrtpPolicy.DISABLED, account.srtpPolicy)
         assertTrue(account.codecs.audio.isNotEmpty())
     }
 
