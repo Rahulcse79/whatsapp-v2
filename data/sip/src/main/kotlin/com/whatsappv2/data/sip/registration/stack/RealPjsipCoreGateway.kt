@@ -605,8 +605,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
             accounts.values.forEach { account ->
                 runCatching { account.setRegistration(false) }
                 runCatching { account.shutdown() }
+                account.release()
             }
             accounts.clear()
+            // Deleted while the library is still up: `Call::~Call` touches the call slot
+            // unconditionally, and after libDestroy there is no slot to touch. See
+            // [PjAccount.release] for why a finalizer must never be the one to do this.
+            calls.values.forEach { call -> runCatching { call.delete() } }
             calls.clear()
             transports.clear()
 
@@ -777,6 +782,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // that the registrar is not answering, so neither of these can be relied on.
             runCatching { stale.setRegistration(false) }
             runCatching { stale.shutdown() }
+            stale.release()
         }
 
         runCatching {
@@ -803,8 +809,40 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // Unregister before shutdown so the registrar hears `Expires: 0` rather than
             // simply losing the binding when it lapses.
             runCatching { account.setRegistration(false) }
-            account.shutdown()
+            runCatching { account.shutdown() }
+                .onFailure { logger.warn(TAG, "shutdown of $accountKey failed: ${it.message}") }
+            account.release()
         }
+    }
+
+    /**
+     * Frees a director's native peer now, on this thread, rather than whenever the
+     * garbage collector gets round to it.
+     *
+     * ## The crash this closes
+     *
+     * SIGABRT on a Zebra TC15, 2026-09-10 22:14:57, tid `FinalizerDaemon`:
+     * `SwigDirector_Account::~SwigDirector_Account → Account::~Account → shutdown() →
+     * pjsua_acc_del2 → pj_log → pj_thread_this` — *"Calling pjlib from unknown/external
+     * thread"*. A `PjAccount` had been dropped from [accounts] on logout, the user logged
+     * in again, and the collector then finalised the old Java object on its own thread.
+     *
+     * Two things are wrong with letting a finalizer do it, and the assertion only catches
+     * the first. The finalizer thread is not registered with pjlib, so any pjlib call
+     * from it is undefined and, in a debug build, an abort. Worse, `Account::~Account`
+     * calls `shutdown()`, which asks `isValid()`, which checks **the slot number** —
+     * `pjsua_var.acc[id].valid` (`pjsua_acc.c:115-119`) — and pjsua reuses freed slots.
+     * The new account had slot 0, the old object still said 0, and the destructor was
+     * deleting the *live* account. `Call::~Call` has the same shape (`pjsua2/call.cpp:
+     * 525-544`): it clears the slot's user data and hangs up whatever is active in it.
+     *
+     * `delete()` runs the destructor here, while the slot is still the one this object
+     * owned and already invalid, so the destructor's own `shutdown()` is a no-op; SWIG
+     * then zeroes the pointer so the eventual finalizer finds nothing to do. The pjsua2
+     * Android sample does exactly this for its calls and accounts.
+     */
+    private fun PjAccount.release() {
+        runCatching { delete() }.onFailure { logger.warn(TAG, "delete of $accountKey failed: ${it.message}") }
     }
 
     override fun setTraceEnabled(enabled: Boolean) {
@@ -1366,6 +1404,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 calls -= callKey
                 recorders -= callKey
                 audioMedia = null
+                // And freed on the PJSIP thread, after this callback has returned — not
+                // from inside it, where the native frame is still this object's, and not
+                // by the garbage collector, whose thread pjlib has never seen and whose
+                // timing lets pjsua reuse this call's slot first. See [PjAccount.release].
+                onPjsip("releaseCall") { runCatching { delete() } }
             }
         }
 
