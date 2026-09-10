@@ -28,8 +28,9 @@ claim below has a log line behind it; the commit messages carry the lines.
 | `b5a9979` | **Resume never resumed.** The prompt's diagnosis was wrong: the re-INVITE carried `a=sendonly` again plus `m=video`/`m=text`, was 1852 bytes, escalated to TCP, was refused, fell back to a fragmented UDP datagram and got no answer at all. Root cause: `Call::reinvite` reads `opt.flag`, not `CallOpParam.options`, and `CallOpParam(true)` replaced the call's media counts with `1/1/1` | **On hardware, twice each way, on both servers** — 1250 B / 1187 B re-INVITEs, `sendonly`/`sendrecv` alternating, each answered 200 in ≤ 380 ms, Telecom in step |
 | `b5a9979` | `RESUMING` had no producer; a refused resume was silent | JVM tests (`PendingResumeTest`, engine, mapper, FSM); the refusal path not seen on hardware |
 | `d3310dd` | **Speaker pressed while ringing did nothing** — button disabled before media, FSM has no controls to hold it, coordinator re-asserted the earpiece at the 183. `PreferredAudioRoute` wired to nothing | **On hardware**: a press between 180 and the answer produced `USER_SWITCH_SPEAKER → ActiveSpeakerRoute → SPEAKER_ON`; the Settings route is JVM-tested only |
-| `a28a554` | **Native crash**: `SIGABRT` in `FinalizerDaemon`, `Account::~Account → pjsua_acc_del2` on a reused slot after logout/login | Trace captured at 22:14:57; fix (explicit `delete()` on the PJSIP thread) compiled, **not yet exercised through a logout/login on hardware** |
-| `5572bcb` | An SRTP/codec/NAT edit never reached the running stack — `affectsRegistration` skipped it | JVM test that fails on the parent; the symptom was measured on hardware (row `DISABLED`, offer still keyed SDES) |
+| `a28a554` | **Native crash**: `SIGABRT` in `FinalizerDaemon`, `Account::~Account → pjsua_acc_del2` on a reused slot after logout/login | Trace captured at 22:14:57; **on hardware** after the fix: two logout → forced GC → login cycles on one pid, `Deleting account 0` each time, slot 0 reused, no crash |
+| `5572bcb` | An SRTP/codec/NAT edit never reached the running stack — `affectsRegistration` skipped it | JVM test that fails on the parent; **on hardware**: save → `Expires: 0` → `Deleting account 0` → `Adding account` → REGISTER → 200, row updated |
+| `3079bf6` | Every logout and policy edit waited 5 s: the account was shut down 45 ms before the registrar's 200 to the un-REGISTER, so the CLEARED event never came | **On hardware**: 200 at :01.966, "Releasing account: unregistration answered 200" at :01.972 — 160 ms, no warning |
 
 ### The one that needs a decision — 2(e), outgoing calls fail 100%
 
@@ -75,12 +76,10 @@ deliberately, so calls work.
 
 ### Where to pick up
 
-1. Install `HEAD` (`./build.sh --reuse-native --install`), log out and in twice, place a
-   call — that is the finalizer fix's hardware test, and the only fix above without one.
-2. Decide the SRTP default (above), then re-measure the `80.145` INVITE size against 1472.
-3. Prompt phase 1 is done on `2.196` — placed, answered, **heard**: not verified; the
+1. Decide the SRTP default (above), then re-measure the `80.145` INVITE size against 1472.
+2. Prompt phase 1 is done on `2.196` — placed, answered, **heard**: not verified; the
    handset was driven by adb and nobody listened. Do that with a person at each end.
-4. Then phases 3–5: transfer, conference, and video through `2.196` over TCP.
+3. Then phases 3–5: transfer, conference, and video through `2.196` over TCP.
 
 ---
 
