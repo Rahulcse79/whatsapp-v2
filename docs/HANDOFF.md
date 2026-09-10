@@ -74,7 +74,37 @@ deliberately, so calls work.
 - LeakCanary reports `SipConnectionService` leaked via `ConnectionService$1.this$0` after
   every call. Debug-only noise until someone reads the trace.
 
-### Where to pick up
+### Lyra — ADR-008 closed at Exit A, late on 2026-09-10
+
+Commits `8c7268c` (vendor), `6de7ab3` (build), `c9cd32f` (runtime), `fac52e3` (ADR).
+`docs/native-dependencies.md` §1.0 and §5 are the record. In one paragraph:
+
+TensorFlow Lite v2.11.0 + XNNPACK built for arm64-v8a under NDK r27c with zero errors
+(the risk the gate named did not exist); the whole closure — 19 vendored trees, one
+patch replacing protobuf for a two-byte file — builds offline through
+`pjsip/lyra/CMakeLists.txt` into one `liblyra.a`; pjproject's own `--with-lyra` link test
+passes against the prefix; and a test binary on the TC15 encoded and decoded a 16 kHz
+tone at exactly 3200 bps with the real model files. `config_site.h` says
+`PJMEDIA_HAS_LYRA_CODEC 1`; the app ships the weights as assets and configures the codec at
+start; the audit reports `lyra` registered-and-stranded, or `ModelFilesUnusable`.
+
+**What is still owed, in order:**
+
+1. **`libpjsua2.so` with Lyra in it.** This Mac's SWIG (MacPorts 4.4.1) has no Java
+   typemaps, so `build-native.sh` stops at its fail-fast check. One command unblocks it:
+   `sudo port install swig-java` (needs a password). Then `./build.sh --install`. CI
+   builds it regardless — expect ~25 min per ABI for TFLite until a cache lands (§5.0 of
+   native-dependencies.md).
+2. **`lyra/16000/1` in the codec audit** on the handset (`adb logcat | grep "Codec audit"`),
+   at non-zero priority when an account's codec list includes `lyra`. Account 1001's list
+   already does (`LYRA,OPUS,PCMA,G729,G722,PCMU` in the DB).
+3. **A call carried by it.** No server offers Lyra; it is app-to-app only. Two installs of
+   this app (the TC15 and the Pixel 10a) on the local FreeSWITCH with media bypassed
+   (`bypass_media=true` in the dialplan for those extensions), Lyra first in both codec
+   lists, and the SDP answer showing `lyra/16000`. Then the audit log and the wire.
+4. armeabi-v7a and x86_64 have not been built at all — only arm64. The closure's CMake is
+   ABI-agnostic on paper; CI is where that claim is tested.
+
 
 1. Decide the SRTP default (above), then re-measure the `80.145` INVITE size against 1472.
 2. Prompt phase 1 is done on `2.196` — placed, answered, **heard**: not verified; the
