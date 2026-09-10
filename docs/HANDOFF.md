@@ -59,7 +59,8 @@ the path MTU and there is no TCP to fall back to*.
 
 ## 2. What is committed and green
 
-Commits `038359e` and `2682eb6`, both pushed.
+Commits `038359e`, `2682eb6`, `c9b1bcf`, then `7936b92`, `d6d4390` and `ca229d1` from the
+afternoon pass. All pushed.
 
 - **Item 1 — answered call disconnects. FIXED.** Root cause: `applyPriorities` set priority
   `0` on every registered codec no account preference named. An account saved with
@@ -115,7 +116,7 @@ one thing not run: it needs the native libraries, which need the toolchain §4 d
 
 ---
 
-## 3. Known defects in the previous agent's own work — START HERE
+## 3. Defects found in the previous agent's own work — all resolved except §3.4
 
 ### 3.1 ~~Item 2 is NOT fixed~~ — RESOLVED. ICE is off, and the migration turns it off too.
 
