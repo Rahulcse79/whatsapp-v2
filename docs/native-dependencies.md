@@ -20,7 +20,7 @@ pinned anyway, because an unpinned tool is a silently different `.so` and defeat
 |---|---|---|---|---|---|
 | **pjproject** | https://github.com/pjsip/pjproject | `2.17` | `5a457451fa2712ba18e12b01738e8ff3af2b26fd` | **GPL-2.0** *or* a Teluu commercial licence — see §4 | The SIP stack itself. Signalling, media, the pjsua2 API the whole of `:data:sip` is written against |
 | **OpenSSL** | https://github.com/openssl/openssl | `openssl-3.5.0` | `636dfadc70ce26f2473870570bfd9ec352806b1d` | Apache-2.0 | **TLS transport.** Without it `configure-android` builds a stack with no TLS and does not complain — DoD 13 and `docs/security.md` §Transport both fail silently |
-| **Opus** | https://github.com/xiph/opus | `v1.5.2` | `ddbe48383984d56acd9e1ab6a090c54ca6b735a6` | BSD-3-Clause (GitHub reports `NOASSERTION`; the tree's `COPYING` is the 3-clause BSD) | The only wideband audio codec in the build. `CodecPreferences.DEFAULT` lists it first (`domain/…/model/Codecs.kt:78-82`) |
+| **Opus** | https://downloads.xiph.org/releases/opus/ — **the release tarball, not the GitHub tag; see §1.3** | `1.5.2` | `ddbe48383984d56acd9e1ab6a090c54ca6b735a6` | BSD-3-Clause (GitHub reports `NOASSERTION`; the tree's `COPYING` is the 3-clause BSD) | The only wideband audio codec in the build. `CodecPreferences.DEFAULT` lists it first (`domain/…/model/Codecs.kt:78-82`) |
 | **libvpx** | https://github.com/webmproject/libvpx | `v1.17.0` | `6df3ec34557879fff673706f4a1d9fbd0f3a6f0e` | BSD-3-Clause | **VP8** — the only video codec both ends can negotiate. The deployed FreeSWITCH offers VP8 and VP9 and no H.264 (`docs/reconciliation.md` A-1b) |
 
 **These are the versions the green build already uses**, not new choices: they are the
@@ -117,7 +117,43 @@ seconds rather than three minutes into a cross-compile.
 candidate by eye, and pruning it would have broken the build. It was kept because `grep`
 found it on the include path — the same question `verify-prune.sh` now asks automatically.
 
-### 1.3 Four checks, because every one of them caught something
+### 1.3 Opus comes from the release tarball, because the tag archive downloads at build time
+
+**Found by building on a laptop that has no `wget`.** It would have passed CI indefinitely.
+
+`third_party/opus/autogen.sh:12` calls `dnn/download_model.sh`, which is:
+
+```sh
+model=opus_data-$1.tar.gz
+if [ ! -f $model ]; then
+        wget https://media.xiph.org/opus/models/$model
+fi
+```
+
+**A vendored tree that fetches from the network at build time defeats N-2 outright.** The
+whole claim of §2.1.2 is that the source is *in this repository* and the build reads what is
+checked out. And every Ubuntu runner has `wget`, so this would simply have downloaded, on
+every build, for ever — the egress-blocked job of §2.1.2 would eventually have caught it,
+after ten minutes, with a socket error rather than a name.
+
+**Why the tag archive has it and the release tarball does not.** GitHub's
+`archive/refs/tags/v1.5.2.tar.gz` is the git tree at that tag: no generated `configure`, so
+the build must run `autogen.sh`, and `autogen.sh` fetches the DNN weights. The official
+release tarball ships `configure` pre-generated and carries the weights as **ten
+`dnn/*_data.c` files**. It contains no download script at all.
+
+**And it is what the green workflow already used** —
+`.github/workflows/build-pjsip.yml:293-294` fetches from `downloads.xiph.org`. Vendoring
+from the GitHub tag was this project's own divergence from a build that worked, and the
+lesson generalises: **vendor from whatever the proven build fetched, not from whatever
+GitHub makes convenient.**
+
+`tools/vendor/verify-no-fetch.sh` now greps every vendored build entry point for `wget`,
+`curl`, `git clone` and `download_model`, so this class fails in seconds rather than in the
+egress-blocked job. That check is the cheap first line; the egress-blocked job remains the
+authoritative one, because a fetch buried in a Makefile rule is beyond grep.
+
+### 1.4 Five checks, because every one of them caught something
 
 **A pruned tree that does not build is worse than an unpruned one**, and every failure in
 this class is silent: the tree looks complete on the machine that vendored it, and CI fails
@@ -129,6 +165,8 @@ trusted. Three of the four caught a real defect on the first vendoring attempt.
 | `tools/vendor/verify-vendored.sh` | Every file on disk under `third_party/` is one git tracks | **348 files silently dropped.** `.gitignore`'s `build/` rule matched `third_party/pjproject/build/` — which is not build output, it is the make-based build system every target includes — and the vendored sample apps' own `.gitignore` files excluded the rest |
 | `tools/vendor/verify-openssl-prune.sh` | `build.info` still guards `SUBDIRS=test`, `no-tests` is still passed, and every unconditional `SUBDIR` exists | **`doc/`, `demos/` and `fuzz/` had been pruned** out of the unconditional `SUBDIRS` line |
 | `.gitattributes` `third_party/** -text` | Git performs no line-ending conversion in a vendored tree | **188 CRLF files would have been rewritten**, so the committed bytes would not be upstream's bytes and rule 12's hash would differ between the vendoring machine and a fresh checkout |
+| `tools/vendor/verify-no-fetch.sh` | No vendored build entry point runs `wget`, `curl`, `git clone` or `download_model` | **Opus fetched its DNN weights from `media.xiph.org` on every build** (§1.3). Every runner has `wget`, so CI would never have noticed |
+| `tools/vendor/verify-prune.sh` | No pruned directory is one its own tree's build files name | Five separate restorations — §1.2 |
 | Architecture **rule 12** | Each tree matches its recorded content hash | The standing check. Verified to reproduce byte-identically from a fresh `git worktree` checkout |
 
 **Still owed: one green CI run that compiles FROM the vendored trees.** `pjsip/build-native.sh`

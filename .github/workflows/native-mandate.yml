@@ -44,6 +44,11 @@ jobs:
       - name: No pruned directory is one its own build files name
         run: ./tools/vendor/verify-prune.sh
 
+      # A vendored tree that wgets at build time defeats N-2, and every runner has
+      # wget, so it would download silently for ever. Opus did exactly this.
+      - name: No vendored tree fetches at build time (N-2)
+        run: ./tools/vendor/verify-no-fetch.sh
+
       # DoD 23, as a command. The bindings are generated from third_party/pjproject on every
       # build; a committed .java under pjsip/ is the drift N-13 removes.
       - name: No committed Java under pjsip/ (N-13)

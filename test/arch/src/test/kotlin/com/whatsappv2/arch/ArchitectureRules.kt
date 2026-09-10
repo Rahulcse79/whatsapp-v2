@@ -66,8 +66,23 @@ object ArchitectureRules {
     private val BLOCK_COMMENT = Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL)
     private val LINE_COMMENT = Regex("""//[^\n]*""")
 
-    /** Directories that are build output, tooling state, or deliberate violations. */
-    private val EXCLUDED = listOf("build", ".git", ".gradle", ".idea", ".kotlin", "resources")
+    /**
+     * Directories that are build output, tooling state, vendored source, or deliberate
+     * violations.
+     *
+     * **`third_party` is the one that had to be added, and it was found by rule 2 firing.**
+     * pjproject ships a Kotlin sample app — `pjsip-apps/src/swig/java/android/app-kotlin` —
+     * whose `MainActivity.kt` imports `org.pjsip.pjsua2`, so vendoring the tree put a rule-2
+     * violation in the repository on day one. The file is not ours, the import is correct
+     * where it is, and the directory cannot be pruned because `configure-android` reads
+     * `android/jni/Application.mk` beside it.
+     *
+     * `docs/module-structure.md` §2.2 already said vendored trees are exempt from the house
+     * style. This is where that stopped being prose. The exemption is from **style** only —
+     * rule 12 still hashes every one of these files, so provenance is not exempt.
+     */
+    private val EXCLUDED =
+        listOf("build", ".git", ".gradle", ".idea", ".kotlin", "resources", "third_party")
 
     /**
      * The repository root.
@@ -94,7 +109,7 @@ object ArchitectureRules {
      * Every file git is tracking, as repository-relative paths.
      *
      * Rules 11 and 12 ask what has been **committed**, not what happens to be on disk, and
-     * those are different questions: `pjsip/libs/*.aar` is gitignored (`.gitignore:22`), so
+     * those are different questions: the AAR under `pjsip/libs` was gitignored, so
      * a developer who fetched one to run the app has a `.aar` in their tree that the
      * repository does not carry. A filesystem scan would fail their build for doing
      * exactly what `docs/pjsip-migration.md` P-2 tells them to do.
@@ -341,6 +356,14 @@ object ArchitectureRules {
      */
     val THREAD_EXEMPT = setOf(
         "data/sip/src/main/kotlin/com/whatsappv2/data/sip/registration/stack/RealPjsipCoreGateway.kt",
+
+        // DoD 4's test, and it is exempt for the same reason the gateway is — it is ABOUT
+        // the threading contract. It asserts that the executor's ThreadFactory names its
+        // thread exactly what the confinement assertion checks for, and a ThreadFactory
+        // cannot be tested without constructing a Thread. The two halves live in different
+        // files, so without this test a rename in either one leaves a check that can never
+        // fire again.
+        "data/sip/src/test/kotlin/com/whatsappv2/data/sip/PjsipThreadConfinementTest.kt",
     )
 
     private val RAW_THREAD = Regex("""\bThread\s*\(""")
@@ -537,9 +560,11 @@ object ArchitectureRules {
                     .toMap()
             }
 
-        val present: Set<String> =
-            if (!vendored.isDirectory) emptySet()
-            else vendored.listFiles()?.filter { it.isDirectory }?.map { it.name }?.toSet().orEmpty()
+        val present: Set<String> = if (!vendored.isDirectory) {
+            emptySet()
+        } else {
+            vendored.listFiles()?.filter { it.isDirectory }?.map { it.name }?.toSet().orEmpty()
+        }
 
         return buildList {
             (recorded.keys - present).forEach {

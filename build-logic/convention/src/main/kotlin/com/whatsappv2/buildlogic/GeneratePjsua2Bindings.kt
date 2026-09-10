@@ -75,6 +75,22 @@ abstract class GeneratePjsua2Bindings @Inject constructor(
     @get:Input
     abstract val expectedSwigVersion: Property<String>
 
+    /**
+     * The `swig` to run. `"swig"` — resolved from `PATH` — unless overridden.
+     *
+     * A property rather than a bare `PATH` lookup, because `PATH` is not the build's to
+     * control. The Gradle **daemon** captures its environment when it starts, so exporting a
+     * different `swig` before `./gradlew` changes nothing until the daemon is restarted —
+     * which is a debugging session nobody enjoys, and the symptom is the build cheerfully
+     * using a tool you thought you had replaced.
+     *
+     * CI installs the pinned version and leaves this alone. A developer whose distribution
+     * ships a different one points at their own build:
+     * `-Ppjsip.swig=$HOME/.local/swig-4.2.0/bin/swig`.
+     */
+    @get:Input
+    abstract val swigExecutable: Property<String>
+
     @TaskAction
     fun generate() {
         val pjproject = pjprojectDir.get().asFile
@@ -100,7 +116,7 @@ abstract class GeneratePjsua2Bindings @Inject constructor(
             workingDir = File(pjproject, SWIG_DIR)
             commandLine(
                 buildList {
-                    add("swig")
+                    add(swigExecutable.get())
                     includes.forEach { add("-I${it.absolutePath}") }
                     // -c++ and -D__ANDROID__ match the green workflow's invocation exactly
                     // (.github/workflows/build-pjsip.yml:110-117); the Android define is
@@ -138,16 +154,39 @@ abstract class GeneratePjsua2Bindings @Inject constructor(
         val stdout = ByteArrayOutputStream()
         try {
             exec.exec {
-                commandLine("swig", "-version")
+                commandLine(swigExecutable.get(), "-version")
                 standardOutput = stdout
             }
         } catch (e: Exception) {
             throw IllegalStateException(
-                "swig is not on PATH. The bindings are generated from third_party/pjproject " +
+                "${swigExecutable.get()} could not be run. The bindings are generated from third_party/pjproject " +
                     "on every build (N-13), so swig is a build tool this project requires — " +
                     "see docs/native-dependencies.md §3. On CI: apt-get install -y swig.",
                 e,
             )
+        }
+
+        // Having the swig BINARY is not the same as having its Java typemaps, and the two
+        // fail very differently. A MacPorts `swig` without `swig-java` reports the right
+        // version and then dies with `Unable to find 'arrays_java.i'` — five errors naming
+        // files nobody wrote, from a tool that just told you it was the correct version.
+        //
+        // Debian's `swig` package is monolithic, so CI never sees this. It cost a local
+        // build to find, and the check is one directory test.
+        val swigLib = ByteArrayOutputStream()
+        exec.exec {
+            commandLine(swigExecutable.get(), "-swiglib")
+            standardOutput = swigLib
+        }
+        val javaTypemaps = File(swigLib.toString().trim(), "java")
+        check(javaTypemaps.isDirectory) {
+            "swig is installed without its Java typemaps: $javaTypemaps does not exist.\n" +
+                "  swig -swiglib reports ${swigLib.toString().trim()}, and the Java support " +
+                "files are packaged separately by some distributions.\n" +
+                "  MacPorts: port install swig-java. Debian/Ubuntu: the `swig` package " +
+                "already includes them.\n" +
+                "  Without them SWIG fails on arrays_java.i and enumtypeunsafe.swg, which " +
+                "reads like a corrupt source tree rather than a missing package."
         }
 
         val found = VERSION.find(stdout.toString())?.groupValues?.get(1)

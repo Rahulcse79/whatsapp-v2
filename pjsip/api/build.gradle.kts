@@ -65,6 +65,11 @@ val generateBindings = tasks.register<GeneratePjsua2Bindings>("generatePjsua2Bin
     // accepted: a runner-image bump becomes a build failure naming the two versions,
     // instead of an UnsatisfiedLinkError on somebody's handset.
     expectedSwigVersion.set(providers.gradleProperty("pjsip.swig.version").orElse("4.2.0"))
+
+    // Which swig to run. PATH by default, which is what CI wants. A developer whose distro
+    // ships a different version points at their own build rather than fighting the daemon's
+    // captured environment: -Ppjsip.swig=$HOME/.local/swig-4.2.0/bin/swig
+    swigExecutable.set(providers.gradleProperty("pjsip.swig").orElse("swig"))
 }
 
 android {

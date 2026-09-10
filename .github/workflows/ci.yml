@@ -86,6 +86,7 @@ jobs:
           swig -version
 
       - name: Set up the NDK (stage 2 — r27+, for 16 KB page sizes)
+        id: ndk
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r27c
@@ -95,6 +96,41 @@ jobs:
           # looks like it should work.
           local-cache: false
           add-to-path: true
+
+      # The pin, ENFORCED. Asking for r27c is not the same as compiling with it.
+      #
+      # The runner image ships its own NDK and exports ANDROID_NDK_ROOT pointing at it, so
+      # `setup-ndk` downloaded r27c and the build then compiled with the image's
+      # **27.3.13750724 — which is r27d**. Nobody would have noticed: r27d is >= r27, so the
+      # 16 KB alignment assertion passed and the .so was fine. What was lost is the pin
+      # itself, and with it N-11: two builds of the same commit on two runner images would
+      # produce different binaries, and the document would still claim r27c.
+      #
+      # This is the exact defect docs/native-dependencies.md §3 names for SWIG — "an
+      # unpinned tool is a silently different .so" — found in this workflow's own wiring.
+      - name: Point the build at the NDK we actually pinned
+        run: |
+          set -euo pipefail
+          ndk="${{ steps.ndk.outputs.ndk-path }}"
+          [ -n "$ndk" ] && [ -d "$ndk" ] || { echo "::error::setup-ndk reported no path"; exit 1; }
+
+          revision="$(sed -n -E 's/^Pkg.Revision *= *(.*)$/\1/p' "$ndk/source.properties")"
+          echo "NDK at        : $ndk"
+          echo "Pkg.Revision  : $revision"
+
+          # r27c is 27.2.x. A different revision here means the action resolved something
+          # else, and the build must say so rather than compile with it.
+          case "$revision" in
+            27.2.*) ;;
+            *) echo "::error::expected NDK r27c (27.2.x), got $revision. The pin in this"
+               echo "::error::workflow and the NDK being used disagree; N-11 is unmeasurable"
+               echo "::error::until they do not."
+               exit 1 ;;
+          esac
+
+          # Overrides the runner image's own export, which is what was winning before.
+          echo "ANDROID_NDK_ROOT=$ndk" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
 
       # API 37 ships as MINOR-versioned platforms (android-37.0, android-37.1,
       # android-37.2) - there is no plain "android-37" directory, so an exact-match
@@ -190,6 +226,7 @@ jobs:
           ./tools/vendor/verify-vendored.sh
           ./tools/vendor/verify-openssl-prune.sh
           ./tools/vendor/verify-prune.sh
+          ./tools/vendor/verify-no-fetch.sh
 
       # Task 3 done-when #2: "zero warnings suppressed by baseline abuse".
       # A baseline file is how suppressed findings quietly become permanent.

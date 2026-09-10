@@ -19,9 +19,19 @@ OPENSSL_TAG="openssl-3.5.0"
 OPENSSL_SHA="636dfadc70ce26f2473870570bfd9ec352806b1d"
 OPENSSL_URL="https://github.com/openssl/openssl/archive/refs/tags/${OPENSSL_TAG}.tar.gz"
 
-OPUS_TAG="v1.5.2"
+# Opus comes from the RELEASE tarball, not the GitHub tag archive, and the difference is
+# not cosmetic. The tag archive ships no generated `configure`, so the build runs
+# `autogen.sh` — and `autogen.sh:12` calls `dnn/download_model.sh`, which **wgets a model
+# from media.xiph.org at build time**. That is a network fetch from inside a vendored tree:
+# it defeats N-2 outright, and it would have passed unnoticed on CI, where wget exists.
+#
+# The release tarball has `configure` pre-generated, ships the DNN weights as ten
+# `dnn/*_data.c` files, and contains no download script at all. It is also what the green
+# workflow already used (.github/workflows/build-pjsip.yml:293-294) — vendoring from the tag
+# was this project's divergence from a build that worked.
+OPUS_TAG="1.5.2"
 OPUS_SHA="ddbe48383984d56acd9e1ab6a090c54ca6b735a6"
-OPUS_URL="https://github.com/xiph/opus/archive/refs/tags/${OPUS_TAG}.tar.gz"
+OPUS_URL="https://downloads.xiph.org/releases/opus/opus-${OPUS_TAG}.tar.gz"
 
 LIBVPX_TAG="v1.17.0"
 LIBVPX_SHA="6df3ec34557879fff673706f4a1d9fbd0f3a6f0e"

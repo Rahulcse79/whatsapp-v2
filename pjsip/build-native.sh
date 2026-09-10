@@ -146,6 +146,16 @@ cp "$CONFIG_SITE_DIR/pj/config_site.h" pjlib/include/pj/config_site.h
 export LDFLAGS="${LDFLAGS:-} -Wl,-z,max-page-size=16384"
 export ANDROID_NDK_ROOT
 
+# THE ABI. `configure-android` reads TARGET_ABI and defaults to arm64 without it, so every
+# ABI configured as aarch64: libopus.a and libvpx.a were built correctly for armeabi-v7a and
+# the wrapper then refused them — `libopus.a(bands.o) is incompatible with aarch64linux`,
+# which reads like a broken cross-compile and is actually a missing environment variable.
+#
+# The green workflow sets it as step `env:` on both the pjproject and the swig steps
+# (.github/workflows/build-pjsip.yml), which is easy to miss when porting a workflow into a
+# script, because a step's env does not look like part of the command.
+export TARGET_ABI="$ABI"
+
 ./configure-android --use-ndk-cflags \
   --with-ssl="$prefix" --with-opus="$prefix" --with-vpx="$prefix"
 
