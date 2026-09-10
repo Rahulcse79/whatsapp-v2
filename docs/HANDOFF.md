@@ -88,22 +88,27 @@ tone at exactly 3200 bps with the real model files. `config_site.h` says
 `PJMEDIA_HAS_LYRA_CODEC 1`; the app ships the weights as assets and configures the codec at
 start; the audit reports `lyra` registered-and-stranded, or `ModelFilesUnusable`.
 
-**What is still owed, in order:**
+**Verified on the TC15 after midnight (commit `f358634d`):** `./build.sh --install`
+end to end — SWIG's Java typemaps supplied user-locally from the swig 4.4.1 source
+(`SWIG_LIB=~/.local/share/swig/4.4.1`; MacPorts ships without them and
+`sudo port install swig-java` is the proper fix) — then on the handset: codec audit
+**`lyra/16000/1@254`**, model files in `files/lyra/`, and an INVITE to the local
+FreeSWITCH with `a=rtpmap:96 lyra/16000` first (1246 bytes) answered on PCMU and
+connected. Two build defects found on the way and fixed in that commit: pjproject was
+being compiled for android-23 while everything else is 26, and the wrapper shipped 80 MB
+of DWARF (APK 146 MB → 70 MB).
 
-1. **`libpjsua2.so` with Lyra in it.** This Mac's SWIG (MacPorts 4.4.1) has no Java
-   typemaps, so `build-native.sh` stops at its fail-fast check. One command unblocks it:
-   `sudo port install swig-java` (needs a password). Then `./build.sh --install`. CI
-   builds it regardless — expect ~25 min per ABI for TFLite until a cache lands (§5.0 of
-   native-dependencies.md).
-2. **`lyra/16000/1` in the codec audit** on the handset (`adb logcat | grep "Codec audit"`),
-   at non-zero priority when an account's codec list includes `lyra`. Account 1001's list
-   already does (`LYRA,OPUS,PCMA,G729,G722,PCMU` in the DB).
-3. **A call carried by it.** No server offers Lyra; it is app-to-app only. Two installs of
-   this app (the TC15 and the Pixel 10a) on the local FreeSWITCH with media bypassed
-   (`bypass_media=true` in the dialplan for those extensions), Lyra first in both codec
-   lists, and the SDP answer showing `lyra/16000`. Then the audit log and the wire.
-4. armeabi-v7a and x86_64 have not been built at all — only arm64. The closure's CMake is
-   ABI-agnostic on paper; CI is where that claim is tested.
+**What is still owed:**
+
+1. **A call carried by Lyra.** No server offers it; it is app-to-app only. Two installs
+   of this app (the TC15 and the Pixel 10a — the Pixel was not attached tonight) on the
+   local FreeSWITCH with media bypassed (`bypass_media=true` in the dialplan for those
+   extensions), Lyra first in both codec lists, and the SDP answer showing `lyra/16000`.
+   Then the audit log and the wire.
+2. armeabi-v7a and x86_64 have not been built at all — only arm64. The closure's CMake is
+   ABI-agnostic on paper; CI is where that claim is tested, at ~25 min per ABI until a
+   cache lands.
+3. Account 1001 is left at `DISABLED` encryption with Lyra first in its codec list.
 
 
 1. Decide the SRTP default (above), then re-measure the `80.145` INVITE size against 1472.
