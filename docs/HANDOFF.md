@@ -59,20 +59,31 @@ policy, cannot place a call to a FreeSWITCH**. The options, none taken yet:
 Account 7003 on `80.145` and account 1001 on `2.196` are both **left at `DISABLED`**,
 deliberately, so calls work.
 
-### Also measured, not yet acted on
+### Also measured — and, in the small hours of 2026-09-11, acted on
 
-- **The app does not re-register on process start.** After `am force-stop` the account is
-  *Offline* until *Log in* is pressed. Whether that is a policy or a defect is unstated.
-- **`RemoteAnswered rejected from Connected`** is logged on every answered call: the gateway
-  publishes `CONNECTED` twice (invite CONFIRMED, then a media callback whose stream is not yet
-  active maps to `CONNECTED` too). Harmless, noisy, and it hides real rejections.
+- ~~The app does not re-register on process start.~~ **Fixed, `12072b21`, verified**: login
+  intent persisted per account (Room v3, `registration_wanted`), restored at start by
+  `RestoreRegistrationsUseCase`; after `am force-stop` + launch the REGISTER went out 1.3 s
+  after "Application started" with nothing pressed. A logged-out account stays out.
+- ~~`RemoteAnswered rejected from Connected` on every answered call.~~ **Fixed, `9eec970d`**:
+  PJSIP raises CONNECTING then CONFIRMED and both mapped to CONNECTED; a repeat on an
+  established call is now no transition.
+- ~~The SRTP default.~~ **Decided and fixed, `0a9a1f52` + `12072b21`**: new accounts and
+  the app default are `DISABLED`; rows saved on `OPTIONAL` are rewritten by the v3
+  migration with `MIGRATION_1_2`'s reasoning; `MANDATORY` untouched; the Settings copy
+  says why. The `NDLB-allow-crypto-in-avp` server setting and `srtpOptionalDupOffer` are
+  recorded on the enum as the two ways `OPTIONAL` could work.
+- ~~LeakCanary: `SipConnectionService` via `ConnectionService$1.this$0`.~~ Framework-held
+  binder, 2.7 kB; ignored by exact field pattern in a debug-only provider, `ddbf6825`.
+- The account editor now says the codec order is the tap order and shows the list as it
+  will be offered (`ddbf6825`).
+- CI caches the Lyra prefix by the same content hash the build stamps it with
+  (`91c24102`) — untested until the branch is pushed.
 - A hardware Back press closes `CallActivity` mid-call; the ongoing-call notification reopens
   it. Not a defect, but it cost one test run.
 - `192.168.2.196` **accepts TCP 5060** (the escalated 1581-byte INVITE went over TCP and was
   answered), so §8's video wall does not exist on this server — the direct path in the
   prompt's §6.3 and a video call through this FreeSWITCH are both open to try.
-- LeakCanary reports `SipConnectionService` leaked via `ConnectionService$1.this$0` after
-  every call. Debug-only noise until someone reads the trace.
 
 ### Lyra — ADR-008 closed at Exit A, late on 2026-09-10
 
