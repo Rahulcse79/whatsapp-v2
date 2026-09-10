@@ -11,7 +11,19 @@ enum class SrtpPolicy {
     /** Never offer SRTP. Media is cleartext RTP. */
     DISABLED,
 
-    /** Offer SRTP, accept cleartext if the peer cannot do it. */
+    /**
+     * Offer SRTP, accept cleartext if the peer cannot do it.
+     *
+     * **Not the default, and know what it sends before choosing it.** PJSIP implements
+     * "optional" as `a=crypto` lines on an `RTP/AVP` media line — the form RFC 3711 does
+     * not define — and FreeSWITCH refuses exactly that: `488 Not Acceptable Here`,
+     * `INCOMPATIBLE_DESTINATION`, with `a=crypto in RTP/AVP, refer to rfc3711` in its own
+     * log. Measured on 2026-09-10 against two FreeSWITCH servers, 100% of outgoing calls.
+     * It works against a server whose profile sets `NDLB-allow-crypto-in-avp`, or one
+     * that is not FreeSWITCH. The RFC-correct alternative, a second `RTP/SAVP` media line
+     * (`srtpOptionalDupOffer`), costs ~330 bytes of an INVITE that has 324 to spare on
+     * the reference path (1148 of 1472), so it is not the default either.
+     */
     OPTIONAL,
 
     /** Require SRTP. Fail the call rather than downgrade. */

@@ -39,8 +39,16 @@ data class AppSettings(
     /** DTMF transport, unless an account overrides it. */
     val dtmfMode: DtmfMode = DtmfMode.RFC_4733,
 
-    /** The SRTP policy new accounts start with. Existing accounts keep their own. */
-    val defaultSrtpPolicy: SrtpPolicy = SrtpPolicy.OPTIONAL,
+    /**
+     * The SRTP policy new accounts start with. Existing accounts keep their own.
+     *
+     * [SrtpPolicy.DISABLED] since 2026-09-10: the previous default, `OPTIONAL`, failed
+     * every outgoing call on every FreeSWITCH tested — see the enum for what it sends
+     * and why the server refuses it. A default that cannot place a call is not a default.
+     * [SrtpPolicy.MANDATORY] is the choice for a server that has SRTP; it sends
+     * `RTP/SAVP` and fails closed.
+     */
+    val defaultSrtpPolicy: SrtpPolicy = SrtpPolicy.DISABLED,
 
     val preferredAudioRoute: PreferredAudioRoute = PreferredAudioRoute.AUTOMATIC,
 

@@ -50,7 +50,8 @@ data class SipAccountDraft(
     val iceEnabled: Boolean = NatPolicy.DEFAULT.iceEnabled,
     val stunEnabled: Boolean = NatPolicy.DEFAULT.stunEnabled,
     val keepaliveIntervalSeconds: String = NatPolicy.DEFAULT_KEEPALIVE_SECONDS.toString(),
-    val srtpPolicy: SrtpPolicy = SrtpPolicy.OPTIONAL,
+    // DISABLED, matching AppSettings.defaultSrtpPolicy and for the same measured reason.
+    val srtpPolicy: SrtpPolicy = SrtpPolicy.DISABLED,
     val audioCodecs: List<AudioCodec> = CodecPreferences.DEFAULT.audio,
     val videoCodecs: List<VideoCodec> = CodecPreferences.DEFAULT.video,
     val isDefault: Boolean = false,

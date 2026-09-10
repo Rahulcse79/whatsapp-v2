@@ -178,7 +178,8 @@ private fun SettingsContent(
 private fun EncryptionGroup(selected: SrtpPolicy, onSelect: (SrtpPolicy) -> Unit) {
     ChoiceGroup(
         title = "Default media encryption",
-        description = "Applies to new accounts. Existing accounts keep their own.",
+        description = "Applies to new accounts. Existing accounts keep their own. " +
+            "Optional is refused by FreeSWITCH; use Mandatory where the server has SRTP.",
         options = SrtpPolicy.entries,
         selected = selected,
         labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },

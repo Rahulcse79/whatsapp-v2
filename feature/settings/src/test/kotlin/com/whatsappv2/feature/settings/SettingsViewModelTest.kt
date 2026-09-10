@@ -42,7 +42,8 @@ class SettingsViewModelTest {
             advanceUntilIdle()
             val state = expectMostRecentItem()
             assertEquals(DtmfMode.RFC_4733, state.settings.dtmfMode)
-            assertEquals(SrtpPolicy.OPTIONAL, state.settings.defaultSrtpPolicy)
+            // DISABLED since 2026-09-10: OPTIONAL failed every outgoing call on FreeSWITCH.
+            assertEquals(SrtpPolicy.DISABLED, state.settings.defaultSrtpPolicy)
             assertEquals(PreferredAudioRoute.AUTOMATIC, state.settings.preferredAudioRoute)
             cancelAndIgnoreRemainingEvents()
         }
