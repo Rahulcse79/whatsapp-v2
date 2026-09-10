@@ -14,7 +14,6 @@ import com.whatsappv2.data.sip.call.StackTransferEvent
 import com.whatsappv2.data.sip.registration.NameAddr
 import com.whatsappv2.data.sip.registration.SipCoreGateway
 import com.whatsappv2.data.sip.registration.StackAccount
-import com.whatsappv2.data.sip.registration.StackMediaEncryption
 import com.whatsappv2.data.sip.registration.StackPushParameters
 import com.whatsappv2.data.sip.registration.StackRegistrationEvent
 import com.whatsappv2.data.sip.registration.StackRegistrationState
@@ -33,7 +32,6 @@ import org.pjsip.pjsua2.Account
 import org.pjsip.pjsua2.AccountConfig
 import org.pjsip.pjsua2.AudioMedia
 import org.pjsip.pjsua2.AudioMediaRecorder
-import org.pjsip.pjsua2.AuthCredInfo
 import org.pjsip.pjsua2.Call
 import org.pjsip.pjsua2.CallInfo
 import org.pjsip.pjsua2.CallOpParam
@@ -49,18 +47,13 @@ import org.pjsip.pjsua2.OnCallStateParam
 import org.pjsip.pjsua2.OnCallTransferStatusParam
 import org.pjsip.pjsua2.OnIncomingCallParam
 import org.pjsip.pjsua2.OnRegStateParam
-import org.pjsip.pjsua2.SrtpCrypto
-import org.pjsip.pjsua2.SrtpCryptoVector
-import org.pjsip.pjsua2.SrtpOpt
 import org.pjsip.pjsua2.TlsConfig
 import org.pjsip.pjsua2.TransportConfig
 import org.pjsip.pjsua2.VideoWindowHandle
 import org.pjsip.pjsua2.pj_ssl_sock_proto
 import org.pjsip.pjsua2.pjmedia_dir
-import org.pjsip.pjsua2.pjmedia_srtp_use
 import org.pjsip.pjsua2.pjmedia_tp_proto
 import org.pjsip.pjsua2.pjmedia_type
-import org.pjsip.pjsua2.pjmedia_vid_stream_rc_method
 import org.pjsip.pjsua2.pjsip_inv_state
 import org.pjsip.pjsua2.pjsip_ssl_method
 import org.pjsip.pjsua2.pjsip_status_code
@@ -68,7 +61,6 @@ import org.pjsip.pjsua2.pjsip_transport_type_e
 import org.pjsip.pjsua2.pjsua_call_flag
 import org.pjsip.pjsua2.pjsua_call_media_status
 import org.pjsip.pjsua2.pjsua_call_vid_strm_op
-import org.pjsip.pjsua2.pjsua_stun_use
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -693,7 +685,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
             }
 
             accountConfigs[account.key] = account
-            val config = account.toAccountConfig()
+            val config = account.toAccountConfig(
+                transportParam = transportUriParameter(account.transport),
+                pushParameters = pushParameters,
+            )
 
             // Replaced in place rather than added again. Two PJSIP accounts for one
             // identity fight over the same registrar binding, and the loser's calls go to
@@ -836,7 +831,12 @@ internal class RealPjsipCoreGateway @Inject constructor(
         onPjsip("setPushParameters") {
             pushParameters = parameters
             accountConfigs.forEach { (key, stored) ->
-                accounts[key]?.modify(stored.toAccountConfig())
+                accounts[key]?.modify(
+                    stored.toAccountConfig(
+                        transportParam = transportUriParameter(stored.transport),
+                        pushParameters = pushParameters,
+                    ),
+                )
             }
         }
     }
@@ -858,135 +858,6 @@ internal class RealPjsipCoreGateway @Inject constructor(
             TRANSPORT_TLS -> ";transport=tls"
             else -> ""
         }
-
-    private fun StackAccount.toAccountConfig(): AccountConfig = AccountConfig().apply {
-        // The transport is selected by the URI parameter, which is what RFC 3261 §19.1.1
-        // defines it for — NOT by pinning `sipConfig.transportId`. See the note below on
-        // why the pinned form sent nothing at all.
-        val transportParam = transportUriParameter(transport)
-
-        idUri = "sip:$username@$domain$transportParam"
-
-        regConfig.registrarUri = registrarUri + transportParam
-        regConfig.timeoutSec = expirySeconds.toLong()
-        regConfig.registerOnAdd = registerEnabled
-        pushParameters?.let { push ->
-            regConfig.contactParams =
-                ";pn-provider=${push.provider};pn-param=${push.param};pn-prid=${push.prid}"
-        }
-
-        sipConfig.authCreds.add(
-            // Realm `*` because the registrar names its own realm in the challenge, and
-            // pinning ours would fail every deployment that does not happen to match.
-            // `0` is PJSIP's data type for a plaintext password rather than a digest.
-            AuthCredInfo("Digest", "*", authUsername, 0, password),
-        )
-        proxyUri?.let { sipConfig.proxies.add(it) }
-
-        // `sipConfig.transportId` is deliberately NEVER set. Not for UDP, and — this is
-        // the change — not for TCP or TLS either.
-        //
-        // For UDP, pinning defeats RFC 3261 §18.1.1: PJSIP rewrites the destination of a
-        // request over 1300 bytes to TCP, `pjsip_endpt_acquire_transport2` then refuses it
-        // because the pinned transport is a UDP one, and the message falls back to UDP as
-        // one oversized, IP-fragmented datagram that routers drop.
-        //
-        // For TCP and TLS, pinning is worse: it sends **nothing at all**. `transportCreate`
-        // returns the id of a *listener* (a `pjsip_tpfactory`), not of a connected
-        // transport, and `pjsua_acc_config.transport_id` turns that into a
-        // `PJSIP_TPSELECTOR_TRANSPORT` on the dialog. Acquiring a transport for an outbound
-        // request against a selector that names a listener yields nothing usable, so the
-        // REGISTER is never put on the wire. Observed exactly that way: the account sat in
-        // "Registering…" for 32 seconds and timed out, while the registrar's own log showed
-        // **no packet of any kind** from the handset — and a raw TCP connection from the
-        // same device to the same port succeeded. No error, no retry, no datagram.
-        //
-        // The transport is chosen by the `;transport=` URI parameter instead, which is what
-        // RFC 3261 §19.1.1 defines it for. PJSIP resolves it per request, so an account can
-        // still upgrade an oversized message to TCP the way §18.1.1 requires.
-
-        // The account's policy, not a constant. This was `= true` regardless of what the
-        // account said, which made three settings in the account form do nothing - and
-        // forced `a=ice-ufrag`, `a=ice-pwd` and `a=candidate` into every SDP offer this
-        // app sends. On a flat LAN that buys nothing, and a B2BUA that does not want to
-        // parse it has one more reason to answer 488.
-        // Read out before the `apply`, because inside it `iceEnabled` would resolve to
-        // AccountNatConfig's own property rather than this account's.
-        val wantIce = iceEnabled
-        val wantStun = if (stunEnabled) {
-            pjsua_stun_use.PJSUA_STUN_USE_DEFAULT
-        } else {
-            pjsua_stun_use.PJSUA_STUN_USE_DISABLED
-        }
-        val keepalive = keepaliveIntervalSeconds.toLong()
-
-        natConfig.apply {
-            iceEnabled = wantIce
-            sipStunUse = wantStun
-            mediaStunUse = wantStun
-            udpKaIntervalSec = keepalive
-        }
-
-        // Per account, and genuinely so. A core-wide setting would let the last
-        // account added decide encryption for every other one, which is the
-        // limitation docs/security.md used to record.
-        mediaConfig.srtpUse = when (mediaEncryption) {
-            StackMediaEncryption.NONE -> pjmedia_srtp_use.PJMEDIA_SRTP_DISABLED
-            StackMediaEncryption.OPTIONAL -> pjmedia_srtp_use.PJMEDIA_SRTP_OPTIONAL
-            StackMediaEncryption.MANDATORY -> pjmedia_srtp_use.PJMEDIA_SRTP_MANDATORY
-        }
-        mediaConfig.srtpSecureSignaling = if (mediaEncryption == StackMediaEncryption.MANDATORY) 1 else 0
-
-        // Two suites, not the four PJSIP offers by default, and this is a size decision
-        // rather than a security one (§18.1.1, `SdpBudget`).
-        //
-        // Every `a=crypto:` line carries a base64 key sized by its suite, so the two AES_256
-        // suites cost 116 bytes each against 76 for the AES_128 pair — 232 bytes of an offer
-        // that was measured at 270 bytes OVER what the network delivers. A 1742-byte INVITE
-        // off this handset was retransmitted seven times across 32 seconds and drew no
-        // response of any kind, because the path drops IP-fragmented datagrams and the
-        // server refuses the TCP that RFC 3261 §18.1.1 would otherwise escalate to. The
-        // 781-byte INVITE sent minutes earlier was answered on the first attempt.
-        //
-        // What is given up is nothing a peer needs. RFC 4568 §6.2 makes
-        // AES_CM_128_HMAC_SHA1_80 mandatory to implement and the _32 variant its
-        // low-bandwidth companion; the AES_256 suites are an extension, and the reference
-        // server does not offer them. An account set to MANDATORY still gets real SRTP —
-        // 128-bit AES in counter mode with an 80-bit tag — so this narrows the offer without
-        // weakening the guarantee (§7, DoD 13).
-        if (mediaEncryption != StackMediaEncryption.NONE) {
-            mediaConfig.srtpOpt = SrtpOpt().apply {
-                cryptos = SrtpCryptoVector().apply {
-                    OFFERED_CRYPTO_SUITES.forEach { suite ->
-                        // An empty key means PJSIP generates a random one per session, which
-                        // is the only correct answer: a key written here would be the same
-                        // for every call this build ever places.
-                        add(SrtpCrypto().apply { name = suite })
-                    }
-                }
-            }
-        }
-
-        // Nothing automatic. `autoTransmitOutgoing` left on would add a camera stream to
-        // every call somebody places, and the Task 54 escalation prompt exists precisely
-        // because the far end asking for video is a question, not an instruction.
-        videoConfig.autoShowIncoming = false
-        videoConfig.autoTransmitOutgoing = false
-
-        // The ceiling the encoder parameters are allowed to reach, and the thing that
-        // actually holds them there. Without rate control PJSIP encodes at the format's
-        // bitrate whatever the link is doing, and a 2.5 Mbit stream on a cell connection
-        // does not degrade - it stalls, because the packets it needs are the ones being
-        // dropped.
-        videoConfig.rateControlMethod =
-            pjmedia_vid_stream_rc_method.PJMEDIA_VID_STREAM_RC_SIMPLE_BLOCKING
-        videoConfig.rateControlBandwidth = VIDEO_MAX_BPS
-
-        // A few keyframes up front. The first frame a decoder can actually show is a
-        // keyframe, and one every two seconds means up to two seconds of grey.
-        videoConfig.startKeyframeCount = VIDEO_START_KEYFRAMES
-        videoConfig.startKeyframeInterval = VIDEO_START_KEYFRAME_INTERVAL_MS
-    }
 
     /**
      * The account's codec preferences, as PJSIP priorities (§5.1, §5.2).
@@ -1802,28 +1673,12 @@ internal class RealPjsipCoreGateway @Inject constructor(
         const val VIDEO_HEIGHT = 720L
         const val VIDEO_FPS = 30
         const val VIDEO_AVG_BPS = 1_500_000L
-        const val VIDEO_MAX_BPS = 2_500_000L
-        const val VIDEO_START_KEYFRAMES = 3L
-        const val VIDEO_START_KEYFRAME_INTERVAL_MS = 1_000L
 
         /** `PJSUA_DTMF_METHOD_SIP_INFO`; RFC 2833 is method 0 and is `dialDtmf`'s default. */
         const val DTMF_METHOD_SIP_INFO = 1
 
         /** Whatever `AccountConfig.videoConfig.defaultCaptureDevice` resolved to. */
         const val CAPTURE_DEVICE_DEFAULT = -1
-
-        /**
-         * The SRTP suites this app offers, in preference order.
-         *
-         * RFC 4568 §6.2: `AES_CM_128_HMAC_SHA1_80` is mandatory to implement, and the `_32`
-         * variant is its low-bandwidth companion. PJSIP would otherwise offer the two
-         * AES_256_CM suites in front of these, costing 232 bytes of an SDP that has none to
-         * spare — see the note beside `mediaConfig.srtpOpt` and `SdpBudget`.
-         */
-        val OFFERED_CRYPTO_SUITES = listOf(
-            "AES_CM_128_HMAC_SHA1_80",
-            "AES_CM_128_HMAC_SHA1_32",
-        )
 
         const val SIP_OK = 200
         const val SIP_PROGRESS = 183

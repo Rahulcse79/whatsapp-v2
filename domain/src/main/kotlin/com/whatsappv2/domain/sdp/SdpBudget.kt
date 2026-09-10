@@ -30,10 +30,27 @@ package com.whatsappv2.domain.sdp
  *
  * ## What this type is for
  *
- * It is not a wire-level check: nothing in Kotlin sees the datagram PJSIP builds. It is the
- * arithmetic that decides **what may go into an offer**, kept in one place with the numbers
- * that justify it, so a change which re-inflates the SDP fails a test rather than a call.
- * [MAX_UDP_REQUEST_BYTES] is the measurement; everything else is derived from it.
+ * It is not a wire-level check, and it is not enforcement: **nothing in Kotlin ever sees the
+ * datagram PJSIP builds**, so no code here can refuse an oversized one. This is the
+ * arithmetic that decided what goes into an offer, kept in one place with the measurements
+ * that justify it. [MAX_UDP_REQUEST_BYTES] is the measurement; everything else is derived
+ * from it.
+ *
+ * ## What actually holds the offer down, since this type cannot
+ *
+ * Three settings, each pinned by a test that cites these constants:
+ *
+ * 1. **ICE off by default** — `NatPolicy.DEFAULT`, worth [ICE_BYTES_PER_MEDIA_LINE] per
+ *    media line. `NatPolicyTest`.
+ * 2. **ICE off on accounts saved before that** — the account store's version 1 → 2
+ *    migration. `SipAccountMigrationTest`.
+ * 3. **Two crypto suites, not four** — `RealPjsipCoreGateway.OFFERED_CRYPTO_SUITES`, worth
+ *    2 × [AES_256_CRYPTO_LINE_BYTES].
+ *
+ * A change that undoes any of the three fails a test here or beside it. A change that adds
+ * bytes some *other* way — a codec, an `fmtp` line, a second `m=` line — will not, and the
+ * only thing that catches that is a call placed on hardware. Said plainly because the
+ * alternative is a type that looks like a guard and is not one.
  */
 object SdpBudget {
 

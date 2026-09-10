@@ -96,5 +96,4 @@ object DeclaredFeatureSet {
      */
     const val UNNEGOTIABLE_SOURCE: String =
         "recorded from `fs_cli -x \"show codec\"` on the reference server, 2026-09-09"
-
 }

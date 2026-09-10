@@ -4,7 +4,7 @@
 diagram, sequence diagrams, threading model — are authored in **Task 67** and are
 deliberately absent here rather than stubbed with placeholder content.
 
-**Source of requirements:** [`../android-sip-app-prompt.md`](../android-sip-app-prompt.md)
+**Source of requirements:** [`android-sip-app-prompt.md`](android-sip-app-prompt.md)
 **Task plan:** kept outside the repository as working notes.
 
 ---
@@ -941,25 +941,62 @@ so RFC 3261 §18.1.1's escalation has nowhere to go — the trace shows PJSIP at
 a 1748-byte INVITE and falling back to a 1742-byte UDP datagram that was retransmitted seven
 times across 32 seconds and never answered.
 
-**Decision: narrow the SRTP offer to the two AES_CM_128 suites.** RFC 4568 §6.2 makes
-`AES_CM_128_HMAC_SHA1_80` mandatory to implement and the `_32` variant its low-bandwidth
-companion; PJSIP additionally offers two AES_256_CM suites at 116 bytes each. Dropping those
-two, with ICE off, brings the audio offer from 1092 SDP bytes to 662:
+**Decision, part one: narrow the SRTP offer to the two AES_CM_128 suites.** RFC 4568 §6.2
+makes `AES_CM_128_HMAC_SHA1_80` mandatory to implement and the `_32` variant its low-bandwidth
+companion; PJSIP additionally offers two AES_256_CM suites. Those two lines were **estimated**
+at 116 bytes each and then **counted off the real INVITE at 108**, which is the difference
+between a fix and a near miss:
 
 | | SDP | + headers | over the 1472 hard limit | over the 1272 safe bound |
 |---|---|---|---|---|
 | as measured | 1092 | **1742** | **270** | 470 |
-| trimmed | 662 | **1312** | **0** | **40** |
+| SRTP trim only | 876 | **1526** | **54** | 254 |
+| SRTP trim **and ICE off** | 678 | **1328** | **0** | **56** |
+
+**Decision, part two: ICE off by default** (`NatPolicy.DEFAULT.iceEnabled = false`, and an
+account-store migration that turns it off on rows saved before this). The middle row is why:
+the crypto trim on its own leaves the request 54 bytes over what the path carries, so it is
+still fragmented, still dropped, still 32 seconds of retransmission. `a=ice-ufrag`, `a=ice-pwd`
+and two host `a=candidate` lines are 198 measured bytes, and taking them out is what closes
+the gap.
+
+They are worth nothing here in any case. ICE needs a reflexive or relayed candidate to earn
+its bytes, and this client gathers none: **`SipAccount.stunServer` is collected, validated and
+persisted, and nothing below `:domain` reads it** — no STUN server ever reaches the stack's
+`UaConfig`, so `PJSUA_STUN_USE_DEFAULT` has nowhere to ask. What ICE offers is host
+candidates: redundant on a flat LAN, unusable by the far end through NAT, and it is the
+server's symmetric-RTP latching that makes media flow either way. ICE remains a per-account
+switch for a deployment that has the infrastructure — and the STUN plumbing, which is a
+separate change with its own measurement.
 
 **So the datagram is no longer fragmented and is no longer dropped, which is the whole of the
-reported defect — and it is still 40 bytes short of §18.1.1's 200-byte headroom.** Both
-numbers are stated because only the first one is a fix. Closing the remaining 40 bytes means
+reported defect — and it is still 56 bytes short of §18.1.1's 200-byte headroom.** Both
+numbers are stated because only the first one is a fix. Closing the remaining 56 bytes means
 one `telephone-event` clock rate instead of two (`PJMEDIA_TELEPHONE_EVENT_ALL_CLOCKRATES`,
 worth about 52 bytes), which is a native rebuild and has not been done.
-`domain/…/sdp/SdpBudget.kt` holds the arithmetic and two tests pin both rows.
+`domain/…/sdp/SdpBudget.kt` holds the arithmetic; `SdpBudgetTest` pins every row of the table,
+`NatPolicyTest` pins the default, and `SipAccountMigrationTest` pins the rows that predate it.
 
 **Rejected alternative: leave the offer as it was and treat the failures as a server problem.**
 The server is half the problem and the offer is the half this repository controls.
+
+**Rejected alternative: find the 54 bytes somewhere other than ICE.** The candidates were a
+shorter `Contact`, fewer codecs, and one `telephone-event` clock rate. The first two trade
+something a peer may need for bytes; the third is a native rebuild. ICE was the only line item
+that cost nothing to give up, and it is the only one that had to be given up twice — once in
+the default, once in the rows already written.
+
+**Rejected alternative: make the migration conditional on "the user did not choose this".**
+Nothing records that. The column has held the draft's opening value on every row ever written,
+because until `ed189b7` the gateway hardcoded `iceEnabled = true` and never read the account —
+so there is no deliberate `true` to protect, and inventing a way to guess at one would be
+inventing intent. An account that wants ICE turns it back on, and that choice survives.
+
+**What this does not fix, and it is worth being plain about it:** `SdpBudget` is arithmetic,
+not enforcement. Nothing in Kotlin ever sees the datagram PJSIP builds, so no code refuses an
+oversized one. Three settings hold the offer down and each is pinned by a test; a change that
+adds bytes some *other* way — a codec, an `fmtp` line, a second `m=` line — fails no test, and
+only a call placed on hardware catches it.
 
 **Open, and it blocks video.** The same arithmetic says a full audio+video offer is roughly
 2700 bytes and does not fit even after every trim, because a second `m=` line brings its own

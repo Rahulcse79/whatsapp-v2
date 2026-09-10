@@ -2,6 +2,7 @@ package com.whatsappv2.domain.model
 
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
+import com.whatsappv2.domain.sdp.SdpBudget
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -101,10 +102,30 @@ class NatPolicyTest {
     }
 
     @Test
-    fun `the default enables ICE and STUN`() {
-        assertTrue(NatPolicy.DEFAULT.iceEnabled)
+    fun `the default leaves ICE off, because the offer does not fit with it on`() {
+        // Not a preference. ICE costs 198 measured bytes of a SIP request that the
+        // reference path carries only 1472 of, and with the SRTP trim already applied the
+        // INVITE still lands at 1526 — fragmented, dropped, unanswered for 32 seconds.
+        // `SdpBudgetTest` holds that arithmetic; this is the setting that acts on it.
+        assertFalse(NatPolicy.DEFAULT.iceEnabled)
+        assertEquals(
+            SdpBudget.ICE_BYTES_PER_MEDIA_LINE,
+            MEASURED_TRIMMED_INVITE - SdpBudget.MAX_UDP_REQUEST_BYTES + FITTED_HEADROOM,
+            "if ICE stops being what closes the gap, this default is up for revisiting",
+        )
+
+        // STUN stays on: it is a different switch, and turning it off here would be a
+        // change nobody measured.
         assertTrue(NatPolicy.DEFAULT.stunEnabled)
         assertEquals(NatPolicy.DEFAULT_KEEPALIVE_SECONDS, NatPolicy.DEFAULT.keepaliveIntervalSeconds)
+    }
+
+    private companion object {
+        /** The 1742-byte INVITE with the two AES_256 crypto lines taken out. */
+        const val MEASURED_TRIMMED_INVITE = 1526
+
+        /** What is left below the 1472-byte limit once ICE goes too: 1472 - 1328. */
+        const val FITTED_HEADROOM = 144
     }
 }
 

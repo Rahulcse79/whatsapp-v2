@@ -2,6 +2,8 @@ package com.whatsappv2.data.account.db
 
 import androidx.room.Database
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
  * The account database.
@@ -31,16 +33,37 @@ abstract class SipAccountDatabase : RoomDatabase() {
     abstract fun sipAccountDao(): SipAccountDao
 
     companion object {
-        const val VERSION = 1
+        const val VERSION = 2
         const val NAME = "sip-accounts.db"
 
         /**
-         * Every migration, in order.
+         * Turns ICE off on accounts that were saved while the setting did nothing.
          *
-         * Empty at version 1. It is declared now rather than added later so that the
-         * builder already wires it up, and adding a migration is one line in one place
-         * instead of a change to the database configuration under time pressure.
+         * A data migration rather than a schema one: the columns are unchanged and the
+         * identity hash with them, so this is version 2 only because the *contents* of a
+         * column now mean something they did not mean in version 1.
+         *
+         * Until `ed189b7` the gateway hardcoded `iceEnabled = true` and never read the
+         * account at all, so no row in this table records a choice anybody made — every
+         * one of them carries the draft's opening value, and every one of them produced
+         * an INVITE 54 bytes too large for the path to carry (`SdpBudget`,
+         * `NatPolicy.DEFAULT`). Leaving them alone would ship the fix and leave the
+         * handset that reported the defect still unable to place a call, because the row
+         * on it predates the fix.
+         *
+         * It is deliberately not conditional. "Only reset rows that look untouched" would
+         * need a way to tell a deliberate `true` from the default `true`, and there is no
+         * such column — inventing one would be guessing at intent that was never recorded.
+         * An account that genuinely wants ICE turns it back on in the account editor, and
+         * that choice then survives, because this migration runs once.
          */
-        val MIGRATIONS: Array<androidx.room.migration.Migration> = emptyArray()
+        val MIGRATION_1_2: Migration = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("UPDATE sip_accounts SET ice_enabled = 0")
+            }
+        }
+
+        /** Every migration, in order. */
+        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2)
     }
 }

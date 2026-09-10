@@ -63,9 +63,11 @@ class SdpBudgetTest {
     @Test
     fun `the crypto trim AND ICE off is what gets the offer delivered`() {
         // 1742 - 216 (two AES_256 lines) - 198 (ice-ufrag, ice-pwd, two candidates) = 1328,
-        // which is under the 1472 the path carries. ICE is an ACCOUNT setting and
-        // NatPolicy.DEFAULT turns it on, so this only holds for an account configured with
-        // ICE off — on a flat LAN, which is where these calls run, it buys nothing anyway.
+        // which is under the 1472 the path carries. ICE is an ACCOUNT setting, and since
+        // this was written `NatPolicy.DEFAULT` turns it OFF and the version 1 -> 2 account
+        // migration turns it off on rows saved before that — so this row is the one a
+        // default account now sends, rather than a hypothetical. `NatPolicyTest` pins the
+        // default; `SipAccountMigrationTest` pins the rows that predate it.
         val trimmed = MEASURED_AUDIO_SDP -
             (2 * SdpBudget.AES_256_CRYPTO_LINE_BYTES) -
             SdpBudget.ICE_BYTES_PER_MEDIA_LINE
