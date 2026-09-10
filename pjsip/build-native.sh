@@ -295,4 +295,17 @@ else
   echo "warning: llvm-readelf not on PATH — 16 KB alignment was NOT verified for $ABI" >&2
 fi
 
+# N-11 diagnostics. Two CI runs of identical native input produce a libpjsua2.so of the
+# SAME SIZE and a DIFFERENT hash, so something fixed-width varies. These three lines are
+# what turn "probably a build id or a timestamp" into a named cause; they cost milliseconds
+# and they are the difference between N-11 being answered and being guessed at.
+if [ -n "$readelf_bin" ]; then
+  echo "::group::N-11 — what varies between builds"
+  echo "  build-id: $("$readelf_bin" -n "$OUT_DIR/libpjsua2.so" 2>/dev/null | sed -n 's/.*Build ID: *//p' | head -1)"
+  # A literal date or time baked in by __DATE__/__TIME__ anywhere in the image.
+  LC_ALL=C grep -aoE '[A-Z][a-z]{2} [ 0-9][0-9] [0-9]{4}|[0-9]{2}:[0-9]{2}:[0-9]{2}' \
+    "$OUT_DIR/libpjsua2.so" 2>/dev/null | sort -u | head -5 | sed 's/^/  embedded: /'
+  echo "::endgroup::"
+fi
+
 echo "==> $ABI: libpjsua2.so + libc++_shared.so in $OUT_DIR"

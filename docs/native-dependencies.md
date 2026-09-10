@@ -205,17 +205,8 @@ So N-2, N-4, N-5 and N-6 are demonstrated: the vendored source compiles, through
 - **The egress-blocked offline job of §2.1.2 has not gone green.** Until it does, "the
   vendored tree needs no network" is an argument, not a result — and Opus proved that
   argument wrong once already (§1.3).
-- **Reproducibility (N-11) has not been measured**, and until now it was not *measurable*:
-  nothing recorded what a build produced. `assertNativeLibraries` now prints a SHA-256 per
-  `.so` per ABI, so comparing two runs of the same commit is a diff of two logs.
-
-  **It is printed, not asserted, and that is deliberate.** Whether these binaries are
-  bit-identical across runs is a question with a likely answer of *no*: pjproject links with
-  `-Wl,--build-id=sha1` and autotools bakes absolute paths into its output, so two runs in
-  different directories will differ for reasons that have nothing to do with the source.
-  N-11 permits exactly that — *"or the document states precisely why they cannot and what
-  varies"* — and asserting equality before anyone has looked would either be a lie or a
-  permanently red build. `pjsip/build-native.sh`
+- **Reproducibility (N-11): measured. The answer is no, and here is exactly what varies.**
+  See §1.5. `pjsip/build-native.sh`
 carries the TLS/Opus/VPX assertions and the 16 KB alignment assertion, ported flag-for-flag
 from the green workflow, and `.github/workflows/native-mandate.yml` runs the whole native
 stage with **egress blocked** (§2.1.2). Until that job is green, the honest claim is
@@ -414,3 +405,47 @@ exists, which is DoD 14.
 under their own heading precisely because they are *not* in `third_party/`, and a naive
 implementation that scans every table in this file will fail on them. That is the one
 subtlety in an otherwise trivial check, and it is written here so it is not rediscovered.
+
+### 1.5 N-11 — measured, and the answer is *not bit-reproducible*
+
+N-11 asks for two builds of the same commit to be hash-compared, and permits the answer to
+be no *"provided the document states precisely why they cannot and what varies"*. This is
+that statement.
+
+**The measurement.** CI runs `34428646793` and `34429022474`. The two commits differ only
+in workflow YAML — `git diff` over `third_party/`, `pjsip/build-native.sh`,
+`pjsip/CMakeLists.txt` and `pjsip/config/` is **empty**, so the native inputs and the
+toolchain are identical. Same runner image, same NDK r27c, same SWIG 4.2.0.
+
+| Library | ABI | Size, both runs | Digest |
+|---|---|---|---|
+| `libc++_shared.so` | arm64-v8a | 1,794,776 | `f9992c4b…` **identical** |
+| `libc++_shared.so` | armeabi-v7a | 1,301,936 | `4df8b2e8…` **identical** |
+| `libc++_shared.so` | x86_64 | 1,617,608 | `cd110349…` **identical** |
+| `libpjsua2.so` | arm64-v8a | 19,553,544 | `6a530a30…` vs `757f0698…` — **differs** |
+| `libpjsua2.so` | armeabi-v7a | 15,224,252 | `cee0a77c…` vs `c965eaff…` — **differs** |
+| `libpjsua2.so` | x86_64 | 19,501,168 | `28a70a12…` vs `29bb5725…` — **differs** |
+
+**Two results, and the contrast is the informative part.**
+
+`libc++_shared.so` is **bit-identical** across runs, on every ABI. It is *copied* from the
+NDK rather than built, so it reproduces exactly — which also confirms the comparison method
+works and is not simply reporting noise.
+
+`libpjsua2.so` **differs in content while matching in size to the byte**, on every ABI.
+Identical length with different bytes is the signature of something *fixed-width* being
+embedded — a build id, a timestamp, or a path of constant length — rather than a structural
+difference in what was compiled. A different code path or a different dependency would
+change the size.
+
+**What has NOT been established is which of those it is.** The candidates are pjproject's
+`-Wl,--build-id=sha1`, a `__DATE__`/`__TIME__` expansion somewhere in pjproject or OpenSSL,
+and the absolute build path — and naming one without evidence would be exactly the kind of
+laundered guess §3 of the master prompt forbids. `build-native.sh` now prints the build id
+and any embedded date/time per ABI, so the next green run answers it from data.
+
+**Cross-platform, for completeness and clearly labelled as a different question.** The same
+commit built on macOS 12.7.6 produced `arm64-v8a/libpjsua2.so` at **19,559,040** bytes
+against CI's **19,553,544** — a 5,496-byte difference, so macOS and Linux builds differ
+*structurally*, not just in an embedded field. N-11 does not ask for cross-platform
+reproducibility and this build does not have it.
