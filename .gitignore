@@ -67,3 +67,8 @@ tasks-v*.md
 # test walks the source tree — so a stale `bin/` makes it scan the deliberate violation
 # fixtures under test/arch and fail every rule at once, locally and only locally.
 bin/
+# …but not inside a vendored tree, where `bin/` is upstream's source layout (flatbuffers'
+# Rust test binaries live in tests/rust_usage_test/bin/). Same reason as the build/
+# negation above.
+!third_party/**/bin/
+!third_party/**/bin/**

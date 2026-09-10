@@ -33,6 +33,10 @@ check_pin pjproject "$PJPROJECT_SHA"
 check_pin openssl   "$OPENSSL_SHA"
 check_pin opus      "$OPUS_SHA"
 check_pin libvpx    "$LIBVPX_SHA"
+for entry in "${LYRA_TREES[@]}"; do
+  name="${entry%%:*}"; sha_var="${entry##*:}_SHA"
+  check_pin "$name" "${!sha_var}"
+done
 
 # No dependency may float. This is the check that makes N-11 measurable at all: a
 # `branch =` is not a reproducibility finding, it is an unpinned input (master prompt

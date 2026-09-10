@@ -56,6 +56,16 @@ jobs:
       - name: No pruned directory is one its own build files name
         run: ./tools/vendor/verify-prune.sh
 
+      # The Lyra closure's two prunes that ARE named by their trees' CMake, each inside an
+      # IF(<option>) block: the option must still exist upstream and still be OFF here.
+      - name: The guarded prunes in the Lyra closure are still safe
+        run: ./tools/vendor/verify-guarded-prunes.sh
+
+      # TensorFlow is kept, not pruned — 472 of 28,000 files. Every path lite's CMake names
+      # must be among them.
+      - name: The TensorFlow keep-list covers what TFLite's build names
+        run: ./tools/vendor/verify-tensorflow-keep.sh
+
       # A vendored tree that wgets at build time defeats N-2, and every runner has
       # wget, so it would download silently for ever. Opus did exactly this.
       - name: No vendored tree fetches at build time (N-2)

@@ -226,6 +226,8 @@ jobs:
           ./tools/vendor/verify-vendored.sh
           ./tools/vendor/verify-openssl-prune.sh
           ./tools/vendor/verify-prune.sh
+          ./tools/vendor/verify-guarded-prunes.sh
+          ./tools/vendor/verify-tensorflow-keep.sh
           ./tools/vendor/verify-no-fetch.sh
 
       # Task 3 done-when #2: "zero warnings suppressed by baseline abuse".
