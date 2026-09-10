@@ -50,9 +50,22 @@ else
            status=1 ;;
       esac
     done < <(printf '%s\n' "$joined" | grep '\./Configure' | grep -v '^[[:space:]]*#' || true)
-    # tools/ is deliberately not scanned: this script mentions ./Configure in order to
-    # look for it, and a checker that fails on its own source is a checker nobody keeps.
-  done < <(grep -rl '\./Configure' .github/workflows/ pjsip/ 2>/dev/null || true)
+    # `git ls-files`, not `find`. Two reasons, and the first one broke CI:
+    #
+    #   1. `pjsip/` contains `pjsip/build/` once the native stage has run, and that holds a
+    #      full COPY of OpenSSL — including NOTES-ANDROID.md, NOTES-UNIX.md and
+    #      NOTES-NONSTOP.md, which discuss `./Configure` in prose. The check read upstream's
+    #      documentation as though it were this project's build scripts and failed with
+    #      twenty errors about NonStop mainframes. Build output is never tracked, so asking
+    #      git excludes it without an ignore list that can drift.
+    #   2. `tools/` is excluded on purpose: this script mentions `./Configure` in order to
+    #      look for it, and a checker that fails on its own source is one nobody keeps.
+    #
+    # Markdown is excluded too. A document that mentions a command is not an invocation of
+    # it, and OpenSSL's own release notes are full of both.
+  done < <(git ls-files .github/workflows pjsip \
+             | grep -vE '\.md$' \
+             | xargs grep -l '\./Configure' 2>/dev/null || true)
 fi
 
 # The directories Configure walks unconditionally. Each must exist.
