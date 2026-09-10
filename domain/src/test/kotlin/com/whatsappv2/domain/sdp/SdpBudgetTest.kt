@@ -44,39 +44,51 @@ class SdpBudgetTest {
     }
 
     @Test
-    fun `dropping the two AES_256 suites and ICE gets the audio offer delivered`() {
-        // The fix, as arithmetic. 1092 SDP bytes, less two 116-byte crypto lines, less the
-        // 198 bytes of ICE, is 662 — and 662 + 650 headers = 1312, against a measured hard
-        // limit of 1472. The datagram is no longer fragmented, so it is no longer dropped,
-        // which is the whole of the reported defect.
-        val trimmed = MEASURED_AUDIO_SDP -
-            (2 * SdpBudget.AES_256_CRYPTO_LINE_BYTES) -
-            SdpBudget.ICE_BYTES_PER_MEDIA_LINE
+    fun `trimming the crypto suites alone does NOT get the offer delivered`() {
+        // The correction that matters, and it was wrong in this file until it was measured
+        // against the real INVITE rather than against an estimate. The two AES_256 lines are
+        // 108 bytes each, not 116 — so the trim saves 216 and the offer lands at 1526, which
+        // is still 54 bytes above the 1472 the path carries. Still fragmented. Still dropped.
+        //
+        // The SRTP trim is therefore a necessary part of the fix and not the whole of it.
+        val cryptoOnly = MEASURED_AUDIO_SDP - (2 * SdpBudget.AES_256_CRYPTO_LINE_BYTES)
 
-        assertEquals(662, trimmed)
+        assertEquals(1526, cryptoOnly + SdpBudget.TYPICAL_INVITE_HEADER_BYTES)
         assertTrue(
-            trimmed + SdpBudget.TYPICAL_INVITE_HEADER_BYTES <= SdpBudget.MAX_UDP_REQUEST_BYTES,
-            "a trimmed audio offer must fit one datagram, or audio calls do not connect",
+            cryptoOnly + SdpBudget.TYPICAL_INVITE_HEADER_BYTES > SdpBudget.MAX_UDP_REQUEST_BYTES,
+            "the crypto trim alone leaves the INVITE over the path limit",
         )
     }
 
     @Test
-    fun `the trimmed offer is still 40 bytes short of RFC 3261's headroom, and says so`() {
-        // The honest half, and the reason `fitsOneDatagram` is not asserted above. §18.1.1
-        // wants 200 bytes of margin below the MTU; the trimmed offer leaves 160. So it is
+    fun `the crypto trim AND ICE off is what gets the offer delivered`() {
+        // 1742 - 216 (two AES_256 lines) - 198 (ice-ufrag, ice-pwd, two candidates) = 1328,
+        // which is under the 1472 the path carries. ICE is an ACCOUNT setting and
+        // NatPolicy.DEFAULT turns it on, so this only holds for an account configured with
+        // ICE off — on a flat LAN, which is where these calls run, it buys nothing anyway.
+        val trimmed = MEASURED_AUDIO_SDP -
+            (2 * SdpBudget.AES_256_CRYPTO_LINE_BYTES) -
+            SdpBudget.ICE_BYTES_PER_MEDIA_LINE
+
+        assertEquals(1328, trimmed + SdpBudget.TYPICAL_INVITE_HEADER_BYTES)
+        assertTrue(
+            trimmed + SdpBudget.TYPICAL_INVITE_HEADER_BYTES <= SdpBudget.MAX_UDP_REQUEST_BYTES,
+            "with ICE off the offer fits one datagram",
+        )
+    }
+
+    @Test
+    fun `even the fully trimmed offer is short of RFC 3261's headroom, and says so`() {
+        // §18.1.1 wants 200 bytes of margin below the MTU; 1328 leaves 144. So it is
         // delivered on THIS path and would stop being delivered on one with a smaller MTU,
-        // or the moment a proxy adds a Record-Route header.
-        //
-        // Closing the last 40 bytes means one telephone-event clock rate instead of two
-        // (PJMEDIA_TELEPHONE_EVENT_ALL_CLOCKRATES, worth ~52 bytes), which is a native
-        // rebuild. Recorded as a number rather than rounded away, so nobody has to
-        // rediscover it from a call that fails on a different network.
+        // or the moment a proxy adds a Record-Route header. Recorded as a number rather than
+        // rounded away.
         val trimmed = MEASURED_AUDIO_SDP -
             (2 * SdpBudget.AES_256_CRYPTO_LINE_BYTES) -
             SdpBudget.ICE_BYTES_PER_MEDIA_LINE
 
         assertFalse(SdpBudget.fitsOneDatagram(trimmed))
-        assertEquals(40, SdpBudget.excessBytes(trimmed))
+        assertEquals(56, SdpBudget.excessBytes(trimmed))
     }
 
     @Test
@@ -90,8 +102,9 @@ class SdpBudgetTest {
             SdpBudget.ICE_BYTES_PER_MEDIA_LINE
         val videoMediaLine = 400 + (2 * SdpBudget.AES_128_CRYPTO_LINE_BYTES)
 
-        assertFalse(
-            SdpBudget.fitsOneDatagram(trimmedAudio + videoMediaLine),
+        assertTrue(
+            trimmedAudio + videoMediaLine + SdpBudget.TYPICAL_INVITE_HEADER_BYTES >
+                SdpBudget.MAX_UDP_REQUEST_BYTES,
             "if this ever passes, re-measure on a device before claiming video is fixed",
         )
     }

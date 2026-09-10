@@ -82,10 +82,10 @@ object SdpBudget {
      * follows the suite's key size — which is why the AES_256 suites cost half as much again
      * as the AES_128 ones, and are the first thing to give up when the budget is tight.
      */
-    const val AES_256_CRYPTO_LINE_BYTES: Int = 116
+    const val AES_256_CRYPTO_LINE_BYTES: Int = 108
 
     /** The same, for a 128-bit suite. */
-    const val AES_128_CRYPTO_LINE_BYTES: Int = 76
+    const val AES_128_CRYPTO_LINE_BYTES: Int = 84
 
     /**
      * What `a=ice-ufrag`, `a=ice-pwd` and two host `a=candidate` lines cost, per media line.
