@@ -84,6 +84,8 @@ class HistoryGroupingTest {
             reason = HangupReason.LOCAL_HANGUP,
             media = MediaProfile.AUDIO,
         ),
+        // Grouping reads the timestamps and nothing else; the title is along for the ride.
+        title = "7001",
     )
 
     private companion object {

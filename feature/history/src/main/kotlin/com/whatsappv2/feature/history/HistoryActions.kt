@@ -20,7 +20,8 @@ import com.whatsappv2.domain.repository.CallLogFilter
 @Stable
 data class HistoryActions(
     val onFilterChanged: (CallLogFilter) -> Unit = {},
-    val onEntryOpened: (CallLogEntry) -> Unit = {},
+    /** The whole row, so the detail sheet is headed with the name the list showed. */
+    val onEntryOpened: (HistoryRow.Call) -> Unit = {},
     val onDetailDismissed: () -> Unit = {},
     val onDelete: (CallLogEntry) -> Unit = {},
     val onClearAllRequested: () -> Unit = {},

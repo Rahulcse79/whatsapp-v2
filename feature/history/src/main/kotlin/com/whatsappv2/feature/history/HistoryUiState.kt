@@ -16,7 +16,14 @@ sealed interface HistoryRow {
     /** The day every following [Call] happened on, until the next one of these. */
     data class DayHeader(val epochDay: Long) : HistoryRow
 
-    data class Call(val entry: CallLogEntry) : HistoryRow
+    /**
+     * One call, together with what to call the person on it.
+     *
+     * The title is carried rather than computed by the row that draws it, because working
+     * it out means asking the address book (`CallLogTitles`) and a composable that did
+     * that would do it again on every recomposition. Resolved once, as the page loads.
+     */
+    data class Call(val entry: CallLogEntry, val title: String) : HistoryRow
 }
 
 /**
@@ -29,8 +36,14 @@ sealed interface HistoryRow {
 data class HistoryUiState(
     val filter: CallLogFilter = CallLogFilter.ALL,
 
-    /** The entry whose detail is open, or null for the list. */
-    val openEntry: CallLogEntry? = null,
+    /**
+     * The row whose detail is open, or null for the list.
+     *
+     * The row and not the bare entry, so the sheet's heading is the name the list showed.
+     * Re-deriving it here would be a second address-book read for a title already resolved,
+     * and the two could disagree.
+     */
+    val openEntry: HistoryRow.Call? = null,
 
     /** True while the "clear all history" confirmation is up. */
     val confirmingClearAll: Boolean = false,

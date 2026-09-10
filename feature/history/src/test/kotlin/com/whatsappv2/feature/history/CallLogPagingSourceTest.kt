@@ -11,6 +11,8 @@ import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.repository.CallLogFilter
 import com.whatsappv2.domain.testing.FakeCallLogRepository
+import com.whatsappv2.domain.testing.FakeContactRepository
+import com.whatsappv2.domain.usecase.CallLogTitles
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -27,6 +29,7 @@ import kotlin.test.assertNull
 class CallLogPagingSourceTest {
 
     private val repository = FakeCallLogRepository()
+    private val contacts = FakeContactRepository()
 
     @Test
     fun `the first page starts at the top and has no previous key`() = runTest {
@@ -84,6 +87,61 @@ class CallLogPagingSourceTest {
         assertNull(page.nextKey)
     }
 
+    // ------------------------------------------------------------------ names
+
+    @Test
+    fun `a row whose address is in the address book shows the contact's name`() = runTest {
+        // The reported defect: the row was written before this contact existed, so its
+        // stored `contactName` is null and re-reading the log will never change that.
+        // Asking the address book as the page loads is what fixes it.
+        contacts.given(REMOTE, name = "Bob Smith")
+        repository.record(entry(0))
+
+        val page = load(offset = null, size = PAGE)
+
+        assertEquals("Bob Smith", page.data.single().title)
+    }
+
+    @Test
+    fun `the missed tab names its rows too`() = runTest {
+        // Both tabs, and this is the one people open: a missed call has no duration to
+        // pad the row out, so a bare address is all there is to read.
+        contacts.given(REMOTE, name = "Bob Smith")
+        repository.record(entry(0, direction = CallDirection.INCOMING, answered = false))
+
+        val page = load(offset = null, size = PAGE, filter = CallLogFilter.MISSED)
+
+        assertEquals("Bob Smith", page.data.single().title)
+    }
+
+    @Test
+    fun `a row with no contact shows the extension, not a sip URI`() = runTest {
+        repository.record(entry(0))
+
+        val page = load(offset = null, size = PAGE)
+
+        assertEquals("bob", page.data.single().title)
+    }
+
+    @Test
+    fun `names are resolved as the page loads, and only for the rows in it`() = runTest {
+        // The cost this design accepts, stated as a number: one ask per row *loaded*, and
+        // no ask at all for the rows below the window. Scrolling back over rows already
+        // loaded adds none, because Paging keeps the page it built.
+        //
+        // The asks are not the provider reads. Every row here is the same address, and
+        // `ContactsContractRepository` answers a repeat from its own cache — this fake has
+        // none, which is what makes the per-row count visible to assert on.
+        contacts.given(REMOTE, name = "Bob Smith")
+        given(entries = PAGE * 2)
+
+        val page = load(offset = null, size = PAGE)
+
+        assertEquals(PAGE, page.data.size)
+        assertEquals(PAGE, contacts.lookups.size, "one ask per row loaded, not per row stored")
+        assertEquals(setOf(REMOTE), contacts.lookups.toSet())
+    }
+
     // ---------------------------------------------------------------- fixture
 
     private suspend fun given(entries: Int) {
@@ -94,8 +152,8 @@ class CallLogPagingSourceTest {
         offset: Int?,
         size: Int,
         filter: CallLogFilter = CallLogFilter.ALL,
-    ): PagingSource.LoadResult.Page<Int, CallLogEntry> {
-        val source = CallLogPagingSource(repository, filter)
+    ): PagingSource.LoadResult.Page<Int, HistoryRow.Call> {
+        val source = CallLogPagingSource(repository, filter, CallLogTitles(contacts))
         val result = source.load(
             PagingSource.LoadParams.Refresh(key = offset, loadSize = size, placeholdersEnabled = false),
         )

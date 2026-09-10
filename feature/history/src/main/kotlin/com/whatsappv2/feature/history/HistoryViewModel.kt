@@ -7,7 +7,6 @@ import androidx.paging.PagingConfig
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import androidx.paging.insertSeparators
-import androidx.paging.map
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.domain.call.userMessage
 import com.whatsappv2.domain.engine.CameraAvailability
@@ -16,6 +15,7 @@ import com.whatsappv2.domain.model.CallLogId
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.repository.CallLogFilter
 import com.whatsappv2.domain.repository.CallLogRepository
+import com.whatsappv2.domain.usecase.CallLogTitles
 import com.whatsappv2.domain.usecase.PlaceCallError
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -70,6 +70,15 @@ class HistoryViewModel @Inject constructor(
      * purely so the snackbar can say the call went out as audio.
      */
     private val camera: CameraAvailability,
+    /**
+     * What each row is called, asked once per entry as its page loads (Task 49).
+     *
+     * Here rather than in the row composable: the address book is a content provider, and
+     * a title resolved during recomposition is a provider read per frame. Applied inside
+     * [pagerFor], above `cachedIn`, so a scroll back over rows already seen re-reads
+     * nothing.
+     */
+    private val titles: CallLogTitles,
 ) : ViewModel() {
 
     private val state = MutableStateFlow(HistoryUiState())
@@ -131,7 +140,7 @@ class HistoryViewModel @Inject constructor(
 
     fun onFilterChanged(filter: CallLogFilter) = state.update { it.copy(filter = filter) }
 
-    fun onEntryOpened(entry: CallLogEntry) = state.update { it.copy(openEntry = entry) }
+    fun onEntryOpened(row: HistoryRow.Call) = state.update { it.copy(openEntry = row) }
 
     fun onDetailDismissed() = state.update { it.copy(openEntry = null) }
 
@@ -145,7 +154,7 @@ class HistoryViewModel @Inject constructor(
             // The open detail is closed only if it was the entry deleted: deleting from
             // the list behind an open sheet must not shut the sheet on a different call.
             state.update { current ->
-                current.copy(openEntry = current.openEntry?.takeIf { it.id != id })
+                current.copy(openEntry = current.openEntry?.takeIf { it.entry.id != id })
             }
         }
     }
@@ -210,12 +219,17 @@ class HistoryViewModel @Inject constructor(
     private fun pagerFor(filter: CallLogFilter): Flow<PagingData<HistoryRow>> =
         Pager(
             config = PagingConfig(pageSize = PAGE_SIZE, enablePlaceholders = false),
-            pagingSourceFactory = { CallLogPagingSource(repository, filter).also { liveSource = it } },
+            pagingSourceFactory = {
+                CallLogPagingSource(repository, filter, titles).also { liveSource = it }
+            },
         ).flow.map { page ->
-            page.map<CallLogEntry, HistoryRow> { HistoryRow.Call(it) }
-                .insertSeparators { before, after ->
-                    dayHeaderBetween(before as? HistoryRow.Call, after as? HistoryRow.Call, zone)
-                }
+            // The source already emits rows with their names resolved, so all that is left
+            // is to slot the day headings between them. The type argument is what widens
+            // `HistoryRow.Call` to `HistoryRow`; before Task 49 this was a `map` followed
+            // by two casts that could not fail.
+            page.insertSeparators<HistoryRow.Call, HistoryRow> { before, after ->
+                dayHeaderBetween(before, after, zone)
+            }
         }
 
     private companion object {

@@ -169,6 +169,22 @@ class SipUriTest {
         assertEquals("sip:alice@example.com;lr", parsed("sip:alice@example.com;lr").render())
     }
 
+    @Test
+    fun `label is the user part alone, with nothing a reader does not need`() {
+        // What a call list shows. The host, port and parameters are all correct and all
+        // noise: on one deployment every row repeats them.
+        assertEquals("7001", parsed("sip:7001@192.168.80.145").label())
+        assertEquals("alice", parsed("sips:alice@example.com:5061;transport=TLS").label())
+    }
+
+    @Test
+    fun `label falls back to the host when there is no user part`() {
+        // `sip:example.com` is a valid thing to have called, and an empty row would be
+        // worse than a host name.
+        assertEquals("example.com", parsed("sip:example.com").label())
+        assertEquals("[2001:db8::1]", parsed("sip:[2001:db8::1]:5060").label())
+    }
+
     // ---------------------------------------------------------------- safety
 
     @Test

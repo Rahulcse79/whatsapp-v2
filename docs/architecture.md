@@ -1019,6 +1019,51 @@ defect is precisely that nothing tried.
 **Also rejected: dial anyway.** That is the defect. The INVITE dies at Timer B 32 seconds
 later with nothing to explain it.
 
+#### 4.11.3 The name on a call history row
+
+**Reported 2026-09-10.** A history row for extension `7001` read `sip:7001@192.168.80.145`.
+Two separate causes, and they needed separate answers.
+
+**Decision: resolve the name as the page loads, and keep the snapshot as the fallback.**
+`CallLogEntry.contactName` is written once, when the call ends, and never revisited — which
+is deliberate and is kept, because it is what the log meant at the time and it survives a
+contact being deleted. What it cannot do is learn: a contact added *after* a call left that
+row reading as a number for the life of the database, and no amount of editing the address
+book fixed it. So `CallLogTitles` asks the address book for the current name, and the
+precedence is: **current name → stored snapshot → the peer's own display name → the
+address**. The first two are the user's own word for the person and both outrank the third,
+which is whatever the far end chose to call itself.
+
+**Decision: the last resort is `SipUri.label()`, not `SipUri.render()`.** The useful label
+for `sip:7001@192.168.80.145` is `7001`. On this deployment every row shares the host, so
+two thirds of that string is the two thirds pushing the name off the screen. A URI with no
+user part falls back to the host, because `sip:conference.example.com` is a real thing to
+have called.
+
+**Where it runs, and the cost.** In `CallLogPagingSource.load`, once per row loaded, on
+Paging's fetch dispatcher — not in the row composable, where it would be a content-provider
+read per recomposition. `ContactsContractRepository` caches by address, so a log of a
+thousand calls to six extensions is six provider reads. That cache now also empties itself
+on a `ContentObserver` for `ContactsContract`, without which an address looked up before its
+contact existed stayed "nobody" until the process restarted — which would have left the
+reported case half-fixed on the very screen that reported it.
+
+**Rejected alternative: replace the snapshot with a join.** Always current, and it loses the
+record: a call to somebody since deleted from the address book would go back to being a
+number, and the log would stop saying what it meant when it was written.
+
+**Rejected alternative: backfill rows whose `contactName` is null when contacts change.**
+Keeps both properties, and costs a trigger, a bounded update and a write path that has to
+decide what to do about rows changed since. Page-time resolution gets the same answer with
+no writes at all.
+
+**Rejected alternative: fix only the fallback label.** Cheapest, and it leaves "I added the
+contact and it still shows a number" exactly where it was.
+
+**Rejected alternative: a third name field on `CallLogEntry`.** It has two already and the
+reason they are kept apart is documented on the type; a third would be one more thing for
+them to disagree about.
+
 **One row remains a decision rather than a setting, and it is open:**
 - **`PJMEDIA_HAS_LYRA_CODEC 0`.** ADR-008.
 

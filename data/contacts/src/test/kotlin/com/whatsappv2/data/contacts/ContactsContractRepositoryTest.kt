@@ -8,6 +8,7 @@ import android.content.pm.ProviderInfo
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
+import android.os.Looper
 import android.provider.ContactsContract
 import androidx.test.core.app.ApplicationProvider
 import com.whatsappv2.core.common.dispatcher.DispatcherProvider
@@ -127,6 +128,56 @@ class ContactsContractRepositoryTest {
         // Absence is remembered as well: without that, a ringing screen re-reads the
         // address book for every frame a stranger is calling.
         assertNull(repository.resolve(address))
+    }
+
+    @Test
+    fun `adding the contact afterwards is noticed, because the cache is told`() = runTest {
+        // The half of the history defect that lives here. The call list asks about every
+        // row it loads, so an address looked up before its contact existed is remembered
+        // as "nobody" — and without a change notification it stays that way until the
+        // process restarts, however many times the user reopens the screen.
+        val repository = repository()
+        val address = uri("sip:bob@sip.example.com")
+        assertNull(repository.resolve(address))
+
+        provider.given(name = "Bob Smith")
+        context.contentResolver.notifyChange(ContactsContract.Contacts.CONTENT_URI, null)
+        // The observer runs on the notifying thread here; on a device it is a binder
+        // thread, which is why LookupCache is synchronised.
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals("Bob Smith", repository.resolve(address)?.displayName)
+    }
+
+    @Test
+    fun `a rename reaches a caller who is already cached`() = runTest {
+        provider.given(name = "Bob Smith")
+        val repository = repository()
+        val address = uri("sip:bob@sip.example.com")
+        assertEquals("Bob Smith", repository.resolve(address)?.displayName)
+
+        provider.given(name = "Robert Smith")
+        context.contentResolver.notifyChange(ContactsContract.Contacts.CONTENT_URI, null)
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals("Robert Smith", repository.resolve(address)?.displayName)
+    }
+
+    @Test
+    fun `nothing is watched until a lookup is allowed`() = runTest {
+        // Registering needs READ_CONTACTS, and Hilt builds this object long before the
+        // user has answered that prompt. A constructor that registered would throw on
+        // every launch where the permission has not been granted yet.
+        Shadows.shadowOf(context).denyPermissions(Manifest.permission.READ_CONTACTS)
+        val repository = repository()
+        assertNull(repository.resolve(uri("sip:bob@sip.example.com")))
+
+        Shadows.shadowOf(context).grantPermissions(Manifest.permission.READ_CONTACTS)
+        provider.given(name = "Bob Smith")
+
+        // Still works once permission arrives: the registration happens on the first
+        // lookup that gets through, not once and for all at construction.
+        assertEquals("Bob Smith", repository.resolve(uri("sip:bob@sip.example.com"))?.displayName)
     }
 
     private fun uri(value: String): SipUri = SipUri.parse(value).getOrNull()!!

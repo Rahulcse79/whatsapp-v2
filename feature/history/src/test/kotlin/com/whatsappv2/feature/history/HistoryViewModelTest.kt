@@ -12,8 +12,10 @@ import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.repository.CallLogFilter
 import com.whatsappv2.domain.testing.FakeCallLogRepository
+import com.whatsappv2.domain.testing.FakeContactRepository
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
+import com.whatsappv2.domain.usecase.CallLogTitles
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -49,6 +51,7 @@ class HistoryViewModelTest {
     }
 
     private val repository = FakeCallLogRepository()
+    private val contacts = FakeContactRepository()
     private val accounts = FakeSipAccountRepository()
     private val engine = FakeSipEngine()
     private val dispatcher = StandardTestDispatcher()
@@ -60,7 +63,15 @@ class HistoryViewModelTest {
     fun tearDown() = Dispatchers.resetMain()
 
     private fun viewModel(camera: CameraAvailability = CameraPresent) =
-        HistoryViewModel(repository, PlaceCallUseCase(accounts, engine, camera, engine), camera)
+        HistoryViewModel(
+            repository,
+            PlaceCallUseCase(accounts, engine, camera, engine),
+            camera,
+            CallLogTitles(contacts),
+        )
+
+    /** The row as the list would have built it, title already resolved. */
+    private fun row(entry: CallLogEntry) = HistoryRow.Call(entry, entry.remote.label())
 
     @Test
     fun `the filter starts on everything, because that is what a log is for`() = runTest {
@@ -82,9 +93,9 @@ class HistoryViewModelTest {
         val entry = repository.record(entry())
         val viewModel = viewModel()
 
-        viewModel.onEntryOpened(entry)
+        viewModel.onEntryOpened(row(entry))
         runCurrent()
-        assertEquals(entry, viewModel.uiState.value.openEntry)
+        assertEquals(entry, viewModel.uiState.value.openEntry?.entry)
 
         viewModel.onDetailDismissed()
         runCurrent()
@@ -95,7 +106,7 @@ class HistoryViewModelTest {
     fun `deleting the open entry closes the detail that was showing it`() = runTest {
         val entry = repository.record(entry())
         val viewModel = viewModel()
-        viewModel.onEntryOpened(entry)
+        viewModel.onEntryOpened(row(entry))
         runCurrent()
 
         viewModel.onDelete(entry.id)
@@ -112,13 +123,13 @@ class HistoryViewModelTest {
         val open = repository.record(entry())
         val other = repository.record(entry())
         val viewModel = viewModel()
-        viewModel.onEntryOpened(open)
+        viewModel.onEntryOpened(row(open))
         runCurrent()
 
         viewModel.onDelete(other.id)
         runCurrent()
 
-        assertEquals(open, viewModel.uiState.value.openEntry)
+        assertEquals(open, viewModel.uiState.value.openEntry?.entry)
     }
 
     @Test

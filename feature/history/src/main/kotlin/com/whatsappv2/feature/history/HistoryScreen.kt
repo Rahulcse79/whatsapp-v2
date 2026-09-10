@@ -109,8 +109,8 @@ fun HistoryScreen(
         }
     }
 
-    state.openEntry?.let { entry ->
-        CallDetail(entry, actions, zone)
+    state.openEntry?.let { row ->
+        CallDetail(row, actions, zone)
     }
 
     if (state.confirmingClearAll) {
@@ -171,7 +171,7 @@ private fun CallList(
         ) { index ->
             when (val row = rows[index]) {
                 is HistoryRow.DayHeader -> DayHeading(row.epochDay)
-                is HistoryRow.Call -> CallRow(row.entry, actions, zone)
+                is HistoryRow.Call -> CallRow(row, actions, zone)
                 null -> Unit
             }
         }
@@ -239,11 +239,12 @@ private fun DayHeading(epochDay: Long) {
 }
 
 @Composable
-private fun CallRow(entry: CallLogEntry, actions: HistoryActions, zone: ZoneId) {
+private fun CallRow(row: HistoryRow.Call, actions: HistoryActions, zone: ZoneId) {
+    val entry = row.entry
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { actions.onEntryOpened(entry) }
+            .clickable { actions.onEntryOpened(row) }
             .padding(horizontal = AppTheme.spacing.large, vertical = AppTheme.spacing.small)
             .testTag(entryTag(entry)),
         verticalAlignment = Alignment.CenterVertically,
@@ -253,7 +254,7 @@ private fun CallRow(entry: CallLogEntry, actions: HistoryActions, zone: ZoneId) 
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = entry.title(),
+                text = row.title,
                 style = MaterialTheme.typography.bodyLarge,
                 // A missed call is what someone opens this screen looking for, so it is
                 // the one the eye lands on. Weight as well as colour: colour alone is not
@@ -281,7 +282,7 @@ private fun CallRow(entry: CallLogEntry, actions: HistoryActions, zone: ZoneId) 
         ) {
             Icon(
                 imageVector = Icons.Filled.Videocam,
-                contentDescription = "Video call ${entry.title()} back",
+                contentDescription = "Video call ${row.title} back",
                 tint = MaterialTheme.colorScheme.primary,
             )
         }
@@ -291,7 +292,7 @@ private fun CallRow(entry: CallLogEntry, actions: HistoryActions, zone: ZoneId) 
         ) {
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.CallMade,
-                contentDescription = "Call ${entry.title()} back",
+                contentDescription = "Call ${row.title} back",
                 tint = MaterialTheme.colorScheme.primary,
             )
         }
@@ -325,9 +326,10 @@ private fun DirectionBadge(entry: CallLogEntry) {
 }
 
 @Composable
-private fun CallDetail(entry: CallLogEntry, actions: HistoryActions, zone: ZoneId) {
+private fun CallDetail(row: HistoryRow.Call, actions: HistoryActions, zone: ZoneId) {
+    val entry = row.entry
     ConfirmDialog(
-        title = entry.title(),
+        title = row.title,
         // The reason comes from Task 44's table, so the sentence here and the one the
         // dialler showed when the call failed are the same sentence.
         message = buildString {
@@ -378,10 +380,6 @@ private fun CallLogEntry.directionDescription() = when {
     direction == CallDirection.INCOMING -> "Incoming call"
     else -> "Outgoing call"
 }
-
-/** The contact's name if we know it, then what the peer called itself, then the address. */
-private fun CallLogEntry.title(): String =
-    contactName ?: remoteDisplayName ?: remote.render()
 
 private fun CallLogEntry.subtitle(zone: ZoneId): String {
     val at = Instant.ofEpochMilli(startedAtEpochMillis).atZone(zone).format(TIME_FORMAT)

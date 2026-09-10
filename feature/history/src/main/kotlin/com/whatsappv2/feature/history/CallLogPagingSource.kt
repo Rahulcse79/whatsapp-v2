@@ -2,9 +2,9 @@ package com.whatsappv2.feature.history
 
 import androidx.paging.PagingSource
 import androidx.paging.PagingState
-import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.repository.CallLogFilter
 import com.whatsappv2.domain.repository.CallLogRepository
+import com.whatsappv2.domain.usecase.CallLogTitles
 
 /**
  * Pages the call log, one window of rows at a time (Task 48).
@@ -26,16 +26,28 @@ import com.whatsappv2.domain.repository.CallLogRepository
  *
  * That last clause was aspirational until Task 71 — the signal existed and nothing
  * collected it. It is wired now; see `HistoryViewModel.watchStoreChanges`.
+ *
+ * ## Rows, not entries: the name is resolved here
+ *
+ * Each entry is paired with what to call the person on it before it leaves this class, and
+ * this is the only place in the screen where that can happen cheaply. [CallLogTitles] asks
+ * the address book, and a page is the coarsest unit that still gets the answer right: once
+ * per row loaded, on Paging's fetch dispatcher, absorbed by the contact repository's own
+ * cache when a log of a thousand calls is a log of six extensions. The alternative — a row
+ * composable resolving its own name — is a content-provider read per recomposition.
  */
 class CallLogPagingSource(
     private val repository: CallLogRepository,
     private val filter: CallLogFilter,
-) : PagingSource<Int, CallLogEntry>() {
+    private val titles: CallLogTitles,
+) : PagingSource<Int, HistoryRow.Call>() {
 
-    override suspend fun load(params: LoadParams<Int>): LoadResult<Int, CallLogEntry> {
+    override suspend fun load(params: LoadParams<Int>): LoadResult<Int, HistoryRow.Call> {
         val offset = params.key ?: 0
 
-        return runCatching { repository.page(filter, offset, params.loadSize) }
+        return runCatching {
+            repository.page(filter, offset, params.loadSize).map { HistoryRow.Call(it, titles(it)) }
+        }
             .fold(
                 onSuccess = { entries ->
                     LoadResult.Page(
@@ -57,7 +69,7 @@ class CallLogPagingSource(
      * ending while they are reading last week's entries must not throw them back to the
      * newest one.
      */
-    override fun getRefreshKey(state: PagingState<Int, CallLogEntry>): Int? =
+    override fun getRefreshKey(state: PagingState<Int, HistoryRow.Call>): Int? =
         state.anchorPosition?.let { anchor ->
             val page = state.closestPageToPosition(anchor)
             page?.prevKey?.plus(state.config.pageSize) ?: page?.nextKey?.minus(state.config.pageSize)
