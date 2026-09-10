@@ -849,6 +849,14 @@ graph TD
 Owning the build does not mean running it on a laptop; it means the repository contains
 everything the build needs.
 
+**Status, 2026-09-10.** Stage 1 is **proven exactly**: 318 files generated from
+`third_party/pjproject` with the pinned SWIG 4.2.0, compared byte-for-byte against the 318
+that were committed before N-13 deleted them — 318 identical, 0 differing, 0 missing.
+Stage 2 has produced a **verified `libpjsua2.so`** for `arm64-v8a`: `AArch64`, every `LOAD`
+segment 16 KB aligned, the `pjsua2JNI` entry point present, and Opus, VP8 and OpenSSL all
+linked in. What remains unproven is the other two ABIs, Linux rather than macOS, and a
+handset. `docs/native-dependencies.md` §1.4 records the distinction.
+
 **Where the cache sits: nowhere, on Exit B of the §2.4 gate.** The master prompt's §2.3
 designs a content-hash cache on an estimate of "roughly an hour per ABI". The measured
 figure is **2m46s-3m23s** (`docs/reconciliation.md` B-7), and a seven-minute end-to-end

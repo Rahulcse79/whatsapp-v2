@@ -276,9 +276,12 @@ completion. The NDK resolved to **r27c**.
 > and place it at `pjsip/libs/pjsua2.aar` is exactly the manual native step N-5 forbids**,
 > and DoD 14 fails on any document that still describes it.
 >
-> It is kept, marked, rather than deleted: it is the accurate record of how the binary
-> reaches a build **today**, and it will stay accurate until phase 3b lands. Delete this
-> task — not just this note — when `:pjsip` compiles from `third_party/`.
+> **`:pjsip` now compiles from `third_party/`.** A verified `libpjsua2.so` was produced for
+> `arm64-v8a` on 2026-09-10 — 16 KB aligned, `pjsua2JNI` present, Opus/VP8/OpenSSL linked —
+> and stage 1 regenerates all 318 bindings byte-identically to the ones this task's AAR used
+> to carry. This task is therefore **obsolete, not merely superseded**; it stays only until
+> CI is green on all three ABIs, at which point it should be deleted outright rather than
+> annotated again.
 
 
 

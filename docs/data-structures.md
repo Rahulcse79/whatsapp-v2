@@ -123,7 +123,7 @@ Everywhere else, allocate freely and readably. Premature pooling is its own defe
 | **Retry bookkeeping** | `mutableMapOf<AccountId, Int>` attempts, `<AccountId, Job>` pending (`RegistrationRecoveryCoordinator.kt:112-117`) | One entry per configured account; the `Job` map is cancelled and cleared on success | O(1) | Two retries in flight for one account; an attempt counter that resets and holds the client at the base delay for ever | **Exists** |
 | **Connectivity churn** | Coalesce + debounce on a derived network-identity key (`RegistrationRecoveryCoordinator.kt:115` `boundNetwork`) | One key per account | O(1) per callback | `ConnectivityManager` fires in bursts during handover; naive handling re-registers 6× per handover | **Exists** |
 | **Codec preference match** | Iterate the **registered** codec list, `indexOfFirst { codecId.startsWith(pref, ignoreCase = true) }`, assign a descending priority (`RealPjsipCoreGateway.kt:889-901`) | Runs **once per account setup**, never in the call path. `n` ≤ ~30 | O(n·m), n codecs × m preferences, both ≤ ~30 | The real bug in P-9: `LYRA` prefix-matches `lyra/16000/1` **never**, and silently. The domain enum pins lowercase (`domain/…/model/Codecs.kt:38`) and a test holds it there | **Exists** |
-| **Codec audit** | Set difference: *declared feature set* − *`codecEnum2()` registry*, computed once per endpoint start | ≤ ~30 codecs, once per start. Result is an immutable value in `:domain` | O(n) | A codec that compiled and did not register — the silent half of "Lyra works". See §4 | **PROPOSED** (master prompt §2.5) |
+| **Codec audit** | Set difference: *declared feature set* − *`codecEnum2()` registry*, computed once per endpoint start | ≤ ~30 codecs, once per start. Result is an immutable value in `:domain` | O(n) | A codec that compiled and did not register — the silent half of "Lyra works". See §4 | **Exists.** `CodecAudit`/`CodecAuditor` in `:domain`, published by `SipCoreGateway.codecAudit`, unit-tested per reason |
 | **Native library inventory** | Expected `.so` set per ABI: `{libpjsua2.so, libc++_shared.so}`, asserted at packaging and re-checked at startup | Exactly 2 entries × 3 ABIs, fixed | O(1) per ABI | An ABI silently short a library; an APK that installs and dies on the first call (N-6) | **Half exists** — CI already asserts it at AAR assembly (`.github/workflows/build-pjsip.yml:607`) and at APK packaging (`:781`). The **startup** re-check is proposed |
 | **Vendored-tree integrity** | Hash of upstream-plus-patches vs the tree on disk | One hash per vendored tree, computed once in CI | O(size), once | An unrecorded edit to vendored source; a fixed bug returning at the next bump (N-7) | **PROPOSED** |
 | **Contact resolution** | `LinkedHashMap` with `accessOrder = true` and `removeEldestEntry` (`data/contacts/…/LookupCache.kt:21-28`) | **32 entries** (`ContactsContractRepository.kt:245`), LRU eviction. Holds `null` deliberately — "not a contact" is the answer worth caching | O(1) amortized get/put, bounded memory | A `ContactsContract` query per list row, and a query per frame of a ringing screen for a caller who is not in the address book | **Exists** |
@@ -316,10 +316,15 @@ install.
 grows for the life of the install. **DECIDE:** a retention bound (rows, or age), with
 deletion at that bound. Principle 4 — *unbounded is a crash with a delay*.
 
-### 5.2 Three seam streams inherit an overflow policy nobody chose
+### 5.2 Three seam streams inherited an overflow policy nobody chose — **fixed**
 
-See §1.2 and `docs/reconciliation.md` A-5. The fix is per stream, not global, and the table
-in §1.2 is the specification.
+Each of the four seam flows now declares `onBufferOverflow` explicitly, and the three that
+publish with `tryEmit` from a non-suspend path route through `emitOrReport`, which logs a
+refusal at WARN naming the stream. A drop is still possible on `endedCalls`,
+`transferEvents` and `videoRequests` — `endCall` is not a suspend function and is reached
+from three non-suspend paths — but it is no longer **silent**, which was the defect.
+`incomingCalls`, the one stream where a loss is unacceptable, uses a suspending `emit` and
+cannot drop at all.
 
 ### 5.3 Two structures were not verified in phase 1
 

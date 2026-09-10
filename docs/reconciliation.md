@@ -19,6 +19,48 @@ Three kinds of disagreement are separated, because they close differently:
 
 ---
 
+## Status, 2026-09-10 — what has been closed since this list was written
+
+This document is the **phase 1 contradiction list**, written before any change. It is kept
+as written rather than edited row by row, because a reconciliation list that gets quietly
+updated stops being evidence of what was found. This section is the delta.
+
+| Row | Status |
+|---|---|
+| A-1 · `DEFAULT` offers H264, the build has none | **Open, and now reported.** The codec audit gives it the reason `NotCompiled` instead of a silent skip. The decision — OpenH264 in, or H264 out — is still owed |
+| A-1b · every wideband codec has no peer | **Open, and now reported.** `NoPeerAccepts` is a first-class audit reason. Installing `mod_opus` server-side closes it with no client change |
+| A-2 · no rule forbids a committed binary | **Closed.** Rule 11, two clauses, two fixtures. It caught a real 19 MB AAR during this work |
+| A-3 · the fallback that ships a dead APK | **Closed.** N-14 — the condition is gone |
+| A-4 · the resolution rule documented in the wrong module | **Closed** with A-3 |
+| A-5 · three seam streams drop silently | **Closed.** Each declares its policy and reports a refusal |
+| B-1 · P-2 instructs a manual AAR fetch | **Closed.** Marked obsolete; `:pjsip` compiles from `third_party/` |
+| B-2 · ADR-006's sourcing paragraph | **Closed.** Amended in place, ADR-007 added |
+| B-3 · docs describe 318 committed files | **Closed.** And the replacement is proven byte-identical |
+| B-4 · 342-line contract, actually 368 | **Closed** |
+| B-5 · "four rules", there are ten | **Closed.** The new ones are 11 and 12 |
+| B-6 · backoff trace is the test's, not production's | **Closed.** `docs/data-structures.md` §3 does the arithmetic; the finding is that the **server's** `sessions-per-second = 30` is the mis-set parameter |
+| B-7 · the workflow "has never run" | **Closed.** It had; the measurement changed the cache design |
+| B-8 · DoD 1 PASS on a build that cannot call | **Closed by design.** That build now fails, which is DoD 24 working |
+| B-9 · no document names the exempt toolchain | **Closed, and it was worse than recorded.** CI was compiling with **r27d while asking for r27c** — the runner image's `ANDROID_NDK_ROOT` beat `setup-ndk`. Now asserted against `Pkg.Revision` |
+| C-1…C-7 | **Closed by construction** — this was the work |
+
+**Five things this list did not contain, because they were only findable by building.** They
+are recorded in `docs/native-dependencies.md` §1.2-§1.4 rather than here, since they are
+defects introduced *by* the vendoring rather than contradictions that predated it:
+
+1. **Opus fetched a model over the network on every build** (`autogen.sh` → `wget`) —
+   defeats N-2, and invisible on any runner that has `wget`.
+2. **`.gitignore`'s `build/` rule would have dropped 348 files**, including pjproject's own
+   make-based build system.
+3. **The prune rule was wrong** — "remove tests and docs" broke the build five times, because
+   autotools projects *declare* their tests and docs.
+4. **`* text=auto eol=lf` would have rewritten 188 CRLF files**, so the committed bytes would
+   not have been upstream's.
+5. **`TARGET_ABI` was never exported**, so every ABI configured as `arm64` and `armeabi-v7a`
+   refused its own correctly-built `libopus.a` as *"incompatible with aarch64linux"*.
+
+---
+
 ## A. Code contradicts code
 
 ### A-1 · `CodecPreferences.DEFAULT` offers a codec the binary is configured not to contain

@@ -169,6 +169,23 @@ trusted. Three of the four caught a real defect on the first vendoring attempt.
 | `tools/vendor/verify-prune.sh` | No pruned directory is one its own tree's build files name | Five separate restorations — §1.2 |
 | Architecture **rule 12** | Each tree matches its recorded content hash | The standing check. Verified to reproduce byte-identically from a fresh `git worktree` checkout |
 
+**The native stage now has a proven run — on one ABI, on one platform.** 2026-09-10, macOS
+12.7.6, NDK r27c (`27.2.12479018`), `arm64-v8a`, driven by `pjsip/build-native.sh` exactly as
+`pjsip/CMakeLists.txt` invokes it. It produced `libpjsua2.so` (19.5 MB) and
+`libc++_shared.so` (1.8 MB), and the artefact was verified rather than assumed:
+
+| Checked | Result |
+|---|---|
+| Architecture | `ELF64`, `AArch64` |
+| 16 KB page alignment (Play) | every `LOAD` segment `0x4000` — **and the check ran**, rather than skipping for want of `llvm-readelf` |
+| JNI entry point | `Java_org_pjsip_pjsua2_pjsua2JNI_swig_1module_1init` present |
+| Declared codecs linked in | `opus_encoder_create`, `pjmedia_codec_opus_init`, `vpx_codec_encode`, `SSL_CTX_new` |
+
+**What that does NOT prove**, and the distinction is the one master prompt §10 insists on:
+it is one ABI of three, on macOS rather than the Linux CI runs on, and nothing has run on a
+handset. `armeabi-v7a` and `x86_64` are unproven, and so is the Gradle wiring that invokes
+this script — the script was driven directly.
+
 **Still owed: one green CI run that compiles FROM the vendored trees.** `pjsip/build-native.sh`
 carries the TLS/Opus/VPX assertions and the 16 KB alignment assertion, ported flag-for-flag
 from the green workflow, and `.github/workflows/native-mandate.yml` runs the whole native

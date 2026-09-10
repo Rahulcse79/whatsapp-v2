@@ -94,7 +94,20 @@ val buildNative = tasks.register<BuildPjsua2Native>("buildPjsua2Native") {
     configDir.set(layout.projectDirectory.dir("config"))
     vendoredDir.set(rootProject.layout.projectDirectory.dir("third_party"))
     jniLibsDir.set(layout.buildDirectory.dir("generated/jniLibs"))
-    abis.set(listOf("arm64-v8a", "armeabi-v7a", "x86_64"))
+    // All three by default, because that is what :app packages and what N-6 requires.
+    //
+    // Overridable for local work: a full three-ABI cross-compile is ~20 minutes PER ABI on a
+    // laptop, and a developer checking that their Kotlin change still runs does not need
+    // x86_64. `-Ppjsip.abis=arm64-v8a` builds the one every current handset uses.
+    //
+    // This is not a hole in N-6. CI passes no override, so the packaging assertion still
+    // sees all three; a locally-built APK with one ABI simply does not install on the other
+    // two, which is loud rather than silent.
+    abis.set(
+        providers.gradleProperty("pjsip.abis")
+            .map { it.split(",").map(String::trim).filter(String::isNotEmpty) }
+            .orElse(listOf("arm64-v8a", "armeabi-v7a", "x86_64")),
+    )
 
     // From the environment, so this task can also run in a job that has an NDK and no
     // Android SDK — which is exactly what the egress-blocked offline test of §2.1.2 is.
@@ -133,7 +146,9 @@ val buildNative = tasks.register<BuildPjsua2Native>("buildPjsua2Native") {
  */
 val assertNativeLibraries = tasks.register("assertNativeLibraries") {
     val expected = setOf("libpjsua2.so", "libc++_shared.so")
-    val abis = setOf("arm64-v8a", "armeabi-v7a", "x86_64")
+    val abis = providers.gradleProperty("pjsip.abis")
+        .map { it.split(",").map(String::trim).filter(String::isNotEmpty).toSet() }
+        .getOrElse(setOf("arm64-v8a", "armeabi-v7a", "x86_64"))
     val jniRoot = layout.buildDirectory.dir("generated/jniLibs")
 
     inputs.dir(jniRoot).optional(true)

@@ -279,11 +279,16 @@ house standard: each names a thing, and each is one sentence to describe.
 | Delete the AAR path in `pjsip/build.gradle.kts` | N-1, N-5 | 3b | **Done.** The module is the native build |
 | `:pjsip` becomes an `externalNativeBuild` module | N-4 | 3b | **Written, NOT YET GREEN.** See below |
 
-**The honest status of the last row.** `pjsip/CMakeLists.txt` and `pjsip/build-native.sh`
-are ported flag-for-flag from a build that IS green — run `34317978694`
-(`docs/reconciliation.md` B-7) — but the port itself has not had a CI run. Until it does,
-the accurate claim is *"written from a proven build, not yet proven"*. The three words in
-master prompt §10 are not interchangeable, and this is *implemented*, not *verified*.
+**The honest status of the last row.** `pjsip/build-native.sh` **has now produced a
+verified `libpjsua2.so`** — `arm64-v8a`, macOS, NDK r27c, 16 KB aligned, JNI symbols and all
+four declared codecs present (`docs/native-dependencies.md` §1.4). That moves it from
+*implemented* to *verified on one ABI, on one platform*.
+
+It is still not *"the build works"*. Three things remain unproven: the other two ABIs, the
+Linux runs CI actually uses, and the Gradle task that wraps the script — the run above drove
+`build-native.sh` directly, the way `CMakeLists.txt` does, but without AGP above it. The
+three words in master prompt §10 are not interchangeable, and this is precisely as far as
+the evidence goes.
 
 **The honest cost of phases 3a-3b, stated up front.** Deleting the fallback means that
 until stage 1 works, the tree does not compile at all. That is not a regression — it is

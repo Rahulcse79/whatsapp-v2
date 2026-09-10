@@ -27,16 +27,31 @@ claims**, and only the last ends an argument.
 |---|---|---|
 | 15 | **N-1** — no `.aar`/`.so` in the tree that `:pjsip` did not build, and the rule fails on its fixture | **PASS.** Rule 11, two clauses, two fixtures. It caught a real 19 MB AAR during this change |
 | 16 | **N-2, N-3** — the egress-blocked job runs the native stage to completion; the four trees are in-tree at pinned commits | **PARTIAL.** The trees are vendored, pinned and verified byte-identical from a fresh checkout. The egress-blocked job is written and **has not gone green yet** |
-| 17 | **N-4, N-5** — one `./gradlew` and one Actions run produce the stack from source, no manual step, no typed version | **NOT VERIFIED.** Written and unproven. `pjsip/CMakeLists.txt` + `build-native.sh` are ported flag-for-flag from a green build; the port has had no run |
-| 18 | **N-6** — every ABI carries its full expected `.so` set, asserted at packaging | **PARTIAL.** `assertNativeLibraries` asserts `{libpjsua2.so, libc++_shared.so}` per ABI. Unexercised until 17 passes |
+| 17 | **N-4, N-5** — one `./gradlew` and one Actions run produce the stack from source, no manual step, no typed version | **PARTIAL, with evidence.** `build-native.sh` produced a verified `libpjsua2.so` for `arm64-v8a` on 2026-09-10 (§below). Unproven: the other two ABIs, Linux, and the Gradle task above the script — that run drove the script directly |
+| 18 | **N-6** — every ABI carries its full expected `.so` set, asserted at packaging | **PARTIAL.** Both libraries were produced for `arm64-v8a` and verified. `assertNativeLibraries` remains unexercised on three ABIs until 17 passes |
 | 19 | **N-7** — every change to vendored source is a numbered patch; the integrity check passes | **PASS, vacuously — and that is the honest word.** `pjsip/patches/` holds no patch because no vendored file has been changed. Rule 12 passes, and its fixtures prove it *can* fail in all three directions |
 | 20 | **N-9** — the audit reports every declared codec as registered, with an on-device round trip | **NOT VERIFIED.** The audit is written and unit-tested; no device has run it. **On Lyra this item is satisfied by ADR-008**: it is not in the declared set, and the audit reports it as *not compiled* |
 | 21 | **N-10** — `docs/native-dependencies.md` lists exactly the `third_party/` directories with version, commit, licence, reason, patches, size | **PASS.** `verify-pins.sh` is the check, and it runs in CI |
 | 22 | **N-11** — every dependency pinned to a commit, no `branch =`, two builds hash-compared | **PARTIAL.** Pinned, and `verify-pins.sh` fails on any `_BRANCH=`. **The two-build comparison has not been run**, and it cannot be meaningful until the exempt toolchain is pinned — SWIG is not (§3 of `docs/native-dependencies.md`) |
-| 23 | **N-13** — `git ls-files pjsip/` returns no `.java` | **PASS.** Three files, none Java. Checked in CI |
+| 23 | **N-13** — `git ls-files pjsip/` returns no `.java` | **PASS, and proven faithful.** `git ls-files pjsip/` returns no `.java`, and the generator reproduces the deleted set **exactly**: 318 files, byte-for-byte identical to the 318 that were committed, 0 differing, 0 missing. Deleting them lost nothing |
 | 24 | **N-14** — no `if (aar.exists())`, no fallback; a build with no `.so` fails | **PASS** as written. The condition is gone and `assertNativeLibraries` is the failure. Unexercised until 17 passes |
 
-**The one number to watch: item 17.** Every "unexercised until" above hangs off it.
+**The one number to watch is still item 17**, and it has moved from *written* to *one ABI
+proven*. Every "unexercised until" above hangs off the remaining two.
+
+**The evidence behind 17, 18 and 23** — 2026-09-10, macOS 12.7.6, NDK r27c
+(`27.2.12479018`), SWIG 4.2.0:
+
+| Claim | How it was checked |
+|---|---|
+| Bindings reproduce the deleted set | 318 generated, compared file-by-file against `b3716bb^` — **318 identical, 0 differing, 0 missing** |
+| `libpjsua2.so` is the right architecture | `llvm-readelf -h` → `ELF64`, `AArch64` |
+| 16 KB aligned (Play, Android 15+) | every `LOAD` segment `0x4000`. **And the check ran** rather than skipping for want of `llvm-readelf`, which is the failure mode a passing check hides |
+| It is the JNI wrapper, not a lookalike | `Java_org_pjsip_pjsua2_pjsua2JNI_swig_1module_1init` present — pjproject builds more than one `libpjsua2.so` and only one exports this |
+| The declared codecs are actually in it | `opus_encoder_create`, `pjmedia_codec_opus_init`, `vpx_codec_encode`, `SSL_CTX_new` |
+
+**What none of that proves:** `armeabi-v7a`, `x86_64`, Linux, AGP above the script, or a
+handset. Four different claims, and only the first two are a CI run away.
 
 **And one existing item changes meaning.** DoD 1 — *"`clean build` passes from a fresh
 clone"* — was PASS on a build that took the `:pjsip:api` fallback and shipped no `.so`
