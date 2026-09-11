@@ -2,6 +2,7 @@ package com.whatsappv2.feature.history
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,7 +14,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.CallMade
 import androidx.compose.material.icons.automirrored.filled.CallMissed
 import androidx.compose.material.icons.automirrored.filled.CallReceived
@@ -21,8 +24,10 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
@@ -36,11 +41,18 @@ import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
@@ -56,7 +68,9 @@ import com.whatsappv2.core.designsystem.theme.AppTheme
 import com.whatsappv2.domain.call.userMessage
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.model.CallLogEntry
+import com.whatsappv2.domain.repository.CallDirectionFilter
 import com.whatsappv2.domain.repository.CallLogFilter
+import com.whatsappv2.domain.repository.CallLogQuery
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -91,20 +105,22 @@ fun HistoryScreen(
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        topBar = { HistoryTopBar(actions = actions) },
+        topBar = { HistoryTopBar(state = state, actions = actions) },
         floatingActionButton = { HistoryFabs(actions = actions) },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
         Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
             FilterTabs(
-                selected = state.filter,
+                selected = state.query.tabFilter,
                 onFilterChanged = actions.onFilterChanged,
             )
 
+            AdvancedFilters(query = state.query, actions = actions)
+
             if (rows.itemCount == 0) {
                 EmptyState(
-                    title = if (state.filter == CallLogFilter.MISSED) "No missed calls" else "No calls yet",
-                    description = "Calls you make and receive appear here.",
+                    title = state.query.emptyTitle,
+                    description = state.query.emptyDescription,
                     icon = Icons.Filled.History,
                     modifier = Modifier.testTag(TAG_EMPTY),
                 )
@@ -142,18 +158,97 @@ fun HistoryScreen(
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HistoryTopBar(actions: HistoryActions) {
+private fun HistoryTopBar(state: HistoryUiState, actions: HistoryActions) {
     TopAppBar(
-        title = { Text("Calls") },
+        title = {
+            if (state.searching) {
+                SearchField(text = state.query.text, onTextChanged = actions.onSearchTextChanged)
+            } else {
+                Text("Calls")
+            }
+        },
+        navigationIcon = {
+            // Only while searching. A back arrow on the app's home screen invites a press
+            // that has nowhere to go.
+            if (state.searching) {
+                IconButton(onClick = { actions.onSearchToggled(false) }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close search")
+                }
+            }
+        },
         actions = {
-            IconButton(
-                onClick = actions.onClearAllRequested,
-                modifier = Modifier.testTag(TAG_CLEAR_ALL),
-            ) {
-                Icon(Icons.Filled.Delete, contentDescription = "Clear call history")
+            if (!state.searching) {
+                IconButton(
+                    onClick = { actions.onSearchToggled(true) },
+                    modifier = Modifier.testTag(TAG_SEARCH),
+                ) {
+                    Icon(Icons.Filled.Search, contentDescription = "Search calls")
+                }
+                IconButton(
+                    onClick = actions.onClearAllRequested,
+                    modifier = Modifier.testTag(TAG_CLEAR_ALL),
+                ) {
+                    Icon(Icons.Filled.Delete, contentDescription = "Clear call history")
+                }
             }
         },
     )
+}
+
+/** The search box, focused the moment it appears — opening it is the request to type. */
+@Composable
+private fun SearchField(text: String, onTextChanged: (String) -> Unit) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+
+    TextField(
+        value = text,
+        onValueChange = onTextChanged,
+        singleLine = true,
+        placeholder = { Text("Name, number or address") },
+        colors = TextFieldDefaults.colors(
+            focusedContainerColor = Color.Transparent,
+            unfocusedContainerColor = Color.Transparent,
+            focusedIndicatorColor = Color.Transparent,
+            unfocusedIndicatorColor = Color.Transparent,
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .focusRequester(focus)
+            .testTag(TAG_SEARCH_FIELD),
+    )
+}
+
+/**
+ * Direction and date, as chips under the tabs.
+ *
+ * Shown only while searching or while something is narrowed — on a resting call log they
+ * would be three controls for a list nobody is looking through yet.
+ */
+@Composable
+private fun AdvancedFilters(query: CallLogQuery, actions: HistoryActions) {
+    if (!query.text.isNotEmpty() && query.activeFilterCount == 0) return
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = AppTheme.spacing.large, vertical = AppTheme.spacing.small),
+        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CallDirectionFilter.entries.forEach { direction ->
+            FilterChip(
+                selected = query.direction == direction,
+                onClick = { actions.onDirectionChanged(direction) },
+                label = { Text(direction.label) },
+                modifier = Modifier.testTag(directionChipTag(direction)),
+            )
+        }
+        if (!query.isMatchAll) {
+            TextButton(onClick = actions.onFiltersCleared) { Text("Clear") }
+        }
+    }
 }
 
 @Composable
@@ -477,6 +572,11 @@ internal const val TAG_EMPTY = "history-empty"
 internal const val TAG_DETAIL = "history-detail"
 internal const val TAG_CONFIRM_CLEAR = "history-confirm-clear"
 internal const val TAG_CLEAR_ALL = "history-clear-all"
+internal const val TAG_SEARCH = "history-search"
+internal const val TAG_SEARCH_FIELD = "history-search-field"
+
+/** Identifies a direction chip, so a test presses the one it means. */
+internal fun directionChipTag(direction: CallDirectionFilter) = "history-direction-${direction.name.lowercase()}"
 internal const val TAG_SETTINGS = "history-settings"
 internal const val TAG_DIALER = "history-dialer"
 

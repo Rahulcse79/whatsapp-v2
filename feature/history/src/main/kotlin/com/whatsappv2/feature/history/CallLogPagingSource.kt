@@ -2,7 +2,7 @@ package com.whatsappv2.feature.history
 
 import androidx.paging.PagingSource
 import androidx.paging.PagingState
-import com.whatsappv2.domain.repository.CallLogFilter
+import com.whatsappv2.domain.repository.CallLogQuery
 import com.whatsappv2.domain.repository.CallLogRepository
 import com.whatsappv2.domain.usecase.CallLogTitles
 
@@ -16,6 +16,15 @@ import com.whatsappv2.domain.usecase.CallLogTitles
  * either. What is left — and what is right — is for the domain to expose the plainest
  * paged read there is and for the adapter to androidx to live here, in the one module
  * that already depends on it.
+ *
+ * ## The query is the source's identity
+ *
+ * Every criterion is applied in the store, by [CallLogRepository.search]. Filtering a
+ * loaded page would search the twenty rows on screen and call it a search — which looks
+ * like it works right up until the match is on row four hundred. A new query means a new
+ * source, which is why `CallLogQuery.MATCH_ALL` is a constant rather than a fresh object:
+ * an equal query must be the same query, or the list reloads from the top on every
+ * keystroke the user did not type.
  *
  * ## Keys are offsets
  *
@@ -38,7 +47,7 @@ import com.whatsappv2.domain.usecase.CallLogTitles
  */
 class CallLogPagingSource(
     private val repository: CallLogRepository,
-    private val filter: CallLogFilter,
+    private val query: CallLogQuery,
     private val titles: CallLogTitles,
 ) : PagingSource<Int, HistoryRow.Call>() {
 
@@ -46,7 +55,7 @@ class CallLogPagingSource(
         val offset = params.key ?: 0
 
         return runCatching {
-            repository.page(filter, offset, params.loadSize).map { HistoryRow.Call(it, titles(it)) }
+            repository.search(query, offset, params.loadSize).map { HistoryRow.Call(it, titles(it)) }
         }
             .fold(
                 onSuccess = { entries ->

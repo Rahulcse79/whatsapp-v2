@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -17,6 +18,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
+import com.whatsappv2.core.designsystem.theme.AppTheme
 import com.whatsappv2.ui.navigation.AppDestination
 import com.whatsappv2.ui.navigation.AppNavHost
 
@@ -88,7 +90,15 @@ fun AppRoot(
  */
 @Composable
 private fun AppBottomBar(current: AppDestination, onSelect: (AppDestination) -> Unit) {
-    NavigationBar {
+    // The screen's own colour, with no tonal lift. Material's default containerColor is a
+    // raised surface, which on the dark theme drew the bar as a distinct slab with a black
+    // band beneath it — the app looked like two apps stacked. The bar is part of the
+    // screen, so it is the same colour as the screen, and the selected pill is what says
+    // where you are.
+    NavigationBar(
+        containerColor = MaterialTheme.colorScheme.surface,
+        tonalElevation = AppTheme.spacing.none,
+    ) {
         AppDestination.TOP_LEVEL.forEach { destination ->
             NavigationBarItem(
                 selected = destination == current,

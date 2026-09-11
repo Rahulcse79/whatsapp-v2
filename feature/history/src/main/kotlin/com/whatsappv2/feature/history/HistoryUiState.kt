@@ -2,7 +2,7 @@ package com.whatsappv2.feature.history
 
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.CallLogEntry
-import com.whatsappv2.domain.repository.CallLogFilter
+import com.whatsappv2.domain.repository.CallLogQuery
 
 /**
  * One line in the history list.
@@ -34,7 +34,20 @@ sealed interface HistoryRow {
  * rebuilding the pager every time the filter or a dialog changed.
  */
 data class HistoryUiState(
-    val filter: CallLogFilter = CallLogFilter.ALL,
+    /**
+     * Everything narrowing the list: the tab, the search text and the advanced filters.
+     *
+     * One value rather than a tab field beside a query field. The All/Missed tabs ARE a
+     * direction filter, and holding the same axis in two places is how a screen ends up
+     * showing "All" over a list of missed calls.
+     */
+    val query: CallLogQuery = CallLogQuery.MATCH_ALL,
+
+    /** True while the search field is open, which is a view concern and not a criterion. */
+    val searching: Boolean = false,
+
+    /** True while the advanced-filter sheet is open. */
+    val filtersOpen: Boolean = false,
 
     /**
      * The row whose detail is open, or null for the list.

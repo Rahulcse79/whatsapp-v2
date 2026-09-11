@@ -10,6 +10,7 @@ import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.repository.CallLogFilter
+import com.whatsappv2.domain.repository.CallLogQuery
 import com.whatsappv2.domain.testing.FakeCallLogRepository
 import com.whatsappv2.domain.testing.FakeContactRepository
 import com.whatsappv2.domain.usecase.CallLogTitles
@@ -153,7 +154,11 @@ class CallLogPagingSourceTest {
         size: Int,
         filter: CallLogFilter = CallLogFilter.ALL,
     ): PagingSource.LoadResult.Page<Int, HistoryRow.Call> {
-        val source = CallLogPagingSource(repository, filter, CallLogTitles(contacts))
+        val query = when (filter) {
+            CallLogFilter.ALL -> CallLogQuery.MATCH_ALL
+            CallLogFilter.MISSED -> CallLogQuery.MISSED
+        }
+        val source = CallLogPagingSource(repository, query, CallLogTitles(contacts))
         val result = source.load(
             PagingSource.LoadParams.Refresh(key = offset, loadSize = size, placeholdersEnabled = false),
         )

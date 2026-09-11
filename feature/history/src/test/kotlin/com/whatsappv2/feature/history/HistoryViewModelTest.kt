@@ -10,7 +10,9 @@ import com.whatsappv2.domain.model.CallLogId
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.SipUri
+import com.whatsappv2.domain.repository.CallDirectionFilter
 import com.whatsappv2.domain.repository.CallLogFilter
+import com.whatsappv2.domain.repository.CallLogQuery
 import com.whatsappv2.domain.testing.FakeCallLogRepository
 import com.whatsappv2.domain.testing.FakeContactRepository
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
@@ -75,7 +77,7 @@ class HistoryViewModelTest {
 
     @Test
     fun `the filter starts on everything, because that is what a log is for`() = runTest {
-        assertEquals(CallLogFilter.ALL, viewModel().uiState.value.filter)
+        assertEquals(CallLogQuery.MATCH_ALL, viewModel().uiState.value.query)
     }
 
     @Test
@@ -85,7 +87,48 @@ class HistoryViewModelTest {
         viewModel.onFilterChanged(CallLogFilter.MISSED)
         runCurrent()
 
-        assertEquals(CallLogFilter.MISSED, viewModel.uiState.value.filter)
+        // The tab IS the direction now: one axis, one place (item 1's advanced search).
+        assertEquals(CallDirectionFilter.MISSED, viewModel.uiState.value.query.direction)
+        assertEquals(CallLogFilter.MISSED, viewModel.uiState.value.query.tabFilter)
+    }
+
+    @Test
+    fun `searching narrows the list in the store, not on the page`() = runTest {
+        val viewModel = viewModel()
+
+        viewModel.onSearchToggled(open = true)
+        viewModel.onSearchTextChanged("rahul")
+        runCurrent()
+
+        assertEquals("rahul", viewModel.uiState.value.query.text)
+        assertTrue(viewModel.uiState.value.searching)
+    }
+
+    @Test
+    fun `closing the search clears what was typed, because that is what Back means`() = runTest {
+        val viewModel = viewModel()
+        viewModel.onSearchToggled(open = true)
+        viewModel.onSearchTextChanged("rahul")
+        runCurrent()
+
+        viewModel.onSearchToggled(open = false)
+        runCurrent()
+
+        assertEquals(CallLogQuery.MATCH_ALL, viewModel.uiState.value.query)
+    }
+
+    @Test
+    fun `clearing the filters keeps the text the user is still typing`() = runTest {
+        val viewModel = viewModel()
+        viewModel.onSearchTextChanged("rahul")
+        viewModel.onDirectionChanged(CallDirectionFilter.OUTGOING)
+        runCurrent()
+
+        viewModel.onFiltersCleared()
+        runCurrent()
+
+        assertEquals("rahul", viewModel.uiState.value.query.text)
+        assertEquals(CallDirectionFilter.ANY, viewModel.uiState.value.query.direction)
     }
 
     @Test

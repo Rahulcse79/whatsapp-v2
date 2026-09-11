@@ -2,6 +2,7 @@ package com.whatsappv2.feature.history
 
 import androidx.compose.runtime.Stable
 import com.whatsappv2.domain.model.CallLogEntry
+import com.whatsappv2.domain.repository.CallDirectionFilter
 import com.whatsappv2.domain.repository.CallLogFilter
 
 /**
@@ -20,6 +21,17 @@ import com.whatsappv2.domain.repository.CallLogFilter
 @Stable
 data class HistoryActions(
     val onFilterChanged: (CallLogFilter) -> Unit = {},
+
+    /** Opens or closes the search field. Closing clears what was typed. */
+    val onSearchToggled: (Boolean) -> Unit = {},
+
+    val onSearchTextChanged: (String) -> Unit = {},
+
+    /** Narrows by direction, with missed as its own case (CallDirectionFilter). */
+    val onDirectionChanged: (CallDirectionFilter) -> Unit = {},
+
+    /** Back to everything, without closing a search field still being typed in. */
+    val onFiltersCleared: () -> Unit = {},
     /** The whole row, so the detail sheet is headed with the name the list showed. */
     val onEntryOpened: (HistoryRow.Call) -> Unit = {},
     val onDetailDismissed: () -> Unit = {},

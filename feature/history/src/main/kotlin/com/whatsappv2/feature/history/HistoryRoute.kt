@@ -66,6 +66,10 @@ fun HistoryRoute(
     val actions = remember(viewModel, onOpenDialer, onOpenSettings, videoGate) {
         HistoryActions(
             onFilterChanged = viewModel::onFilterChanged,
+            onSearchToggled = viewModel::onSearchToggled,
+            onSearchTextChanged = viewModel::onSearchTextChanged,
+            onDirectionChanged = viewModel::onDirectionChanged,
+            onFiltersCleared = viewModel::onFiltersCleared,
             onEntryOpened = viewModel::onEntryOpened,
             onDetailDismissed = viewModel::onDetailDismissed,
             onDelete = { entry: CallLogEntry -> viewModel.onDelete(entry.id) },

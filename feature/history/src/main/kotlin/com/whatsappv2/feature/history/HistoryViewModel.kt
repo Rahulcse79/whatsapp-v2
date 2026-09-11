@@ -13,7 +13,9 @@ import com.whatsappv2.domain.engine.CameraAvailability
 import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.model.CallLogId
 import com.whatsappv2.domain.model.MediaProfile
+import com.whatsappv2.domain.repository.CallDirectionFilter
 import com.whatsappv2.domain.repository.CallLogFilter
+import com.whatsappv2.domain.repository.CallLogQuery
 import com.whatsappv2.domain.repository.CallLogRepository
 import com.whatsappv2.domain.usecase.CallLogTitles
 import com.whatsappv2.domain.usecase.PlaceCallError
@@ -25,6 +27,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
@@ -106,9 +109,13 @@ class HistoryViewModel @Inject constructor(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val rows: Flow<PagingData<HistoryRow>> = state
-        .map { it.filter }
+        .map { it.query }
         .distinctUntilChanged()
-        .flatMapLatest { filter -> pagerFor(filter) }
+        // Debounced, so typing a name is one reload at the end rather than one per letter.
+        // distinctUntilChanged first: a tab press and a filter chip are not typing and
+        // should not wait.
+        .debounce { query -> if (query.text.isEmpty()) 0L else SEARCH_DEBOUNCE_MILLIS }
+        .flatMapLatest { query -> pagerFor(query) }
         // Re-reads the cache rather than the database after a configuration change, which
         // is what keeps the position instead of snapping back to the top.
         .cachedIn(viewModelScope)
@@ -138,7 +145,35 @@ class HistoryViewModel @Inject constructor(
         liveSource?.invalidate()
     }
 
-    fun onFilterChanged(filter: CallLogFilter) = state.update { it.copy(filter = filter) }
+    fun onFilterChanged(filter: CallLogFilter) = state.update {
+        val direction = when (filter) {
+            CallLogFilter.ALL -> CallDirectionFilter.ANY
+            CallLogFilter.MISSED -> CallDirectionFilter.MISSED
+        }
+        it.copy(query = it.query.copy(direction = direction))
+    }
+
+    /** Opens or closes the search field; closing clears the text, which is what Back means. */
+    fun onSearchToggled(open: Boolean) = state.update {
+        if (open) it.copy(searching = true) else it.copy(searching = false, query = it.query.copy(text = ""))
+    }
+
+    fun onSearchTextChanged(text: String) = state.update { it.copy(query = it.query.copy(text = text)) }
+
+    fun onFiltersToggled(open: Boolean) = state.update { it.copy(filtersOpen = open) }
+
+    fun onDirectionChanged(direction: CallDirectionFilter) = state.update {
+        it.copy(query = it.query.copy(direction = direction))
+    }
+
+    fun onDateRangeChanged(from: Long?, to: Long?) = state.update {
+        it.copy(query = it.query.copy(fromEpochMillis = from, toEpochMillis = to))
+    }
+
+    /** Back to everything, without closing the search field the user is still typing in. */
+    fun onFiltersCleared() = state.update {
+        it.copy(query = CallLogQuery(text = it.query.text))
+    }
 
     fun onEntryOpened(row: HistoryRow.Call) = state.update { it.copy(openEntry = row) }
 
@@ -216,11 +251,11 @@ class HistoryViewModel @Inject constructor(
         is PlaceCallError.NotRegistered -> "Could not reach the server for that account"
     }
 
-    private fun pagerFor(filter: CallLogFilter): Flow<PagingData<HistoryRow>> =
+    private fun pagerFor(query: CallLogQuery): Flow<PagingData<HistoryRow>> =
         Pager(
             config = PagingConfig(pageSize = PAGE_SIZE, enablePlaceholders = false),
             pagingSourceFactory = {
-                CallLogPagingSource(repository, filter, titles).also { liveSource = it }
+                CallLogPagingSource(repository, query, titles).also { liveSource = it }
             },
         ).flow.map { page ->
             // The source already emits rows with their names resolved, so all that is left
@@ -233,6 +268,14 @@ class HistoryViewModel @Inject constructor(
         }
 
     private companion object {
+        /**
+         * How long typing settles before the list reloads.
+         *
+         * A search is a database read per keystroke without it. Long enough that "rahul"
+         * is one query rather than five, short enough that the list does not feel stuck.
+         */
+        const val SEARCH_DEBOUNCE_MILLIS = 250L
+
         /**
          * Rows per page.
          *
