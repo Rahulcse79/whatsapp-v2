@@ -1244,11 +1244,7 @@ internal class PjsipSipEngine @Inject constructor(
             return failure(SipError.InvalidState("this device mixes at most 8 calls"))
         }
 
-        // A held member contributes nothing — sendonly RTP, stopped media port — so the
-        // hold comes off before the mix. A resume the far end refuses simply leaves that
-        // member out of [liveForMix] below, rather than in a conference pretending.
-        heldForMix(activeCalls.value, callIds).forEach { setHold(it, held = false) }
-
+        resumeHeldForMix(activeCalls, callIds, logger) { setHold(it, held = false) }
         val live = liveForMix(activeCalls.value, callIds)
 
         return when (val mixed = conferenceGateway.setConferenceMembers(live.map { it.value }.toSet())) {
@@ -1424,7 +1420,7 @@ internal class PjsipSipEngine @Inject constructor(
     private val RegistrationState?.isGone: Boolean
         get() = this == null || this == RegistrationState.Unregistered
 
-    private companion object {
+    internal companion object {
         const val TAG = "PjsipSipEngine"
         const val DEFAULT_EXPIRY_SECONDS = 3_600
 
@@ -1444,6 +1440,15 @@ internal class PjsipSipEngine @Inject constructor(
          * enough that logging out of a dead server does not feel broken.
          */
         const val UNREGISTER_ACK_TIMEOUT_MILLIS = 5_000L
+
+        /**
+         * How long a merge waits for held members to come off hold.
+         *
+         * A resume is a re-INVITE and a round trip; 5 s is the same bound the
+         * unregister acknowledgement uses, and long enough that a slow far end is not
+         * mistaken for one that refused.
+         */
+        const val RESUME_FOR_MIX_TIMEOUT_MILLIS = 5_000L
     }
 }
 
@@ -1546,6 +1551,34 @@ private fun SipAccount.toStackAccount(password: String) = StackAccount(
 )
 
 /**
+ * Takes every requested member off hold and waits until their media is running (ADR-009).
+ *
+ * The waiting is the whole point, and it cost a run on hardware to learn: a resume is a
+ * re-INVITE, so the call stays Held until the far end answers and then passes through
+ * Resuming before media flows. Reading the call list straight after issuing the resumes
+ * finds nobody ready, mixes nobody, and reports a conference of one — which is exactly
+ * what the first device run produced ("Mixing 1 call(s)", and a bridge showing only
+ * microphone-to-call links, never call-to-call).
+ *
+ * Bounded like every wait here (§1.4). A far end that never answers leaves that member out
+ * of the mix rather than holding the merge open; the others are still worth connecting.
+ */
+private suspend fun resumeHeldForMix(
+    calls: StateFlow<List<CallSnapshot>>,
+    requested: Set<CallId>,
+    logger: Logger,
+    resume: suspend (CallId) -> Unit,
+) {
+    val held = heldForMix(calls.value, requested)
+    if (held.isEmpty()) return
+
+    held.forEach { resume(it) }
+    withTimeoutOrNull(PjsipSipEngine.RESUME_FOR_MIX_TIMEOUT_MILLIS) {
+        calls.first { pendingForMix(it, requested).isEmpty() }
+    } ?: logger.warn("PjsipSipEngine", "Some calls did not finish resuming in time; mixing the rest")
+}
+
+/**
  * Members of a requested mix that are on hold, and must be resumed first (ADR-009).
  *
  * At file level because `PjsipSipEngine` is at detekt's `LargeClass` bound, and because
@@ -1563,5 +1596,19 @@ private fun heldForMix(calls: List<CallSnapshot>, requested: Set<CallId>): List<
  */
 private fun liveForMix(calls: List<CallSnapshot>, requested: Set<CallId>): Set<CallId> =
     calls.filterTo(mutableSetOf()) {
-        it.callId in requested && it.state !is CallState.Held && it.state.isEstablished
+        it.callId in requested && it.state.isEstablished && !it.state.isMixPending
     }.mapTo(mutableSetOf()) { it.callId }
+
+/**
+ * Requested members whose media is not running yet, so a mix must wait for them.
+ *
+ * `Held` is the obvious one. `Resuming` is the one that cost a run on hardware: the
+ * re-INVITE is out and the state has left Held, but no media is flowing, so a mix that
+ * only checked for Held would connect a port with nothing behind it.
+ */
+private fun pendingForMix(calls: List<CallSnapshot>, requested: Set<CallId>): List<CallId> =
+    calls.filter { it.callId in requested && it.state.isMixPending }.map { it.callId }
+
+/** Established, but with no media running: nothing for the bridge to connect yet. */
+private val CallState.isMixPending: Boolean
+    get() = this is CallState.Held || this is CallState.Resuming

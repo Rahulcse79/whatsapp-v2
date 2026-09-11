@@ -195,6 +195,21 @@ open class PjsipSipEngineFixture {
         return engine
     }
 
+    /** Two established calls, the first of them held — what a merge starts from. */
+    internal suspend fun TestScope.twoCallsOneHeld(): PjsipSipEngine {
+        val engine = connectedCall()
+        val first = engine.activeCalls.value.single().callId
+        engine.setHold(first, held = true)
+        gateway.emitCall(first.value, StackCallState.PAUSED)
+        runCurrent()
+
+        val second = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+        gateway.emitCall(second.value, StackCallState.CONNECTED)
+        runCurrent()
+        return engine
+    }
+
     internal companion object {
         /** Fixed instant, so a call's timestamps are equalities rather than ranges. */
         const val NOW = 1_700_000_000_000L

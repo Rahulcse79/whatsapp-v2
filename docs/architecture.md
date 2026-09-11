@@ -610,8 +610,34 @@ quality, would cut the marginal cost materially — and would cut battery on eve
 call as well. Not done here: it changes audio quality on every call, which is its own ADR
 with its own measurements, and this decision does not need it to fit the budget.
 
+**Measured after building it, 2026-09-11 — the estimate above was pessimistic.** The gate
+predicted `70 + 22(N-1)`, so 224 % at eight. What a real eight-party conference costs on the
+TC15, PCMU, each step a fresh participant merged in:
+
+| N | members / links | CPU | PSS |
+|---|---|---|---|
+| 2 | 2 / 2 | 102 % | 194 MB |
+| 3 | 3 / 6 | 102 % | 201 MB |
+| 4 | 4 / 12 | 106 % | 202 MB |
+| 5 | 5 / 20 | 105 % | 202 MB |
+| 6 | 6 / 30 | 92 % | 202 MB |
+| 7 | 7 / 42 | 90 % | 203 MB |
+| **8** | **8 / 56** | **101 %** | **203 MB** |
+
+The curve is **flat**, not linear: 102 % at two participants and 101 % at eight, with memory
+moving 9 MB across the whole range. So the per-stream marginal cost of a PCMU leg is a few
+percent, not 22 — the 22 % in the gate was one stream's *setup* (its resampler and jitter
+buffer) measured against a held call, and the conference bridge mixes the extra ports far
+more cheaply than adding the first one costs. The 400 % budget is not close to being spent,
+and the ceiling of 8 is `PJSUA_MAX_CALLS`, not CPU.
+
+Link counts are `n(n-1)` exactly at every step, which is the arithmetic `ConferenceMixTest`
+asserts, confirmed on hardware.
+
 **Re-evaluation trigger.** A handset with materially more CPU, or the resampling work
-above, would move the video line. Re-measure before assuming it has.
+above, would move the video line. Re-measure before assuming it has. The flat audio curve
+also means a ceiling above 8 is a `PJSUA_MAX_CALLS` decision rather than a CPU one — worth
+re-measuring for Lyra, whose per-stream cost is higher, before raising it.
 
 ---
 

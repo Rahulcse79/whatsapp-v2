@@ -25,6 +25,7 @@ import com.whatsappv2.data.sip.registration.StackRegistrationEvent
 import com.whatsappv2.data.sip.registration.StackRegistrationState
 import com.whatsappv2.domain.codec.CodecAudit
 import com.whatsappv2.domain.codec.CodecPriorities
+import com.whatsappv2.domain.engine.SipConferenceController
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.BufferOverflow
@@ -1928,8 +1929,20 @@ internal class RealPjsipCoreGateway @Inject constructor(
          */
         const val USER_AGENT = "whatsapp-v2 (PJSIP)"
 
-        /** Simultaneous calls the stack will hold: one active, one held, room to transfer. */
-        const val MAX_CALLS = 4L
+        /**
+         * Simultaneous calls the stack will hold (ADR-009).
+         *
+         * Taken from the domain's conference ceiling, not written again here, because
+         * this number is declared in three places and the runtime one silently wins.
+         * Raising `PJSUA_MAX_CALLS` in `config_site.h` alone did nothing: pjsua answered
+         * the fifth INVITE `486 Busy Here` with "Unable to accept incoming call (too many
+         * calls)" because `uaConfig.maxCalls` was still 4 — the compile-time value is only
+         * the default this overrides. Found on a handset, at the fifth participant.
+         *
+         * It was 4 — one active, one held, room to transfer — which is right for a
+         * softphone and not enough for a conference.
+         */
+        val MAX_CALLS = SipConferenceController.MAX_LOCAL_CONFERENCE.toLong()
 
         const val MONO = 1L
 

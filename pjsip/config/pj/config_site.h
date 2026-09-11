@@ -49,6 +49,12 @@
  * of it — the array is small beside the media pools, which are per-active-call and
  * unaffected by this number.
  *
+ * NOT sufficient on its own: this is only the default for `pjsua_config.max_calls`, and
+ * the app sets `uaConfig.maxCalls` explicitly at startup. Raising this alone left pjsua
+ * answering the fifth INVITE `486 Busy Here` ("Unable to accept incoming call (too many
+ * calls)"). `RealPjsipCoreGateway.MAX_CALLS` is the one that decides, and it reads the
+ * same ceiling from `SipConferenceController.MAX_LOCAL_CONFERENCE`.
+ *
  * Exercised by :data:sip through SipConferenceGateway. */
 #define PJSUA_MAX_CALLS 8
 
