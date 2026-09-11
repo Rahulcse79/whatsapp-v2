@@ -6,7 +6,7 @@
 > carries the measured baseline. This file says what is done, what is half-done, what is
 > wrong, and what to do next.
 >
-> **Read §0a first — it is newer than everything below it.** The evening pass of 2026-09-10
+> **Read §0b, then §0a — they are newer than everything below them.** The evening pass of 2026-09-10
 > built the APK, put it on a Zebra TC15, and placed, answered and held calls against two
 > FreeSWITCH servers. §3.4's "nothing has been run on a handset" is no longer true. Where
 > §0a and a later section disagree, §0a wins.
@@ -125,7 +125,75 @@ of DWARF (APK 146 MB → 70 MB).
 1. Decide the SRTP default (above), then re-measure the `80.145` INVITE size against 1472.
 2. Prompt phase 1 is done on `2.196` — placed, answered, **heard**: not verified; the
    handset was driven by adb and nobody listened. Do that with a person at each end.
-3. Then phases 3–5: transfer, conference, and video through `2.196` over TCP.
+3. ~~Then phases 3–5: transfer, conference, and video through `2.196` over TCP.~~ Done in
+   the morning pass — see §0b.
+
+---
+
+## 0b. Morning pass, 2026-09-11 — video, transfer, conference, all on hardware
+
+Setup changed: the Mac and the TC15 are on the office Wi-Fi (`192.168.0.101` / `.108`),
+the local FreeSWITCH binds `192.168.0.101` (its `lan-ip.sh` follows en0), and the handset
+carries **two** accounts — `7000@192.168.80.145` (office server) and `localfs` =
+`1001@192.168.0.101`, the default. Every test below ran on `localfs` against
+`dialplan/default/03_whatsapp_v2_test_apps.xml` (outside the repo): 9196 echo, 9197
+bridge-to-loopback, 9198 tone, 9199 unrouted, 3000 `mod_conference`. Rahul's 7001
+(Zoiper) and 7002 (this APK on a second phone) were not registered on `80.145` during the
+pass — every call to them got `480`. So **APK-to-APK is still owed**, Lyra included.
+
+### Video — six defects, one commit (`2763f778`)
+
+A video call to the echo placed, negotiated VP8 and then sent nothing, drew nothing, and
+lay on its side. Each of these was measured before the next was looked for:
+
+| Defect | Cause | Fix |
+|---|---|---|
+| "Camera released" 12 ms after the 200 OK, `set video stream, op=6` | `callStateOf` mapped PJSIP's CONNECTING to CONNECTED before the media update; the engine took it as the answer with `videoActive=false` and stored an established snapshot with video off | CONNECTING is not published; negotiated-video adoption is folded into the state before the store. New engine test records every snapshot and fails on the previous code |
+| `Setting up TX..` then nothing — no capture device ever opened | `autoTransmitOutgoing` is off by design and the one START_TRANSMIT went out before the INVITE, when there was no stream | The gateway remembers `cameraWanted` and re-issues START_TRANSMIT when a video stream comes up — also on every re-INVITE, where pjsua drops the capture window |
+| The preview view was a hole in the remote picture | A sendrecv stream has one window and it shows the far end; the local picture is the capture device's *preview* window, hidden, renderer never started | `LocalPreview` starts `pjsua_vid_preview` on it with the screen's surface; stopped before STOP_TRANSMIT, camera switch, and release (it holds a window reference) |
+| Half the calls: black far end, `and_vid_mediacodec: Decoder failed to get input Buffer` | libvpx and MediaCodec both register `VP8`; both got priority 254 and pjmedia's unstable selection sort swapped them on every account save | `CodecPriorities` gives every enabled codec a distinct number (TOP is 254 — pjmedia demotes 255), gateway puts `VP8/102` (libvpx) ahead of `VP8/103` (MediaCodec). Audit now reads `VP8/102@254, VP8/103@253, H264/99@252` on every save |
+| One lost packet = macroblock smear for up to 60 s | `CallSetting()` zeroes `reqKeyframeMethod`; no `a=rtcp-fb` in the SDP; libvpx keyframe interval is 60 s | PLI + SIP INFO requested on every call; FreeSWITCH answers `a=rtcp-fb:102 nack pli` |
+| Both pictures rotated 90° | The camera captures landscape; nothing told the stack the screen was portrait | `VideoSurfaceController.setDisplayRotation` from `CallVideo` → `setCaptureOrient` for every camera, pjsua2's own sample mapping. `android_dev.c` logs "orientation set to 4" |
+
+Also: "Flip" cycled through PJSIP's colour-bar generator (it reports itself as a capture
+device) — cameras are now the `Android` driver's devices only.
+
+**Verified** (screenshots in the session, log lines in the commit): camera acquired once
+and never flapped; remote and preview both drawn and upright; flip → back camera → front;
+video off (`REMOVE` + STOP_TRANSMIT, camera released) → on (`ADD` + START_TRANSMIT);
+hold → resume re-issues START_TRANSMIT and restarts the preview. RX 1088×612 VP8 at
+~1 Mbit with 0.4 % Wi-Fi loss and the picture clean at 32 s.
+
+### Transfer and conference (`1dba318f`)
+
+- **Blind**: 9197 → 9198. REFER → 202 → NOTIFY (`terminated;noresource`, sipfrag 200) →
+  the app ends the leg; FreeSWITCH's loopback leg moves to 9198. First run exposed that
+  the gateway read pjsua's `100 Accepted` as a *failure* (anything but 200 was ERROR), so
+  the call went back to Connected before the transferee was tried. Mapping is now
+  `TransferEventMapper.stateOf`, tested with pjsua's real sequence.
+- **Failure path**: 9197 → 9199 (unrouted). **Cannot be produced on FreeSWITCH** — it
+  answers every blind REFER with 200 and runs the target through the dialplan itself;
+  the loopback leg just dies. Needs a phone as the far end that refuses (486). JVM-covered.
+- **Attended**: 9197 on hold, consult 9198, "Complete transfer" → REFER with `Replaces`
+  → 202 → 200 → both legs released, loopback leg at 9198. Exposed a second defect: every
+  attended transfer asked for the same hold twice (the transfer, then Telecom's
+  `holdActiveCallForNewCall` 200 ms later) and pjsua refused the second with
+  `PJ_EINVALIDOP`, logged as `pauseCall failed`. The engine now holds once per re-INVITE.
+- **Conference**: dialled 3000 as an ordinary call; `conference list` shows the member
+  `hear|speak|talking|floor`; DTMF `0` over RFC 4733 muted it (`hear|floor`). Note:
+  `JoinConferenceUseCase` has **no UI entry point** — nothing in `feature/` calls it — and
+  the real gateway never emits a roster (no conference-info subscription; the flow exists
+  for the contract). A "conference" is exactly a call to the bridge, which is ADR-003's
+  design; the roster is future work, and so is a button.
+
+### What is still owed after this pass
+
+1. **APK ↔ APK** on `80.145` (7000 ↔ 7002) and APK ↔ Zoiper (7001): audio heard, video
+   both ways, the transfer failure path with a phone that refuses, and the Lyra call
+   (bypass_media). Blocked only on those two being registered.
+2. A preview that follows a *rotation* mid-call is untested (the activity recreates and
+   re-reports; `LaunchedEffect(configuration)` covers a manifest that does not).
+3. `sudo port install swig-java` so `./build.sh` runs without `SWIG_LIB`.
 
 ---
 
