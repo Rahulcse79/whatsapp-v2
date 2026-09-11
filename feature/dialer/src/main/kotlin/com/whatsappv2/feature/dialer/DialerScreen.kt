@@ -23,12 +23,13 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -38,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -143,31 +145,7 @@ internal fun DialerScreen(
                 AccountPicker(state = state, onAccountSelected = actions.onAccountSelected)
             }
 
-            OutlinedTextField(
-                value = state.input,
-                onValueChange = actions.onInputChanged,
-                singleLine = true,
-                label = { Text("Number or SIP address") },
-                placeholder = { Text("1001 or sip:1001@example.com") },
-                textStyle = MaterialTheme.typography.headlineSmall,
-                trailingIcon = {
-                    if (state.input.isNotEmpty()) {
-                        IconButton(
-                            onClick = actions.onBackspace,
-                            modifier = Modifier.testTag(TAG_BACKSPACE),
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.Backspace,
-                                contentDescription = "Delete last character",
-                            )
-                        }
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = AppTheme.spacing.medium)
-                    .testTag(TAG_INPUT),
-            )
+            DialledNumber(state = state, actions = actions)
 
             Suggestions(state = state, actions = actions)
 
@@ -178,6 +156,59 @@ internal fun DialerScreen(
             DialerCallButtons(state = state, actions = actions)
         }
     }
+}
+
+/**
+ * The number being dialled.
+ *
+ * Its own composable so [DialerScreen] stays a layout, and because the styling here is the
+ * point: a dialler shows the number, it does not ask for it in a form. The box and its
+ * floating label are gone; what is left is the digits, large and centred, with the hint
+ * standing in as the heading while the field is empty — which is also the only thing on
+ * this screen that names what it takes.
+ */
+@Composable
+private fun DialledNumber(state: DialerUiState, actions: DialerActions) {
+    TextField(
+        value = state.input,
+        onValueChange = actions.onInputChanged,
+        singleLine = true,
+        placeholder = {
+            Text(
+                text = "Number or SIP address",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        textStyle = MaterialTheme.typography.headlineMedium.copy(textAlign = TextAlign.Center),
+        trailingIcon = {
+            if (state.input.isNotEmpty()) {
+                IconButton(
+                    onClick = actions.onBackspace,
+                    modifier = Modifier.testTag(TAG_BACKSPACE),
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Backspace,
+                        contentDescription = "Delete last character",
+                    )
+                }
+            }
+        },
+        colors = TextFieldDefaults.colors(
+            focusedContainerColor = Color.Transparent,
+            unfocusedContainerColor = Color.Transparent,
+            disabledContainerColor = Color.Transparent,
+            focusedIndicatorColor = Color.Transparent,
+            unfocusedIndicatorColor = Color.Transparent,
+            disabledIndicatorColor = Color.Transparent,
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = AppTheme.spacing.medium)
+            .testTag(TAG_INPUT),
+    )
 }
 
 /** A back arrow, because the dialler is a screen opened from Calls now, not a tab (Task 70). */

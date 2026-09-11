@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CallMade
 import androidx.compose.material.icons.automirrored.filled.CallMissed
@@ -22,7 +21,6 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -51,6 +49,7 @@ import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.paging.compose.LazyPagingItems
+import com.whatsappv2.core.designsystem.component.Avatar
 import com.whatsappv2.core.designsystem.component.ConfirmDialog
 import com.whatsappv2.core.designsystem.component.EmptyState
 import com.whatsappv2.core.designsystem.theme.AppTheme
@@ -133,7 +132,14 @@ fun HistoryScreen(
     }
 }
 
-/** Clearing the log, and the one way into settings now that it is not a tab (Task 69). */
+/**
+ * The title and the one destructive action.
+ *
+ * The settings gear that used to live here is gone: Settings is a tab again, and two
+ * doors into one screen is one more than a top bar should spend. `onOpenSettings` stays
+ * on [HistoryActions] because the account-status banner still uses it — that is a jump to
+ * a *particular* account, not a trip to the settings screen.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HistoryTopBar(actions: HistoryActions) {
@@ -145,12 +151,6 @@ private fun HistoryTopBar(actions: HistoryActions) {
                 modifier = Modifier.testTag(TAG_CLEAR_ALL),
             ) {
                 Icon(Icons.Filled.Delete, contentDescription = "Clear call history")
-            }
-            IconButton(
-                onClick = actions.onOpenSettings,
-                modifier = Modifier.testTag(TAG_SETTINGS),
-            ) {
-                Icon(Icons.Filled.Settings, contentDescription = "Settings and accounts")
             }
         },
     )
@@ -304,12 +304,15 @@ private fun CallRowContent(row: HistoryRow.Call, actions: HistoryActions, zone: 
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.medium),
     ) {
-        DirectionBadge(entry)
+        // The face first, the way every list of people is arranged. The direction moved
+        // down beside the time it belongs to: it describes what happened, not who it was
+        // with, and it had been sitting where the person should be.
+        Avatar(displayName = row.title.takeIf { title -> title.any(Char::isLetter) })
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = row.title,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.titleMedium,
                 // A missed call is what someone opens this screen looking for, so it
                 // is the one the eye lands on. Weight as well as colour: colour alone
                 // is not a channel everybody has.
@@ -321,11 +324,24 @@ private fun CallRowContent(row: HistoryRow.Call, actions: HistoryActions, zone: 
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(
-                text = entry.subtitle(zone),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraSmall),
+            ) {
+                Icon(
+                    imageVector = entry.directionIcon(),
+                    contentDescription = entry.directionDescription(),
+                    tint = entry.directionTint(),
+                    modifier = Modifier.size(AppTheme.spacing.medium),
+                )
+                Text(
+                    text = entry.subtitle(zone),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
@@ -375,22 +391,6 @@ private fun SwipeAffordance(direction: SwipeToDismissBoxValue) {
  * its own is what this row had — three small monochrome arrows that all read the same at
  * a glance.
  */
-@Composable
-private fun DirectionBadge(entry: CallLogEntry) {
-    Box(
-        modifier = Modifier
-            .size(AppTheme.sizing.avatarSmall)
-            .background(entry.directionContainer(), CircleShape),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = entry.directionIcon(),
-            contentDescription = entry.directionDescription(),
-            tint = entry.directionTint(),
-            modifier = Modifier.size(AppTheme.spacing.extraLarge),
-        )
-    }
-}
 
 @Composable
 private fun CallDetail(row: HistoryRow.Call, actions: HistoryActions, zone: ZoneId) {

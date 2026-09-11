@@ -3,6 +3,7 @@ package com.whatsappv2.feature.settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -15,9 +16,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -132,44 +134,72 @@ private fun SettingsContent(
         verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.large),
     ) {
         // First, because it is the one thing here without which the app cannot do
-        // anything at all — and because it is what the Calls screen's settings icon
-        // is most often pressed to reach (Task 69).
+        // anything at all.
         onOpenAccounts?.let { open ->
-            AccountsRow(onClick = open)
-            HorizontalDivider()
+            SettingsCard { AccountsRow(onClick = open) }
         }
 
         Text("App settings", style = MaterialTheme.typography.titleLarge)
 
-        ChoiceGroup(
-            title = "DTMF",
-            description = "RFC 4733 sends digits in the media stream and survives " +
-                "transcoding. SIP INFO is a fallback for gateways that cannot.",
-            options = DtmfMode.entries,
-            selected = state.settings.dtmfMode,
-            labelOf = { if (it == DtmfMode.RFC_4733) "RFC 4733" else "SIP INFO" },
-            onSelect = onDtmfModeChange,
-        )
+        SettingsCard {
+            ChoiceGroup(
+                title = "DTMF",
+                description = "RFC 4733 sends digits in the media stream and survives " +
+                    "transcoding. SIP INFO is a fallback for gateways that cannot.",
+                options = DtmfMode.entries,
+                selected = state.settings.dtmfMode,
+                labelOf = { if (it == DtmfMode.RFC_4733) "RFC 4733" else "SIP INFO" },
+                onSelect = onDtmfModeChange,
+            )
+        }
 
-        EncryptionGroup(selected = state.settings.defaultSrtpPolicy, onSelect = onSrtpPolicyChange)
+        SettingsCard {
+            EncryptionGroup(selected = state.settings.defaultSrtpPolicy, onSelect = onSrtpPolicyChange)
+        }
 
-        ChoiceGroup(
-            title = "Audio route",
-            description = "Where calls start. Automatic follows a connected headset.",
-            options = PreferredAudioRoute.entries,
-            selected = state.settings.preferredAudioRoute,
-            labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
-            onSelect = onAudioRouteChange,
-        )
+        SettingsCard {
+            ChoiceGroup(
+                title = "Audio route",
+                description = "Where calls start. Automatic follows a connected headset.",
+                options = PreferredAudioRoute.entries,
+                selected = state.settings.preferredAudioRoute,
+                labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
+                onSelect = onAudioRouteChange,
+            )
+        }
 
         // Absent in release builds rather than disabled: a disabled control invites
         // someone to make it enableable.
         if (state.traceToggleAvailable) {
-            SipTraceToggle(
-                enabled = state.settings.sipTraceEnabled,
-                onChange = onSipTraceChange,
-            )
+            SettingsCard {
+                SipTraceToggle(
+                    enabled = state.settings.sipTraceEnabled,
+                    onChange = onSipTraceChange,
+                )
+            }
         }
+    }
+}
+
+/**
+ * One group of settings, on its own surface.
+ *
+ * The screen used to be a flat column separated by rules. Rules say "these are different";
+ * a card says "these belong together", which is what a settings group actually is — and it
+ * gives the eye somewhere to stop on a screen that is otherwise a wall of radio buttons.
+ */
+@Composable
+private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+        shape = MaterialTheme.shapes.large,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(AppTheme.spacing.large),
+            verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
+            content = content,
+        )
     }
 }
 

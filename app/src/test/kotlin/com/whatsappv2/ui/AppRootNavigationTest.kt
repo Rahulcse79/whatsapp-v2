@@ -105,12 +105,12 @@ class AppRootNavigationTest {
     }
 
     @Test
-    fun `settings is reachable from the top bar, and accounts from settings`() {
-        // Task 69's whole claim in one path: neither is a tab any more, and both must
-        // still be reachable in a couple of taps.
+    fun `settings is a tab again, and accounts are still inside it`() {
+        // Settings went back into the bar when Chats gave it company; accounts did NOT,
+        // and this is the path that says so — one tap to Settings, one more to accounts.
         compose.setContent { WhatsAppV2Theme { AppRoot() } }
 
-        compose.onNodeWithContentDescription("Settings and accounts").performClick()
+        compose.onNodeWithTag(tabTag(AppDestination.SETTINGS)).performClick()
         compose.waitForIdle()
         compose.onNodeWithText("App settings").assertIsDisplayed()
 
@@ -123,12 +123,13 @@ class AppRootNavigationTest {
     }
 
     @Test
-    fun `every setting the Settings tab used to hold is still there`() {
-        // Task 69 removed the destination, not the controls. This is the check that would
-        // catch "remove the Settings page" being read as "delete what was on it".
+    fun `every setting is still there after the screen was restyled`() {
+        // The check that would catch a visual pass quietly dropping a control. Task 69
+        // wrote it for its own removal; it earns its keep again now the screen has been
+        // laid out afresh.
         compose.setContent { WhatsAppV2Theme { AppRoot() } }
 
-        compose.onNodeWithContentDescription("Settings and accounts").performClick()
+        compose.onNodeWithTag(tabTag(AppDestination.SETTINGS)).performClick()
         compose.waitForIdle()
 
         // Scrolled to, not merely present: the settings body is a scrolling column, so
@@ -146,7 +147,7 @@ class AppRootNavigationTest {
         val restoration = StateRestorationTester(compose)
         restoration.setContent { WhatsAppV2Theme { AppRoot() } }
 
-        compose.onNodeWithContentDescription("Settings and accounts").performClick()
+        compose.onNodeWithTag(tabTag(AppDestination.SETTINGS)).performClick()
         compose.waitForIdle()
         compose.onNodeWithText("App settings").assertIsDisplayed()
 
