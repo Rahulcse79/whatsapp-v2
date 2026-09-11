@@ -6,7 +6,9 @@
 > carries the measured baseline. This file says what is done, what is half-done, what is
 > wrong, and what to do next.
 >
-> **Read §0f, then §0e, §0d, §0c, §0b, §0a — newest first.** §0f is client-side
+> **Read §0g, then §0f, §0e, §0d, §0c, §0b, §0a — newest first.** §0g is the
+> WhatsApp-shaped UI round and the sweep that followed it, which closed ADR-009's `RX 0pkt`
+> item and found that every inbound video call was dying at 88 s; §0f is client-side
 > conferencing (ADR-009); §0e is the full
 > end-to-end sweep; §0c replaces the deleted `docs/HANDOFF-NEXT.txt`. The evening pass of 2026-09-10
 > built the APK, put it on a Zebra TC15, and placed, answered and held calls against two
@@ -228,9 +230,128 @@ drives one phone by adb and Rahul answers the other.
 
 ---
 
+## 0g. 2026-09-12, small hours — the UI round (items 5.1–5.6) and the sweep behind it
+
+**The newest section.** Fifteen commits on `docs/native-mandate-design`, none pushed. The
+six UI items from `docs/ui-round-prompt.md` first, then §6's sweep against the local
+FreeSWITCH on Phone A (`24110524701351`, `localfs` = 1001, plus `1004`; the office account
+is not on this phone tonight). Every claim below is "connected on the wire" with pjsua's
+own counters, or "on screen" with a screenshot in the session; **nothing was heard**.
+
+> The phone was being used by someone else between ~02:34 and ~03:00 — the theme, the
+> default account and a date-picker dialog changed under the driving session. Nothing
+> below depends on that window.
+
+### The six UI items, and where each landed
+
+| Item | Commit | What changed | Verified |
+|---|---|---|---|
+| 5.1 Settings → gear on Chats | `06c775d2` | `TOP_LEVEL` = Chats, Calls; gear in the Chats top bar; `AppRootNavigationTest` presses the gear; a test that a bar needs ≥ 2 destinations | on device, both themes |
+| 5.4 Bottom bar spacing | `06c775d2` | Two defects: the shell handed the bar's height down as `padding` and every inner `Scaffold` re-added the system inset (48 dp strip, FAB 48 dp high) → `consumeWindowInsets`; the 80 dp `NavigationBar` → a 64 dp row of `NavigationBarItem`s (`ShortNavigationBar` is behind an internal opt-in in Material3 1.4.0) | FAB 32 px above the bar, was 135 |
+| 5.2 Theme | `7cc46bbd` | `AppSettings.themeMode` System/Light/Dark through DataStore; `AppThemed` wraps **both** activities and sets the system-bar icon colours; `values-night` window theme; `PreviewSurface` now honours the preview's uiMode — every "Dark" preview in the project had been rendering light | live switch; survives force-stop |
+| 5.5 Registration in the Chats bar | `0a017b54` | `RegistrationStatusViewModel` + indicator in `:feature:accounts`, placed by `:app`; dot + extension + state in the account list's own words; tap → every account, tick the default, "Manage accounts"; `StatusColors`, `StatusDot`, `StatusLabel` in the design system | both themes, 12 tests |
+| 5.3 Calls filters | `8057e2c9` | Date range via Material's range picker with a UTC-day → local-day conversion (`DateRangeBounds`, 6 tests); voice/video glyph on every row and in the detail; the filter row shows while searching, narrowed, or after a funnel with a badge; wraps instead of scrolling | both themes; `HistoryScreenTest` is new |
+| 5.6 Look and feel | `992343dd` | The colour scheme was half-defined — every `surfaceContainer*`, `tertiary` and outline fell back to Material's mauve baseline (settings cards, dropdowns, the date picker); empty states carry "Make a call" / "Clear filters"; tab switches cross-fade, pushes slide | both themes |
+
+Also on the way: `97450c97` fixes three warnings CI compiles as errors (`-PwarningsAsErrors`
+is CI-only, so the local gate never saw them); `b25acb11` fixes the log reopening eighty
+rows down after any refresh once it has ≥ 120 rows (`getRefreshKey` was `nextKey − pageSize`
+with a three-page first load — two tests trip on the old formula).
+
+### The sweep — PASS / FAIL
+
+| Area | Result | Evidence |
+|---|---|---|
+| Register now (Account status) | **FAIL → fixed** `2aa48b15` | "Registering..." forever, no REGISTER on the wire: `pjsua_acc_modify` re-registers only when the config moved. `setRegistration(true)` after a successful modify; EXP moved 04:16:11 → 04:16:29 within 4 s |
+| Log out / log in | PASS | server shows 0 bindings for 1001 after logout; Registered again in < 5 s |
+| force-stop → relaunch | PASS | 1001 and 1004 re-registered unprompted |
+| Outgoing audio 9196; mute, speaker, keypad, hold/resume | PASS | PCMU sendrecv, RX 1.1 Kpkt 0.3 % loss; FreeSWITCH `RECV DTMF 1/2/3` |
+| Incoming: in front / backgrounded / screen off | PASS | full screen; heads-up DECLINE/ANSWER; `Dozing → Awake` |
+| **Inbound video call** | **FAIL → fixed** `c2e9219d` | Died at 88 s: `BYE Reason: cause=408 "No session refresh received"`. FreeSWITCH is `refresher=uac`; its refresh re-INVITE was deferred for a video prompt because the offer had video in it. Deferred only for an escalation now. After: 5 m 47 s, four refreshes each answered in ≤ 20 ms |
+| Video off → on | **FAIL → fixed** `c2e9219d` | `ADD` appended an m=video line per toggle; `CHANGE_DIR` on the existing stream now. Two toggles, one m-line, RX VP8 1088×612 30 fps 1.11 Mbit/s 0 % loss |
+| Flip, rotation ×4 mid-video, hold/resume video | PASS | `orientation set to 1/4/3/4`, call kept |
+| Call waiting: hold-and-answer, swap ×2, end active | PASS | screen follows the held leg |
+| Blind transfer 9197 → 9198 | PASS | REFER → 202 → NOTIFY `terminated;noresource` → BYE |
+| Attended transfer 9197 ⇄ 9198 | PASS | REFER with `Replaces` → 202 → both legs released |
+| Conference 3000 | PASS | member `hear\|speak\|talking\|floor`; DTMF 0 → `hear` |
+| **Merge 2 → 8** | **FAIL → fixed** `73d9c9e6` | see below; after: n(n−1) links at every step, all eight legs RX 2.8–3.0 Kpkt |
+| Recording 52 s, stop with 5 taps hammered | PASS | sealed 4.99 MB `.rec`, no plaintext left, no stall |
+| Wi-Fi off 8 s / on, mid-call | PASS | same SSID and IP; both accounts re-registered by PJSIP's IP change; call kept (re-INVITE by IP change) |
+| Search over the whole log | PASS | "9197" → only the ten 9197 rows |
+| Both themes, every screen | PASS | account editor is a secure window and cannot be captured |
+
+Throughout: 0 `Fatal signal` / `FATAL EXCEPTION` / `Assert failed`, 0 ANRs, 0 `Skipped
+300+ frames`, pid unchanged inside each step, LeakCanary 0 APPLICATION LEAKS (the
+`ConnectionService$1` library pattern only, analyses 15–16 in `leaks.db`).
+
+### The RX 0pkt item is closed — it was Telecom
+
+Telecom allows one active call per connection service and **holds every other the moment
+a call becomes active**. `mixCalls` resumes up to seven held members at once, Telecom
+answered each resume by holding the call before it — `SipConnectionService: hold TC@…
+(cw/cast)` seven times in 200 ms — and `TelecomCallBridge` carried every one to the stack.
+The two Telecom won last stayed held: RTP `sendonly`, the echo stopped sending, `RX 0pkt`
+while all eight showed TX. Reproduced on the first eight-way of the night with exactly two
+legs at 0.
+
+Fixing it exposed two more in `ConferenceBridge`: links were tracked by call key but pjsua
+rebuilds a call's bridge port on every media re-INVITE, so a member coming back on a new
+slot was never re-linked; and re-linking through a cached `AudioMedia` whose slot pjsua had
+reused connected two members to one slot — `Port 1 transmitting to port 1`, a participant
+hearing themselves. The engine now publishes `SipConferenceController.mixedCalls` **before**
+the first resume goes out; the bridge declines a platform hold for a member; the conference
+bridge tracks slots and validates the cached port against the slot pjsua reports.
+`ConferencePort` makes the bridge JVM-testable (`ConferenceBridgeTest`, 8;
+`TelecomCallBridgeTest`, 3 — the key tests fail on the old code).
+
+The proper Android answer is a Telecom `Conference` object; it was not built because
+whether a self-managed connection service may add one was not verified, and the guard is
+enough for the mix to hold. Worth doing if Telecom's view of the members ever matters.
+
+### Found and not fixed — for the next pass
+
+1. **Portrait video is sent as a thin strip.** `android_dev.c` rotates the 1280×720
+   capture into the *landscape* encoder frame with `MAINTAIN_ASPECT_RATIO`, so a portrait
+   picture is pillar-boxed to ~230×408 inside the frame — the far end (and our own echo)
+   sees a strip a third of the width. Landscape is full-frame. The fix is a portrait
+   encoder format on orientation change, or not maintaining aspect and letting the far
+   end rotate; either is a media-pipeline decision with its own measurement and a full
+   native rebuild. Screenshot in the session: `sw-video.png`.
+2. **In landscape the in-call controls overflow the screen** — the End button is cut off.
+   A `verticalScroll` on the controls sheet, or a two-row grid under 400 dp of height.
+3. **A `SipConnectionService.connections` application leak** was recorded by LeakCanary at
+   00:53:39 on 2026-09-12 (heap analysis 14), before this session. Hypothesis: a
+   connection created by Telecom *after* the engine had already ended the call — an inbound
+   CANCEL that beats `onCreateIncomingConnection` — is added to the static map and nothing
+   ever removes it. Not reproduced tonight; `dumpsys telecom` shows no phantom calls now.
+4. pjsua2 logs `pjsua_conf_connect … PJ_EINVAL` at ERROR for links refused during a
+   port rebuild (harmless, retried) and `RTP socket bind() at 0.0.0.0:4000 … Address already
+   in use` on every call (its own port probing). Both are the library's log level, not ours.
+5. The three items §6 of the prompt already listed stay open: a Telecom timeout and a
+   genuine refusal share one sentence; `EncryptedRecordingStore.init { sweepAbandoned() }`
+   runs on the injecting thread; recordings cannot be played.
+
+### Not exercised, and why
+
+- **Heard.** Nothing. Every audio claim is a packet count.
+- **The office server** — no office account on Phone A tonight; the accounts screen is the
+  authority on extensions and it showed `localfs` (1001) and `1004`.
+- **APK ↔ APK** — Phone B (`1002`) was registered but off the cable.
+- **Transfer refused** — FreeSWITCH answers every blind REFER 202 and runs the target itself.
+  `1003` is registered from the Mac over TCP (a softphone) and could decline one.
+- **Lyra** — not touched this round.
+
+### Gate
+
+`./gradlew testDebugUnitTest test detekt -PwarningsAsErrors=true …`: **1259 tests, 0
+failures, detekt clean.** Build and install throughout with `./build.sh --reuse-native
+--install`; no native input changed.
+
+---
+
 ## 0f. 2026-09-11, night — client-side conferencing (ADR-009), 2 to 8 participants
 
-**The newest section.** Phase 0 measured before anything was built, and the measurement
+Phase 0 measured before anything was built, and the measurement
 changed the scope: audio yes, video no. See ADR-009 and the correction to ADR-008.
 
 ### PASS / FAIL
@@ -279,8 +400,8 @@ pid unchanged.
   conference ends. A server bridge has no such single point.
 - **Nobody has heard it.** Every claim here is "connected on the wire" with packet counts.
   Whether eight mixed legs are *intelligible* needs a person.
-- **Two of eight legs showed `RX 0pkt` at teardown** while all eight showed full TX. Not
-  explained yet; worth a look before this is called finished.
+- ~~**Two of eight legs showed `RX 0pkt` at teardown** while all eight showed full TX.~~
+  Explained and fixed in §0g: Telecom held them during the merge.
 - **All eight peers were FreeSWITCH echo legs**, not eight handsets. The stack cannot tell
   the difference, but the claim should not be stretched.
 - **Lyra in a conference is untested.** The gate predicts ~40 % per stream against PCMU's

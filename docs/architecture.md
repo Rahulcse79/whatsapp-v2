@@ -634,6 +634,17 @@ and the ceiling of 8 is `PJSUA_MAX_CALLS`, not CPU.
 Link counts are `n(n-1)` exactly at every step, which is the arithmetic `ConferenceMixTest`
 asserts, confirmed on hardware.
 
+**The platform fights the mix, and is told not to (2026-09-12).** Android Telecom allows
+one active call per connection service and holds every other the moment a call becomes
+active. A merge resumes up to seven members at once; Telecom answered each resume by
+holding the previous one, and the two it won last stayed `sendonly` — the "two of eight
+legs RX 0pkt" the first measurement could not explain. The engine publishes
+`SipConferenceController.mixedCalls` before the first resume and the Telecom bridge
+declines a platform hold for a member. The Android-native answer is a Telecom
+`Conference`; it is not built because a self-managed connection service's right to add
+one was not verified, and the guard holds the mix. Revisit if Telecom's own view of the
+members — a car display, the system call UI — ever has to show a conference.
+
 **Re-evaluation trigger.** A handset with materially more CPU, or the resampling work
 above, would move the video line. Re-measure before assuming it has. The flat audio curve
 also means a ceiling above 8 is a `PJSUA_MAX_CALLS` decision rather than a CPU one — worth
