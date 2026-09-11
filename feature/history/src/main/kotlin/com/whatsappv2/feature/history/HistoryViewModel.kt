@@ -22,6 +22,7 @@ import com.whatsappv2.domain.usecase.PlaceCallError
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -107,7 +108,7 @@ class HistoryViewModel @Inject constructor(
         watchStoreChanges()
     }
 
-    @OptIn(ExperimentalCoroutinesApi::class)
+    @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
     val rows: Flow<PagingData<HistoryRow>> = state
         .map { it.query }
         .distinctUntilChanged()

@@ -156,11 +156,12 @@ internal fun CallVideo(
  * The display's rotation as degrees clockwise from the device's natural orientation.
  *
  * `Context.display` is API 30; below that the window manager's default display is the
- * one an activity's context refers to.
+ * one an activity's context refers to. The getter throws rather than returning null for a
+ * context with no display, which is what the `runCatching` is for.
  */
 private fun Context.displayRotationDegrees(): Int {
     val rotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        runCatching { display?.rotation }.getOrNull()
+        runCatching { display.rotation }.getOrNull()
     } else {
         @Suppress("DEPRECATION")
         (getSystemService(Context.WINDOW_SERVICE) as? WindowManager)?.defaultDisplay?.rotation

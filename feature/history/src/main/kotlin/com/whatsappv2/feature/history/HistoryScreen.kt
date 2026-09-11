@@ -49,6 +49,7 @@ import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -71,6 +72,7 @@ import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.repository.CallDirectionFilter
 import com.whatsappv2.domain.repository.CallLogFilter
 import com.whatsappv2.domain.repository.CallLogQuery
+import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -348,23 +350,25 @@ private fun CallRow(row: HistoryRow.Call, actions: HistoryActions, zone: ZoneId)
     // list people scan, and a pair of icons per line competes with the thing they are
     // scanning for. Left is video, right is audio.
     //
-    // `confirmValueChange` returns false on purpose: this is a swipe *action*, not a
-    // dismissal. The row performs the call and springs back, so the entry stays in the
-    // log — which is the whole point of a log.
-    val swipe = rememberSwipeToDismissBoxState(
-        confirmValueChange = { value ->
+    // This is a swipe *action*, not a dismissal: the row performs the call and springs
+    // back, so the entry stays in the log — which is the whole point of a log. The box
+    // reports the swipe once it settles, and `reset` animates the row home. (It used to
+    // veto the settle in `confirmValueChange`; that callback is deprecated without a
+    // replacement, and letting the row settle then return is the documented shape.)
+    val swipe = rememberSwipeToDismissBoxState()
+    val scope = rememberCoroutineScope()
+
+    SwipeToDismissBox(
+        state = swipe,
+        backgroundContent = { SwipeAffordance(swipe.dismissDirection) },
+        onDismiss = { value ->
             when (value) {
                 SwipeToDismissBoxValue.EndToStart -> actions.onVideoCallBack(entry)
                 SwipeToDismissBoxValue.StartToEnd -> actions.onCallBack(entry)
                 SwipeToDismissBoxValue.Settled -> Unit
             }
-            false
+            scope.launch { swipe.reset() }
         },
-    )
-
-    SwipeToDismissBox(
-        state = swipe,
-        backgroundContent = { SwipeAffordance(swipe.dismissDirection) },
         modifier = Modifier.testTag(entryTag(entry)),
     ) {
         CallRowContent(row, actions, zone)
