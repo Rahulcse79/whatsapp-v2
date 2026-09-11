@@ -840,7 +840,7 @@ jobs:
 
       - name: Restore the pjsua2 AAR from cache
         id: aar-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: pjsip/libs/pjsua2.aar
           # Keyed on the workflow that produces it, so bumping pjproject, OpenSSL, Opus
