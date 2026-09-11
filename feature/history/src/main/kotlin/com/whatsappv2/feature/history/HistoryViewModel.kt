@@ -256,7 +256,7 @@ class HistoryViewModel @Inject constructor(
         Pager(
             config = PagingConfig(pageSize = PAGE_SIZE, enablePlaceholders = false),
             pagingSourceFactory = {
-                CallLogPagingSource(repository, query, titles).also { liveSource = it }
+                CallLogPagingSource(repository, query, titles, PAGE_SIZE).also { liveSource = it }
             },
         ).flow.map { page ->
             // The source already emits rows with their names resolved, so all that is left

@@ -1,6 +1,8 @@
 package com.whatsappv2.feature.history
 
+import androidx.paging.PagingConfig
 import androidx.paging.PagingSource
+import androidx.paging.PagingState
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.model.AccountId
@@ -63,6 +65,43 @@ class CallLogPagingSourceTest {
 
         assertEquals(0, page.prevKey)
         assertEquals(PAGE * 2, page.nextKey)
+    }
+
+    @Test
+    fun `the first load is three pages long and still keys one page back`() = runTest {
+        // Paging's initial load asks for `pageSize * 3`. A page loaded that way sits at
+        // offset 0 and has no previous page; a page that size loaded anywhere else must
+        // still point one *page* back, not three, or scrolling up skips two pages.
+        given(entries = PAGE * 5)
+
+        val page = load(offset = PAGE * 3, size = PAGE * 3)
+
+        assertEquals(PAGE * 2, page.prevKey)
+    }
+
+    @Test
+    fun `a refresh with the user at the top restarts at the top`() = runTest {
+        // The defect: 147 rows, the initial window of 120 gave nextKey 120, and the old
+        // refresh key was `nextKey - pageSize` = 80. The screen reopened on row 80 —
+        // yesterday's calls, no day heading — with the newest call eighty rows above it.
+        given(entries = PAGE * 3 + 7)
+        val window = load(offset = null, size = PAGE * 3)
+
+        val key = source().getRefreshKey(stateOf(window, anchor = 3))
+
+        assertEquals(0, key)
+    }
+
+    @Test
+    fun `a refresh mid-list starts one page above the row being looked at`() = runTest {
+        // Window at rows 30..59 (prevKey 20), anchor on its third row = row 32. One page
+        // above, aligned: 20. The row is inside the new window with room to scroll up.
+        given(entries = PAGE * 10)
+        val window = load(offset = PAGE * 3, size = PAGE * 3)
+
+        val key = source().getRefreshKey(stateOf(window, anchor = 2))
+
+        assertEquals(PAGE * 2, key)
     }
 
     @Test
@@ -149,21 +188,35 @@ class CallLogPagingSourceTest {
         repeat(entries) { repository.record(entry(it)) }
     }
 
+    private fun source(filter: CallLogFilter = CallLogFilter.ALL): CallLogPagingSource {
+        val query = when (filter) {
+            CallLogFilter.ALL -> CallLogQuery.MATCH_ALL
+            CallLogFilter.MISSED -> CallLogQuery.MISSED
+        }
+        return CallLogPagingSource(repository, query, CallLogTitles(contacts), PAGE)
+    }
+
     private suspend fun load(
         offset: Int?,
         size: Int,
         filter: CallLogFilter = CallLogFilter.ALL,
     ): PagingSource.LoadResult.Page<Int, HistoryRow.Call> {
-        val query = when (filter) {
-            CallLogFilter.ALL -> CallLogQuery.MATCH_ALL
-            CallLogFilter.MISSED -> CallLogQuery.MISSED
-        }
-        val source = CallLogPagingSource(repository, query, CallLogTitles(contacts))
-        val result = source.load(
+        val result = source(filter).load(
             PagingSource.LoadParams.Refresh(key = offset, loadSize = size, placeholdersEnabled = false),
         )
         return assertIs(result)
     }
+
+    /** What Paging hands `getRefreshKey`: the loaded window, and where in it the user is. */
+    private fun stateOf(
+        window: PagingSource.LoadResult.Page<Int, HistoryRow.Call>,
+        anchor: Int,
+    ) = PagingState(
+        pages = listOf(window),
+        anchorPosition = anchor,
+        config = PagingConfig(pageSize = PAGE, enablePlaceholders = false),
+        leadingPlaceholderCount = 0,
+    )
 
     private fun entry(
         index: Int,
