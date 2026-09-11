@@ -1447,15 +1447,27 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
         override fun onCallState(prm: OnCallStateParam) {
             val info = infoOrNull() ?: return
-            // CONNECTING is the moment between the 200 and the ACK, and on this side the
-            // media is not negotiated yet: `callStateOf` mapped it to CONNECTED through
-            // its `else` arm, the engine took that as the answer, read `videoActive` as
-            // false because the video stream had not been set up, and released the camera
-            // on every video call twelve milliseconds after the far end accepted it
-            // (TC15, 2026-09-11: "Camera released" straight after the 200, then
-            // `set video stream, op=6` — STOP_TRANSMIT). CONFIRMED follows the media
-            // update and carries the negotiated streams; it is the one to report.
-            if (info.state == pjsip_inv_state.PJSIP_INV_STATE_CONNECTING) return
+            // CONNECTING is the moment between the 200 and the ACK, and which side sent
+            // the 200 decides whether the media is negotiated by then (`sip_inv.c`):
+            //
+            //  - As the *caller* (UAC) it is not — the state is set first and the answer's
+            //    SDP is processed after (`inv_on_state_early`, the RX_MSG branch). Reported
+            //    as CONNECTED, the engine took it as the answer, read `videoActive` as
+            //    false, and released the camera 12 ms after the far end accepted a video
+            //    call (TC15, 2026-09-11, `set video stream, op=6`). The media-state
+            //    callback and CONFIRMED both follow the update and are the ones to report.
+            //  - As the *callee* (UAS) it is — `pjsip_inv_answer` negotiates while building
+            //    the 200, before this state, so the media-state callback has already fired
+            //    with the call still INCOMING and reported nothing that connects. Skipping
+            //    CONNECTING here too left every answered incoming call stuck on the ringing
+            //    screen: the second Answer got "already answered" (PJ_EINVALIDOP) and
+            //    Decline the same (second TC15, 12:44 the same day). For the callee this
+            //    *is* the answer.
+            if (info.state == pjsip_inv_state.PJSIP_INV_STATE_CONNECTING &&
+                info.role == pjsip_role_e.PJSIP_ROLE_UAC
+            ) {
+                return
+            }
             publish(callStateOf(info), info)
 
             if (info.state == pjsip_inv_state.PJSIP_INV_STATE_DISCONNECTED) {
@@ -1885,19 +1897,22 @@ private const val SIP_ERROR_FLOOR = 300
 /**
  * PJSIP's invite state as the app's.
  *
- * `CONNECTING` has no arm of its own and would fall into `else`; `PjCall.onCallState`
- * does not publish it at all — see the comment there for the video call it broke.
+ * `CONNECTING` has no arm of its own and falls into `else`; `PjCall.onCallState` publishes
+ * it only for the callee — see the comment there for what each side broke.
  */
 private fun callStateOf(info: CallInfo): StackCallState = when (info.state) {
     pjsip_inv_state.PJSIP_INV_STATE_CALLING -> StackCallState.OUTGOING_INIT
     pjsip_inv_state.PJSIP_INV_STATE_INCOMING -> StackCallState.INCOMING_RECEIVED
-    // 180 is ringing; 183 with SDP is early media, and the difference is audible.
-    pjsip_inv_state.PJSIP_INV_STATE_EARLY ->
-        if (info.lastStatusCode == SIP_PROGRESS) {
-            StackCallState.OUTGOING_EARLY_MEDIA
-        } else {
-            StackCallState.OUTGOING_RINGING
-        }
+    // EARLY is a 1xx in flight. For the callee that is the 180 *we* sent, and the call
+    // is still an incoming one — the media-state callback fires in this state while the
+    // 200 is being built, and reporting it as "ringing at the far end" was a wrong event
+    // for an inbound call. For the caller, 180 is ringing and 183 with SDP is early
+    // media, and the difference is audible.
+    pjsip_inv_state.PJSIP_INV_STATE_EARLY -> when {
+        info.role == pjsip_role_e.PJSIP_ROLE_UAS -> StackCallState.INCOMING_RECEIVED
+        info.lastStatusCode == SIP_PROGRESS -> StackCallState.OUTGOING_EARLY_MEDIA
+        else -> StackCallState.OUTGOING_RINGING
+    }
 
     pjsip_inv_state.PJSIP_INV_STATE_CONFIRMED -> confirmedStateOf(info)
     pjsip_inv_state.PJSIP_INV_STATE_DISCONNECTED ->

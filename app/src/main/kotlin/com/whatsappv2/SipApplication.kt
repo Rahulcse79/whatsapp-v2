@@ -2,6 +2,7 @@ package com.whatsappv2
 
 import android.app.Application
 import com.whatsappv2.audio.CallAudioCoordinator
+import com.whatsappv2.call.IncomingCallPresenter
 import com.whatsappv2.calllog.CallLogWriter
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.data.sip.SipEngineLifecycle
@@ -63,6 +64,9 @@ class SipApplication : Application() {
     lateinit var services: ServiceLauncher
 
     @Inject
+    lateinit var incomingCalls: IncomingCallPresenter
+
+    @Inject
     lateinit var restoreRegistrations: RestoreRegistrationsUseCase
 
     @Inject
@@ -89,6 +93,10 @@ class SipApplication : Application() {
         // could register and a call could arrive with no service to post a notification
         // from. The same ServiceRunPolicy that stops it decides when to start it.
         services.start()
+        // A call arriving while the app is on screen is shown, not merely notified: the
+        // notification's full-screen intent only fires on a locked device, and a heads-up
+        // over our own activity is not something every device draws (TC15, 2026-09-11).
+        incomingCalls.start(this)
         // The token reaches the registrar on the next REGISTER's Contact header. A no-op
         // on a build with no Firebase configuration, which it logs rather than hides
         // (ADR-004, Task 38).
