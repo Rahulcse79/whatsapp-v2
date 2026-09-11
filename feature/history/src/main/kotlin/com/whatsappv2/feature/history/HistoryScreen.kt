@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CallMade
 import androidx.compose.material.icons.automirrored.filled.CallMissed
 import androidx.compose.material.icons.automirrored.filled.CallReceived
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material.icons.filled.History
@@ -33,15 +34,21 @@ import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.paging.compose.LazyPagingItems
 import com.whatsappv2.core.designsystem.component.ConfirmDialog
@@ -241,12 +248,59 @@ private fun DayHeading(epochDay: Long) {
 @Composable
 private fun CallRow(row: HistoryRow.Call, actions: HistoryActions, zone: ZoneId) {
     val entry = row.entry
+
+    // Swipe to call back, rather than two buttons on every row (item 3). The log is a
+    // list people scan, and a pair of icons per line competes with the thing they are
+    // scanning for. Left is video, right is audio.
+    //
+    // `confirmValueChange` returns false on purpose: this is a swipe *action*, not a
+    // dismissal. The row performs the call and springs back, so the entry stays in the
+    // log — which is the whole point of a log.
+    val swipe = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            when (value) {
+                SwipeToDismissBoxValue.EndToStart -> actions.onVideoCallBack(entry)
+                SwipeToDismissBoxValue.StartToEnd -> actions.onCallBack(entry)
+                SwipeToDismissBoxValue.Settled -> Unit
+            }
+            false
+        },
+    )
+
+    SwipeToDismissBox(
+        state = swipe,
+        backgroundContent = { SwipeAffordance(swipe.dismissDirection) },
+        modifier = Modifier.testTag(entryTag(entry)),
+    ) {
+        CallRowContent(row, actions, zone)
+    }
+}
+
+/** The row itself, so [CallRow] stays the gesture and this stays the layout. */
+@Composable
+private fun CallRowContent(row: HistoryRow.Call, actions: HistoryActions, zone: ZoneId) {
+    val entry = row.entry
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
             .clickable { actions.onEntryOpened(row) }
-            .padding(horizontal = AppTheme.spacing.large, vertical = AppTheme.spacing.small)
-            .testTag(entryTag(entry)),
+            // A swipe is not an affordance everyone has. TalkBack reads these two as
+            // actions on the row, so removing the buttons did not remove the ability
+            // to call back — it removed two taps from everybody who can swipe.
+            .semantics {
+                customActions = listOf(
+                    CustomAccessibilityAction("Call ${row.title} back") {
+                        actions.onCallBack(entry)
+                        true
+                    },
+                    CustomAccessibilityAction("Video call ${row.title} back") {
+                        actions.onVideoCallBack(entry)
+                        true
+                    },
+                )
+            }
+            .padding(horizontal = AppTheme.spacing.large, vertical = AppTheme.spacing.medium),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.medium),
     ) {
@@ -256,9 +310,9 @@ private fun CallRow(row: HistoryRow.Call, actions: HistoryActions, zone: ZoneId)
             Text(
                 text = row.title,
                 style = MaterialTheme.typography.bodyLarge,
-                // A missed call is what someone opens this screen looking for, so it is
-                // the one the eye lands on. Weight as well as colour: colour alone is not
-                // a channel everybody has.
+                // A missed call is what someone opens this screen looking for, so it
+                // is the one the eye lands on. Weight as well as colour: colour alone
+                // is not a channel everybody has.
                 color = if (entry.wasMissed) {
                     MaterialTheme.colorScheme.error
                 } else {
@@ -273,27 +327,40 @@ private fun CallRow(row: HistoryRow.Call, actions: HistoryActions, zone: ZoneId)
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
 
-        // Two ways to call back, because the log records which kind the call was and the
-        // one people want again is usually the same kind (Tasks 74, 75).
-        IconButton(
-            onClick = { actions.onVideoCallBack(entry) },
-            modifier = Modifier.testTag(videoCallBackTag(entry)),
-        ) {
+/**
+ * What appears behind a row being swiped, so the gesture says what it will do.
+ *
+ * A swipe with no feedback is a guess. The icon and the side it sits on are the whole
+ * instruction: drag right for a voice call, left for video.
+ */
+@Composable
+private fun SwipeAffordance(direction: SwipeToDismissBoxValue) {
+    val audio = direction == SwipeToDismissBoxValue.StartToEnd
+    val colour = if (audio) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.tertiaryContainer
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(if (direction == SwipeToDismissBoxValue.Settled) Color.Transparent else colour)
+            .padding(horizontal = AppTheme.spacing.large),
+        contentAlignment = if (audio) Alignment.CenterStart else Alignment.CenterEnd,
+    ) {
+        if (direction != SwipeToDismissBoxValue.Settled) {
             Icon(
-                imageVector = Icons.Filled.Videocam,
-                contentDescription = "Video call ${row.title} back",
-                tint = MaterialTheme.colorScheme.primary,
-            )
-        }
-        IconButton(
-            onClick = { actions.onCallBack(entry) },
-            modifier = Modifier.testTag(callBackTag(entry)),
-        ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.CallMade,
-                contentDescription = "Call ${row.title} back",
-                tint = MaterialTheme.colorScheme.primary,
+                imageVector = if (audio) Icons.Filled.Call else Icons.Filled.Videocam,
+                contentDescription = null,
+                tint = if (audio) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onTertiaryContainer
+                },
             )
         }
     }
@@ -414,7 +481,7 @@ internal const val TAG_SETTINGS = "history-settings"
 internal const val TAG_DIALER = "history-dialer"
 
 internal fun filterTag(filter: CallLogFilter) = "history-filter-${filter.name.lowercase()}"
-internal fun entryTag(entry: CallLogEntry) = "history-entry-${entry.id.value}"
-internal fun callBackTag(entry: CallLogEntry) = "history-callback-${entry.id.value}"
-internal fun videoCallBackTag(entry: CallLogEntry) = "history-video-callback-${entry.id.value}"
 internal fun dayHeadingTag(epochDay: Long) = "history-day-$epochDay"
+
+/** Identifies one row, so a test can find the entry it means rather than a position. */
+internal fun entryTag(entry: CallLogEntry) = "history-entry-${entry.id.value}"
