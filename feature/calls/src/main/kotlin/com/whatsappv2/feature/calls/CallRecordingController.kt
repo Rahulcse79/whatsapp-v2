@@ -30,6 +30,16 @@ internal class CallRecordingController(
     private val scope: CoroutineScope,
     private val recorder: CallRecorder,
     private val clock: Clock,
+    /**
+     * The call the screen is showing *now*, read at the moment of acting.
+     *
+     * See [CallTransferController.currentCall] for why this is a provider and not a
+     * parameter. Recording is the half where it mattered most: a stale [confirm] merely
+     * refuses, but a stale [stop] succeeds quietly on a call that was never recording —
+     * leaving the real recording running with the indicator still on, and capturing a
+     * conversation nobody consented to on that leg.
+     */
+    private val currentCall: () -> CallId?,
     private val onFailure: suspend (String) -> Unit,
 ) {
 
@@ -57,7 +67,8 @@ internal class CallRecordingController(
     }
 
     /** The user consented, on this call, now. */
-    fun confirm(callId: CallId) {
+    fun confirm() {
+        val callId = currentCall() ?: return
         askingConsent.value = false
         scope.launch {
             val result = recorder.start(
@@ -68,7 +79,8 @@ internal class CallRecordingController(
         }
     }
 
-    fun stop(callId: CallId) {
+    fun stop() {
+        val callId = currentCall() ?: return
         scope.launch { recorder.stop(callId) }
     }
 

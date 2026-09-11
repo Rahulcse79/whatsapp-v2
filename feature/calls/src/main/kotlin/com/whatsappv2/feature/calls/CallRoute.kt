@@ -64,22 +64,25 @@ fun CallRoute(
             onVideoSurfaces = viewModel::attachVideoSurfaces,
             onReleaseVideoSurfaces = viewModel::detachVideoSurfaces,
             onDisplayRotation = viewModel::reportDisplayRotation,
-            // Both take the call id from the route rather than from the ViewModel's own
-            // `watched`: the screen is looking at exactly one call, and passing it here
-            // keeps the controllers free of a second idea of which one that is.
+            // None of these take a call id any more. They used to close over the route's
+            // `callId`, on the reasoning that the screen looks at exactly one call — true
+            // at any instant, but which one changes: a second call, a swap, or the active
+            // call of a pair ending all re-point the screen, and the argument then named a
+            // call the user was not looking at. The controllers read the watched call at
+            // the moment of acting, so there is no id here to be stale.
             onStartTransfer = viewModel.transfer::start,
             onTransferTargetChanged = viewModel.transfer::onTargetChanged,
             onCancelTransfer = viewModel.transfer::cancel,
-            onTransferBlind = { target -> viewModel.transfer.blind(callId, target) },
-            onStartConsultation = { target -> viewModel.transfer.startConsultation(callId, target) },
+            onTransferBlind = viewModel.transfer::blind,
+            onStartConsultation = viewModel.transfer::startConsultation,
             onCompleteConsultation = viewModel.transfer::completeConsultation,
             onCancelConsultation = viewModel.transfer::cancelConsultation,
             onSecondCall = viewModel::respondToSecondCall,
             onSwapTo = viewModel::swapTo,
             onRequestRecording = viewModel.recording::request,
-            onConfirmRecording = { viewModel.recording.confirm(callId) },
+            onConfirmRecording = viewModel.recording::confirm,
             onDismissRecordingConsent = viewModel.recording::dismiss,
-            onStopRecording = { viewModel.recording.stop(callId) },
+            onStopRecording = viewModel.recording::stop,
         ),
         modifier = modifier,
     )

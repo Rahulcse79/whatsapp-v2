@@ -129,12 +129,12 @@ class CallViewModel @Inject constructor(
      * interest to the rest of this screen. Split out so the call screen's own surface stays
      * readable; see [CallTransferController].
      */
-    internal val transfer = CallTransferController(viewModelScope, transfers) { message ->
+    internal val transfer = CallTransferController(viewModelScope, transfers, { watched.value }) { message ->
         eventChannel.send(CallEvent.ActionFailed(CallAction.TRANSFER, message))
     }
 
     /** The consent dialog and the recording it gates (Task 58, §2.6). */
-    internal val recording = CallRecordingController(viewModelScope, recorder, clock) { message ->
+    internal val recording = CallRecordingController(viewModelScope, recorder, clock, { watched.value }) { message ->
         eventChannel.send(CallEvent.ActionFailed(CallAction.RECORD, message))
     }
 

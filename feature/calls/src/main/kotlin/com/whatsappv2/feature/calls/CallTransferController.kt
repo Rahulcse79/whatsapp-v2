@@ -34,6 +34,17 @@ import kotlinx.coroutines.launch
 internal class CallTransferController(
     private val scope: CoroutineScope,
     private val transfers: TransferCallUseCase,
+    /**
+     * The call the screen is showing *now*, read at the moment of acting.
+     *
+     * A provider rather than a parameter, and that is the point. This used to take a
+     * `CallId` from the caller, and the caller was the composition — which closed over
+     * the id its route was opened with. A second call, a swap, or the active call of a
+     * pair ending all re-point the screen, and the transfer then went to a call the user
+     * was no longer looking at, usually one that had ended. There is now no way to hand
+     * this controller the wrong call, because there is no way to hand it one at all.
+     */
+    private val currentCall: () -> CallId?,
     /** How a failure reaches the user as well as the screen — see [reportFailure]. */
     private val onFailure: suspend (String) -> Unit,
 ) {
@@ -56,13 +67,15 @@ internal class CallTransferController(
     }
 
     /** `REFER` straight to [target] — the transferor drops out (Task 55). */
-    fun blind(callId: CallId, target: String) {
+    fun blind(target: String) {
+        val callId = currentCall() ?: return
         transferState.value = TransferUiState.InProgress(target)
         run(target) { transfers.blind(callId, target) }
     }
 
     /** Holds this call and rings [target] so the user can speak to them first (Task 57). */
-    fun startConsultation(callId: CallId, target: String) {
+    fun startConsultation(target: String) {
+        val callId = currentCall() ?: return
         scope.launch {
             when (val started = transfers.startConsultation(callId, target)) {
                 is Outcome.Failure -> reportFailure(target, started.error)
