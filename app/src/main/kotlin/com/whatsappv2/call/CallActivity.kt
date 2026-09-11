@@ -9,9 +9,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.whatsappv2.core.common.logging.Logger
-import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
 import com.whatsappv2.domain.model.CallId
+import com.whatsappv2.domain.repository.AppSettingsRepository
 import com.whatsappv2.feature.calls.CallRoute
+import com.whatsappv2.ui.theme.AppThemed
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -54,6 +55,10 @@ class CallActivity : ComponentActivity() {
     @Inject
     lateinit var ongoingCall: OngoingCall
 
+    /** For the theme, so the call screen matches the app behind it (item 5.2). */
+    @Inject
+    lateinit var settings: AppSettingsRepository
+
     override fun onCreate(savedInstanceState: Bundle?) {
         showOverLockScreen()
         enableEdgeToEdge()
@@ -77,7 +82,7 @@ class CallActivity : ComponentActivity() {
         }
 
         setContent {
-            WhatsAppV2Theme {
+            AppThemed(settings) {
                 CallRoute(
                     callId = callId,
                     // The activity's whole lifetime is this call. When the FSM says the

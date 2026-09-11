@@ -5,6 +5,7 @@ import com.whatsappv2.domain.model.AppSettings
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
+import com.whatsappv2.domain.model.ThemeMode
 import com.whatsappv2.domain.testing.FakeAppSettingsRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -81,6 +82,7 @@ class SettingsViewModelTest {
         model.setDtmfMode(DtmfMode.SIP_INFO)
         model.setDefaultSrtpPolicy(SrtpPolicy.MANDATORY)
         model.setPreferredAudioRoute(PreferredAudioRoute.SPEAKER)
+        model.setThemeMode(ThemeMode.LIGHT)
         model.setSipTraceEnabled(true)
         advanceUntilIdle()
 
@@ -90,6 +92,7 @@ class SettingsViewModelTest {
             assertEquals(DtmfMode.SIP_INFO, state.dtmfMode)
             assertEquals(SrtpPolicy.MANDATORY, state.defaultSrtpPolicy)
             assertEquals(PreferredAudioRoute.SPEAKER, state.preferredAudioRoute)
+            assertEquals(ThemeMode.LIGHT, state.themeMode)
             assertTrue(state.sipTraceEnabled)
             cancelAndIgnoreRemainingEvents()
         }

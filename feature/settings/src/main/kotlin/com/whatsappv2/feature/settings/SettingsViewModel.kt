@@ -6,6 +6,7 @@ import com.whatsappv2.domain.model.AppSettings
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
+import com.whatsappv2.domain.model.ThemeMode
 import com.whatsappv2.domain.repository.AppSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
@@ -49,6 +50,8 @@ class SettingsViewModel @Inject constructor(
 
     fun setPreferredAudioRoute(route: PreferredAudioRoute) =
         viewModelScope.launch { repository.setPreferredAudioRoute(route) }
+
+    fun setThemeMode(mode: ThemeMode) = viewModelScope.launch { repository.setThemeMode(mode) }
 
     fun setSipTraceEnabled(enabled: Boolean) =
         viewModelScope.launch { repository.setSipTraceEnabled(enabled) }
