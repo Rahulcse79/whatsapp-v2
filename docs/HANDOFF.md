@@ -6,7 +6,8 @@
 > carries the measured baseline. This file says what is done, what is half-done, what is
 > wrong, and what to do next.
 >
-> **Read §0e, then §0d, then §0c, then §0b, then §0a — newest first.** §0e is the full
+> **Read §0f, then §0e, §0d, §0c, §0b, §0a — newest first.** §0f is client-side
+> conferencing (ADR-009); §0e is the full
 > end-to-end sweep; §0c replaces the deleted `docs/HANDOFF-NEXT.txt`. The evening pass of 2026-09-10
 > built the APK, put it on a Zebra TC15, and placed, answered and held calls against two
 > FreeSWITCH servers. §3.4's "nothing has been run on a handset" is no longer true. Where
@@ -224,6 +225,66 @@ drives one phone by adb and Rahul answers the other.
 2. A preview that follows a *rotation* mid-call is untested (the activity recreates and
    re-reports; `LaunchedEffect(configuration)` covers a manifest that does not).
 3. `sudo port install swig-java` so `./build.sh` runs without `SWIG_LIB`.
+
+---
+
+## 0f. 2026-09-11, night — client-side conferencing (ADR-009), 2 to 8 participants
+
+**The newest section.** Phase 0 measured before anything was built, and the measurement
+changed the scope: audio yes, video no. See ADR-009 and the correction to ADR-008.
+
+### PASS / FAIL
+
+| N | members / links | CPU (1 core) | PSS | client-side mix | result |
+|---|---|---|---|---|---|
+| 2 | 2 / 2 | 102 % | 194 MB | yes | **PASS** |
+| 3 | 3 / 6 | 102 % | 201 MB | yes | **PASS** |
+| 4 | 4 / 12 | 106 % | 202 MB | yes | **PASS** |
+| 5 | 5 / 20 | 105 % | 202 MB | yes | **PASS** |
+| 6 | 6 / 30 | 92 % | 202 MB | yes | **PASS** |
+| 7 | 7 / 42 | 90 % | 203 MB | yes | **PASS** |
+| 8 | 8 / 56 | 101 % | 203 MB | yes | **PASS** |
+
+Links are `n(n-1)` at every step — the arithmetic `ConferenceMixTest` asserts, confirmed on
+hardware. The curve is flat: 102 % at two, 101 % at eight, 9 MB of memory across the range.
+
+**Evidence the mixing is on the device, not the server** (N=8): 56 distinct
+`Port N (sip:…) transmitting to port M (sip:…)` links inside `pjmedia_conf`;
+`fs_cli "conference list"` → *No active conferences*; 8 ordinary legs, all PCMU/PCMU;
+TX 5.2 Kpkt / 832 KB / 63.9 kbps on every leg. 0 crashes, 0 ANRs, 0 application leaks,
+pid unchanged.
+
+### Defects found and fixed, in the order they appeared
+
+1. **Held members were mixed as if live.** `isEstablished` includes `Held`, whose RTP is
+   `sendonly` with a stopped port — the screen would have said "merged" over a leg with no
+   audio. `mixCalls` resumes first. Found by *reading* `CallState`, not by testing.
+2. **The resume was not waited for.** A resume is a re-INVITE; reading the call list in the
+   same breath finds everyone still held. First hardware run: `Mixing 1 call(s)`, and a
+   bridge with only microphone-to-call links, never call-to-call. Now bounded-waits for
+   media (§1.4). The engine test trips without it.
+3. **Waiting for "not Held" was not enough.** A resume passes through `Resuming`, where the
+   re-INVITE is out and no media flows. Mixing there connects a port with nothing behind
+   it. The wait is for media running.
+4. **The ceiling was declared twice and the runtime one won.** Raising `PJSUA_MAX_CALLS`
+   did nothing: `uaConfig.maxCalls` is set explicitly at startup, so the fifth participant
+   got `486 Busy Here` / "Unable to accept incoming call (too many calls)". `MAX_CALLS` now
+   reads the domain constant.
+
+### Limitations, stated rather than discovered later
+
+- **Audio only.** ADR-009's gate measured one video stream at ~135 % of a core and ~107 MB;
+  seven does not fit. A video conference is still a call to the FreeSWITCH bridge (ADR-003).
+- **The host is load-bearing.** Mixing lives on the handset that merged: if it leaves, the
+  conference ends. A server bridge has no such single point.
+- **Nobody has heard it.** Every claim here is "connected on the wire" with packet counts.
+  Whether eight mixed legs are *intelligible* needs a person.
+- **Two of eight legs showed `RX 0pkt` at teardown** while all eight showed full TX. Not
+  explained yet; worth a look before this is called finished.
+- **All eight peers were FreeSWITCH echo legs**, not eight handsets. The stack cannot tell
+  the difference, but the claim should not be stretched.
+- **Lyra in a conference is untested.** The gate predicts ~40 % per stream against PCMU's
+  few percent, so the flat curve above should not be assumed for it.
 
 ---
 
