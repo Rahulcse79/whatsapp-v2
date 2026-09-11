@@ -4,6 +4,10 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.hardware.camera2.CameraManager
 import com.whatsappv2.core.common.logging.Logger
+import com.whatsappv2.core.common.result.Outcome
+import com.whatsappv2.core.common.result.failure
+import com.whatsappv2.core.common.result.map
+import com.whatsappv2.core.common.result.success
 import com.whatsappv2.data.sip.call.SipCallGateway
 import com.whatsappv2.data.sip.call.SipRecordingGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
@@ -21,6 +25,7 @@ import com.whatsappv2.data.sip.registration.StackRegistrationState
 import com.whatsappv2.domain.codec.CodecAudit
 import com.whatsappv2.domain.codec.CodecPriorities
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -28,6 +33,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withTimeoutOrNull
 import org.pjsip.PjCameraInfo2
 import org.pjsip.pjsua2.Account
 import org.pjsip.pjsua2.AccountConfig
@@ -1352,21 +1358,31 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * PJSIP has no per-call record flag. A recorder is a media port, so both legs are
      * transmitted into it: the far end's stream and this device's capture. Nothing here
      * decides whether recording is allowed — `RecordingPolicy` has already answered that.
+     *
+     * The answer is *waited for*. Posting the work and returning was the reason a refusal
+     * never reached the screen: the recorder marked the call as recording the instant the
+     * job was queued, so a call with no audio stream yet showed "Recording this call" over
+     * a file nothing ever opened.
      */
-    override fun startRecording(callKey: String, filePath: String) {
+    override suspend fun startRecording(callKey: String, filePath: String): Outcome<Unit, String> {
+        val answer = CompletableDeferred<Outcome<Unit, String>>()
         onPjsip("startRecording") {
-            val running = endpoint ?: return@onPjsip
-            val media = calls[callKey]?.audioMedia ?: run {
-                logger.warn(TAG, "Recording asked for a call with no audio stream")
-                return@onPjsip
-            }
-
-            val recorder = AudioMediaRecorder()
-            recorder.createRecorder(filePath)
-            media.startTransmit(recorder)
-            running.audDevManager().captureDevMedia.startTransmit(recorder)
-            recorders[callKey] = recorder
+            val running = endpoint
+            val media = calls[callKey]?.audioMedia
+            answer.complete(
+                when {
+                    running == null -> failure("the stack is not running")
+                    media == null -> failure("the call has no audio stream")
+                    else -> openRecorder(media, running.audDevManager().captureDevMedia, filePath, logger)
+                        .map { recorders[callKey] = it }
+                },
+            )
         }
+        // Bounded, like every other wait in this app (§1.4). One thread serves pjsua2, a
+        // media operation can be ahead of this one, and a wait with no end would hang the
+        // caller's coroutine for the life of the process rather than report anything.
+        return withTimeoutOrNull(RECORDING_START_TIMEOUT_MILLIS) { answer.await() }
+            ?: failure("the stack did not answer in $RECORDING_START_TIMEOUT_MILLIS ms")
     }
 
     override fun stopRecording(callKey: String) {
@@ -1867,6 +1883,15 @@ internal class RealPjsipCoreGateway @Inject constructor(
         const val SRTP_PROFILE = pjmedia_tp_proto.PJMEDIA_TP_PROFILE_SRTP
 
         const val PJSIP_THREAD = "pjsip-main"
+
+        /**
+         * How long [startRecording] waits for the PJSIP thread before giving up.
+         *
+         * Matches the unregister acknowledgement in `PjsipSipEngine`: long enough that
+         * a busy media thread is not mistaken for a refusal, short enough that the tap
+         * that asked for the recording still gets an answer.
+         */
+        const val RECORDING_START_TIMEOUT_MILLIS = 5_000L
         const val EVENT_BUFFER = 64
 
         const val TRANSPORT_UDP = "UDP"
@@ -2215,3 +2240,37 @@ private fun captureOrientFor(degrees: Int): Int? = when (degrees) {
 private const val QUARTER_TURN_DEGREES = 90
 private const val HALF_TURN_DEGREES = 180
 private const val THREE_QUARTER_TURN_DEGREES = 270
+
+/**
+ * Opens a pjsua2 recorder on [filePath] and transmits both legs into it (Task 58).
+ *
+ * At file level rather than in `RealPjsipCoreGateway` because the class is already at
+ * detekt's `LargeClass` bound, and because this needs nothing of the gateway but the two
+ * media ports it is handed. Runs on the PJSIP thread — its caller is inside `onPjsip`.
+ *
+ * Total by construction: every path returns a value, including the throwing ones, because
+ * the caller is completing a deferred that somebody is waiting on.
+ */
+private fun openRecorder(
+    media: AudioMedia,
+    captureDevMedia: AudioMedia,
+    filePath: String,
+    logger: Logger,
+): Outcome<AudioMediaRecorder, String> {
+    val recorder = AudioMediaRecorder()
+    return runCatching {
+        recorder.createRecorder(filePath)
+        media.startTransmit(recorder)
+        captureDevMedia.startTransmit(recorder)
+    }.fold(
+        onSuccess = { success(recorder) },
+        onFailure = { thrown ->
+            // Half-started is worse than not started: a port created and never handed back
+            // is a conference slot `stopRecording` can no longer find, so it is freed here.
+            runCatching { media.stopTransmit(recorder) }
+            runCatching { recorder.delete() }
+            logger.error(RealPjsipCoreGateway.TAG, "startRecording failed: ${thrown.message}", thrown)
+            failure(thrown.message ?: thrown.javaClass.simpleName)
+        },
+    )
+}

@@ -39,7 +39,8 @@ import javax.inject.Singleton
  *   *parameter*, so there is no lookup this class could be persuaded to skip.
  * - [active] is a `StateFlow`, so the in-call indicator is a function of what is being
  *   written rather than of an event somebody has to remember to send. A recording that is
- *   running and an indicator that is showing cannot disagree.
+ *   running and an indicator that is showing cannot disagree — which is only true because
+ *   [start] waits for the stack's answer before it adds anything to that set.
  * - [stop] seals through [RecordingStore], which encrypts and destroys the plaintext.
  *
  * ## Recording stops when the call does, and nothing has to ask
@@ -101,12 +102,26 @@ internal class PjsipCallRecorder @Inject constructor(
             is Outcome.Success -> slot.value
         }
 
-        gateway.startRecording(callId.value, allocated.plaintextPath)
-        setRunning(running.value + (callId to InFlight(allocated, clock.nowEpochMillis())))
-        // The call id, never the path: a log line naming a recording's file is a map to it
-        // for anything that can read logcat (§7, DoD 12).
-        logger.info(TAG, "Recording started on $callId")
-        return success(allocated.id)
+        // Waited for, not fired off. The indicator is a function of [running], so marking
+        // the call before the stack has agreed is exactly how "Recording this call" came
+        // to sit over a file nothing was writing.
+        return when (val started = gateway.startRecording(callId.value, allocated.plaintextPath)) {
+            is Outcome.Failure -> {
+                // The slot goes back, or a refusal leaves a stub the store would later
+                // seal into a recording of nothing.
+                store.discard(allocated)
+                logger.warn(TAG, "The stack would not record $callId: ${started.error}")
+                failure(RecordingError.EngineRefused(started.error))
+            }
+
+            is Outcome.Success -> {
+                setRunning(running.value + (callId to InFlight(allocated, clock.nowEpochMillis())))
+                // The call id, never the path: a log line naming a recording's file is a
+                // map to it for anything that can read logcat (§7, DoD 12).
+                logger.info(TAG, "Recording started on $callId")
+                success(allocated.id)
+            }
+        }
     }
 
     override suspend fun stop(callId: CallId): Outcome<Recording?, RecordingError> {

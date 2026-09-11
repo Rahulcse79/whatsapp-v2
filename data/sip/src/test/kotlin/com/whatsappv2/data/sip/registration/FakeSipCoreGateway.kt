@@ -1,5 +1,8 @@
 package com.whatsappv2.data.sip.registration
 
+import com.whatsappv2.core.common.result.Outcome
+import com.whatsappv2.core.common.result.failure
+import com.whatsappv2.core.common.result.success
 import com.whatsappv2.data.sip.call.SipCallGateway
 import com.whatsappv2.data.sip.call.SipRecordingGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
@@ -105,6 +108,14 @@ internal class FakeSipCoreGateway :
     /** Every recording started, as call key to path, and every one stopped (Task 58). */
     val startedRecordings: MutableList<Pair<String, String>> = mutableListOf()
     val stoppedRecordings: MutableList<String> = mutableListOf()
+
+    /**
+     * Set to make the next start refuse, the way a call with no audio stream does.
+     *
+     * A string rather than a flag, because the string is what the failure carries up to
+     * `RecordingError.EngineRefused` and out to the screen.
+     */
+    var recordingRefusal: String? = null
 
     /** Every INVITE the engine asked for, in order. */
     val placedCalls: MutableList<PlacedCall> = mutableListOf()
@@ -296,8 +307,10 @@ internal class FakeSipCoreGateway :
         attendedTransfers += callKey to consultationCallKey
     }
 
-    override fun startRecording(callKey: String, filePath: String) {
+    override suspend fun startRecording(callKey: String, filePath: String): Outcome<Unit, String> {
+        recordingRefusal?.let { return failure(it) }
         startedRecordings += callKey to filePath
+        return success(Unit)
     }
 
     override fun stopRecording(callKey: String) {

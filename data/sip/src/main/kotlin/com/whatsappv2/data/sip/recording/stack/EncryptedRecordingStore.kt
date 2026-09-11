@@ -85,6 +85,13 @@ internal class EncryptedRecordingStore @Inject constructor(
         }
     }
 
+    override fun discard(allocated: AllocatedRecording) {
+        // The id is safe to log; the path is not (§7, DoD 12).
+        if (File(allocated.plaintextPath).delete()) {
+            logger.info(TAG, "Discarded the slot for ${allocated.id}; the recording never started")
+        }
+    }
+
     override fun seal(
         allocated: AllocatedRecording,
         startedAtEpochMillis: Long,

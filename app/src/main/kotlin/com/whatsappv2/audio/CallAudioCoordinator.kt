@@ -295,13 +295,29 @@ class CallAudioCoordinator @Inject constructor(
             .setOnAudioFocusChangeListener(focusListener, handler)
             .build()
 
-        focusRequest = request
-        val granted = audio.requestAudioFocus(request)
-        if (granted != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-            // Not fatal: the call still has audio, it is simply sharing. Logged because a
-            // refusal here is usually another calling app holding focus.
-            logger.warn(TAG, "Audio focus was not granted")
+        if (audio.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            focusRequest = request
+            return
         }
+
+        // Remembered only when it was granted, so [abandonFocus] gives back what this
+        // actually holds rather than focus it never had.
+        focusRequest = null
+
+        // Info, not a warning, because on this app it is the expected answer rather than a
+        // fault. The connection is self-managed — `SipPhoneAccount` registers
+        // `CAPABILITY_SELF_MANAGED` and `SipConnection` sets `PROPERTY_SELF_MANAGED` — so
+        // Telecom has already taken focus for the call and refuses a second exclusive
+        // request over the top of its own. It was logged as a warning on every resume and
+        // every second call, which is noise sitting exactly where a real audio fault would
+        // have to show itself to be noticed.
+        //
+        // What the refusal costs is worth naming rather than hiding: a request that is not
+        // granted registers no listener, so [onFocusChanged] never fires and muting on
+        // focus loss belongs to Telecom from here. The request is still made, because it is
+        // granted whenever Telecom is not holding this call — and that is the case the
+        // listener exists for.
+        logger.info(TAG, "Audio focus stays with Telecom, which holds this self-managed call")
     }
 
     private fun abandonFocus() {

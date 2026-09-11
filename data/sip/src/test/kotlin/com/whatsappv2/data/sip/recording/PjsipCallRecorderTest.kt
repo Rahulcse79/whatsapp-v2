@@ -216,6 +216,53 @@ class PjsipCallRecorderTest {
     }
 
     @Test
+    fun `a stack that refuses is not shown as recording`() = runTest {
+        val recorder = recorder(this)
+        val callId = connectedCall()
+        gateway.recordingRefusal = "the call has no audio stream"
+
+        val result = recorder.start(callId, consent(callId))
+
+        // The defect this covers: start used to return before the stack had answered, so
+        // the indicator said "Recording this call" over a file nothing was writing.
+        val refused = assertIs<RecordingError.EngineRefused>(
+            assertIs<Outcome.Failure<RecordingError>>(result).error,
+        )
+        assertEquals("the call has no audio stream", refused.detail)
+        assertTrue(recorder.active.value.isEmpty())
+    }
+
+    @Test
+    fun `a refused start gives its slot back instead of leaving a stub`() = runTest {
+        val recorder = recorder(this)
+        val callId = connectedCall()
+        gateway.recordingRefusal = "the stack is not running"
+
+        recorder.start(callId, consent(callId))
+
+        // Sealed, the stub would become a recording of nothing that still has to be
+        // listed, shown and deleted like a real one.
+        assertEquals(store.allocated.single(), store.discarded.single())
+        assertTrue(store.sealed.isEmpty())
+    }
+
+    @Test
+    fun `a refused start can be retried once the stack is willing`() = runTest {
+        val recorder = recorder(this)
+        val callId = connectedCall()
+        gateway.recordingRefusal = "the call has no audio stream"
+        recorder.start(callId, consent(callId))
+
+        gateway.recordingRefusal = null
+        val result = recorder.start(callId, consent(callId))
+
+        // The first attempt must leave nothing behind that makes the second a no-op.
+        assertIs<Outcome.Success<RecordingId>>(result)
+        assertEquals(setOf(callId), recorder.active.value)
+        assertEquals(1, gateway.startedRecordings.size)
+    }
+
+    @Test
     fun `stopping the recorder seals everything still running`() = runTest {
         val recorder = recorder(this)
         recorder.start()
@@ -269,6 +316,7 @@ private class FakeRecordingStore : RecordingStore {
 
     val allocated = mutableListOf<AllocatedRecording>()
     val sealed = mutableListOf<Recording>()
+    val discarded = mutableListOf<AllocatedRecording>()
     val purgedBefore = mutableListOf<Long>()
     var failAllocation = false
     private var next = 0
@@ -282,6 +330,10 @@ private class FakeRecordingStore : RecordingStore {
         )
         allocated += slot
         return success(slot)
+    }
+
+    override fun discard(allocated: AllocatedRecording) {
+        discarded += allocated
     }
 
     override fun seal(
