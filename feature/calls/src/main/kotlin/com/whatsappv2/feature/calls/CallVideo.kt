@@ -1,16 +1,22 @@
 package com.whatsappv2.feature.calls
 
+import android.content.Context
+import android.os.Build
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.WindowManager
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.viewinterop.AndroidView
@@ -54,6 +60,13 @@ internal fun CallVideo(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    // Re-read on every configuration change: rotating the device recreates the activity
+    // by default, but a manifest that opts out of that would otherwise leave the camera
+    // sending the old way up. The stack keeps the value, so repeating it is harmless.
+    val configuration = LocalConfiguration.current
+    LaunchedEffect(configuration) {
+        actions.onDisplayRotation(context.displayRotationDegrees())
+    }
     val remoteView = remember { SurfaceView(context) }
     val previewView = remember {
         SurfaceView(context).apply {
@@ -138,6 +151,31 @@ internal fun CallVideo(
         }
     }
 }
+
+/**
+ * The display's rotation as degrees clockwise from the device's natural orientation.
+ *
+ * `Context.display` is API 30; below that the window manager's default display is the
+ * one an activity's context refers to.
+ */
+private fun Context.displayRotationDegrees(): Int {
+    val rotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        runCatching { display?.rotation }.getOrNull()
+    } else {
+        @Suppress("DEPRECATION")
+        (getSystemService(Context.WINDOW_SERVICE) as? WindowManager)?.defaultDisplay?.rotation
+    }
+    return when (rotation) {
+        Surface.ROTATION_90 -> QUARTER_TURN_DEGREES
+        Surface.ROTATION_180 -> HALF_TURN_DEGREES
+        Surface.ROTATION_270 -> THREE_QUARTER_TURN_DEGREES
+        else -> 0
+    }
+}
+
+private const val QUARTER_TURN_DEGREES = 90
+private const val HALF_TURN_DEGREES = 180
+private const val THREE_QUARTER_TURN_DEGREES = 270
 
 internal const val TAG_VIDEO = "call-video"
 internal const val TAG_REMOTE = "call-video-remote"

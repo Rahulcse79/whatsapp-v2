@@ -282,6 +282,12 @@ internal class FakeSipCoreGateway :
         videoWindows = remoteView to localPreview
     }
 
+    val captureRotations: MutableList<Int> = mutableListOf()
+
+    override fun setCaptureRotation(degrees: Int) {
+        captureRotations += degrees
+    }
+
     override fun transferCall(callKey: String, destination: String) {
         blindTransfers += callKey to destination
     }

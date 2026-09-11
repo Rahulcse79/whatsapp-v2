@@ -50,11 +50,14 @@ import org.pjsip.pjsua2.OnIncomingCallParam
 import org.pjsip.pjsua2.OnRegStateParam
 import org.pjsip.pjsua2.TlsConfig
 import org.pjsip.pjsua2.TransportConfig
+import org.pjsip.pjsua2.VidDevManager
 import org.pjsip.pjsua2.VideoWindowHandle
 import org.pjsip.pjsua2.pj_ssl_sock_proto
 import org.pjsip.pjsua2.pjmedia_dir
+import org.pjsip.pjsua2.pjmedia_orient
 import org.pjsip.pjsua2.pjmedia_tp_proto
 import org.pjsip.pjsua2.pjmedia_type
+import org.pjsip.pjsua2.pjmedia_vid_dev_std_index
 import org.pjsip.pjsua2.pjsip_inv_state
 import org.pjsip.pjsua2.pjsip_role_e
 import org.pjsip.pjsua2.pjsip_ssl_method
@@ -63,6 +66,7 @@ import org.pjsip.pjsua2.pjsip_transport_type_e
 import org.pjsip.pjsua2.pjsua_call_flag
 import org.pjsip.pjsua2.pjsua_call_media_status
 import org.pjsip.pjsua2.pjsua_call_vid_strm_op
+import org.pjsip.pjsua2.pjsua_vid_req_keyframe_method
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -395,8 +399,8 @@ internal class RealPjsipCoreGateway @Inject constructor(
         // is what registers the codecs, so there is nothing to configure before it;
         // a stream created after libStart has already taken its parameters, so
         // configuring later changes nothing until the next call.
-        created.tuneOpus()
-        created.tuneVideoCodecs()
+        created.tuneOpus(logger)
+        created.tuneVideoCodecs(logger)
         lyraModelProblem = created.tuneLyra(context, logger)
 
         // All three, once, at startup. PJSIP binds an account to a transport by id,
@@ -531,70 +535,6 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 pj_ssl_sock_proto.PJ_SSL_SOCK_PROTO_TLS1_2 or
                     pj_ssl_sock_proto.PJ_SSL_SOCK_PROTO_TLS1_3
                 ).toLong()
-        }
-    }
-
-    /**
-     * Opus, configured rather than left at whatever the codec defaults to (§5.2).
-     *
-     * Opus is the only wideband codec in the default preference list, so its settings are
-     * most of what "audio quality" means here.
-     *
-     *  - `sample_rate` matches the bridge, so nothing resamples on the way in or out.
-     *  - `bit_rate` is well above the 16-24 kbps that narrowband deployments settle for;
-     *    at 48 kHz mono this is transparent for speech.
-     *  - `complexity` is the encoder's own quality/CPU dial, 0..10.
-     *  - `packet_loss` is not a measurement, it is a *hint*: it tells the encoder how much
-     *    FEC to carry. Zero means no redundancy, and the first lost packet is a hole.
-     *  - CBR off, because VBR spends the bits where the speech is.
-     */
-    private fun Endpoint.tuneOpus() {
-        runCatching {
-            val opus = codecOpusConfig
-            opus.sample_rate = CORE_CLOCK_RATE
-            opus.channel_cnt = MONO
-            opus.bit_rate = OPUS_BITRATE
-            opus.complexity = OPUS_COMPLEXITY
-            opus.packet_loss = OPUS_EXPECTED_LOSS_PCT
-            opus.cbr = false
-            codecOpusConfig = opus
-        }.onFailure {
-            // Not fatal: a build without Opus still registers PCMU and G722, and a call
-            // on those is worth more than no call. Loud, because it means the native
-            // library was built without PJMEDIA_HAS_OPUS_CODEC and §5.2 is not being met.
-            logger.error(TAG, "Opus not configured - is it compiled in? ${it.message}")
-        }
-    }
-
-    /**
-     * Video encoder parameters, per codec (§5.2).
-     *
-     * PJSIP's defaults here are conservative enough to look like a fault: a small frame at
-     * a low bitrate, which on a modern handset reads as a broken camera rather than a
-     * bandwidth choice. Every registered codec gets the same ceiling, because the codec
-     * that ends up negotiated is the far end's decision, not ours.
-     *
-     * A ceiling, not a target - `rateControlBandwidth` on the account is what actually
-     * holds the stream to it, and PJSIP drops below it on its own when the link cannot
-     * carry it. Applied per codec inside `runCatching` so one codec rejecting a format
-     * does not cost the others theirs.
-     */
-    private fun Endpoint.tuneVideoCodecs() {
-        videoCodecEnum2().forEach { info ->
-            runCatching {
-                val param = getVideoCodecParam(info.codecId)
-                param.encFmt.apply {
-                    width = VIDEO_WIDTH
-                    height = VIDEO_HEIGHT
-                    fpsNum = VIDEO_FPS
-                    fpsDenum = 1
-                    avgBps = VIDEO_AVG_BPS
-                    maxBps = VIDEO_MAX_BPS
-                }
-                setVideoCodecParam(info.codecId, param)
-            }.onFailure {
-                logger.warn(TAG, "Video codec ${info.codecId} kept its defaults: ${it.message}")
-            }
         }
     }
 
@@ -958,7 +898,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
         applyPriorities(
             kind = "Video",
             accountKey = account.key,
-            available = videoCodecEnum2().map { it.codecId },
+            available = videoCodecEnum2().map { it.codecId }.softwareVp8First(),
             preferred = account.videoCodecs,
             alsoRequired = otherVideo,
         ) { id, priority -> videoCodecSetPriority(id, priority) }
@@ -1249,20 +1189,20 @@ internal class RealPjsipCoreGateway @Inject constructor(
         onPjsip("switchCamera") {
             val running = endpoint ?: return@onPjsip
             val call = calls[callKey] ?: return@onPjsip
-
-            val devices = (0 until running.vidDevManager().devCount.toInt()).toList()
-            if (devices.size < 2) {
+            val next = cameraAfter(running.vidDevManager(), call.captureDevice)
+            if (next == null) {
                 logger.info(TAG, "Only one camera on this device; nothing to switch to")
                 return@onPjsip
             }
-
-            val current = call.captureDevice
-            val next = devices[(devices.indexOf(current).coerceAtLeast(0) + 1) % devices.size]
+            // The preview is bound to the old device's window; PJSIP replaces that window
+            // on the change, so the preview is stopped first and re-drawn on the new one.
+            call.stopPreview()
             call.captureDevice = next
             call.vidSetStream(
                 pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_CHANGE_CAP_DEV,
                 CallVidSetStreamParam().apply { capDev = next },
             )
+            call.applyPreview()
         }
     }
 
@@ -1276,16 +1216,44 @@ internal class RealPjsipCoreGateway @Inject constructor(
      */
     override fun setCameraCapturing(capturing: Boolean) {
         onPjsip("setCameraCapturing") {
+            cameraWanted = capturing
             val op = if (capturing) {
                 pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_START_TRANSMIT
             } else {
                 pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_STOP_TRANSMIT
             }
             calls.values.forEach { call ->
+                // The preview holds its own reference on the capture window (see
+                // `PjCall.applyPreview`), so it goes first or the camera stays open.
+                if (!capturing) call.stopPreview()
                 runCatching { call.vidSetStream(op, CallVidSetStreamParam()) }
+                if (capturing) call.applyPreview()
             }
         }
     }
+
+    /**
+     * What [setCameraCapturing] last asked for, so a video stream that appears *after* the
+     * asking can be given the same answer.
+     *
+     * `START_TRANSMIT` is per stream, and `CameraPolicy` asks for the camera before the
+     * INVITE is sent so the offer can carry video — at which point there is no stream, the
+     * request is `PJ_ENOTFOUND`, and the `runCatching` above swallows it, correctly. With
+     * `autoTransmitOutgoing` off (`AccountConfigFactory`, §5.2) nothing in PJSIP starts
+     * capture when the stream is finally negotiated either, so until this existed a video
+     * call placed as one connected with a renderer, an encoder, and no camera behind it:
+     * `pjsua_vid.c` logged "Setting up TX.." and then nothing (TC15, 2026-09-11). The same
+     * gap reopens on every re-INVITE, because `pjsua_vid_stop_stream` drops the capture
+     * window and the rebuilt stream starts without one. `PjCall.onCallMediaState` reads
+     * this when a video stream comes up and re-issues the start.
+     *
+     * Only the start is re-issued. A stream PJSIP builds with auto-transmit off is not
+     * transmitting until told to, so a `false` here needs nothing done to it — and
+     * `STOP_TRANSMIT` on a stream that never captured walks `dec_vid_win` with an invalid
+     * window id when another call holds the preview, which is a crash rather than a no-op.
+     */
+    @Volatile
+    private var cameraWanted = false
 
     /**
      * Takes the surfaces the call screen draws into, or releases them with nulls (Task 52).
@@ -1302,7 +1270,32 @@ internal class RealPjsipCoreGateway @Inject constructor(
         remoteSurface = remoteView
         previewSurface = localPreview
         onPjsip("setVideoWindows") {
-            calls.values.forEach { it.applyVideoWindows() }
+            calls.values.forEach {
+                it.applyVideoWindows()
+                it.applyPreview()
+            }
+        }
+    }
+
+    /**
+     * Rotates what the cameras capture so a portrait call sends a portrait picture.
+     *
+     * Applied to every capture device rather than the one in use, and with `keep`, so
+     * the setting survives a camera switch and reaches captures that have not started
+     * yet — PJSIP holds it per device and applies it when the device opens. The mapping
+     * from display rotation to `pjmedia_orient` is pjsua2's own Android sample's
+     * (`CallActivity.updateCaptureOrientation`): the camera sensor sits landscape, so a
+     * portrait screen (rotation 0) needs the frame turned 270°, and `android_dev.c:1023`
+     * mirrors that for a back-facing camera on its own.
+     */
+    override fun setCaptureRotation(degrees: Int) {
+        val orient = captureOrientFor(degrees) ?: return
+        onPjsip("setCaptureRotation") {
+            val manager = endpoint?.vidDevManager() ?: return@onPjsip
+            manager.cameras().forEach { id ->
+                runCatching { manager.setCaptureOrient(id, orient, true) }
+                    .onFailure { logger.warn(TAG, "Camera $id did not take rotation $degrees: ${it.message}") }
+            }
         }
     }
 
@@ -1453,10 +1446,20 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
         override fun onCallState(prm: OnCallStateParam) {
             val info = infoOrNull() ?: return
+            // CONNECTING is the moment between the 200 and the ACK, and on this side the
+            // media is not negotiated yet: `callStateOf` mapped it to CONNECTED through
+            // its `else` arm, the engine took that as the answer, read `videoActive` as
+            // false because the video stream had not been set up, and released the camera
+            // on every video call twelve milliseconds after the far end accepted it
+            // (TC15, 2026-09-11: "Camera released" straight after the 200, then
+            // `set video stream, op=6` — STOP_TRANSMIT). CONFIRMED follows the media
+            // update and carries the negotiated streams; it is the one to report.
+            if (info.state == pjsip_inv_state.PJSIP_INV_STATE_CONNECTING) return
             publish(callStateOf(info), info)
 
             if (info.state == pjsip_inv_state.PJSIP_INV_STATE_DISCONNECTED) {
                 pendingResume.cancel()
+                stopPreview()
                 // Only now. The native peer is finished with this director, and holding it
                 // any longer is the leak; releasing it any earlier is a crash.
                 calls -= callKey
@@ -1501,8 +1504,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
                     media.type == pjmedia_type.PJMEDIA_TYPE_VIDEO &&
                         media.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE -> {
-                        captureDevice = media.videoCapDev
+                        // Only once capture is set up: before `START_TRANSMIT` PJSIP
+                        // reports INVALID (-3) here, and a preview asked for on -3 fails.
+                        if (media.videoCapDev != pjmedia_vid_dev_std_index.PJMEDIA_VID_INVALID_DEV) {
+                            captureDevice = media.videoCapDev
+                        }
                         applyVideoWindows()
+                        if (media.dir and pjmedia_dir.PJMEDIA_DIR_ENCODING != 0) startTransmitIfWanted()
                     }
                 }
             }
@@ -1589,6 +1597,51 @@ internal class RealPjsipCoreGateway @Inject constructor(
             }
         }
 
+        /**
+         * Gives a video stream that has just come up the camera decision already made
+         * (see [cameraWanted]). Posted rather than done inline: this runs inside PJSIP's
+         * media-state callback, and `pjsua_call_set_vid_strm` re-acquires the call it is
+         * being told about, which is safe on the same thread but clearer after the
+         * callback has returned.
+         */
+        private fun startTransmitIfWanted() {
+            if (!cameraWanted) return
+            onPjsip("startTransmit") {
+                if (!cameraWanted || !calls.containsKey(callKey)) return@onPjsip
+                vidSetStream(
+                    pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_START_TRANSMIT,
+                    CallVidSetStreamParam(),
+                )
+                applyPreview()
+            }
+        }
+
+        private val localPreview = LocalPreview(logger)
+
+        /**
+         * Draws this device's own picture into the preview surface, or takes it down when
+         * the surface is gone — see [LocalPreview] for why a sendrecv stream needs this
+         * at all. Only while capture is running: started earlier, the preview would open
+         * the camera itself, which is the decision `CameraPolicy` owns, and a surface
+         * that arrives first is picked up when [startTransmitIfWanted] runs.
+         */
+        fun applyPreview() {
+            val surface = previewSurface
+            if (surface == null) {
+                localPreview.stop()
+                return
+            }
+            if (!isTransmittingVideo()) return
+            localPreview.draw(captureDevice, surface)
+        }
+
+        fun stopPreview() = localPreview.stop()
+
+        /** Whether this call's video stream is encoding, i.e. capture has been set up. */
+        private fun isTransmittingVideo(): Boolean =
+            runCatching { vidStreamIsRunning(ANY_VIDEO_STREAM, pjmedia_dir.PJMEDIA_DIR_ENCODING) }
+                .getOrDefault(false)
+
         fun publish(state: StackCallState, info: CallInfo? = infoOrNull()) {
             val remote = NameAddr.of(info?.remoteUri)
             callEventFlow.tryEmit(
@@ -1661,6 +1714,17 @@ internal class RealPjsipCoreGateway @Inject constructor(
             audioCount = 1
             // There is no `isVideoEnabled` in PJSIP. The stream count *is* the profile.
             videoCount = if (videoEnabled) 1L else 0L
+            // How a lost packet gets repaired. `CallSetting()` zeroes this (only
+            // `CallSetting(true)` takes pjsua's defaults, and those also offer a text
+            // stream), and zero meant no `a=rtcp-fb:* nack pli` in the SDP: the decoder
+            // could not ask for a keyframe and libvpx sends one on its own every 60 s, so
+            // one lost packet on Wi-Fi left the far end a smear of macroblocks for up to
+            // a minute (TC15, 0.4 % loss, 2026-09-11). PLI is the RTCP request, SIP INFO
+            // the fallback for a peer without RTCP-FB; both are what pjsua defaults to.
+            reqKeyframeMethod = (
+                pjsua_vid_req_keyframe_method.PJSUA_VID_REQ_KEYFRAME_RTCP_PLI or
+                    pjsua_vid_req_keyframe_method.PJSUA_VID_REQ_KEYFRAME_SIP_INFO
+                ).toLong()
         }
     }
 
@@ -1705,7 +1769,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
         return block()
     }
 
-    private companion object {
+    internal companion object {
         const val TAG = "PjsipGateway"
 
         /**
@@ -1795,6 +1859,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
         /** Whatever `AccountConfig.videoConfig.defaultCaptureDevice` resolved to. */
         const val CAPTURE_DEVICE_DEFAULT = -1
 
+        /** `med_idx = -1` to `pjsua_call_vid_stream_is_running`: the first active video stream. */
+        const val ANY_VIDEO_STREAM = -1
+
         /**
          * How long a removed account may wait for its un-REGISTER to be answered before
          * it is shut down regardless. Longer than `PjsipSipEngine`'s five-second wait,
@@ -1815,10 +1882,10 @@ private const val SIP_ERROR_FLOOR = 300
 // and detekt's LargeClass limit is the budget the class spends on the things that do.
 
 /**
- * PJSIP's invite state as the app's, or null for one that maps to nothing.
+ * PJSIP's invite state as the app's.
  *
- * `CONNECTING` is deliberately absent: it is the moment between the 200 and the ACK,
- * and the app has nothing different to do during it.
+ * `CONNECTING` has no arm of its own and would fall into `else`; `PjCall.onCallState`
+ * does not publish it at all — see the comment there for the video call it broke.
  */
 private fun callStateOf(info: CallInfo): StackCallState = when (info.state) {
     pjsip_inv_state.PJSIP_INV_STATE_CALLING -> StackCallState.OUTGOING_INIT
@@ -1897,6 +1964,70 @@ private fun CallInfo.resumeParams(): CallOpParam {
 }
 
 /**
+ * Opus, configured rather than left at whatever the codec defaults to (§5.2).
+ *
+ * Opus is the only wideband codec in the default preference list, so its settings are
+ * most of what "audio quality" means here.
+ *
+ *  - `sample_rate` matches the bridge, so nothing resamples on the way in or out.
+ *  - `bit_rate` is well above the 16-24 kbps that narrowband deployments settle for;
+ *    at 48 kHz mono this is transparent for speech.
+ *  - `complexity` is the encoder's own quality/CPU dial, 0..10.
+ *  - `packet_loss` is not a measurement, it is a *hint*: it tells the encoder how much
+ *    FEC to carry. Zero means no redundancy, and the first lost packet is a hole.
+ *  - CBR off, because VBR spends the bits where the speech is.
+ */
+private fun Endpoint.tuneOpus(logger: Logger) {
+    runCatching {
+        val opus = codecOpusConfig
+        opus.sample_rate = RealPjsipCoreGateway.CORE_CLOCK_RATE
+        opus.channel_cnt = RealPjsipCoreGateway.MONO
+        opus.bit_rate = RealPjsipCoreGateway.OPUS_BITRATE
+        opus.complexity = RealPjsipCoreGateway.OPUS_COMPLEXITY
+        opus.packet_loss = RealPjsipCoreGateway.OPUS_EXPECTED_LOSS_PCT
+        opus.cbr = false
+        codecOpusConfig = opus
+    }.onFailure {
+        // Not fatal: a build without Opus still registers PCMU and G722, and a call
+        // on those is worth more than no call. Loud, because it means the native
+        // library was built without PJMEDIA_HAS_OPUS_CODEC and §5.2 is not being met.
+        logger.error(RealPjsipCoreGateway.TAG, "Opus not configured - is it compiled in? ${it.message}")
+    }
+}
+
+/**
+ * Video encoder parameters, per codec (§5.2).
+ *
+ * PJSIP's defaults here are conservative enough to look like a fault: a small frame at
+ * a low bitrate, which on a modern handset reads as a broken camera rather than a
+ * bandwidth choice. Every registered codec gets the same ceiling, because the codec
+ * that ends up negotiated is the far end's decision, not ours.
+ *
+ * A ceiling, not a target - `rateControlBandwidth` on the account is what actually
+ * holds the stream to it, and PJSIP drops below it on its own when the link cannot
+ * carry it. Applied per codec inside `runCatching` so one codec rejecting a format
+ * does not cost the others theirs.
+ */
+private fun Endpoint.tuneVideoCodecs(logger: Logger) {
+    videoCodecEnum2().forEach { info ->
+        runCatching {
+            val param = getVideoCodecParam(info.codecId)
+            param.encFmt.apply {
+                width = RealPjsipCoreGateway.VIDEO_WIDTH
+                height = RealPjsipCoreGateway.VIDEO_HEIGHT
+                fpsNum = RealPjsipCoreGateway.VIDEO_FPS
+                fpsDenum = 1
+                avgBps = RealPjsipCoreGateway.VIDEO_AVG_BPS
+                maxBps = VIDEO_MAX_BPS
+            }
+            setVideoCodecParam(info.codecId, param)
+        }.onFailure {
+            logger.warn(RealPjsipCoreGateway.TAG, "Video codec ${info.codecId} kept its defaults: ${it.message}")
+        }
+    }
+}
+
+/**
  * Points the Lyra codec at its model files (ADR-008, Exit A).
  *
  * After `libInit`, which is when the codec registers and writes its *default* path —
@@ -1932,3 +2063,74 @@ private fun Endpoint.tuneLyra(context: Context, logger: Logger): String? {
 }
 
 private const val LYRA_TAG = "PjsipGateway"
+
+/**
+ * The camera to switch to after [current], or null when there is nothing to switch to.
+ *
+ * Cameras only. PJSIP's device list also holds every renderer and its colour-bar
+ * generator, and cycling through the whole list pointed the encoder at a device that
+ * cannot capture. "Default" (-1) is an alias, not a position in the list, so it is
+ * resolved to the device it stands for before the next one is looked up.
+ */
+private fun cameraAfter(manager: VidDevManager, current: Int): Int? {
+    val cameras = manager.cameras()
+    if (cameras.size < 2) return null
+    val resolved = if (current == pjmedia_vid_dev_std_index.PJMEDIA_VID_DEFAULT_CAPTURE_DEV) {
+        runCatching { manager.getDevInfo(current).id }.getOrDefault(current)
+    } else {
+        current
+    }
+    return cameras[(cameras.indexOf(resolved).coerceAtLeast(0) + 1) % cameras.size]
+}
+
+/**
+ * The video registry with libvpx's VP8 ahead of Android MediaCodec's.
+ *
+ * Both register as `VP8`, and `CodecPriorities` offers same-name codecs in the order it is
+ * given — so this is the one place that decides which VP8 the offer leads with. Software:
+ * on the TC15 the MediaCodec decoder never produced a picture (`and_vid_mediacodec.cpp:
+ * Decoder failed to get input Buffer`, every frame `PJ_ETOOSMALL`), while libvpx decoded
+ * the same echoed stream at 1088×612 without a dropped frame (2026-09-11). MediaCodec's
+ * VP8 stays registered, one step below, so a far end that only speaks to it still gets an
+ * answer. Stable, so nothing else in the registry moves.
+ */
+private fun List<String>.softwareVp8First(): List<String> =
+    sortedBy { if (it.equals(MEDIACODEC_VP8_ID, ignoreCase = true)) 1 else 0 }
+
+/** `VP8/<PJMEDIA_RTP_PT_VP8_RSV1>`: the id `and_vid_mediacodec.cpp:76` registers its VP8 under. */
+private const val MEDIACODEC_VP8_ID = "VP8/103"
+
+/**
+ * The indices of the real cameras: capture devices of the platform's camera driver.
+ *
+ * PJSIP's device list also holds every renderer and a colour-bar test-pattern generator,
+ * and the generator reports itself as a capture device — so the first version of this
+ * filtered on direction alone and the second "Flip" of a call pointed the encoder at
+ * `Colorbar generator [Colorbar]` (TC15, 2026-09-11). The driver name is what tells the
+ * camera apart: `android_dev.c` registers its devices under `Android`.
+ */
+private fun VidDevManager.cameras(): List<Int> = (0 until devCount.toInt()).filter { id ->
+    runCatching {
+        val info = getDevInfo(id)
+        info.dir and pjmedia_dir.PJMEDIA_DIR_CAPTURE != 0 && info.driver.equals(CAMERA_DRIVER, ignoreCase = true)
+    }.getOrDefault(false)
+}
+
+/** What `android_dev.c` calls its factory: `pj_ansi_strxcpy(info->driver, "Android", ...)`. */
+private const val CAMERA_DRIVER = "Android"
+
+/**
+ * pjsua2's Android sample mapping from `Display.getRotation()` degrees to the capture
+ * orientation, or null for a value that is not a rotation.
+ */
+private fun captureOrientFor(degrees: Int): Int? = when (degrees) {
+    0 -> pjmedia_orient.PJMEDIA_ORIENT_ROTATE_270DEG
+    QUARTER_TURN_DEGREES -> pjmedia_orient.PJMEDIA_ORIENT_NATURAL
+    HALF_TURN_DEGREES -> pjmedia_orient.PJMEDIA_ORIENT_ROTATE_90DEG
+    THREE_QUARTER_TURN_DEGREES -> pjmedia_orient.PJMEDIA_ORIENT_ROTATE_180DEG
+    else -> null
+}
+
+private const val QUARTER_TURN_DEGREES = 90
+private const val HALF_TURN_DEGREES = 180
+private const val THREE_QUARTER_TURN_DEGREES = 270

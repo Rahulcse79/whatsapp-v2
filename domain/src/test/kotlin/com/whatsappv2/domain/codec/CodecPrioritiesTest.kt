@@ -51,9 +51,9 @@ class CodecPrioritiesTest {
             preferred = listOf("opus", "PCMU", "PCMA"),
         )
 
-        assertEquals(255.toShort(), result.priorities.getValue("opus/48000/2"))
-        assertEquals(254.toShort(), result.priorities.getValue("PCMU/8000/1"))
-        assertEquals(253.toShort(), result.priorities.getValue("PCMA/8000/1"))
+        assertEquals(254.toShort(), result.priorities.getValue("opus/48000/2"))
+        assertEquals(253.toShort(), result.priorities.getValue("PCMU/8000/1"))
+        assertEquals(252.toShort(), result.priorities.getValue("PCMA/8000/1"))
         assertFalse(result.wouldDisableEverything)
     }
 
@@ -76,7 +76,7 @@ class CodecPrioritiesTest {
             alsoRequired = setOf("opus"),
         )
 
-        assertEquals(255.toShort(), result.priorities.getValue("PCMU/8000/1"))
+        assertEquals(254.toShort(), result.priorities.getValue("PCMU/8000/1"))
         assertEquals(
             CodecPriorities.KEPT_FOR_ANOTHER_ACCOUNT,
             result.priorities.getValue("opus/48000/2"),
@@ -94,8 +94,8 @@ class CodecPrioritiesTest {
             preferred = listOf("OPUS", "PCMU"),
         )
 
-        assertEquals(255.toShort(), result.priorities.getValue("opus/48000/2"))
-        assertEquals(254.toShort(), result.priorities.getValue("pcmu/8000/1"))
+        assertEquals(254.toShort(), result.priorities.getValue("opus/48000/2"))
+        assertEquals(253.toShort(), result.priorities.getValue("pcmu/8000/1"))
         assertTrue(result.unmatchedPreferences.isEmpty())
     }
 
@@ -110,8 +110,31 @@ class CodecPrioritiesTest {
         )
 
         assertEquals(listOf("H264"), result.unmatchedPreferences)
-        assertEquals(255.toShort(), result.priorities.getValue("VP8/102"))
+        assertEquals(254.toShort(), result.priorities.getValue("VP8/102"))
         assertFalse(result.wouldDisableEverything)
+    }
+
+    @Test
+    fun `two codecs with one name get distinct priorities, in the order the registry gave them`() {
+        // libvpx and Android's MediaCodec both register VP8, and both matched the one
+        // preference at the same number. pjmedia orders equal priorities with an unstable
+        // selection sort, so which VP8 led the offer changed every time an account was
+        // saved — and on the TC15 the MediaCodec one cannot decode ("Decoder failed to get
+        // input Buffer"), so half the video calls showed a black far end (2026-09-11).
+        val result = CodecPriorities.assign(
+            available = listOf("VP8/102", "H264/99", "VP8/103", "VP9/106"),
+            preferred = listOf("VP8", "H264"),
+        )
+
+        assertEquals(254.toShort(), result.priorities.getValue("VP8/102"))
+        assertEquals(253.toShort(), result.priorities.getValue("VP8/103"))
+        assertEquals(252.toShort(), result.priorities.getValue("H264/99"))
+        assertEquals(CodecPriorities.DISABLED, result.priorities.getValue("VP9/106"))
+        assertEquals(
+            result.priorities.filterValues { it > 0 }.size,
+            result.priorities.filterValues { it > 0 }.values.toSet().size,
+            "every enabled codec has its own priority",
+        )
     }
 
     @Test

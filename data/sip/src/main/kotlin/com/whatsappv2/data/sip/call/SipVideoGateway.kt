@@ -57,4 +57,11 @@ internal interface SipVideoGateway {
      * is a texture the stack keeps writing into after the screen has gone.
      */
     fun setVideoWindows(remoteView: Any?, localPreview: Any?)
+
+    /**
+     * Rotates captured frames to match a screen turned [degrees] clockwise from the
+     * device's natural orientation (0, 90, 180, 270), for every camera and for the
+     * captures that come after. See `VideoSurfaceController.setDisplayRotation`.
+     */
+    fun setCaptureRotation(degrees: Int)
 }

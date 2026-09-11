@@ -10,7 +10,9 @@ import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -76,6 +78,39 @@ class PjsipSipEngineVideoTest : PjsipSipEngineFixture() {
         val call = engine.activeCalls.value.single()
         assertEquals(true, call.state.controlsOrNull?.isVideoEnabled)
         assertTrue(gateway.cameraCaptureChanges.contains(true))
+    }
+
+    @Test
+    fun `a video call connects in one step, with video already on, so the camera never flaps`() = runTest {
+        // The TC15 shape of the same bug (2026-09-11). The first fix adopted the negotiated
+        // video *after* storing the connected snapshot, so for one emission the call was
+        // established with `isVideoEnabled = false` — and CameraPolicy acted on that
+        // emission: "Camera released" 12 ms after the 200 OK, STOP_TRANSMIT to the stack,
+        // and a video call that sent nothing. The adoption is now folded into the state
+        // before it is stored, so no observer ever sees an established video call that
+        // says video is off. Every snapshot is recorded here, not only the last one.
+        val engine = registeredEngine()
+        val seen = mutableListOf<CallState>()
+        val recorder = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            engine.activeCalls.collect { calls -> calls.singleOrNull()?.let { seen += it.state } }
+        }
+        val callId = requireNotNull(
+            engine.placeCall(account.id, TARGET, MediaProfile.AUDIO_VIDEO).getOrNull(),
+        )
+        runCurrent()
+        gateway.emitCall(callId.value, StackCallState.CONNECTED, videoActive = true)
+        runCurrent()
+        gateway.emitCall(callId.value, StackCallState.STREAMS_RUNNING, videoActive = true)
+        runCurrent()
+        recorder.cancel()
+
+        val established = seen.filter { it.controlsOrNull != null }
+        assertTrue(established.isNotEmpty(), "the call never connected: $seen")
+        assertTrue(
+            established.all { it.controlsOrNull?.isVideoEnabled == true },
+            "an established snapshot said video was off: $seen",
+        )
+        assertEquals(listOf(true), gateway.cameraCaptureChanges)
     }
 
     @Test

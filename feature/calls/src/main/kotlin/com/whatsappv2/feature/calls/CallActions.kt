@@ -36,6 +36,7 @@ data class CallActions(
     /** Hands the stack the views to draw into, and takes them back (Task 52). */
     val onVideoSurfaces: (remote: Any?, preview: Any?) -> Unit = { _, _ -> },
     val onReleaseVideoSurfaces: () -> Unit = {},
+    val onDisplayRotation: (degrees: Int) -> Unit = {},
 
     // ------------------------------------------------------------------ transfer
     val onStartTransfer: () -> Unit = {},

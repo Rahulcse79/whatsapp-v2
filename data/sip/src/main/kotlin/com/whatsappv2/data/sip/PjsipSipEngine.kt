@@ -575,36 +575,13 @@ internal class PjsipSipEngine @Inject constructor(
 
         val justConnected = current.connectedAtEpochMillis == null &&
             CallStateMapper.isConnected(event.state)
-        reportToPlatform(id, current, next, justConnected)
-        store(id, current, withRequestedRoute(current, next), event, justConnected)
-        if (justConnected) adoptNegotiatedVideo(id)
-    }
-
-    /**
-     * Makes the controls agree with the video that was actually negotiated.
-     *
-     * ## The bug this fixes
-     *
-     * [CallControls.isVideoEnabled] defaults to `false` and, until this existed, the only
-     * thing that ever set it was the user pressing the in-call video button. A call placed
-     * *as* a video call therefore connected with video negotiated and running while its
-     * controls still said video was off — and two things read that flag:
-     * [com.whatsappv2.domain.call.CameraPolicy], which then never claimed the camera, and
-     * the call screen, which then never drew the local preview. Video calling did not work,
-     * and nothing in the SIP layer was wrong.
-     *
-     * ## Only at connect
-     *
-     * Once, on the transition where media starts running — the same moment
-     * [negotiatedMedia] reads the stack's params for the same reason. Re-applying it on
-     * every later event would undo a deliberate video mute, whose whole shape is
-     * `isVideoEnabled = false` while a stream is still negotiated (Task 53).
-     */
-    private fun adoptNegotiatedVideo(id: CallId) {
-        val call = calls.value[id] ?: return
-        if (!call.media.hasVideo) return
-        if (call.state.controlsOrNull?.isVideoEnabled == true) return
-        applyControl(id, CallEvent.SetVideoEnabled(true))
+        val media = negotiatedMedia(current, event)
+        // Both folds happen before the store, for the same reason: the first established
+        // snapshot is the one every observer acts on, and a control applied one emission
+        // later is a control the observers have already acted against.
+        val settled = withNegotiatedVideo(current, withRequestedRoute(current, next), media)
+        reportToPlatform(id, current, settled, justConnected)
+        store(id, current, settled, media, justConnected)
     }
 
     /**
@@ -658,14 +635,14 @@ internal class PjsipSipEngine @Inject constructor(
         id: CallId,
         current: CallSnapshot,
         next: CallState?,
-        event: StackCallEvent,
+        media: MediaProfile,
         justConnected: Boolean,
     ) {
         updateCalls { live ->
             live + (
                 id to current.copy(
                     state = next ?: current.state,
-                    media = negotiatedMedia(current, event),
+                    media = media,
                     connectedAtEpochMillis = current.connectedAtEpochMillis
                         ?: clock.nowEpochMillis().takeIf { justConnected },
                     // Consumed by the controls the moment they exist; see withRequestedRoute.
@@ -1446,8 +1423,7 @@ private val CallState.isHeldForPlatform: Boolean
  * `CallAudioCoordinator.begin` runs on the first established snapshot it sees and seeds
  * its own idea of the chosen route from that snapshot's controls. A route applied one
  * emission later would be a route the coordinator had already overridden with the
- * earpiece. The same reason `adoptNegotiatedVideo` is only safe *after* the store — it
- * reads the stored call — is the reason this has to be before it.
+ * earpiece. [withNegotiatedVideo] sits before the store for the same reason.
  */
 private fun withRequestedRoute(current: CallSnapshot, next: CallState?): CallState? {
     val route = current.requestedAudioRoute ?: return next
@@ -1472,3 +1448,34 @@ private fun negotiatedMedia(current: CallSnapshot, event: StackCallEvent): Media
     } else {
         current.media
     }
+
+/**
+ * Makes the controls agree with the video that was actually negotiated, on the transition
+ * that creates them.
+ *
+ * ## The bug this fixes, twice
+ *
+ * [CallControls.isVideoEnabled] defaults to `false`, and the only thing that set it was the
+ * in-call video button. A call placed *as* a video call therefore connected with video
+ * negotiated while its controls said video was off — `CameraPolicy` released the camera
+ * and the screen drew no preview. The first fix adopted the negotiated video *after* the
+ * connected snapshot was stored, and on one handset that was still wrong: the snapshot it
+ * read came from PJSIP's CONNECTING, before the video stream existed, so `media.hasVideo`
+ * was false, the adoption did nothing, and the stack was told to stop transmitting twelve
+ * milliseconds after the 200 OK (TC15, 2026-09-11). The gateway no longer reports
+ * CONNECTING, and the adoption is folded into the state *before* it is stored, so the
+ * first established snapshot already says video is on and the camera never flaps.
+ *
+ * Only on the transition into an established state. Re-applying it on every later event
+ * would undo a deliberate video mute, whose whole shape is `isVideoEnabled = false` while
+ * a stream is still negotiated (Task 53).
+ */
+private fun withNegotiatedVideo(current: CallSnapshot, next: CallState?, media: MediaProfile): CallState? {
+    if (next == null || current.state.controlsOrNull != null) return next
+    val controls = next.controlsOrNull ?: return next
+    if (!media.hasVideo || controls.isVideoEnabled) return next
+    return when (val folded = CallStateMachine.transition(next, CallEvent.SetVideoEnabled(true))) {
+        is TransitionResult.Moved -> folded.state
+        is TransitionResult.Rejected -> next
+    }
+}

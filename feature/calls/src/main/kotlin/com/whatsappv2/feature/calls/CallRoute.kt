@@ -63,6 +63,7 @@ fun CallRoute(
             onRespondToVideoRequest = viewModel::respondToVideoRequest,
             onVideoSurfaces = viewModel::attachVideoSurfaces,
             onReleaseVideoSurfaces = viewModel::detachVideoSurfaces,
+            onDisplayRotation = viewModel::reportDisplayRotation,
             // Both take the call id from the route rather than from the ViewModel's own
             // `watched`: the screen is looking at exactly one call, and passing it here
             // keeps the controllers free of a second idea of which one that is.

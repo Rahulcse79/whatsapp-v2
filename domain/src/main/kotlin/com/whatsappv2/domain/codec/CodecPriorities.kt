@@ -43,8 +43,19 @@ package com.whatsappv2.domain.codec
  */
 object CodecPriorities {
 
-    /** PJSIP's highest priority. The first preference gets this and each next one gets less. */
-    const val TOP: Short = 255
+    /**
+     * The priority the first preference gets; each next one gets less.
+     *
+     * `254` — `PJMEDIA_CODEC_PRIO_NEXT_HIGHER` — and not the nominal maximum of 255. pjmedia's
+     * `sort_codecs` (`vid_codec.c:527`, and the audio twin) rewrites every leading codec at
+     * 255 down to 254 after sorting, so an assignment starting at 255 landed the first two
+     * preferences on the same number: the TC15's audit read `opus@254, G722@254`. Two
+     * codecs on one priority are ordered by an unstable selection sort, which is how two
+     * VP8 implementations swapped places every time an account was saved (2026-09-11).
+     * Starting at 254 keeps every enabled priority distinct, and distinct is what makes the
+     * order the account asked for the order the SDP carries.
+     */
+    const val TOP: Short = 254
 
     /** PJSIP's "never offer this". */
     const val DISABLED: Short = 0
@@ -84,7 +95,18 @@ object CodecPriorities {
      * one silent failure already: an uppercase `LYRA` matches `lyra/16000/1` never, and does
      * so with no error anywhere ([com.whatsappv2.domain.model.AudioCodec.LYRA]).
      *
-     * @param available every codec id the library registered, in registry order.
+     * ## One preference, several codecs
+     *
+     * A build can register the same payload name twice — `VP8/102` from libvpx and `VP8/103`
+     * from Android's MediaCodec — and one preference names both. They are **not** given the
+     * same priority: every enabled codec gets a distinct number, descending through the
+     * preferences and, within one preference, through [available] in the order given. The
+     * caller decides that order and so decides which implementation is offered first; what
+     * this guarantees is that the decision sticks, because pjmedia sorts equal priorities
+     * with an unstable selection sort and had been swapping the two VP8s on every save.
+     *
+     * @param available every codec id the library registered, in the order the caller wants
+     *   same-name codecs offered.
      * @param preferred the account's preferences, most preferred first.
      * @param alsoRequired preferences belonging to *other* configured accounts. Kept enabled
      *   at [KEPT_FOR_ANOTHER_ACCOUNT] so this account's list cannot mute theirs.
@@ -109,12 +131,19 @@ object CodecPriorities {
             )
         }
 
-        val priorities = ranked.mapValues { (codecId, rank) ->
+        // Descending from the top, one number per enabled codec: preferences in their order,
+        // and same-name codecs in `available`'s. The arithmetic cannot underflow: a registry
+        // is far shorter than 254 entries, and coerceAtLeast makes that a guarantee rather
+        // than an assumption.
+        val enabled = ranked.filterValues { it >= 0 }.entries
+            .sortedBy { (_, rank) -> rank }
+            .mapIndexed { position, (codecId, _) ->
+                codecId to (TOP - position).coerceAtLeast(KEPT_FOR_ANOTHER_ACCOUNT.toInt()).toShort()
+            }
+            .toMap()
+        val priorities = ranked.mapValues { (codecId, _) ->
             when {
-                // Descending from the top, so the first preference outranks the second. The
-                // arithmetic cannot underflow: `preferred` is far shorter than 255 entries,
-                // and coerceAtLeast makes that a guarantee rather than an assumption.
-                rank >= 0 -> (TOP - rank).coerceAtLeast(KEPT_FOR_ANOTHER_ACCOUNT.toInt()).toShort()
+                codecId in enabled -> enabled.getValue(codecId)
                 matches(codecId, alsoRequired) -> KEPT_FOR_ANOTHER_ACCOUNT
                 else -> DISABLED
             }

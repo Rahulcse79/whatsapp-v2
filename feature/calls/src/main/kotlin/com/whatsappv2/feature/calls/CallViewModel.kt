@@ -406,6 +406,11 @@ class CallViewModel @Inject constructor(
         surfaces.detach()
     }
 
+    /** The screen's rotation, so the camera's picture is sent the way up the screen is. */
+    fun reportDisplayRotation(degrees: Int) {
+        surfaces.setDisplayRotation(degrees)
+    }
+
     // ---------------------------------------------------------------- call waiting
 
     /** One of the three answers to a second call (Task 56). */
