@@ -3,6 +3,7 @@ package com.whatsappv2.ui
 import com.whatsappv2.ui.navigation.AppDestination
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -28,6 +29,22 @@ class AppDestinationTest {
         // Task 70. The dialler is still one tap away, behind a floating button — but the
         // screen worth landing on is the one that says what happened while you were away.
         assertEquals(AppDestination.HISTORY, AppDestination.START)
+    }
+
+    @Test
+    fun `the bar carries Chats and Calls, and Settings is not in it`() {
+        // Settings is behind the gear on Chats. A tab for it was the arrangement this
+        // replaced, and a test is how that decision stays made.
+        assertEquals(listOf(AppDestination.CHATS, AppDestination.HISTORY), AppDestination.TOP_LEVEL)
+        assertFalse(AppDestination.SETTINGS.isTopLevel)
+    }
+
+    @Test
+    fun `a bar needs at least two destinations, or it navigates nowhere`() {
+        // Task 70's test, kept live: a one-item bottom bar is chrome that costs a strip of
+        // every screen and switches to nothing. If Chats ever leaves, this fails and the
+        // bar has to go with it rather than linger.
+        assertTrue(AppDestination.TOP_LEVEL.size >= 2, "a bar with ${AppDestination.TOP_LEVEL.size} item(s)")
     }
 
     @Test

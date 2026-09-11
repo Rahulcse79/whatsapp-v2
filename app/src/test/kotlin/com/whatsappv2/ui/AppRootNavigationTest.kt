@@ -12,6 +12,7 @@ import androidx.compose.ui.test.performScrollTo
 import com.whatsappv2.HiltTestActivity
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
 import com.whatsappv2.di.ROBOLECTRIC_SDK
+import com.whatsappv2.ui.chats.TAG_CHATS_SETTINGS
 import com.whatsappv2.ui.navigation.AppDestination
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
@@ -24,14 +25,14 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * Task 15 done-when #1, restated for the shell Tasks 69 and 70 left behind: every
- * top-level destination is still reachable, and the shell survives a configuration change.
+ * Task 15 done-when #1, restated for the shell as it stands: every top-level destination
+ * is still reachable, and the shell survives a configuration change.
  *
- * The bottom bar is gone, so this no longer clicks tab labels — it clicks the affordances
- * that replaced them: the floating buttons on Calls, the settings action in its top bar,
- * and the accounts row inside settings. That is the check worth having. Route uniqueness
- * is unit-tested next door, but that proves the routes differ, not that anything on screen
- * can actually open them — which is exactly what regressed when the bar was removed.
+ * It clicks what is on screen — the two tabs, the floating button on Calls, the gear on
+ * Chats, and the accounts row inside settings. That is the check worth having. Route
+ * uniqueness is unit-tested next door, but that proves the routes differ, not that
+ * anything on screen can actually open them — which is exactly what regressed when the
+ * bar was removed, and what would regress again if the gear went missing.
  */
 @HiltAndroidTest
 @RunWith(RobolectricTestRunner::class)
@@ -64,20 +65,26 @@ class AppRootNavigationTest {
     }
 
     @Test
-    fun `the bottom bar switches between the three top-level destinations`() {
+    fun `the bottom bar switches between the two top-level destinations`() {
         compose.setContent { WhatsAppV2Theme { AppRoot() } }
 
         compose.onNodeWithTag(tabTag(AppDestination.CHATS)).performClick()
         compose.waitForIdle()
         compose.onNodeWithText("Messages are coming").assertIsDisplayed()
-
-        compose.onNodeWithTag(tabTag(AppDestination.SETTINGS)).performClick()
-        compose.waitForIdle()
-        compose.onNodeWithTag(tabTag(AppDestination.SETTINGS)).assertIsSelected()
+        compose.onNodeWithTag(tabTag(AppDestination.CHATS)).assertIsSelected()
 
         compose.onNodeWithTag(tabTag(AppDestination.HISTORY)).performClick()
         compose.waitForIdle()
         compose.onNodeWithTag(tabTag(AppDestination.HISTORY)).assertIsSelected()
+    }
+
+    @Test
+    fun `settings is not a tab, so the bar has no way to open it`() {
+        // The bar carries the places the app can be. Settings is somewhere you go to and
+        // come back from, and a third tab for it was the arrangement this replaced.
+        compose.setContent { WhatsAppV2Theme { AppRoot() } }
+
+        compose.onNodeWithTag(tabTag(AppDestination.SETTINGS)).assertDoesNotExist()
     }
 
     @Test
@@ -105,14 +112,15 @@ class AppRootNavigationTest {
     }
 
     @Test
-    fun `settings is a tab again, and accounts are still inside it`() {
-        // Settings went back into the bar when Chats gave it company; accounts did NOT,
-        // and this is the path that says so — one tap to Settings, one more to accounts.
+    fun `settings is behind the gear on Chats, and accounts are still inside it`() {
+        // Two taps to settings — the Chats tab, then its gear — and one more to accounts.
+        // Accounts did NOT get a shortcut of their own, and this is the path that says so.
         compose.setContent { WhatsAppV2Theme { AppRoot() } }
 
-        compose.onNodeWithTag(tabTag(AppDestination.SETTINGS)).performClick()
-        compose.waitForIdle()
+        openSettings()
         compose.onNodeWithText("App settings").assertIsDisplayed()
+        // Settings is somewhere you went *to*, so the bar is gone while you are there.
+        compose.onNodeWithTag(tabTag(AppDestination.CHATS)).assertDoesNotExist()
 
         compose.onNodeWithText("SIP accounts").performClick()
         compose.waitForIdle()
@@ -129,8 +137,7 @@ class AppRootNavigationTest {
         // laid out afresh.
         compose.setContent { WhatsAppV2Theme { AppRoot() } }
 
-        compose.onNodeWithTag(tabTag(AppDestination.SETTINGS)).performClick()
-        compose.waitForIdle()
+        openSettings()
 
         // Scrolled to, not merely present: the settings body is a scrolling column, so
         // the lower two groups exist off-screen whether or not anything renders them.
@@ -147,13 +154,20 @@ class AppRootNavigationTest {
         val restoration = StateRestorationTester(compose)
         restoration.setContent { WhatsAppV2Theme { AppRoot() } }
 
-        compose.onNodeWithTag(tabTag(AppDestination.SETTINGS)).performClick()
-        compose.waitForIdle()
+        openSettings()
         compose.onNodeWithText("App settings").assertIsDisplayed()
 
         restoration.emulateSavedInstanceStateRestore()
         compose.waitForIdle()
 
         compose.onNodeWithText("App settings").assertIsDisplayed()
+    }
+
+    /** The one way in: the Chats tab, then the gear in its top bar. */
+    private fun openSettings() {
+        compose.onNodeWithTag(tabTag(AppDestination.CHATS)).performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag(TAG_CHATS_SETTINGS).performClick()
+        compose.waitForIdle()
     }
 }

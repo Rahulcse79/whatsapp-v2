@@ -8,8 +8,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -18,6 +20,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
@@ -35,13 +38,36 @@ import com.whatsappv2.core.designsystem.theme.AppTheme
  *
  * It says what it is. A blank tab reads as a bug, and a spinner reads as something that is
  * about to finish — this is neither, and saying so plainly costs one line.
+ *
+ * ## The gear lives here
+ *
+ * Settings is reached from this top bar and from nowhere else. It stopped being a tab
+ * because it is not a place the app *is* — see `AppDestination` — and the first tab's top
+ * right corner is where every messaging app this one sits beside keeps it. The module
+ * that replaces this placeholder inherits the gear along with the route; it is part of
+ * the shell's contract, not of the placeholder.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatsPlaceholderScreen(modifier: Modifier = Modifier) {
+fun ChatsPlaceholderScreen(
+    modifier: Modifier = Modifier,
+    /** Opens settings. Null in a preview, where there is nowhere to go. */
+    onOpenSettings: (() -> Unit)? = null,
+) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        topBar = { TopAppBar(title = { Text("Chats") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Chats") },
+                actions = {
+                    onOpenSettings?.let { open ->
+                        IconButton(onClick = open, modifier = Modifier.testTag(TAG_CHATS_SETTINGS)) {
+                            Icon(Icons.Filled.Settings, contentDescription = "Open settings")
+                        }
+                    }
+                },
+            )
+        },
     ) { padding ->
         Column(
             modifier = Modifier
@@ -82,6 +108,9 @@ fun ChatsPlaceholderScreen(modifier: Modifier = Modifier) {
     }
 }
 
+/** Identifies the gear, so a test presses the control it means rather than an icon. */
+internal const val TAG_CHATS_SETTINGS = "chats-settings"
+
 @ThemePreviews
 @Composable
-private fun ChatsPlaceholderPreview() = PreviewSurface { ChatsPlaceholderScreen() }
+private fun ChatsPlaceholderPreview() = PreviewSurface { ChatsPlaceholderScreen(onOpenSettings = {}) }

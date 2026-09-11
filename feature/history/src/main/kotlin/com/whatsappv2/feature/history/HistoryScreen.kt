@@ -85,11 +85,10 @@ import java.time.format.DateTimeFormatter
  * business handset, and loading them to draw twenty would make opening the screen a
  * visible pause and scrolling it a stutter.
  *
- * ## It owns the shell now
+ * ## What it carries besides the list
  *
- * The bottom bar is gone (Tasks 69, 70), so this screen carries what used to be in it: a
- * settings action in the top bar, and floating buttons for the dialler and the group-call
- * page. All three are callbacks on [HistoryActions] — this module may not navigate to
+ * A floating button for the dialler (Task 70), and search over the whole log in the top
+ * bar. The dialler is a callback on [HistoryActions] — this module may not navigate to
  * another feature, so it reports the press and `:app` decides where it goes.
  *
  * The list is stateless in the Compose sense — every action goes up through [HistoryActions]
@@ -151,12 +150,10 @@ fun HistoryScreen(
 }
 
 /**
- * The title and the one destructive action.
+ * The title, search, and the one destructive action.
  *
- * The settings gear that used to live here is gone: Settings is a tab again, and two
- * doors into one screen is one more than a top bar should spend. `onOpenSettings` stays
- * on [HistoryActions] because the account-status banner still uses it — that is a jump to
- * a *particular* account, not a trip to the settings screen.
+ * The settings gear that used to live here is gone: Settings is behind the gear on Chats,
+ * and two doors into one screen is one more than a top bar should spend.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -581,7 +578,6 @@ internal const val TAG_SEARCH_FIELD = "history-search-field"
 
 /** Identifies a direction chip, so a test presses the one it means. */
 internal fun directionChipTag(direction: CallDirectionFilter) = "history-direction-${direction.name.lowercase()}"
-internal const val TAG_SETTINGS = "history-settings"
 internal const val TAG_DIALER = "history-dialer"
 
 internal fun filterTag(filter: CallLogFilter) = "history-filter-${filter.name.lowercase()}"

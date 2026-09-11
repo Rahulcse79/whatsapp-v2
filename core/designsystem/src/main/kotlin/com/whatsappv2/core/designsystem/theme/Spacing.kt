@@ -50,6 +50,14 @@ data class Sizing(
     /** Minimum touch target. Below this, people miss (Material accessibility). */
     val minimumTouchTarget: Dp = 48.dp,
 
+    /**
+     * The bottom navigation bar, above the system inset.
+     *
+     * Material's short navigation bar: 64dp, against the classic bar's 80. The taller
+     * one spent its extra height as empty space above the icons.
+     */
+    val bottomBar: Dp = 64.dp,
+
     /** Avatar in a list row. */
     val avatarSmall: Dp = 40.dp,
 

@@ -32,13 +32,12 @@ import com.whatsappv2.ui.chats.ChatsPlaceholderScreen
  * layering rule that keeps them independently testable — which is why every screen below
  * takes callbacks rather than a `NavController`.
  *
- * ## The shape changed with Tasks 69 and 70
+ * ## The shape changed with Tasks 69 and 70, and again when Chats arrived
  *
- * Four of these used to be tabs. They are all still routes, reached from the Calls screen
- * instead: a floating button for the dialler, the top-right icon for
- * settings, and the account list from inside settings. Nothing was removed from the graph
- * — a tab going away is not a destination going away, and `account-detail/{accountId}`
- * still resolves exactly as it did.
+ * Four of these used to be tabs. They are all still routes: the dialler behind a floating
+ * button on Calls, settings behind the gear on Chats, and the account list from inside
+ * settings. Nothing was removed from the graph — a tab going away is not a destination
+ * going away, and `account-detail/{accountId}` still resolves exactly as it did.
  */
 @Composable
 fun AppNavHost(
@@ -73,7 +72,7 @@ fun AppNavHost(
     }
 }
 
-/** Calls, and the two screens reached from it (Tasks 69, 70). */
+/** The two tabs, and the two screens reached from them (Tasks 69, 70). */
 private fun NavGraphBuilder.callRoutes(
     navController: NavHostController,
     openCall: (CallId) -> Unit,
@@ -83,15 +82,17 @@ private fun NavGraphBuilder.callRoutes(
     // enough: only one destination is on screen to press it.
     composable(AppDestination.CHATS.route) {
         // A real destination behind a placeholder, so the module another team is building
-        // replaces a composable rather than negotiating an app shell (Task: item 8).
-        ChatsPlaceholderScreen()
+        // replaces a composable rather than negotiating an app shell (Task: item 8). The
+        // gear is the one way into settings; it travels with the route, not the placeholder.
+        ChatsPlaceholderScreen(
+            onOpenSettings = { navController.navigate(AppDestination.SETTINGS.route) },
+        )
     }
 
     composable(AppDestination.HISTORY.route) {
         HistoryRoute(
             onCallPlaced = openCall,
             onOpenDialer = { navController.navigate(AppDestination.DIALER.route) },
-            onOpenSettings = { navController.navigate(AppDestination.SETTINGS.route) },
             videoGate = videoGate,
         )
     }

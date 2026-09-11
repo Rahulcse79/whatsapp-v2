@@ -45,10 +45,10 @@ import com.whatsappv2.domain.model.SrtpPolicy
 /**
  * App preferences, wired to the ViewModel — and the way into the account list (Task 69).
  *
- * Settings stopped being a tab and became the screen behind the top-right icon on Calls.
- * The accounts list moved with it, because both are "set the app up" rather than "make a
- * call", and neither earns a permanent tab on a phone whose primary job is the latter.
- * Nothing here was removed: every control this screen had, it still has.
+ * Settings stopped being a tab and became the screen behind the gear at the top right of
+ * Chats. The accounts list moved with it, because both are "set the app up" rather than
+ * "make a call", and neither earns a permanent tab on a phone whose primary job is the
+ * latter. Nothing here was removed: every control this screen had, it still has.
  */
 @Composable
 fun SettingsScreen(
@@ -95,7 +95,7 @@ fun SettingsScreen(
                         IconButton(onClick = back, modifier = Modifier.testTag(TAG_BACK)) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back to calls",
+                                contentDescription = "Back",
                             )
                         }
                     }
