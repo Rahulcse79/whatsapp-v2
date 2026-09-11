@@ -1,15 +1,18 @@
 package com.whatsappv2.ui
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import com.whatsappv2.HiltTestActivity
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
 import com.whatsappv2.di.ROBOLECTRIC_SDK
+import com.whatsappv2.ui.navigation.AppDestination
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import dagger.hilt.android.testing.HiltTestApplication
@@ -54,7 +57,39 @@ class AppRootNavigationTest {
     @Test
     fun `the app opens on Calls`() {
         compose.setContent { WhatsAppV2Theme { AppRoot() } }
-        compose.onNodeWithText("Calls").assertIsDisplayed()
+
+        // "Calls" is on screen twice now — the screen's title and its tab — so the
+        // assertion names the tab and its selected state rather than the word.
+        compose.onNodeWithTag(tabTag(AppDestination.HISTORY)).assertIsSelected()
+    }
+
+    @Test
+    fun `the bottom bar switches between the three top-level destinations`() {
+        compose.setContent { WhatsAppV2Theme { AppRoot() } }
+
+        compose.onNodeWithTag(tabTag(AppDestination.CHATS)).performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Messages are coming").assertIsDisplayed()
+
+        compose.onNodeWithTag(tabTag(AppDestination.SETTINGS)).performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag(tabTag(AppDestination.SETTINGS)).assertIsSelected()
+
+        compose.onNodeWithTag(tabTag(AppDestination.HISTORY)).performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag(tabTag(AppDestination.HISTORY)).assertIsSelected()
+    }
+
+    @Test
+    fun `the bar is hidden on a screen you navigated into`() {
+        // A dialler is somewhere you went *to*. Offering to switch tabs from inside one
+        // invites losing what you were doing — half a number, in this case.
+        compose.setContent { WhatsAppV2Theme { AppRoot() } }
+
+        compose.onNodeWithContentDescription("Open the dialler").performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithTag(tabTag(AppDestination.HISTORY)).assertDoesNotExist()
     }
 
     @Test

@@ -22,6 +22,7 @@ import com.whatsappv2.feature.accounts.AccountsRoute
 import com.whatsappv2.feature.dialer.DialerScreen
 import com.whatsappv2.feature.history.HistoryRoute
 import com.whatsappv2.feature.settings.SettingsScreen
+import com.whatsappv2.ui.chats.ChatsPlaceholderScreen
 
 /**
  * The navigation graph.
@@ -80,6 +81,12 @@ private fun NavGraphBuilder.callRoutes(
 ) {
     // All three routes that can start a video call share one gate. One launcher is
     // enough: only one destination is on screen to press it.
+    composable(AppDestination.CHATS.route) {
+        // A real destination behind a placeholder, so the module another team is building
+        // replaces a composable rather than negotiating an app shell (Task: item 8).
+        ChatsPlaceholderScreen()
+    }
+
     composable(AppDestination.HISTORY.route) {
         HistoryRoute(
             onCallPlaced = openCall,
