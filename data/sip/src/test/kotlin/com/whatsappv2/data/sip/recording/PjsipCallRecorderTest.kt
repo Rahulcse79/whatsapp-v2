@@ -2,6 +2,7 @@
 
 package com.whatsappv2.data.sip.recording
 
+import com.whatsappv2.core.common.dispatcher.DispatcherProvider
 import com.whatsappv2.core.common.logging.NoOpLogger
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.failure
@@ -25,6 +26,8 @@ import com.whatsappv2.domain.recording.RecordingError
 import com.whatsappv2.domain.recording.RecordingId
 import com.whatsappv2.domain.recording.RecordingRefusal
 import com.whatsappv2.domain.testing.FakeSipEngine
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
@@ -33,6 +36,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
@@ -74,8 +78,8 @@ class PjsipCallRecorderTest {
     private val store = FakeRecordingStore()
     private val clock = MutableClock().set(NOW)
 
-    private fun recorder(scope: TestScope) =
-        PjsipCallRecorder(gateway, engine, store, clock, NoOpLogger, scope.backgroundScope)
+    private fun recorder(scope: TestScope, dispatchers: DispatcherProvider = InlineDispatchers) =
+        PjsipCallRecorder(gateway, engine, store, clock, NoOpLogger, scope.backgroundScope, dispatchers)
 
     private suspend fun connectedCall(): CallId =
         engine.simulateIncomingCall(account.id, bob).callId
@@ -276,6 +280,24 @@ class PjsipCallRecorderTest {
     }
 
     @Test
+    fun `the store never runs on the thread that asked - the ANR this fixes`() = runTest {
+        val caller = Thread.currentThread().name
+        val recorder = recorder(this, OnIo)
+        val callId = connectedCall()
+
+        recorder.start(callId, consent(callId))
+        recorder.stop(callId)
+
+        // seal() encrypts the whole recording with a Keystore key — a Keymaster round trip
+        // per block. Its callers are on viewModelScope, which is the main thread, so
+        // running it there blocked the call screen for ~5 s on a 5 MB recording and ANR'd
+        // it (docs/HANDOFF.md §0d). `suspend` is what permits the hop off the caller;
+        // this asserts the hop is actually taken rather than merely allowed.
+        assertNotEquals(caller, store.sealedOnThread)
+        assertNotEquals(caller, store.allocatedOnThread)
+    }
+
+    @Test
     fun `the retention hook is passed straight through to the store`() = runTest {
         val recorder = recorder(this)
 
@@ -314,6 +336,10 @@ class PjsipCallRecorderTest {
  */
 private class FakeRecordingStore : RecordingStore {
 
+    /** Which thread the store was used from, so the ANR fix has something to assert. */
+    var allocatedOnThread: String? = null
+    var sealedOnThread: String? = null
+
     val allocated = mutableListOf<AllocatedRecording>()
     val sealed = mutableListOf<Recording>()
     val discarded = mutableListOf<AllocatedRecording>()
@@ -322,6 +348,7 @@ private class FakeRecordingStore : RecordingStore {
     private var next = 0
 
     override fun allocate(callId: CallId): Outcome<AllocatedRecording, RecordingError> {
+        allocatedOnThread = Thread.currentThread().name
         if (failAllocation) return failure(RecordingError.StorageUnavailable("no space"))
         val slot = AllocatedRecording(
             id = RecordingId("rec-${++next}"),
@@ -341,6 +368,7 @@ private class FakeRecordingStore : RecordingStore {
         startedAtEpochMillis: Long,
         endedAtEpochMillis: Long,
     ): Outcome<Recording?, RecordingError> {
+        sealedOnThread = Thread.currentThread().name
         val recording = Recording(
             id = allocated.id,
             callId = allocated.callId,
@@ -363,4 +391,33 @@ private class FakeRecordingStore : RecordingStore {
         purgedBefore += cutoffEpochMillis
         return success(0)
     }
+}
+
+/**
+ * Everything inline, for the tests that are about decisions rather than threads.
+ *
+ * `Unconfined` rather than the test scheduler because nothing here delays — the fake store
+ * answers on the calling thread, and running it inline is both simpler and closer to what
+ * the real one does once it is already on its dispatcher.
+ */
+private object InlineDispatchers : DispatcherProvider {
+    override val main: CoroutineDispatcher get() = Dispatchers.Unconfined
+    override val io: CoroutineDispatcher get() = Dispatchers.Unconfined
+    override val default: CoroutineDispatcher get() = Dispatchers.Unconfined
+    override val unconfined: CoroutineDispatcher get() = Dispatchers.Unconfined
+}
+
+/**
+ * A real IO pool for [io], so a test can prove the hop off the caller happened.
+ *
+ * `Dispatchers.IO` and not the test scheduler, because the whole assertion is *which
+ * thread* — a scheduler that runs the block inline would pass whether the production code
+ * hopped or not, which is the bug it is there to catch. `runTest` still waits for the
+ * `withContext` to come back, so nothing here is timing-dependent.
+ */
+private object OnIo : DispatcherProvider {
+    override val io: CoroutineDispatcher get() = Dispatchers.IO
+    override val main: CoroutineDispatcher get() = Dispatchers.Unconfined
+    override val default: CoroutineDispatcher get() = Dispatchers.Unconfined
+    override val unconfined: CoroutineDispatcher get() = Dispatchers.Unconfined
 }

@@ -6,8 +6,8 @@
 > carries the measured baseline. This file says what is done, what is half-done, what is
 > wrong, and what to do next.
 >
-> **Read §0c, then §0b, then §0a — they are newer than everything below them.** §0c is the
-> newest and replaces the deleted `docs/HANDOFF-NEXT.txt`. The evening pass of 2026-09-10
+> **Read §0d, then §0c, then §0b, then §0a — they are newer than everything below them.**
+> §0d is the newest; §0c replaces the deleted `docs/HANDOFF-NEXT.txt`. The evening pass of 2026-09-10
 > built the APK, put it on a Zebra TC15, and placed, answered and held calls against two
 > FreeSWITCH servers. §3.4's "nothing has been run on a handset" is no longer true. Where
 > §0a and a later section disagree, §0a wins.
@@ -224,6 +224,92 @@ drives one phone by adb and Rahul answers the other.
 2. A preview that follows a *rotation* mid-call is untested (the activity recreates and
    re-reports; `LaunchedEffect(configuration)` covers a manifest that does not).
 3. `sudo port install swig-java` so `./build.sh` runs without `SWIG_LIB`.
+
+---
+
+## 0d. 2026-09-11, late afternoon — the ANR: sealing a recording on the main thread
+
+**The newest section. Read it before §0c.**
+
+Rahul reported the app crashing. It was not a crash — the process never died — it was an
+**ANR**, and the log named it exactly:
+
+```
+09-11 15:32:19.547  6130  6130 I Choreographer: Skipped 310 frames!  The application may be
+                                                doing too much work on its main thread.
+09-11 15:32:27.623  1713  7011 E ActivityManager: ANR in com.whatsappv2 (…/.call.CallActivity)
+   Reason: Input dispatching timed out (… is not responding. Waited 5005ms for MotionEvent)
+/data/anr/anr_2026-09-11-15-32-19-998
+```
+
+`6130 6130` is pid = tid, so that is the **main** thread, and 310 skipped frames is ~5.2 s.
+The timestamp is the moment "Stop recording" was tapped.
+
+### The cause
+
+One chain, with no dispatcher switch anywhere in it:
+
+1. `CallRecordingController.stop()` launches on `viewModelScope` — **`Dispatchers.Main`**.
+2. `PjsipCallRecorder.stop()` is `suspend`, but never left the caller's thread.
+3. `RecordingStore.seal()` is **blocking**: it AES-GCM-encrypts the entire recording with an
+   **Android Keystore** key — so a Keymaster round trip per block, not in-process AES —
+   rewrites the file and deletes the plaintext.
+
+5.3 MB through the TEE on the main thread ≈ 5 s of dead UI, and Android's input dispatcher
+gives up at 5 s. `grep -rn "withContext\|Dispatchers" data/sip/…/recording/` returned
+**nothing** before this fix.
+
+### Why it appeared today and not weeks ago
+
+It has always been written this way; it only became *reachable* on 2026-09-11. Before the
+sweep's defect 2 (§0c), every recording was named `<id>.tmp`, `pjsua_recorder_create`
+refused it, and the file was **0 bytes** — so `seal` returned at its `length() == 0L` guard
+in microseconds. Fixing the filename turned an instant no-op into megabytes of Keystore
+work on the main thread. A latent main-thread violation that was being hidden by a
+different defect.
+
+### The fix
+
+`PjsipCallRecorder` takes a `DispatcherProvider` and every `RecordingStore` call —
+`allocate`, `discard`, `seal`, `list`, `delete`, `purgeOlderThan` — goes through
+`withContext(dispatchers.io)`. The fix is in the **implementation**, not the caller:
+`CallRecorder` is a `suspend` interface precisely so an implementation may take time
+without owning the caller's thread, and `CallRecordingController` was right to launch on
+`viewModelScope`. A `suspend` function that blocks its caller is not a seam, it is a trap.
+
+This follows the pattern already in `ContactsContractRepository` (`:data:contacts`), which
+is the same problem solved the same way.
+
+**The regression test trips.** `the store never runs on the thread that asked` records the
+caller's thread name, gives the recorder a real `Dispatchers.IO`, and asserts the store saw
+a different thread. Verified both ways: with the `withContext` removed it **FAILS**, with it
+in place it passes.
+
+### Verified on hardware
+
+TC15 `24143524701316`, pid 10304, a FreeSWITCH-originated call to the echo, **60 s of
+recording** — deliberately longer than the 55 s that ANR'd — then "Stop recording" followed
+immediately by five taps hammered at the UI to force any block into an ANR:
+
+```
+sealed f45e4657-…__1789122035714__1789122109587.rec   7,092,552 bytes  (73.9 s)
+                                      ^ a third larger than the file that ANR'd
+Choreographer "Skipped … frames"   -> none
+"ANR in com.whatsappv2"            -> none
+new file in /data/anr/             -> none (newest is still anr_2026-09-11-15-32-19-998,
+                                     which is from before the fix)
+Fatal signal / FATAL EXCEPTION / Assert failed -> none;  pid unchanged
+```
+
+The five taps all landed — the call was on hold when they finished — so the main thread was
+servicing input *through* the seal.
+
+### One thing deliberately left
+
+`EncryptedRecordingStore.init { sweepAbandoned() }` still runs on whichever thread first
+injects the store, which is the main thread when `CallViewModel` is created. It is a
+`listFiles()` plus an unlink per stale file — O(1) each, sub-millisecond — so it is not this
+bug and was not swept into this fix. Worth moving if that directory ever grows.
 
 ---
 
