@@ -118,6 +118,10 @@ an implementation swap in `:data:sip`, not a domain rewrite.
   subscribe to. If it does not, Task 60's participant list shows what is actually known
   and says so — it does **not** render a fabricated list (§13).
 
+> **Superseded for audio by ADR-009** (2026-09-11): audio conferences up to 8 participants
+> are mixed on the device with `pjmedia_conf`. This ADR still governs **video**
+> conferencing, which the ADR-009 gate measured and refuted for this hardware.
+
 **Both answered on hardware, 2026-09-11, and the answer is settled rather than pending**
 (decided with the stakeholder, 2026-09-11): extension `3000` on the local FreeSWITCH joins
 `mod_conference`, and `conference list` showed this app's leg as
@@ -452,11 +456,23 @@ after keeping 472 of its 28,000 files); ~25 minutes of TFLite compile per ABI, s
 locally, unpaid-for on CI until a cache is added (`docs/native-dependencies.md` §5.0);
 `liblyra.a` is 193 MB unstripped, of which the linker takes what `lyra.cpp` references.
 
-**And the cost that is paid per call, not per build: ~120 % of one CPU core** on the TC15
-for encode and decode together — observed during the 22-minute call above, not re-measured
-since. That is the price of running a neural vocoder on the handset, and it is the number
-to weigh against the 3.1 kbit/s, because §1.5 says battery is a budget the user notices at
-4pm. Two consequences follow and are stated so nobody has to discover them:
+**And the cost that is paid per call, not per build — corrected 2026-09-11.** The figure
+first recorded here was "~120 % of one CPU core", and read as Lyra's own cost it is wrong
+by about three times. 120 % is the **total app CPU during a Lyra call**, and a *PCMU* call
+on the same handset costs 92-94 %. Measured properly (ADR-009's gate):
+
+| | CPU, % of one core |
+|---|---|
+| Fixed: Speex AEC @48 kHz/200 ms tail + sound device + 48 kHz bridge | **~70 %**, paid once |
+| Marginal, one PCMU stream | ~22 % |
+| **Marginal, one Lyra stream** | **~40 %** |
+
+So Lyra costs roughly **18 % of a core more than PCMU per stream**, not 120 %. The original
+number was never wrong as an observation — it was the right measurement of the wrong thing,
+and it is the reason an early estimate said multi-party Lyra was infeasible when the
+arithmetic says eight-way Lyra fits in 350 % (ADR-009). Battery (§1.5) is still a real cost
+of a Lyra call; most of it is simply not Lyra. Two consequences follow and are stated so
+nobody has to discover them:
 
 - Lyra is **not** a default. `CodecPreferences.DEFAULT` is `OPUS, G722, PCMU, PCMA`
   (`domain/…/model/Codecs.kt:83`) and carries no Lyra; it is chosen per account,
@@ -521,6 +537,81 @@ FreeSWITCH's `modules.conf.xml` and its `.so` is simply not installed. Installin
 the bandwidth of every call — 160 kbps to 80 kbps — with **no client change at all**,
 because the APK already compiles and registers Opus. The arithmetic is in
 `docs/system-design.md` §2.1. **Do that before spending a week on Lyra.**
+
+---
+
+### ADR-009 — Local audio conferencing: **mix on the device with `pjmedia_conf`, up to 8, audio only**
+
+**Status:** Accepted · **Decided:** 2026-09-11 · **Decider:** stakeholder ·
+**Supersedes ADR-003 for audio. ADR-003 still governs video.**
+
+**Context.** ADR-003 chose a server-side dial-in MCU and it works — verified on hardware
+2026-09-11, members mixing in `mod_conference` 3000 with DTMF mute. What it costs is a
+dependency: a conference needs a FreeSWITCH that is reachable, configured, and (for Lyra)
+told to `bypass_media`, because the server cannot decode the codec this app ships. The
+motivation to reverse it for audio is removing that dependency, not fixing a defect.
+
+**The gate, measured before any code.** Total app CPU on a Zebra TC15 (8 cores @ 1.8 GHz),
+as a percentage of **one** core, sampled from `/proc/<pid>/stat` deltas over 15-25 s:
+
+| State | CPU | PSS |
+|---|---|---|
+| Idle, registered, no call | 3–5 % | 199 MB |
+| Call **held** — sound device and AEC up, stream down | **70 %** | — |
+| One **PCMU** stream | 92–94 % | 207 MB |
+| One **Lyra** stream | 106–122 % | 222 MB |
+| One **VP8 video** stream (camera, encode, decode, render) | **227 %** | 314 MB |
+
+Two things fall out, and the second is the decision:
+
+- **The fixed cost is ~70 % and it is paid once.** Speex AEC at 48 kHz with a 200 ms tail,
+  the sound device, and the 48 kHz bridge — none of which scale with participant count.
+- **The marginal cost of a stream is ~22 % (PCMU) and ~40 % (Lyra).** Not 120 %. See the
+  correction to ADR-008 below.
+
+**SHOW YOUR WORKING.** A conference of N is N-1 streams on the mixing device, against a
+budget of **400 % — half the handset**, chosen so a conference never starves the rest of
+the phone:
+
+| N | PCMU `70 + 22(N-1)` | Lyra `70 + 40(N-1)` | Audio + video `70 + 157(N-1)` |
+|---|---|---|---|
+| 4 | 136 % ✅ | 190 % ✅ | ~540 % ❌ |
+| 6 | 180 % ✅ | 270 % ✅ | ❌ |
+| 8 | **224 % ✅** | **350 % ✅** | ~1170 % ❌ |
+
+**Decision.** Mix **audio** on the device with `pjmedia_conf`, for up to **8 participants**.
+`PJSUA_MAX_CALLS` is raised from upstream's 4 to 8 in `config_site.h` (7 peers plus
+headroom), which is a change to the declared feature set (N-8) and annotated there.
+
+**Topology: a device-hosted MCU, not a mesh.** The host holds N-1 calls and cross-connects
+them; every other participant places one ordinary call and pays for one stream (~110 %).
+A mesh would make all eight phones pay the host's 350 % and turn 7 calls into 28. The star
+is also what `pjmedia_conf` is built for: connecting every member port to every other
+gives **mix-minus for free**, because a conference port never transmits to itself — there
+is no loop to prevent, which is the usual source of conferencing bugs.
+
+**Video stays on ADR-003.** One video stream costs ~135 % CPU and ~107 MB on top of audio.
+Seven of them is ~11 cores of the 8 this handset has and ~750 MB, before any mixing, and a
+mesh would need ~7 Mbit/s uplink. The measurement refutes client-side video conferencing on
+this hardware; it is not a matter of implementation quality. A video conference remains a
+call to the FreeSWITCH bridge.
+
+**What we give up.** The host is a participant with a job: if it leaves, the conference
+ends, because the mixing lives on it. A server-side bridge has no such single point. This
+is the trade the star topology makes and it is why ADR-003 is superseded *for audio only*
+rather than deleted — the MCU path stays, works, and is the right answer for video and for
+conferences that must outlive any one handset.
+
+**The lever not pulled, recorded so it is a decision and not an oversight.** The ~22-40 %
+per stream is dominated by resampling between the codec's rate and the 48 kHz bridge at
+`RESAMPLE_QUALITY = 10`, plus the Speex AEC's 200 ms tail at 48 kHz
+(`RealPjsipCoreGateway`). Lowering the bridge clock rate for a conference, or the resampler
+quality, would cut the marginal cost materially — and would cut battery on every 1-to-1
+call as well. Not done here: it changes audio quality on every call, which is its own ADR
+with its own measurements, and this decision does not need it to fit the budget.
+
+**Re-evaluation trigger.** A handset with materially more CPU, or the resampling work
+above, would move the video line. Re-measure before assuming it has.
 
 ---
 

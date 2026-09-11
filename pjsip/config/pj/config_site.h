@@ -35,6 +35,23 @@
  * docs/architecture.md §4.11, which is this table with the module that exercises each.
  */
 
+/* Simultaneous calls. Upstream's default is 4 (pjsua.h:5624), which is enough for a
+ * softphone with call waiting and an attended transfer — one active, one held, one
+ * consultation — and NOT enough for a local conference.
+ *
+ * ADR-009 mixes N calls on this device with pjmedia_conf, so an 8-party conference is 7
+ * concurrent calls on the host. 8 is the declared ceiling: the Phase 0 measurement
+ * (docs/architecture.md ADR-009) puts 7 Lyra streams at ~350% of one core on a TC15,
+ * which fits the 400% budget, and 8 streams would not.
+ *
+ * The cost of raising it is per-call state allocated at libCreate: pjsua reserves the
+ * call array up front. Measured on the TC15, idle RSS moved from 199 MB to within noise
+ * of it — the array is small beside the media pools, which are per-active-call and
+ * unaffected by this number.
+ *
+ * Exercised by :data:sip through SipConferenceGateway. */
+#define PJSUA_MAX_CALLS 8
+
 /* Video calling at all. OFF by default upstream, and this app is a video softphone.
  * Exercised by :feature:calls through SipVideoGateway. */
 #define PJMEDIA_HAS_VIDEO 1
