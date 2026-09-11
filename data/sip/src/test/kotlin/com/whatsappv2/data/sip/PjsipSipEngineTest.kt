@@ -642,6 +642,33 @@ class PjsipSipEngineMediaTest : PjsipSipEngineFixture() {
         }
 
     @Test
+    fun `a second hold while the first is unanswered is accepted and not sent again`() = runTest {
+        // Every attended transfer asks twice: the transfer holds the call, and 200 ms later
+        // Telecom's holdActiveCallForNewCall asks for the same hold when the consultation
+        // call goes active. The FSM still says Connected in that window, and pjsua refuses
+        // the second re-INVITE with PJ_EINVALIDOP, logged as a failure (TC15, 2026-09-11).
+        val engine = connectedCall()
+        val callId = engine.activeCalls.value.single().callId
+
+        assertTrue(engine.setHold(callId, held = true) is Outcome.Success)
+        assertTrue(engine.setHold(callId, held = true) is Outcome.Success)
+        assertEquals(listOf(callId.value to true), gateway.holdRequests, "one re-INVITE, not two")
+
+        // Once the stack has answered, and the call has been resumed, a hold is a real
+        // request again.
+        gateway.emitCall(callId.value, StackCallState.PAUSED)
+        runCurrent()
+        assertTrue(engine.setHold(callId, held = false) is Outcome.Success)
+        runCurrent()
+        gateway.emitCall(callId.value, StackCallState.STREAMS_RUNNING)
+        runCurrent()
+        assertIs<CallState.Connected>(engine.activeCalls.value.single().state)
+        assertTrue(engine.setHold(callId, held = true) is Outcome.Success)
+        assertEquals(2, gateway.holdRequests.count { it.second })
+        engine.stop()
+    }
+
+    @Test
     fun `resuming goes through Resuming and only reaches Connected when media runs again`() =
         runTest {
             // RESUMING is the gateway's to report as the re-INVITE goes out — the fake

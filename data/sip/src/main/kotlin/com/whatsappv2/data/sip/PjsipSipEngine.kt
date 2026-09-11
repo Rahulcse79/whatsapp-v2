@@ -303,6 +303,19 @@ internal class PjsipSipEngine @Inject constructor(
      */
     private val transferTypes = mutableMapOf<CallId, TransferType>()
 
+    /**
+     * Calls whose hold re-INVITE is out and unanswered.
+     *
+     * `Held` arrives on the stack's event, not on the button, so between the request and
+     * the far end's 200 the FSM still says `Connected` and would let a second `LocalHold`
+     * through. Two things ask in that window on every attended transfer: the transfer
+     * itself, and Telecom's `holdActiveCallForNewCall` 200 ms later when the consultation
+     * call goes active. pjsua refuses the second with `PJ_EINVALIDOP`, which the gateway
+     * logged as "pauseCall failed" — a failure that was not one (TC15, 2026-09-11). The
+     * second ask is answered here instead: it wants what is already happening.
+     */
+    private val pendingHolds = mutableSetOf<CallId>()
+
     private val conferenceSessions = MutableStateFlow<List<ConferenceSession>>(emptyList())
     override val conferences: StateFlow<List<ConferenceSession>> = conferenceSessions.asStateFlow()
 
@@ -326,6 +339,7 @@ internal class PjsipSipEngine @Inject constructor(
         // (ADR-003), so one ending is the other's (Task 60).
         conferenceSessions.update { sessions -> sessions.filterNot { it.callId == callId } }
         pendingVideoRequests -= callId
+        pendingHolds -= callId
         transferTypes -= callId
         platform.onEnded(callId, reason)
         ending?.let { ended.emitOrReport(logger, it, "endedCalls") }
@@ -566,6 +580,9 @@ internal class PjsipSipEngine @Inject constructor(
             return
         }
 
+        // Any answer from the stack settles the hold that was in flight — the 200 that
+        // holds it, or a refusal that leaves it connected — so the next ask is a real one.
+        pendingHolds -= id
         val next = nextStateFor(id, current, event)
 
         // §7, DoD 13: a call that reached media without encrypting it, on an account that
@@ -945,6 +962,10 @@ internal class PjsipSipEngine @Inject constructor(
             return failure(SipError.InvalidState("cannot ${if (held) "hold" else "resume"} in ${call.state}"))
         }
 
+        if (held && !pendingHolds.add(callId)) {
+            logger.debug(TAG, "Hold already requested for $callId; waiting for the far end")
+            return success(Unit)
+        }
         logger.info(TAG, "Asking the stack to ${if (held) "hold" else "resume"} $callId")
         if (held) callGateway.pauseCall(callId.value) else callGateway.resumeCall(callId.value)
         return success(Unit)
@@ -1351,35 +1372,6 @@ internal class PjsipSipEngine @Inject constructor(
         live.forEach { platform.onEnded(it, HangupReason.NETWORK_FAILURE) }
     }
 
-    private fun SipAccount.toStackAccount(password: String) = StackAccount(
-        key = id.value,
-        username = username,
-        authUsername = effectiveAuthUsername,
-        password = password,
-        domain = domain,
-        registrarUri = "sip:$effectiveRegistrar",
-        proxyUri = outboundProxy?.let { "sip:${it.render()}" },
-        transport = transport.token,
-        expirySeconds = registrationExpirySeconds,
-        // §5.1 and §5.2. These were modelled, validated, persisted and then dropped on the
-        // floor: nothing below this seam had ever read them, so every account offered
-        // whatever the stack's built-in defaults happened to be and the codec editor
-        // changed nothing at all. The stack takes RTP mime types, which is what
-        // `payloadName` is.
-        iceEnabled = natPolicy.iceEnabled,
-        stunEnabled = natPolicy.stunEnabled,
-        keepaliveIntervalSeconds = natPolicy.keepaliveIntervalSeconds,
-        audioCodecs = codecs.audio.map { it.payloadName },
-        videoCodecs = codecs.video.map { it.payloadName },
-        // §7, DoD 13. MANDATORY becomes `setMediaEncryptionMandatory(true)` on the stack,
-        // which is what makes it fail a call it cannot encrypt rather than downgrade.
-        mediaEncryption = when (srtpPolicy) {
-            SrtpPolicy.DISABLED -> StackMediaEncryption.NONE
-            SrtpPolicy.OPTIONAL -> StackMediaEncryption.OPTIONAL
-            SrtpPolicy.MANDATORY -> StackMediaEncryption.MANDATORY
-        },
-    )
-
     /**
      * True when this account no longer holds a registration.
      *
@@ -1479,3 +1471,33 @@ private fun withNegotiatedVideo(current: CallSnapshot, next: CallState?, media: 
         is TransitionResult.Rejected -> next
     }
 }
+
+/** The account as the stack takes it — every modelled preference carried across the seam. */
+private fun SipAccount.toStackAccount(password: String) = StackAccount(
+    key = id.value,
+    username = username,
+    authUsername = effectiveAuthUsername,
+    password = password,
+    domain = domain,
+    registrarUri = "sip:$effectiveRegistrar",
+    proxyUri = outboundProxy?.let { "sip:${it.render()}" },
+    transport = transport.token,
+    expirySeconds = registrationExpirySeconds,
+    // §5.1 and §5.2. These were modelled, validated, persisted and then dropped on the
+    // floor: nothing below this seam had ever read them, so every account offered
+    // whatever the stack's built-in defaults happened to be and the codec editor
+    // changed nothing at all. The stack takes RTP mime types, which is what
+    // `payloadName` is.
+    iceEnabled = natPolicy.iceEnabled,
+    stunEnabled = natPolicy.stunEnabled,
+    keepaliveIntervalSeconds = natPolicy.keepaliveIntervalSeconds,
+    audioCodecs = codecs.audio.map { it.payloadName },
+    videoCodecs = codecs.video.map { it.payloadName },
+    // §7, DoD 13. MANDATORY becomes `setMediaEncryptionMandatory(true)` on the stack,
+    // which is what makes it fail a call it cannot encrypt rather than downgrade.
+    mediaEncryption = when (srtpPolicy) {
+        SrtpPolicy.DISABLED -> StackMediaEncryption.NONE
+        SrtpPolicy.OPTIONAL -> StackMediaEncryption.OPTIONAL
+        SrtpPolicy.MANDATORY -> StackMediaEncryption.MANDATORY
+    },
+)

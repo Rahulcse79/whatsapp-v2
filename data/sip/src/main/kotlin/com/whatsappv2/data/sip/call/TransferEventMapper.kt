@@ -28,6 +28,38 @@ import com.whatsappv2.domain.model.TransferType
 internal object TransferEventMapper {
 
     /**
+     * The stack state for one `on_call_transfer_status` report, from the code it carries
+     * and whether the REFER subscription ended with it.
+     *
+     * pjsua reports three different things through one callback (`pjsua_call.c:6019`,
+     * `:6119`): `100 Accepted` when the REFER itself is accepted, then every NOTIFY's
+     * sipfrag status — `100 Trying`, `180 Ringing`, `200 OK`, `486 Busy Here` — with
+     * [isFinal] set when the subscription terminates. The first version of the gateway
+     * read all of it as "200 means connected, anything else means failed", so the accept
+     * was a failure: the call was put back to `Connected` before the far end had even been
+     * tried, and the `200` that followed found nothing to complete (TC15, blind transfer
+     * to a FreeSWITCH tone extension, 2026-09-11).
+     *
+     * A final report below 200 is a subscription that ended without the transferee ever
+     * answering — [StackCallState.ENDED], which [toDomain] reports as a failure with the
+     * code, so the user is told rather than left holding a call that went nowhere.
+     */
+    fun stateOf(statusCode: Int, isFinal: Boolean): StackCallState = when {
+        statusCode >= SIP_ERROR_FLOOR -> StackCallState.ERROR
+        statusCode >= SIP_OK -> StackCallState.CONNECTED
+        isFinal -> StackCallState.ENDED
+        statusCode == SIP_RINGING || statusCode == SIP_SESSION_PROGRESS -> StackCallState.OUTGOING_RINGING
+        statusCode == SIP_TRYING && !isFinal -> StackCallState.OUTGOING_INIT
+        else -> StackCallState.OUTGOING_PROGRESS
+    }
+
+    private const val SIP_TRYING = 100
+    private const val SIP_RINGING = 180
+    private const val SIP_SESSION_PROGRESS = 183
+    private const val SIP_OK = 200
+    private const val SIP_ERROR_FLOOR = 300
+
+    /**
      * The domain event for [event], or null when the state carries no news.
      *
      * @param type only needed for the accept, which is the one event that says *how* the

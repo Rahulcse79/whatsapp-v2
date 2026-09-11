@@ -11,6 +11,7 @@ import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.StackConferenceEvent
 import com.whatsappv2.data.sip.call.StackTransferEvent
+import com.whatsappv2.data.sip.call.TransferEventMapper
 import com.whatsappv2.data.sip.registration.NameAddr
 import com.whatsappv2.data.sip.registration.SipCoreGateway
 import com.whatsappv2.data.sip.registration.StackAccount
@@ -1568,7 +1569,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             transferEventFlow.tryEmit(
                 StackTransferEvent(
                     callKey = callKey,
-                    state = if (prm.statusCode == SIP_OK) StackCallState.CONNECTED else StackCallState.ERROR,
+                    state = TransferEventMapper.stateOf(prm.statusCode, prm.finalNotify),
                     statusCode = prm.statusCode,
                 ),
             )
