@@ -36,6 +36,14 @@ internal object Palette {
     val Amber40 = Color(0xFF7A5900)
     val Amber80 = Color(0xFFF2C144)
 
+    /** Orange, for "trying": distinct from the amber warning and from the green it is on its way to. */
+    val Orange40 = Color(0xFFB35A00)
+    val Orange80 = Color(0xFFFFB77C)
+
+    /** The grey a thing that is switched off is drawn in. */
+    val Neutral50 = Color(0xFF747874)
+    val Neutral60 = Color(0xFF8E928E)
+
     val Neutral10 = Color(0xFF191C1A)
     val Neutral20 = Color(0xFF2E312F)
     val Neutral90 = Color(0xFFE1E3DF)
@@ -121,4 +129,34 @@ internal val DarkCallColors = CallColors(
     activeControl = Palette.GreenContainerDark,
     onActiveControl = Palette.GreenContainer,
     warning = Palette.Amber80,
+)
+
+/**
+ * The four colours a status indicator can be (item 5.5).
+ *
+ * Green is registered, orange is trying, red is failed, grey is off. Fixed like
+ * [CallColors] rather than taken from the scheme, because a traffic light whose red came
+ * out of a wallpaper palette would not be a traffic light — and because "registered" must
+ * be the same green as "answer" so the app has one meaning for it. Colour is never the
+ * only channel: every indicator pairs its dot with the state in words.
+ */
+data class StatusColors(
+    val online: Color,
+    val connecting: Color,
+    val failed: Color,
+    val offline: Color,
+)
+
+internal val LightStatusColors = StatusColors(
+    online = Palette.Green40,
+    connecting = Palette.Orange40,
+    failed = Palette.Red40,
+    offline = Palette.Neutral50,
+)
+
+internal val DarkStatusColors = StatusColors(
+    online = Palette.Green80,
+    connecting = Palette.Orange80,
+    failed = Palette.Red80,
+    offline = Palette.Neutral60,
 )

@@ -19,6 +19,7 @@ import com.whatsappv2.feature.accounts.AccountDetailRoute
 import com.whatsappv2.feature.accounts.AccountEditorRoute
 import com.whatsappv2.feature.accounts.AccountSavedMessage
 import com.whatsappv2.feature.accounts.AccountsRoute
+import com.whatsappv2.feature.accounts.status.RegistrationIndicatorRoute
 import com.whatsappv2.feature.dialer.DialerScreen
 import com.whatsappv2.feature.history.HistoryRoute
 import com.whatsappv2.feature.settings.SettingsScreen
@@ -86,6 +87,13 @@ private fun NavGraphBuilder.callRoutes(
         // gear is the one way into settings; it travels with the route, not the placeholder.
         ChatsPlaceholderScreen(
             onOpenSettings = { navController.navigate(AppDestination.SETTINGS.route) },
+            registrationIndicator = {
+                // Straight to the account list, not to Settings and then the list: the
+                // person pressing this has a registration to fix or an account to add.
+                RegistrationIndicatorRoute(
+                    onManageAccounts = { navController.navigate(AppDestination.ACCOUNTS.route) },
+                )
+            },
         )
     }
 

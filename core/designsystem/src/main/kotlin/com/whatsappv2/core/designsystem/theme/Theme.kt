@@ -14,6 +14,9 @@ import androidx.compose.ui.platform.LocalContext
 /** Call colours, which Material's scheme has no slot for. See [CallColors]. */
 val LocalCallColors = staticCompositionLocalOf { LightCallColors }
 
+/** Status colours — registered, trying, failed, off. See [StatusColors]. */
+val LocalStatusColors = staticCompositionLocalOf { LightStatusColors }
+
 /**
  * The app theme.
  *
@@ -40,6 +43,7 @@ fun WhatsAppV2Theme(
 
     CompositionLocalProvider(
         LocalCallColors provides if (darkTheme) DarkCallColors else LightCallColors,
+        LocalStatusColors provides if (darkTheme) DarkStatusColors else LightStatusColors,
         LocalSpacing provides Spacing(),
         LocalRadius provides Radius(),
         LocalSizing provides Sizing(),
@@ -77,4 +81,9 @@ object AppTheme {
         @Composable
         @ReadOnlyComposable
         get() = LocalCallColors.current
+
+    val statusColors: StatusColors
+        @Composable
+        @ReadOnlyComposable
+        get() = LocalStatusColors.current
 }

@@ -61,6 +61,9 @@ data class Sizing(
     /** Avatar in a list row. */
     val avatarSmall: Dp = 40.dp,
 
+    /** A status dot beside a label. Big enough to read as a colour, small enough not to be a button. */
+    val statusDot: Dp = 10.dp,
+
     /** Avatar on the in-call screen. */
     val avatarLarge: Dp = 96.dp,
 

@@ -39,13 +39,16 @@ import com.whatsappv2.core.designsystem.theme.AppTheme
  * It says what it is. A blank tab reads as a bug, and a spinner reads as something that is
  * about to finish — this is neither, and saying so plainly costs one line.
  *
- * ## The gear lives here
+ * ## The top bar is the shell's, not the placeholder's
  *
- * Settings is reached from this top bar and from nowhere else. It stopped being a tab
- * because it is not a place the app *is* — see `AppDestination` — and the first tab's top
- * right corner is where every messaging app this one sits beside keeps it. The module
- * that replaces this placeholder inherits the gear along with the route; it is part of
- * the shell's contract, not of the placeholder.
+ * Two things live in it that the module replacing this screen inherits along with the
+ * route. The **gear**: Settings is reached from here and from nowhere else — it stopped
+ * being a tab because it is not a place the app *is* (see `AppDestination`), and the first
+ * tab's top right is where every messaging app this one sits beside keeps it. And the
+ * **registration indicator** (item 5.5): the default extension with its state as a dot
+ * and a word, because "am I reachable" is the question a phone app's home screen should
+ * answer without being asked. It is `:feature:accounts`' composable placed here; this
+ * module knows where the bar is, that one knows what registration means.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,6 +56,11 @@ fun ChatsPlaceholderScreen(
     modifier: Modifier = Modifier,
     /** Opens settings. Null in a preview, where there is nowhere to go. */
     onOpenSettings: (() -> Unit)? = null,
+    /**
+     * The registration indicator to place in the bar. `:app` supplies the wired route;
+     * a preview and a test may pass nothing, or a stateless indicator of their own.
+     */
+    registrationIndicator: (@Composable () -> Unit)? = null,
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -60,6 +68,7 @@ fun ChatsPlaceholderScreen(
             TopAppBar(
                 title = { Text("Chats") },
                 actions = {
+                    registrationIndicator?.invoke()
                     onOpenSettings?.let { open ->
                         IconButton(onClick = open, modifier = Modifier.testTag(TAG_CHATS_SETTINGS)) {
                             Icon(Icons.Filled.Settings, contentDescription = "Open settings")
