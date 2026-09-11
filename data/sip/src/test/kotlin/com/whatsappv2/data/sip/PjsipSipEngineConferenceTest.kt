@@ -57,6 +57,34 @@ class PjsipSipEngineConferenceTest {
     }
 
     @Test
+    fun `the mixed set is published while the conference lasts, and empties when it is a call again`() = runTest {
+        // What keeps Telecom from breaking the mix: the platform holds every other active
+        // call the moment one goes active, and the bridge that carries its holds reads
+        // this set to decline them for a member (ADR-009's "RX 0pkt on two legs").
+        val engine = with(fixture) { twoCallsOneHeld() }
+        val ids = engine.activeCalls.value.map { it.callId }.toSet()
+        assertEquals(emptySet(), engine.mixedCalls.value)
+
+        val merging = async { engine.mixCalls(ids) }
+        runCurrent()
+        engine.activeCalls.value
+            .filterNot { it.state is CallState.Connected }
+            .forEach { fixture.gateway.emitCall(it.callId.value, StackCallState.STREAMS_RUNNING) }
+        advanceUntilIdle()
+        merging.await()
+
+        assertEquals(ids, engine.mixedCalls.value)
+
+        // One member hangs up. One left is a call, not a conference, so the set empties
+        // rather than naming a lone member the bridge would then refuse to hold.
+        fixture.gateway.emitCall(ids.first().value, StackCallState.ENDED)
+        advanceUntilIdle()
+
+        assertEquals(emptySet(), engine.mixedCalls.value)
+        engine.stop()
+    }
+
+    @Test
     fun `mixing more than eight is refused here, not by a native error later`() = runTest {
         // PJSUA_MAX_CALLS refusing the ninth call is a native failure at the wrong moment;
         // the ceiling is a number the user can be told about (ADR-009).

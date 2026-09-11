@@ -277,24 +277,16 @@ internal class PjsipSipEngine @Inject constructor(
      */
     private val pendingVideoRequests = mutableMapOf<CallId, VideoRequest>()
 
-    private val videoOffers = MutableSharedFlow<VideoRequest>(
-        replay = 0,
-        extraBufferCapacity = INCOMING_BUFFER,
-        // Stated, not inherited. On overflow the emitter suspends; because this one is
-        // published with tryEmit from a non-suspend path, [emitOrReport] turns a refusal
-        // into a WARN rather than nothing. A dropped offer is recoverable —
-        // pendingVideoRequests still holds it — so a reported drop is the right trade here.
-        onBufferOverflow = BufferOverflow.SUSPEND,
-    )
+    // Stated, not inherited. On overflow the emitter suspends; because this one is
+    // published with tryEmit from a non-suspend path, [emitOrReport] turns a refusal
+    // into a WARN rather than nothing. A dropped offer is recoverable —
+    // pendingVideoRequests still holds it — so a reported drop is the right trade here.
+    private val videoOffers = eventFlow<VideoRequest>()
     override val videoRequests: Flow<VideoRequest> = videoOffers.asSharedFlow()
 
-    private val transfers = MutableSharedFlow<TransferEvent>(
-        replay = 0,
-        extraBufferCapacity = INCOMING_BUFFER,
-        // A dropped transfer event loses the OUTCOME, never the call: the state machine has
-        // already advanced and the call is correct either way. Reported, not fatal.
-        onBufferOverflow = BufferOverflow.SUSPEND,
-    )
+    // A dropped transfer event loses the OUTCOME, never the call: the state machine has
+    // already advanced and the call is correct either way. Reported, not fatal.
+    private val transfers = eventFlow<TransferEvent>()
     override val transferEvents: Flow<TransferEvent> = transfers.asSharedFlow()
 
     /**
@@ -322,6 +314,9 @@ internal class PjsipSipEngine @Inject constructor(
     private val conferenceSessions = MutableStateFlow<List<ConferenceSession>>(emptyList())
     override val conferences: StateFlow<List<ConferenceSession>> = conferenceSessions.asStateFlow()
 
+    private val mixed = MutableStateFlow<Set<CallId>>(emptySet())
+    override val mixedCalls: StateFlow<Set<CallId>> = mixed.asStateFlow()
+
     /**
      * The one way a call ends here (Task 47).
      *
@@ -341,6 +336,8 @@ internal class PjsipSipEngine @Inject constructor(
         // The conference leg and the conference are the same thing under a dial-in MCU
         // (ADR-003), so one ending is the other's (Task 60).
         conferenceSessions.update { sessions -> sessions.filterNot { it.callId == callId } }
+        // A member leaving shrinks the mix; one member left is no conference (ADR-009).
+        mixed.update { (it - callId).asConferenceOrEmpty() }
         pendingVideoRequests -= callId
         pendingHolds -= callId
         transferTypes -= callId
@@ -357,14 +354,10 @@ internal class PjsipSipEngine @Inject constructor(
      * a collector at that instant is a call the user never hears about. Replay would be
      * the opposite mistake — re-ringing a call that was answered minutes ago.
      */
-    private val incoming = MutableSharedFlow<IncomingCall>(
-        replay = 0,
-        extraBufferCapacity = INCOMING_BUFFER,
-        // The one stream that must never drop, and the only one published with a suspending
-        // `emit` (see the emit site). A dropped inbound call is a call that never rang and
-        // never reached the log — the single worst loss in the app.
-        onBufferOverflow = BufferOverflow.SUSPEND,
-    )
+    // The one stream that must never drop, and the only one published with a suspending
+    // `emit` (see the emit site). A dropped inbound call is a call that never rang and
+    // never reached the log — the single worst loss in the app.
+    private val incoming = eventFlow<IncomingCall>()
     override val incomingCalls: Flow<IncomingCall> = incoming.asSharedFlow()
 
     /**
@@ -374,15 +367,11 @@ internal class PjsipSipEngine @Inject constructor(
      * one row per emission, so replaying would duplicate rows on every re-collection, and
      * dropping would lose the missed call nobody was watching for.
      */
-    private val ended = MutableSharedFlow<CallSnapshot>(
-        replay = 0,
-        extraBufferCapacity = INCOMING_BUFFER,
-        // The call log writes one row per emission, so a drop is a call that happened and is
-        // not in the history. [endCall] is not a suspend function, so this cannot suspend at
-        // its only emit site; [emitOrReport] makes the loss visible instead of silent, which
-        // is the difference between a bug that can be diagnosed and one that cannot.
-        onBufferOverflow = BufferOverflow.SUSPEND,
-    )
+    // The call log writes one row per emission, so a drop is a call that happened and is
+    // not in the history. [endCall] is not a suspend function, so this cannot suspend at
+    // its only emit site; [emitOrReport] makes the loss visible instead of silent, which
+    // is the difference between a bug that can be diagnosed and one that cannot.
+    private val ended = eventFlow<CallSnapshot>()
     override val endedCalls: Flow<CallSnapshot> = ended.asSharedFlow()
 
     private var started = false
@@ -1244,13 +1233,22 @@ internal class PjsipSipEngine @Inject constructor(
             return failure(SipError.InvalidState("this device mixes at most 8 calls"))
         }
 
+        // Published as the intent, before a single resume goes out. Telecom answers each
+        // resume by holding another member within milliseconds, and the bridge that
+        // declines those holds reads this set — a membership published only once the
+        // stack accepted it would arrive after the holds it exists to refuse.
+        mixed.value = establishedForMix(activeCalls.value, callIds).asConferenceOrEmpty()
         resumeHeldForMix(activeCalls, callIds, logger) { setHold(it, held = false) }
         val live = liveForMix(activeCalls.value, callIds)
 
-        return when (val mixed = conferenceGateway.setConferenceMembers(live.map { it.value }.toSet())) {
-            is Outcome.Failure -> failure(SipError.EngineUnavailable)
+        return when (val accepted = conferenceGateway.setConferenceMembers(live.map { it.value }.toSet())) {
+            is Outcome.Failure -> {
+                mixed.value = emptySet()
+                failure(SipError.EngineUnavailable)
+            }
             is Outcome.Success -> {
-                val ids = mixed.value.map(::CallId).toSet()
+                val ids = accepted.value.map(::CallId).toSet()
+                mixed.value = ids.asConferenceOrEmpty()
                 logger.info(TAG, "Mixing ${ids.size} call(s) on this device")
                 success(ids)
             }
@@ -1599,6 +1597,11 @@ private fun liveForMix(calls: List<CallSnapshot>, requested: Set<CallId>): Set<C
         it.callId in requested && it.state.isEstablished && !it.state.isMixPending
     }.mapTo(mutableSetOf()) { it.callId }
 
+/** Requested members that are established at all, held or not: the mix as intended. */
+private fun establishedForMix(calls: List<CallSnapshot>, requested: Set<CallId>): Set<CallId> =
+    calls.filterTo(mutableSetOf()) { it.callId in requested && it.state.isEstablished }
+        .mapTo(mutableSetOf()) { it.callId }
+
 /**
  * Requested members whose media is not running yet, so a mix must wait for them.
  *
@@ -1612,3 +1615,17 @@ private fun pendingForMix(calls: List<CallSnapshot>, requested: Set<CallId>): Li
 /** Established, but with no media running: nothing for the bridge to connect yet. */
 private val CallState.isMixPending: Boolean
     get() = this is CallState.Held || this is CallState.Resuming
+
+/**
+ * The shape every event stream in the engine takes: unreplayed, buffered, and suspending
+ * rather than dropping on overflow — each declaration says why that is right for it.
+ */
+private fun <T> eventFlow(): MutableSharedFlow<T> = MutableSharedFlow(
+    replay = 0,
+    extraBufferCapacity = PjsipSipEngine.INCOMING_BUFFER,
+    onBufferOverflow = BufferOverflow.SUSPEND,
+)
+
+/** Fewer than two mixed calls is a call, not a conference, and the published set says so by being empty. */
+private fun Set<CallId>.asConferenceOrEmpty(): Set<CallId> =
+    takeIf { it.size >= SipConferenceController.MINIMUM_MIXED } ?: emptySet()

@@ -411,7 +411,11 @@ class FakeSipEngine(
     }
 
     /** Every membership this device was asked to mix, in order (ADR-009). */
-    val mixedCalls: MutableList<Set<CallId>> = mutableListOf()
+    /** Every membership [mixCalls] was asked for, in order — what a test asserts on. */
+    val mixRequests: MutableList<Set<CallId>> = mutableListOf()
+
+    private val mixed = MutableStateFlow<Set<CallId>>(emptySet())
+    override val mixedCalls: StateFlow<Set<CallId>> = mixed.asStateFlow()
 
     override suspend fun mixCalls(callIds: Set<CallId>): Outcome<Set<CallId>, SipError> {
         record(Operation.MIX_CALLS, callIds.joinToString(",") { it.value })
@@ -428,7 +432,8 @@ class FakeSipEngine(
             .filter { it.callId in callIds && it.state !is CallState.Held && it.state.isEstablished }
             .map { it.callId }
             .toSet()
-        mixedCalls += live
+        mixRequests += live
+        mixed.value = if (live.size >= SipConferenceController.MINIMUM_MIXED) live else emptySet()
         return guard(Operation.MIX_CALLS) { success(live) }
     }
 

@@ -62,6 +62,7 @@ class UnavailableSipEngine @Inject constructor() : SipEngine {
     override val videoRequests: Flow<VideoRequest> = emptyFlow()
 
     override val conferences: StateFlow<List<ConferenceSession>> = MutableStateFlow(emptyList())
+    override val mixedCalls: StateFlow<Set<CallId>> = MutableStateFlow(emptySet())
 
     override suspend fun register(account: SipAccount) = unavailable()
 

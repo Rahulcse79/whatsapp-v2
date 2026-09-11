@@ -316,7 +316,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
     private val recorders = ConcurrentHashMap<String, AudioMediaRecorder>()
 
     /** Conference mixing, and everything it needs to remember (ADR-009). */
-    private val conference = ConferenceBridge(logger) { key -> calls[key]?.audioMedia }
+    private val conference = ConferenceBridge(logger) { key -> calls[key]?.currentAudioPort() }
 
     /**
      * Whether a `setNetworkReachable(false)` has arrived since the last IP change was
@@ -1747,6 +1747,27 @@ internal class RealPjsipCoreGateway @Inject constructor(
          * (TC15, 2026-09-11 13:59). A library assertion is not an exception `runCatching`
          * can see.
          */
+        /**
+         * This call's bridge port, only while it is the port pjsua currently holds for it.
+         *
+         * [audioMedia] is refreshed on the media-state callback, but pjsua tears a
+         * stream down *before* that callback fires for its replacement — a resume
+         * re-INVITE logs `Remove port 4 … Add port 8` first and reports media state
+         * after. In that window the cached object names a slot that is gone, and that
+         * pjsua may already have handed to another call: linking through it connected
+         * two members to one slot, which is a port transmitting to itself, which is a
+         * participant hearing their own voice. The slot pjsua reports for the live audio
+         * stream is the truth; a cached port that disagrees with it is treated as absent,
+         * and the bridge links the member when the callback brings the new one.
+         */
+        fun currentAudioPort(): ConferencePort? {
+            val media = audioMedia ?: return null
+            val slot = infoOrNull()?.media
+                ?.firstOrNull { it.type == pjmedia_type.PJMEDIA_TYPE_AUDIO && it.isLive }
+                ?.audioConfSlot ?: return null
+            return if (slot == media.portId) PjConferencePort(media) else null
+        }
+
         fun isTransmittingVideo(): Boolean {
             val info = infoOrNull() ?: return false
             val index = info.media.firstOrNull { media ->
@@ -2374,4 +2395,13 @@ private fun Account.registerAfterModify(accountKey: String, ipChangeInProgress: 
     runCatching { setRegistration(true) }.onFailure {
         logger.debug(RealPjsipCoreGateway.TAG, "REGISTER for $accountKey already in flight: ${it.message}")
     }
+}
+
+/** [ConferencePort] over a live `AudioMedia`. Equality is the port slot, which is what the bridge keys on. */
+private class PjConferencePort(private val media: AudioMedia) : ConferencePort {
+    override val id: Int get() = media.portId
+
+    override fun transmitTo(other: ConferencePort) = media.startTransmit((other as PjConferencePort).media)
+
+    override fun stopTransmitTo(other: ConferencePort) = media.stopTransmit((other as PjConferencePort).media)
 }

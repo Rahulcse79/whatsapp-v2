@@ -403,6 +403,18 @@ interface SipConferenceController {
      */
     suspend fun mixCalls(callIds: Set<CallId>): Outcome<Set<CallId>, SipError>
 
+    /**
+     * The calls currently mixed on this device by [mixCalls], or empty when there is no
+     * local conference.
+     *
+     * Published because the platform has to be kept from breaking the mix. Android
+     * Telecom allows one active call per connection service and holds every other the
+     * moment a call becomes active; a local conference is N calls that must all be
+     * active at once. Whoever carries Telecom's hold requests to the engine reads this
+     * and declines to hold a member. A `StateFlow` so a late reader sees the current set.
+     */
+    val mixedCalls: StateFlow<Set<CallId>>
+
     companion object {
         /**
          * The most participants this device will mix, from ADR-009's measurement.
@@ -412,5 +424,8 @@ interface SipConferenceController {
          * the same number for the same reason and must move together.
          */
         const val MAX_LOCAL_CONFERENCE = 8
+
+        /** Fewer than two mixed calls is a call, not a conference; [mixedCalls] is empty below it. */
+        const val MINIMUM_MIXED = 2
     }
 }

@@ -310,7 +310,7 @@ class CallViewModelTest {
         viewModel.merge()
         runCurrent()
 
-        assertEquals(listOf(setOf(first, second.callId)), engine.mixedCalls)
+        assertEquals(listOf(setOf(first, second.callId)), engine.mixRequests)
     }
 
     @Test
@@ -328,7 +328,7 @@ class CallViewModelTest {
         viewModel.merge()
         runCurrent()
 
-        val mixed = engine.mixedCalls.single()
+        val mixed = engine.mixRequests.single()
         assertTrue(ringing.callId !in mixed, "a ringing call was mixed in: $mixed")
         assertEquals(setOf(first, second), mixed)
     }
@@ -343,7 +343,7 @@ class CallViewModelTest {
         viewModel.merge()
         runCurrent()
 
-        assertTrue(engine.mixedCalls.isEmpty(), "the stack was asked to mix ${engine.mixedCalls}")
+        assertTrue(engine.mixRequests.isEmpty(), "the stack was asked to mix ${engine.mixRequests}")
     }
 
     @Test
