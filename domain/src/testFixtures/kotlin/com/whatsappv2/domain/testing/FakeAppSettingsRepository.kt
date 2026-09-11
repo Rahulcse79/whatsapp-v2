@@ -4,6 +4,7 @@ import com.whatsappv2.domain.model.AppSettings
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
+import com.whatsappv2.domain.model.ThemeMode
 import com.whatsappv2.domain.repository.AppSettingsRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +31,10 @@ class FakeAppSettingsRepository(
 
     override suspend fun setPreferredAudioRoute(route: PreferredAudioRoute) {
         settings.value = settings.value.copy(preferredAudioRoute = route)
+    }
+
+    override suspend fun setThemeMode(mode: ThemeMode) {
+        settings.value = settings.value.copy(themeMode = mode)
     }
 
     override suspend fun setSipTraceEnabled(enabled: Boolean) {

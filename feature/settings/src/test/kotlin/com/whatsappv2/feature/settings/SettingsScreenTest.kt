@@ -2,6 +2,7 @@ package com.whatsappv2.feature.settings
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -9,6 +10,7 @@ import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
 import com.whatsappv2.domain.model.AppSettings
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.SrtpPolicy
+import com.whatsappv2.domain.model.ThemeMode
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -34,6 +36,7 @@ class SettingsScreenTest {
         onDtmf: (DtmfMode) -> Unit = {},
         onSrtp: (SrtpPolicy) -> Unit = {},
         onTrace: (Boolean) -> Unit = {},
+        onTheme: (ThemeMode) -> Unit = {},
     ) {
         compose.setContent {
             WhatsAppV2Theme {
@@ -42,6 +45,7 @@ class SettingsScreenTest {
                     onDtmfModeChange = onDtmf,
                     onSrtpPolicyChange = onSrtp,
                     onAudioRouteChange = {},
+                    onThemeModeChange = onTheme,
                     onSipTraceChange = onTrace,
                     onOpenAccounts = {},
                     onBack = {},
@@ -54,9 +58,23 @@ class SettingsScreenTest {
     fun `each setting group is shown with an explanation`() {
         // A bare list of enum names tells a user nothing about which to pick.
         setContent()
-        compose.onNodeWithText("DTMF").assertIsDisplayed()
+        compose.onNodeWithText("Appearance").assertIsDisplayed()
+        compose.onNodeWithText("DTMF").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Default media encryption").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Audio route").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `choosing an appearance reports it`() {
+        // Tagged rather than found by text: "Dark" is also a word the DTMF description
+        // could grow, and a chip found by tag is the chip meant.
+        var chosen: ThemeMode? = null
+        setContent(onTheme = { chosen = it })
+
+        compose.onNodeWithTag(themeChipTag(ThemeMode.DARK)).performScrollTo().performClick()
+        compose.waitForIdle()
+
+        assertEquals(ThemeMode.DARK, chosen)
     }
 
     @Test

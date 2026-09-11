@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The window before Compose draws. Without this, a dark phone flashed a white window on
+  every cold start because the only platform theme was the Light one. The user's own
+  choice (Settings → Appearance) is applied by Compose a frame later; the platform theme
+  can only follow the phone, which is the right first guess.
+-->
+<resources>
+    <style name="Theme.WhatsAppV2" parent="android:Theme.Material.NoActionBar" />
+</resources>

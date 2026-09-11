@@ -1,6 +1,7 @@
 package com.whatsappv2.core.designsystem.preview
 
 import android.content.res.Configuration
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
@@ -27,10 +28,18 @@ annotation class ThemePreviews
 @Preview(name = "Large font", showBackground = true, fontScale = 2.0f)
 annotation class ThemeAndFontPreviews
 
-/** Wraps preview content in the app theme, so a preview cannot lie about styling. */
+/**
+ * Wraps preview content in the app theme, so a preview cannot lie about styling.
+ *
+ * The default follows the preview's own `uiMode`, which is what makes the "Dark" half of
+ * [ThemePreviews] actually dark. It used to default to `false`, so every "Dark" preview in
+ * the project rendered light and rule 7 was checking that an annotation existed rather
+ * than that anyone had seen the component in dark — the bottom bar's black-slab defect
+ * shipped through exactly that gap.
+ */
 @Composable
 fun PreviewSurface(
-    darkTheme: Boolean = false,
+    darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
     WhatsAppV2Theme(darkTheme = darkTheme, content = content)

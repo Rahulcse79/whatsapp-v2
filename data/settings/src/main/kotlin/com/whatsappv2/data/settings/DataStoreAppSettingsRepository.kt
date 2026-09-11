@@ -10,6 +10,7 @@ import com.whatsappv2.domain.model.AppSettings
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
+import com.whatsappv2.domain.model.ThemeMode
 import com.whatsappv2.domain.repository.AppSettingsRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -59,6 +60,8 @@ class DataStoreAppSettingsRepository @Inject constructor(
     override suspend fun setPreferredAudioRoute(route: PreferredAudioRoute) =
         edit { it[AUDIO_ROUTE] = route.name }
 
+    override suspend fun setThemeMode(mode: ThemeMode) = edit { it[THEME_MODE] = mode.name }
+
     override suspend fun setSipTraceEnabled(enabled: Boolean) =
         edit { it[SIP_TRACE] = enabled }
 
@@ -78,6 +81,7 @@ class DataStoreAppSettingsRepository @Inject constructor(
             ?: AppSettings.DEFAULT.defaultSrtpPolicy,
         preferredAudioRoute = this[AUDIO_ROUTE]?.toEnumOrNull<PreferredAudioRoute>()
             ?: AppSettings.DEFAULT.preferredAudioRoute,
+        themeMode = this[THEME_MODE]?.toEnumOrNull<ThemeMode>() ?: AppSettings.DEFAULT.themeMode,
         sipTraceEnabled = this[SIP_TRACE] ?: AppSettings.DEFAULT.sipTraceEnabled,
     )
 
@@ -90,6 +94,7 @@ class DataStoreAppSettingsRepository @Inject constructor(
         val DTMF_MODE = stringPreferencesKey("dtmf_mode")
         val SRTP_POLICY = stringPreferencesKey("default_srtp_policy")
         val AUDIO_ROUTE = stringPreferencesKey("preferred_audio_route")
+        val THEME_MODE = stringPreferencesKey("theme_mode")
         val SIP_TRACE = booleanPreferencesKey("sip_trace_enabled")
     }
 }
