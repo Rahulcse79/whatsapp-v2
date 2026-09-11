@@ -9,6 +9,7 @@ import com.whatsappv2.core.common.result.failure
 import com.whatsappv2.core.common.result.map
 import com.whatsappv2.core.common.result.success
 import com.whatsappv2.data.sip.call.SipCallGateway
+import com.whatsappv2.data.sip.call.SipConferenceGateway
 import com.whatsappv2.data.sip.call.SipRecordingGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
@@ -127,7 +128,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
     @ApplicationContext private val context: Context,
     private val trustStore: PjsipTrustStore,
     private val logger: Logger,
-) : SipCoreGateway, SipCallGateway, SipVideoGateway, SipRecordingGateway {
+) : SipCoreGateway, SipCallGateway, SipVideoGateway, SipRecordingGateway, SipConferenceGateway {
 
     private val events = MutableSharedFlow<StackRegistrationEvent>(
         replay = 0,
@@ -312,6 +313,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     /** Recorders by call key, so [stopRecording] can find and release the right one. */
     private val recorders = ConcurrentHashMap<String, AudioMediaRecorder>()
+
+    /** Conference mixing, and everything it needs to remember (ADR-009). */
+    private val conference = ConferenceBridge(logger) { key -> calls[key]?.audioMedia }
 
     /**
      * Whether a `setNetworkReachable(false)` has arrived since the last IP change was
@@ -1385,6 +1389,15 @@ internal class RealPjsipCoreGateway @Inject constructor(
             ?: failure("the stack did not answer in $RECORDING_START_TIMEOUT_MILLIS ms")
     }
 
+    // -------------------------------------------------------------- conference
+
+    override suspend fun setConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String> {
+        val answer = CompletableDeferred<Set<String>>()
+        onPjsip("setConferenceMembers") { answer.complete(conference.set(callKeys)) }
+        return withTimeoutOrNull(CONFERENCE_MIX_TIMEOUT_MILLIS) { success(answer.await()) }
+            ?: failure("the stack did not answer in $CONFERENCE_MIX_TIMEOUT_MILLIS ms")
+    }
+
     override fun stopRecording(callKey: String) {
         onPjsip("stopRecording") {
             val running = endpoint ?: return@onPjsip
@@ -1537,6 +1550,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 // any longer is the leak; releasing it any earlier is a crash.
                 calls -= callKey
                 recorders -= callKey
+                // Before the media goes: a conference link into a released port is a
+                // use-after-free in a native bridge, not a stale entry in a map.
+                conference.remove(callKey)
                 audioMedia = null
                 // And freed on the PJSIP thread, after this callback has returned — not
                 // from inside it, where the native frame is still this object's, and not
@@ -1587,6 +1603,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     }
                 }
             }
+            // A member that was still ringing now has an audio port, so the conference
+            // can take it. Idempotent, so calling it on every media change costs nothing
+            // when there is no conference or when nothing moved (ADR-009).
+            if (conference.isActive) conference.remix()
+
             val state = callStateOf(info)
             // Media running again is our resume landing; anything else, LOCAL_HOLD
             // restated mid-flight included, leaves it outstanding.
@@ -1892,6 +1913,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
          * that asked for the recording still gets an answer.
          */
         const val RECORDING_START_TIMEOUT_MILLIS = 5_000L
+
+        /** Same bound and same reasoning as the recording start: a wait must end (§1.4). */
+        const val CONFERENCE_MIX_TIMEOUT_MILLIS = 5_000L
         const val EVENT_BUFFER = 64
 
         const val TRANSPORT_UDP = "UDP"
