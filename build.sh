@@ -24,12 +24,44 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$root"
 
-abis="arm64-v8a"
 reuse_native=0
 install_after=0
 
 die() { printf '\n\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
 note() { printf '\033[36m%s\033[0m\n' "$1"; }
+
+# The supported ABI set and the SWIG pin are DECLARED IN gradle.properties, not here.
+# Gradle reads them natively through providers.gradleProperty and this script reads the
+# same file, so there is one answer instead of two that drift. A second copy here is not a
+# tidiness question: move the pin in Gradle and this script would warn about the old one —
+# silent on a build that is wrong and noisy on one that is right, which is the worst
+# possible way for a warning to fail.
+prop() {
+  awk -F= -v k="$1" '$1 == k { sub(/^[^=]*=/, ""); gsub(/^[ \t]+|[ \t]+$/, ""); print; exit }' \
+    "$root/gradle.properties"
+}
+
+supported_abis="$(prop pjsip.abis)"
+swig_pin="$(prop pjsip.swig.version)"
+[ -n "$supported_abis" ] || die "pjsip.abis is not declared in gradle.properties."
+[ -n "$swig_pin" ] || die "pjsip.swig.version is not declared in gradle.properties."
+
+# One ABI by default: the handsets this is tested on are arm64, and building three costs
+# three native builds. --all-abis expands to whatever gradle.properties declares.
+abis="arm64-v8a"
+
+# An unknown ABI is caught here for the same reason the NDK and SWIG are: passed through,
+# it fails deep in the native build as something that reads like a broken checkout.
+check_abis() {
+  local abi
+  for abi in ${1//,/ }; do
+    case ",$supported_abis," in
+      *",$abi,"*) ;;
+      *) die "unknown ABI: $abi
+  Supported, from gradle.properties (pjsip.abis): $supported_abis" ;;
+    esac
+  done
+}
 
 # The header comment above IS the help text: awk stops at the first line that is not a
 # comment, so the two cannot drift apart the way a second copy of the usage would.
@@ -37,8 +69,8 @@ usage() { awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; ex
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --abi) [ $# -ge 2 ] || die "--abi needs a value"; abis="$2"; shift 2 ;;
-    --all-abis) abis="arm64-v8a,armeabi-v7a,x86_64"; shift ;;
+    --abi) [ $# -ge 2 ] || die "--abi needs a value"; check_abis "$2"; abis="$2"; shift 2 ;;
+    --all-abis) abis="$supported_abis"; shift ;;
     --reuse-native) reuse_native=1; shift ;;
     --install) install_after=1; shift ;;
     --with-lyra) echo "note: --with-lyra is not a flag any more; Lyra is in every build (ADR-008 Exit A)" >&2; shift ;;
@@ -101,6 +133,21 @@ else
   swig_version="$(swig -version 2>/dev/null | awk '/SWIG Version/ {print $3}')"
   swig_lib="$(swig -swiglib 2>/dev/null | head -1)"
 
+  # A user-local copy of the typemaps is a supported way out and it is what this machine
+  # uses: MacPorts' swig ships without Lib/java, so a copy of the whole lib plus java/ sits
+  # under ~/.local/share/swig/<version>. Find it rather than making every invocation carry
+  # SWIG_LIB= by hand — the script can see it, so it should. Exporting is what does the
+  # work: swig reads SWIG_LIB itself, and both stages inherit it from here.
+  if [ ! -d "$swig_lib/java" ]; then
+    for candidate in "$HOME/.local/share/swig/$swig_version" "$HOME/.local/share/swig"/*; do
+      [ -d "$candidate/java" ] || continue
+      export SWIG_LIB="$candidate"
+      swig_lib="$candidate"
+      note "Java typemaps: $SWIG_LIB (the swig on PATH ships none)"
+      break
+    done
+  fi
+
   if [ ! -d "$swig_lib/java" ]; then
     die "swig $swig_version is installed without its Java typemaps: $swig_lib/java does not exist.
   Some distributions package them separately. Without them SWIG fails on arrays_java.i and
@@ -109,14 +156,18 @@ else
   MacPorts:       sudo port selfupdate && sudo port install swig-java
   Debian/Ubuntu:  the swig package already includes them
 
+  Or put a copy where this script looks for one, which needs no root:
+      cp -R \"$swig_lib\" ~/.local/share/swig/$swig_version
+      cp -R <a swig source tree>/Lib/java ~/.local/share/swig/$swig_version/
+
   To build an APK right now with the native libraries already on disk:
       ./build.sh --reuse-native"
   fi
 
   gradle_args+=("-Ppjsip.swig=$swig_bin" "-Ppjsip.swig.version=$swig_version")
 
-  if [ "$swig_version" != "4.2.0" ]; then
-    printf '\033[33mwarning:\033[0m this build uses swig %s, and the pin is 4.2.0.\n' "$swig_version"
+  if [ "$swig_version" != "$swig_pin" ]; then
+    printf '\033[33mwarning:\033[0m this build uses swig %s, and the pin is %s.\n' "$swig_version" "$swig_pin"
     printf '         Both stages use the same binary so the APK is self-consistent and fine\n'
     printf '         to install and test. Do NOT ship it: the JNI names differ from a 4.2.0\n'
     printf '         build. CI is the authority on what ships.\n\n'
@@ -153,6 +204,25 @@ if [ "$install_after" = 1 ]; then
   [ -n "$adb_bin" ] || adb_bin="$HOME/Downloads/platform-tools/adb"
   [ -x "$adb_bin" ] || die "--install was asked for but no adb was found.
   Not on PATH, and not at $HOME/Downloads/platform-tools/adb."
-  note "installing with $adb_bin"
+  # adb's own answer when two phones are plugged in is "adb: error: failed to resolve host:
+  # more than one device", which reads like DNS. Two TC15s on one desk is this project's
+  # documented setup (docs/HANDOFF.md §0e), so name the real problem and the real fix.
+  ready="$("$adb_bin" devices | awk 'NR > 1 && $2 == "device" { print $1 }')"
+  count="$(printf '%s' "$ready" | grep -c . || true)"
+
+  if [ "$count" -eq 0 ]; then
+    die "--install was asked for but no device is ready.
+  \`$adb_bin devices\` lists none in state 'device'. Check the cable, and that the phone
+  has accepted this machine's USB debugging key."
+  fi
+
+  if [ "$count" -gt 1 ] && [ -z "${ANDROID_SERIAL:-}" ]; then
+    die "--install was asked for but $count devices are attached:
+$(printf '      %s\n' $ready)
+  adb cannot choose. Name one:
+      ANDROID_SERIAL=<serial> ./build.sh --install"
+  fi
+
+  note "installing with $adb_bin${ANDROID_SERIAL:+ (ANDROID_SERIAL=$ANDROID_SERIAL)}"
   "$adb_bin" install -r "$apk"
 fi
