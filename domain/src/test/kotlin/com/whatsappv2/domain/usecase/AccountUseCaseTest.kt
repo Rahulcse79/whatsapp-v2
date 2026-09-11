@@ -278,6 +278,26 @@ class SaveAccountUseCaseTest {
         assertTrue(engine.invocations.isEmpty(), "a logged-out account must be left logged out")
     }
 
+    @Test
+    fun `saving an edit to a FAILED account registers it, because that is the repair`() = runTest {
+        // The defect: correcting a mistyped password and pressing Save did nothing at
+        // all, because a failed registration and a deliberate logout were both simply
+        // "not registered". People were sent to "Register now" as a second step that the
+        // save should never have needed.
+        val stored = storedAccount()
+        repository.given(stored)
+        engine.givenRegistrationFailed(stored)
+        engine.clearInvocations()
+
+        val result = save(draft(password = "corrected")).getOrNull() ?: fail("save failed")
+
+        assertEquals(RegistrationAttempt.Succeeded, result.registration)
+        assertTrue(
+            engine.invocations.any { it.operation == FakeSipEngine.Operation.REGISTER },
+            "a failed account must be registered by the save that repairs it",
+        )
+    }
+
     // ---------------------------------------------------------------- failures
 
     @Test

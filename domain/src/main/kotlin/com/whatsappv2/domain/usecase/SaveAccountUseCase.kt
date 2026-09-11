@@ -7,6 +7,7 @@ import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.SipRegistrar
 import com.whatsappv2.domain.model.AccountId
+import com.whatsappv2.domain.model.RegistrationState
 import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.repository.AccountRepositoryError
 import com.whatsappv2.domain.repository.SipAccountRepository
@@ -126,8 +127,13 @@ class SaveAccountUseCase @Inject constructor(
         }
 
         val existing = repository.findById(validated.account.id)
-        val wasRegistered = existing != null &&
-            registrar.registrationState.first()[existing.id]?.isUsable == true
+        val stateNow = existing?.let { registrar.registrationState.first()[it.id] }
+        val wasRegistered = stateNow?.isUsable == true
+        // A registration that FAILED and one the user logged out of are both "not
+        // registered" and are opposite intentions. Saving an edit to a failed account is
+        // an attempt to repair it — the commonest case being a mistyped password — so it
+        // registers. A logged-out account stays logged out; see below.
+        val wasFailed = stateNow is RegistrationState.Failed
         val mustUnregister = existing != null &&
             wasRegistered &&
             existing.affectsRegistration(validated.account, storedPasswordOf(existing.id))
@@ -146,8 +152,12 @@ class SaveAccountUseCase @Inject constructor(
                     warnings = validated.warnings,
                     unregisteredFirst = mustUnregister,
                     // A new account is a login. An edit that dropped a live binding must
-                    // put it back. Anything else is left as the user had it.
-                    registration = if (existing == null || mustUnregister) {
+                    // put it back. An edit to a FAILED account is a repair, and the whole
+                    // point of making it — correcting a password and pressing Save did
+                    // nothing at all before, which is what sent people to "Register now"
+                    // as a second step nobody should need. Anything else is left as the
+                    // user had it, which is what keeps a deliberate logout deliberate.
+                    registration = if (existing == null || mustUnregister || wasFailed) {
                         register(validated.account)
                     } else {
                         RegistrationAttempt.NotAttempted

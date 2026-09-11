@@ -455,6 +455,22 @@ class FakeSipEngine(
         }
     }
 
+    /**
+     * An account whose registration FAILED, which is not the same as one logged out of.
+     *
+     * The difference decides whether saving an edit registers it: a failure is something
+     * to repair, a logout is a decision to respect.
+     */
+    fun givenRegistrationFailed(
+        account: SipAccount,
+        reason: RegistrationFailure = RegistrationFailure.AUTHENTICATION_FAILED,
+    ): FakeSipEngine = apply {
+        knownAccounts[account.id] = account
+        registrations.update {
+            it + (account.id to RegistrationState.Failed(reason, retryScheduled = false))
+        }
+    }
+
     /** Delivers an inbound INVITE and returns it, so the test can use its [CallId]. */
     fun simulateIncomingCall(
         accountId: AccountId,
