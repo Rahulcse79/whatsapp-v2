@@ -171,9 +171,14 @@ class HistoryViewModel @Inject constructor(
         it.copy(query = it.query.copy(fromEpochMillis = from, toEpochMillis = to))
     }
 
-    /** Back to everything, without closing the search field the user is still typing in. */
+    /**
+     * Back to everything, without closing the search field the user is still typing in.
+     *
+     * The row stays open: clearing is something done *in* the row, and a row that vanished
+     * under the finger that pressed Clear would look like a crash.
+     */
     fun onFiltersCleared() = state.update {
-        it.copy(query = CallLogQuery(text = it.query.text))
+        it.copy(query = CallLogQuery(text = it.query.text), filtersOpen = true)
     }
 
     fun onEntryOpened(row: HistoryRow.Call) = state.update { it.copy(openEntry = row) }

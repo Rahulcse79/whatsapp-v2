@@ -2,10 +2,11 @@ package com.whatsappv2.feature.history
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,18 +15,24 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.CallMade
 import androidx.compose.material.icons.automirrored.filled.CallMissed
 import androidx.compose.material.icons.automirrored.filled.CallReceived
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dialpad
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
@@ -45,11 +52,16 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -116,7 +128,9 @@ fun HistoryScreen(
                 onFilterChanged = actions.onFilterChanged,
             )
 
-            AdvancedFilters(query = state.query, actions = actions)
+            if (state.showsFilters) {
+                AdvancedFilters(query = state.query, actions = actions, zone = zone)
+            }
 
             if (rows.itemCount == 0) {
                 EmptyState(
@@ -183,6 +197,7 @@ private fun HistoryTopBar(state: HistoryUiState, actions: HistoryActions) {
                 ) {
                     Icon(Icons.Filled.Search, contentDescription = "Search calls")
                 }
+                FilterButton(state = state, actions = actions)
                 IconButton(
                     onClick = actions.onClearAllRequested,
                     modifier = Modifier.testTag(TAG_CLEAR_ALL),
@@ -192,6 +207,35 @@ private fun HistoryTopBar(state: HistoryUiState, actions: HistoryActions) {
             }
         },
     )
+}
+
+/**
+ * The funnel: how the filter row is found on a log nobody has started narrowing.
+ *
+ * The row hides at rest (see [AdvancedFilters]), and a control that only appears once you
+ * have used it is one nobody finds. The badge carries the number of active criteria, so a
+ * narrowed list says so even when the row itself has been folded away.
+ */
+@Composable
+private fun FilterButton(state: HistoryUiState, actions: HistoryActions) {
+    val active = state.query.activeFilterCount
+    IconButton(
+        onClick = { actions.onFiltersToggled(!state.filtersOpen) },
+        modifier = Modifier.testTag(TAG_FILTERS),
+    ) {
+        BadgedBox(
+            badge = {
+                if (active > 0) {
+                    Badge { Text(active.toString()) }
+                }
+            },
+        ) {
+            Icon(
+                imageVector = Icons.Filled.FilterList,
+                contentDescription = if (active > 0) "Filters, $active active" else "Filters",
+            )
+        }
+    }
 }
 
 /** The search box, focused the moment it appears — opening it is the request to type. */
@@ -221,20 +265,24 @@ private fun SearchField(text: String, onTextChanged: (String) -> Unit) {
 /**
  * Direction and date, as chips under the tabs.
  *
- * Shown only while searching or while something is narrowed — on a resting call log they
- * would be three controls for a list nobody is looking through yet.
+ * Shown while searching, while something is narrowed, or while the funnel in the top bar
+ * has been pressed — and hidden otherwise, because on a resting call log they would be
+ * five controls for a list nobody is looking through yet. The decision lives in
+ * [HistoryUiState.showsFilters]; this is only the row.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AdvancedFilters(query: CallLogQuery, actions: HistoryActions) {
-    if (!query.text.isNotEmpty() && query.activeFilterCount == 0) return
-
-    Row(
+private fun AdvancedFilters(query: CallLogQuery, actions: HistoryActions, zone: ZoneId) {
+    // Wraps rather than scrolls sideways. Five chips do not fit one line on a phone, and a
+    // control that has to be scrolled into view is a control nobody knows is there — the
+    // date chip, the one this row was reopened for, was the one that fell off the edge.
+    FlowRow(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = AppTheme.spacing.large, vertical = AppTheme.spacing.small),
+            .padding(horizontal = AppTheme.spacing.large, vertical = AppTheme.spacing.small)
+            .testTag(TAG_FILTER_ROW),
         horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraSmall),
     ) {
         CallDirectionFilter.entries.forEach { direction ->
             FilterChip(
@@ -244,9 +292,99 @@ private fun AdvancedFilters(query: CallLogQuery, actions: HistoryActions) {
                 modifier = Modifier.testTag(directionChipTag(direction)),
             )
         }
+        DateRangeChip(query = query, actions = actions, zone = zone)
         if (!query.isMatchAll) {
             TextButton(onClick = actions.onFiltersCleared) { Text("Clear") }
         }
+    }
+}
+
+/**
+ * The date range, as one chip: "Date" at rest, the range once one is applied, and a
+ * cross to drop it without opening the picker again (item 5.3).
+ *
+ * The picker is Material's range calendar in a dialog. Its days come back as UTC
+ * midnights and the query wants bounds in the log's zone — [dateRangeBounds] is the
+ * conversion, and the reason a 02:00 call lands on the day it was made.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DateRangeChip(query: CallLogQuery, actions: HistoryActions, zone: ZoneId) {
+    var picking by rememberSaveable { mutableStateOf(false) }
+    val from = query.fromEpochMillis
+    val to = query.toEpochMillis
+    val applied = from != null && to != null
+
+    FilterChip(
+        selected = applied,
+        onClick = { picking = true },
+        label = { Text(if (applied) dateRangeLabel(from, to, zone) else "Date") },
+        leadingIcon = { Icon(Icons.Filled.DateRange, contentDescription = null) },
+        trailingIcon = if (applied) {
+            {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "Clear the date range",
+                    modifier = Modifier
+                        .clickable { actions.onDateRangeChanged(null, null) }
+                        .testTag(TAG_DATE_CLEAR),
+                )
+            }
+        } else {
+            null
+        },
+        modifier = Modifier.testTag(TAG_DATE_CHIP),
+    )
+
+    if (picking) {
+        DateRangeDialog(
+            initialFrom = from?.toUtcDayMillis(zone),
+            initialTo = to?.toUtcDayMillis(zone),
+            onConfirm = { start, end ->
+                picking = false
+                val bounds = dateRangeBounds(start, end, zone)
+                actions.onDateRangeChanged(bounds.fromEpochMillis, bounds.toEpochMillis)
+            },
+            onDismiss = { picking = false },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DateRangeDialog(
+    initialFrom: Long?,
+    initialTo: Long?,
+    onConfirm: (startUtcDayMillis: Long, endUtcDayMillis: Long?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val pickerState = rememberDateRangePickerState(
+        initialSelectedStartDateMillis = initialFrom,
+        initialSelectedEndDateMillis = initialTo,
+    )
+    DatePickerDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            val start = pickerState.selectedStartDateMillis
+            // One day is a range too: a start with no end means that day.
+            TextButton(
+                onClick = { if (start != null) onConfirm(start, pickerState.selectedEndDateMillis) },
+                enabled = start != null,
+                modifier = Modifier.testTag(TAG_DATE_CONFIRM),
+            ) {
+                Text("Apply")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        modifier = Modifier.testTag(TAG_DATE_DIALOG),
+    ) {
+        DateRangePicker(
+            state = pickerState,
+            // The dialog is already headed; a second title inside it is a title twice.
+            title = null,
+            showModeToggle = false,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
@@ -405,39 +543,59 @@ private fun CallRowContent(row: HistoryRow.Call, actions: HistoryActions, zone: 
         // with, and it had been sitting where the person should be.
         Avatar(displayName = row.title.takeIf { title -> title.any(Char::isLetter) })
 
-        Column(modifier = Modifier.weight(1f)) {
+        CallRowText(row = row, zone = zone, modifier = Modifier.weight(1f))
+
+        // What kind of call it was, at the end of the row where a calling app keeps it
+        // (item 5.3). The log records it and the row did not show it, so a missed video
+        // call and a missed audio call looked identical. Both kinds get a glyph: video is
+        // not the exception being flagged, it is one of two things a call can be.
+        Icon(
+            imageVector = if (entry.media.hasVideo) Icons.Filled.Videocam else Icons.Filled.Call,
+            contentDescription = if (entry.media.hasVideo) "Video call" else "Voice call",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .size(AppTheme.sizing.listTrailingIcon)
+                .testTag(mediaTag(entry)),
+        )
+    }
+}
+
+/** Who it was, and underneath, what happened and when. */
+@Composable
+private fun CallRowText(row: HistoryRow.Call, zone: ZoneId, modifier: Modifier = Modifier) {
+    val entry = row.entry
+    Column(modifier = modifier) {
+        Text(
+            text = row.title,
+            style = MaterialTheme.typography.titleMedium,
+            // A missed call is what someone opens this screen looking for, so it
+            // is the one the eye lands on. Weight as well as colour: colour alone
+            // is not a channel everybody has.
+            color = if (entry.wasMissed) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraSmall),
+        ) {
+            Icon(
+                imageVector = entry.directionIcon(),
+                contentDescription = entry.directionDescription(),
+                tint = entry.directionTint(),
+                modifier = Modifier.size(AppTheme.spacing.medium),
+            )
             Text(
-                text = row.title,
-                style = MaterialTheme.typography.titleMedium,
-                // A missed call is what someone opens this screen looking for, so it
-                // is the one the eye lands on. Weight as well as colour: colour alone
-                // is not a channel everybody has.
-                color = if (entry.wasMissed) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurface
-                },
+                text = entry.subtitle(zone),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraSmall),
-            ) {
-                Icon(
-                    imageVector = entry.directionIcon(),
-                    contentDescription = entry.directionDescription(),
-                    tint = entry.directionTint(),
-                    modifier = Modifier.size(AppTheme.spacing.medium),
-                )
-                Text(
-                    text = entry.subtitle(zone),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
         }
     }
 }
@@ -497,6 +655,7 @@ private fun CallDetail(row: HistoryRow.Call, actions: HistoryActions, zone: Zone
         // dialler showed when the call failed are the same sentence.
         message = buildString {
             appendLine(entry.remote.render())
+            appendLine(if (entry.media.hasVideo) "Video call" else "Voice call")
             appendLine(entry.reason.userMessage())
             append(entry.subtitle(zone))
         },
@@ -578,7 +737,16 @@ internal const val TAG_SEARCH_FIELD = "history-search-field"
 
 /** Identifies a direction chip, so a test presses the one it means. */
 internal fun directionChipTag(direction: CallDirectionFilter) = "history-direction-${direction.name.lowercase()}"
+internal const val TAG_FILTERS = "history-filters"
+internal const val TAG_FILTER_ROW = "history-filter-row"
+internal const val TAG_DATE_CHIP = "history-date-chip"
+internal const val TAG_DATE_CLEAR = "history-date-clear"
+internal const val TAG_DATE_DIALOG = "history-date-dialog"
+internal const val TAG_DATE_CONFIRM = "history-date-confirm"
 internal const val TAG_DIALER = "history-dialer"
+
+/** The audio/video glyph on one row, so a test can ask which kind the row says it was. */
+internal fun mediaTag(entry: CallLogEntry) = "history-media-${entry.id.value}"
 
 internal fun filterTag(filter: CallLogFilter) = "history-filter-${filter.name.lowercase()}"
 internal fun dayHeadingTag(epochDay: Long) = "history-day-$epochDay"

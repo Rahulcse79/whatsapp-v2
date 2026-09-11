@@ -31,6 +31,12 @@ data class HistoryActions(
     /** Narrows by direction, with missed as its own case (CallDirectionFilter). */
     val onDirectionChanged: (CallDirectionFilter) -> Unit = {},
 
+    /** Bounds on when a call started, inclusive, in epoch millis; nulls for no bound. */
+    val onDateRangeChanged: (from: Long?, to: Long?) -> Unit = { _, _ -> },
+
+    /** Shows or hides the filter row when nothing is narrowed yet — the funnel in the top bar. */
+    val onFiltersToggled: (Boolean) -> Unit = {},
+
     /** Back to everything, without closing a search field still being typed in. */
     val onFiltersCleared: () -> Unit = {},
     /** The whole row, so the detail sheet is headed with the name the list showed. */

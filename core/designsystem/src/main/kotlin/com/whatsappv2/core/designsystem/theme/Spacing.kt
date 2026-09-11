@@ -64,6 +64,9 @@ data class Sizing(
     /** A status dot beside a label. Big enough to read as a colour, small enough not to be a button. */
     val statusDot: Dp = 10.dp,
 
+    /** A glyph at the end of a list row that says what the row is, not what it does. */
+    val listTrailingIcon: Dp = 20.dp,
+
     /** Avatar on the in-call screen. */
     val avatarLarge: Dp = 96.dp,
 
