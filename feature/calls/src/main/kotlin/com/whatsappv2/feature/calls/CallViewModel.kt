@@ -91,6 +91,16 @@ class CallViewModel @Inject constructor(
 
     private val watched = MutableStateFlow<CallId?>(null)
 
+    /**
+     * The calls this device is mixing right now (ADR-009).
+     *
+     * Held here rather than read back from the engine because the engine has no
+     * conference *object* to report — local mixing is a property of the bridge, not a
+     * session with a URI. The screen needs to know so it can say "3 calls merged"
+     * instead of leaving the merge silent, and so the button stops offering itself.
+     */
+    private val mixed = MutableStateFlow<Set<CallId>>(emptySet())
+
     private val eventChannel = Channel<CallEvent>(Channel.BUFFERED)
     val events: Flow<CallEvent> = eventChannel.receiveAsFlow()
 
@@ -196,6 +206,7 @@ class CallViewModel @Inject constructor(
         val recording: RecordingUiState,
         val pendingVideo: PendingVideoRequest?,
         val transfer: TransferUiState,
+        val mixed: Set<CallId> = emptySet(),
     )
 
     private fun stateFor(callId: CallId): Flow<CallUiState> {
@@ -222,7 +233,10 @@ class CallViewModel @Inject constructor(
                 pendingVideo = video?.takeIf { it.callId == callId },
                 transfer = transfer,
             )
-        }
+            // Folded in after the five above rather than as a sixth source: `combine`
+            // stops being type-checked past five, and an indexed array of Any is a worse
+            // trade than one extra operator.
+        }.combine(mixed) { state, mixedNow -> state.copy(mixed = mixedNow) }
 
         return combine(engine, ticker(), contactFor(callId), inFlight) { state, now, contact, busy ->
             val call = state.calls.firstOrNull { it.callId == callId }
@@ -240,6 +254,8 @@ class CallViewModel @Inject constructor(
                     transfer = state.transfer,
                     recording = state.recording,
                     conference = state.conference?.toUiState(UNKNOWN_PARTICIPANT),
+                    canMerge = state.calls.count { it.state.isEstablished } >= MIN_MERGEABLE,
+                    mixedCallCount = state.mixed.size,
                     pendingActions = busy,
                 )
                 // Absent after it was present means the call ended. Absent before it was
@@ -461,6 +477,31 @@ class CallViewModel @Inject constructor(
      * Also re-points the screen, because after a swap the call the user is looking at
      * should be the one they are talking to.
      */
+    /**
+     * Mixes every established call this device is holding into one conference (ADR-009).
+     *
+     * Everything on the device, not a chosen pair: the phone has one audio bridge and one
+     * microphone, so "merge" can only ever mean all of them. Ringing calls are left out —
+     * they have no audio to contribute — and join by themselves when they are answered,
+     * because the stack re-plans the mix on every media change.
+     *
+     * The result is what the stack accepted, not what was asked for, so a member the
+     * bridge refused never appears on screen as merged.
+     */
+    fun merge() {
+        val establishedCalls = calls.activeCalls.value
+            .filter { it.state.isEstablished }
+            .map { it.callId }
+            .toSet()
+        if (establishedCalls.size < MIN_MERGEABLE) return
+
+        act(CallAction.MERGE) {
+            conferences.mixCalls(establishedCalls).also { result ->
+                if (result is Outcome.Success) mixed.value = result.value
+            }
+        }
+    }
+
     fun swapTo(callId: CallId) {
         viewModelScope.launch {
             when (val result = callWaiting.swapTo(callId)) {
@@ -508,6 +549,9 @@ class CallViewModel @Inject constructor(
         action !in inFlight.getAndUpdate { it + action }
 
     private companion object {
+        /** Two established calls is the least that can be mixed (ADR-009). */
+        const val MIN_MERGEABLE = 2
+
         const val SUBSCRIPTION_TIMEOUT_MILLIS = 5_000L
 
         /** One second, which is the resolution a call timer is read at. */

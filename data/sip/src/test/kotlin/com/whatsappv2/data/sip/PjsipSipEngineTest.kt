@@ -142,10 +142,11 @@ open class PjsipSipEngineFixture {
     private fun engineScope(scope: TestScope) = CoroutineScope(scope.coroutineContext + Job())
 
     internal fun engine(scope: TestScope) =
-        // The same fake three times: one object implements every half of the seam, exactly
-        // as the real gateway does, because one `Core` owns registration, calls and video
-        // alike.
+        // The same fake four times: one object implements every half of the seam, exactly
+        // as the real gateway does, because one `Core` owns registration, calls, video and
+        // the conference bridge alike.
         PjsipSipEngine(
+            gateway,
             gateway,
             gateway,
             gateway,

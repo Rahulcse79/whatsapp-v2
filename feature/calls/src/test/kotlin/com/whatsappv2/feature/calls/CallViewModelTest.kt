@@ -297,6 +297,56 @@ class CallViewModelTest {
     }
 
     @Test
+    fun `merging mixes every established call on this device`() = runTest {
+        // ADR-009: the phone has one audio bridge and one microphone, so "merge" can only
+        // mean all of them — there is no pair to choose.
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val viewModel = viewModel().also { it.watch(first) }
+        val second = engine.simulateIncomingCall(ACCOUNT.id, REMOTE)
+        engine.answer(second.callId, MediaProfile.AUDIO)
+        runCurrent()
+
+        viewModel.merge()
+        runCurrent()
+
+        assertEquals(listOf(setOf(first, second.callId)), engine.mixedCalls)
+    }
+
+    @Test
+    fun `a call that is still ringing is not mixed in`() = runTest {
+        // It has no audio to contribute. It joins by itself when it is answered, because
+        // the stack re-plans the mix on every media change.
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val second = placeCall()
+        engine.simulateRemoteAnswer(second)
+        val ringing = engine.simulateIncomingCall(ACCOUNT.id, REMOTE)
+        val viewModel = viewModel().also { it.watch(first) }
+        runCurrent()
+
+        viewModel.merge()
+        runCurrent()
+
+        val mixed = engine.mixedCalls.single()
+        assertTrue(ringing.callId !in mixed, "a ringing call was mixed in: $mixed")
+        assertEquals(setOf(first, second), mixed)
+    }
+
+    @Test
+    fun `one call is not a conference, and the stack is never asked`() = runTest {
+        val only = placeCall()
+        engine.simulateRemoteAnswer(only)
+        val viewModel = viewModel().also { it.watch(only) }
+        runCurrent()
+
+        viewModel.merge()
+        runCurrent()
+
+        assertTrue(engine.mixedCalls.isEmpty(), "the stack was asked to mix ${engine.mixedCalls}")
+    }
+
+    @Test
     fun `declining sends a decline, not a busy`() = runTest {
         // The caller hears the difference: 603 means the user was there and said no.
         engine.givenRegistered(ACCOUNT)

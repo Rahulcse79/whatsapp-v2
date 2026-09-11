@@ -10,6 +10,7 @@ import com.whatsappv2.core.common.time.SystemClock
 import com.whatsappv2.data.sip.call.CallStateMapper
 import com.whatsappv2.data.sip.call.ConferenceMapper
 import com.whatsappv2.data.sip.call.SipCallGateway
+import com.whatsappv2.data.sip.call.SipConferenceGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
@@ -37,6 +38,7 @@ import com.whatsappv2.domain.engine.IncomingCall
 import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.engine.PlatformCallRegistry
 import com.whatsappv2.domain.engine.PushToken
+import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.engine.SipEngine
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.TransferEvent
@@ -126,6 +128,7 @@ internal class PjsipSipEngine @Inject constructor(
     private val gateway: SipCoreGateway,
     private val callGateway: SipCallGateway,
     private val videoGateway: SipVideoGateway,
+    private val conferenceGateway: SipConferenceGateway,
     private val accounts: SipAccountRepository,
     /**
      * App-wide preferences, read for the DTMF transport (Task 43, §5.1).
@@ -1219,6 +1222,46 @@ internal class PjsipSipEngine @Inject constructor(
     }
 
     /**
+     * Mixes established calls on this device (ADR-009).
+     *
+     * Everything that can be decided without the stack is decided here, so the gateway is
+     * handed a membership it can simply apply:
+     *
+     *  - **Not established, not mixed.** A ringing or held call has no audio to
+     *    contribute; including it would ask the bridge for a port that does not exist.
+     *  - **The ceiling is enforced above the stack**, because `PJSUA_MAX_CALLS` refusing
+     *    the eighth call is a native error at the wrong moment, and this is a number the
+     *    user can be told about.
+     *
+     * The whole membership goes down every time. Adding a participant, dropping one and
+     * ending the conference are the same call with a different set, which is why there is
+     * no add/remove pair to get out of order.
+     */
+    override suspend fun mixCalls(callIds: Set<CallId>): Outcome<Set<CallId>, SipError> {
+        if (!started) return failure(SipError.EngineUnavailable)
+
+        if (callIds.size > SipConferenceController.MAX_LOCAL_CONFERENCE) {
+            return failure(SipError.InvalidState("this device mixes at most 8 calls"))
+        }
+
+        // A held member contributes nothing — sendonly RTP, stopped media port — so the
+        // hold comes off before the mix. A resume the far end refuses simply leaves that
+        // member out of [liveForMix] below, rather than in a conference pretending.
+        heldForMix(activeCalls.value, callIds).forEach { setHold(it, held = false) }
+
+        val live = liveForMix(activeCalls.value, callIds)
+
+        return when (val mixed = conferenceGateway.setConferenceMembers(live.map { it.value }.toSet())) {
+            is Outcome.Failure -> failure(SipError.EngineUnavailable)
+            is Outcome.Success -> {
+                val ids = mixed.value.map(::CallId).toSet()
+                logger.info(TAG, "Mixing ${ids.size} call(s) on this device")
+                success(ids)
+            }
+        }
+    }
+
+    /**
      * Runs a control event through the FSM and, if it is legal, does the thing.
      *
      * The order is the point. `CallStateMachine` is asked first, so an action the call
@@ -1501,3 +1544,24 @@ private fun SipAccount.toStackAccount(password: String) = StackAccount(
         SrtpPolicy.MANDATORY -> StackMediaEncryption.MANDATORY
     },
 )
+
+/**
+ * Members of a requested mix that are on hold, and must be resumed first (ADR-009).
+ *
+ * At file level because `PjsipSipEngine` is at detekt's `LargeClass` bound, and because
+ * these two are pure: which calls to resume and which to mix is decided from a snapshot
+ * list, with no stack involved, so it is testable the way §1.3 asks for.
+ */
+private fun heldForMix(calls: List<CallSnapshot>, requested: Set<CallId>): List<CallId> =
+    calls.filter { it.callId in requested && it.state is CallState.Held }.map { it.callId }
+
+/**
+ * Members of a requested mix that can contribute audio right now.
+ *
+ * Established and **not** held: a call still ringing has no media port, and a held one has
+ * a port that is stopped. Either would be a member the bridge cannot reach.
+ */
+private fun liveForMix(calls: List<CallSnapshot>, requested: Set<CallId>): Set<CallId> =
+    calls.filterTo(mutableSetOf()) {
+        it.callId in requested && it.state !is CallState.Held && it.state.isEstablished
+    }.mapTo(mutableSetOf()) { it.callId }

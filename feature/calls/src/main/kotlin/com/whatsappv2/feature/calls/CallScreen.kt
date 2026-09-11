@@ -209,6 +209,8 @@ private fun CallActionArea(
                 call = call,
                 recording = state.recording,
                 actions = actions,
+                canMerge = state.canMerge,
+                mixedCallCount = state.mixedCallCount,
                 pending = state.pendingActions,
             )
         },

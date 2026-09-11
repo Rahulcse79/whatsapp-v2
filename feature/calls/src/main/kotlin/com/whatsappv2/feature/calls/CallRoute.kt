@@ -79,6 +79,7 @@ fun CallRoute(
             onCancelConsultation = viewModel.transfer::cancelConsultation,
             onSecondCall = viewModel::respondToSecondCall,
             onSwapTo = viewModel::swapTo,
+            onMerge = viewModel::merge,
             onRequestRecording = viewModel.recording::request,
             onConfirmRecording = viewModel.recording::confirm,
             onDismissRecordingConsent = viewModel.recording::dismiss,

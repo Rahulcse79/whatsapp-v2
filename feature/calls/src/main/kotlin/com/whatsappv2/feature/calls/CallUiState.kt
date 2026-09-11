@@ -266,6 +266,19 @@ sealed interface CallUiState {
         val conference: ConferenceUiState? = null,
 
         /**
+         * True when this device could mix the calls it is holding into one (ADR-009).
+         *
+         * A property of the calls rather than a button's enabled flag: merging needs two
+         * or more calls that are *established*, because a ringing one has no audio to
+         * contribute. Deriving it here means the control cannot offer a merge the engine
+         * would then refuse.
+         */
+        val canMerge: Boolean = false,
+
+        /** How many calls this device is mixing right now; 0 when it is not (ADR-009). */
+        val mixedCallCount: Int = 0,
+
+        /**
          * Actions asked of the engine that it has not answered yet (Task 76).
          *
          * The screen shows these as busy and refuses a second press. It deliberately does
@@ -306,6 +319,7 @@ enum class CallAction {
     TRANSFER,
     SWAP,
     RECORD,
+    MERGE,
     ;
 
     /**

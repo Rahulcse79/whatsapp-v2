@@ -4,6 +4,7 @@ import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.failure
 import com.whatsappv2.core.common.result.success
 import com.whatsappv2.data.sip.call.SipCallGateway
+import com.whatsappv2.data.sip.call.SipConferenceGateway
 import com.whatsappv2.data.sip.call.SipRecordingGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
@@ -41,7 +42,8 @@ internal class FakeSipCoreGateway :
     SipCoreGateway,
     SipCallGateway,
     SipVideoGateway,
-    SipRecordingGateway {
+    SipRecordingGateway,
+    SipConferenceGateway {
 
     private val events = MutableSharedFlow<StackRegistrationEvent>(
         replay = 0,
@@ -305,6 +307,14 @@ internal class FakeSipCoreGateway :
 
     override fun transferCallToCall(callKey: String, consultationCallKey: String) {
         attendedTransfers += callKey to consultationCallKey
+    }
+
+    /** Every membership the stack was asked to mix, in order (ADR-009). */
+    val conferenceMemberships: MutableList<Set<String>> = mutableListOf()
+
+    override suspend fun setConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String> {
+        conferenceMemberships += callKeys
+        return success(callKeys)
     }
 
     override suspend fun startRecording(callKey: String, filePath: String): Outcome<Unit, String> {

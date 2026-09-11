@@ -19,6 +19,7 @@ import com.whatsappv2.domain.engine.ParticipantId
 import com.whatsappv2.domain.engine.PushToken
 import com.whatsappv2.domain.engine.SipEngine
 import com.whatsappv2.domain.engine.SipError
+import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.engine.TransferEvent
 import com.whatsappv2.domain.engine.VideoRequest
 import com.whatsappv2.domain.engine.toHangupReason
@@ -94,6 +95,7 @@ class FakeSipEngine(
         RESPOND_TO_VIDEO_REQUEST,
         SEND_DTMF,
         TRANSFER,
+        MIX_CALLS,
         JOIN_CONFERENCE,
     }
 
@@ -406,6 +408,28 @@ class FakeSipEngine(
                 success(placed.value)
             }
         }
+    }
+
+    /** Every membership this device was asked to mix, in order (ADR-009). */
+    val mixedCalls: MutableList<Set<CallId>> = mutableListOf()
+
+    override suspend fun mixCalls(callIds: Set<CallId>): Outcome<Set<CallId>, SipError> {
+        record(Operation.MIX_CALLS, callIds.joinToString(",") { it.value })
+        if (callIds.size > SipConferenceController.MAX_LOCAL_CONFERENCE) {
+            return failure(SipError.InvalidState("this device mixes at most 8 calls"))
+        }
+        // Held calls are resumed first and only then mixed — the same rule the real
+        // engine applies, because a held member contributes no audio at all.
+        activeCalls.value
+            .filter { it.callId in callIds && it.state is CallState.Held }
+            .forEach { setHold(it.callId, held = false) }
+
+        val live = activeCalls.value
+            .filter { it.callId in callIds && it.state !is CallState.Held && it.state.isEstablished }
+            .map { it.callId }
+            .toSet()
+        mixedCalls += live
+        return guard(Operation.MIX_CALLS) { success(live) }
     }
 
     override suspend fun shutdown() {

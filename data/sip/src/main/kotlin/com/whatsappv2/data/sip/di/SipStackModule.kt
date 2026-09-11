@@ -2,6 +2,7 @@ package com.whatsappv2.data.sip.di
 
 import com.whatsappv2.core.common.dispatcher.DispatcherProvider
 import com.whatsappv2.data.sip.call.SipCallGateway
+import com.whatsappv2.data.sip.call.SipConferenceGateway
 import com.whatsappv2.data.sip.call.SipRecordingGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackVideoSurfaceController
@@ -54,6 +55,10 @@ internal abstract class SipStackModule {
 
     @Binds
     abstract fun bindRecordingGateway(gateway: RealPjsipCoreGateway): SipRecordingGateway
+
+    /** The same adapter again, seen through ADR-009's narrow conference contract. */
+    @Binds
+    abstract fun bindConferenceGateway(gateway: RealPjsipCoreGateway): SipConferenceGateway
 
     /**
      * Where video is drawn (Task 52).

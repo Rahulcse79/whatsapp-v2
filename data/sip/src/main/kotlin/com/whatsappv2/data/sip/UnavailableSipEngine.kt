@@ -110,6 +110,10 @@ class UnavailableSipEngine @Inject constructor() : SipEngine {
         media: MediaProfile,
     ): Outcome<CallId, SipError> = failure(SipError.EngineUnavailable)
 
+    /** ADR-009's local mixing needs a running stack just as much as a call does. */
+    override suspend fun mixCalls(callIds: Set<CallId>): Outcome<Set<CallId>, SipError> =
+        failure(SipError.EngineUnavailable)
+
     override suspend fun shutdown() = Unit
 
     private fun unavailable(): Outcome<Unit, SipError> = failure(SipError.EngineUnavailable)
