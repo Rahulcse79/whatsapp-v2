@@ -723,7 +723,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
                         "modify failed for ${account.key}; rebuilding it: ${failure.message}",
                     )
                     rebuildAccount(account.key, config)
-                }
+                }.onSuccess { existing.registerAfterModify(account.key, ipChangeInProgress, logger) }
             } else {
                 val created = PjAccount(account.key)
                 created.create(config, accounts.isEmpty())
@@ -753,12 +753,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * "the stack is not running" is not an answer anybody can act on.
      */
     private fun reportStackUnavailable(accountKey: String, operation: String) {
-        val cause = startFailure
-        val reason = cause
+        val reason = startFailure
             ?.let { "${it.javaClass.simpleName}: ${it.message ?: "no message"}" }
             ?: "the SIP stack was never started"
 
-        logger.error(TAG, "$operation refused - $reason", cause)
+        logger.error(TAG, "$operation refused - $reason", startFailure)
         events.tryEmit(
             StackRegistrationEvent(
                 accountKey = accountKey,
@@ -2310,4 +2309,26 @@ private fun openRecorder(
             failure(thrown.message ?: thrown.javaClass.simpleName)
         },
     )
+}
+
+/**
+ * Sends the REGISTER that `modify` alone does not.
+ *
+ * `pjsua_acc_modify` re-registers only when something in the config moved — identity,
+ * registrar, proxy, credentials, expiry. "Register now" on an account whose config is
+ * unchanged moved nothing, so the stack logged `Modifying account 0` and did nothing else —
+ * while the engine had already published `Registering`. The spinner never resolved and the
+ * registrar never heard a thing; a handset showed "Registering..." for a minute over a
+ * binding the server still listed as fresh. So the REGISTER is asked for explicitly.
+ * `PJSIP_EBUSY` here means `modify` did send one, and its answer will move the state.
+ * Skipped while PJSIP is re-registering for an IP change, for the reason
+ * `RealPjsipCoreGateway.refreshAccount` gives.
+ *
+ * File level because the gateway is at detekt's `LargeClass` bound.
+ */
+private fun Account.registerAfterModify(accountKey: String, ipChangeInProgress: Boolean, logger: Logger) {
+    if (ipChangeInProgress) return
+    runCatching { setRegistration(true) }.onFailure {
+        logger.debug(RealPjsipCoreGateway.TAG, "REGISTER for $accountKey already in flight: ${it.message}")
+    }
 }
