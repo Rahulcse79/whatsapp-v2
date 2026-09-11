@@ -6,7 +6,8 @@
 > carries the measured baseline. This file says what is done, what is half-done, what is
 > wrong, and what to do next.
 >
-> **Read §0b, then §0a — they are newer than everything below them.** The evening pass of 2026-09-10
+> **Read §0c, then §0b, then §0a — they are newer than everything below them.** §0c is the
+> newest and replaces the deleted `docs/HANDOFF-NEXT.txt`. The evening pass of 2026-09-10
 > built the APK, put it on a Zebra TC15, and placed, answered and held calls against two
 > FreeSWITCH servers. §3.4's "nothing has been run on a handset" is no longer true. Where
 > §0a and a later section disagree, §0a wins.
@@ -214,12 +215,141 @@ drives one phone by adb and Rahul answers the other.
 
 ### What is still owed after this pass
 
+> Superseded by **§0c "Still owed"**, which is the current list. Kept as the record of
+> where this pass left things.
+
 1. **On `80.145`** (7000 ↔ 7004, Zoiper 7001): the same calls through the office server,
    and the transfer failure path with a phone that refuses. The office extensions
    answered `480` all morning.
 2. A preview that follows a *rotation* mid-call is untested (the activity recreates and
    re-reports; `LaunchedEffect(configuration)` covers a manifest that does not).
 3. `sudo port install swig-java` so `./build.sh` runs without `SWIG_LIB`.
+
+---
+
+## 0c. 2026-09-11, afternoon — the automated sweep, and two fixes about telling the truth
+
+**Read this first; it is the newest.** It also **replaces `docs/HANDOFF-NEXT.txt`**, which
+has been deleted — everything that file carried is here.
+
+### The automated feature sweep (`9a066a10`) — six defects, all fixed
+
+Every calling feature was driven by `adb` against the local FreeSWITCH (echo 9196, loopback
+9197, tone 9198, conference 3000, FreeSWITCH-originated inbound calls), with a crash check
+after every step. It found six things, and each was measured before the next was looked for:
+
+| # | What broke | Cause | Fix |
+|---|---|---|---|
+| 1 | **Process crash** on "Turn off my video" | `vidStreamIsRunning(-1, …)` on a call whose video stream had just been removed resolves the index to -1 and pjsua ASSERTs (`pjsua_vid.c:2873`, SIGABRT on `pjsip-main`) | The gateway finds the encoding video stream in the call's own media list and asks only when there is one. `config_site.h` also sets `PJ_DEBUG 0` — pjproject's own release setting — so a library assertion logs `Assert failed` and returns `PJ_EINVAL` instead of ending a live call |
+| 2 | **Recording wrote nothing** | The plaintext was named `<id>.tmp`, and `pjsua_recorder_create` picks its writer from the last four characters (`.wav`/`.mp3`, else `PJ_ENOTSUP`). The UI said "Recording this call" over a recorder that was never created | `<id>.unsealed.wav` (`RecordingFileNames`, JVM-tested). A 15 s call sealed a 1.47 MB `.rec` and deleted the plaintext |
+| 3 | **Incoming call with the screen off did not wake the phone**, and showed no heads-up in the background | The ringing card was an *update* of the service's one notification (SystemUI fires a full-screen intent only on an ADD), and `setSilent(true)` puts it in a suppressive group that Android 13 explicitly blocks FSI for (b/231322873) | The ringing card is its own notification id, alert-once, and silence comes from the channel |
+| 4 | **Call waiting showed the wrong screen** | Hold-and-answer left the held first call on screen under a banner saying the *second* call was on hold; ending the active call of a pair finished the screen and stranded the held one | The ViewModel re-points to the answered call and follows the remaining one (two tests) |
+| 5 | **Every Wi-Fi blip logged a registration failure** and a stack trace | The recovery coordinator's refresh raced PJSIP's own IP-change re-registration (UDP socket back "in 10 ms") | `refreshAccount` defers to the IP change until PJSIP reports it complete (15 s safety). Verified: Wi-Fi off/on mid-call — call kept, one clean re-registration, no error |
+| 6 | `pjsua_call_get_stream_info` logged an ERROR at every hangup | `encryptedAudio` asked for streams already torn down | Live streams only |
+
+### Two fixes about the app telling the truth about itself (`ad583632`)
+
+- **A recording the stack refuses is no longer shown as recording.**
+  `SipRecordingGateway.startRecording` was fire-and-forget, so `PjsipCallRecorder` marked
+  the call as recording the instant the job was *queued* — and the indicator is a function
+  of that set. A stack that refused still put "Recording this call" on screen over a file
+  nothing was writing. It is now `suspend … : Outcome<Unit, String>`: the PJSIP thread
+  completes a deferred, the caller waits with a 5 s bound (§1.4), and a refusal becomes
+  `RecordingError.EngineRefused`, which `CallRecordingController` already knew how to say
+  out loud. A refused start also hands its slot back (`RecordingStore.discard`) — pjsua
+  writes a WAV header before it can fail on the transmit, and a header *sealed* is a
+  recording of nothing that still has to be listed and deleted like a real one. Three JVM
+  tests cover the refusal path; it is **not** hardware-observed, because a live call cannot
+  be asked to make the stack refuse.
+- **`CallAudioCoordinator: Audio focus was not granted` is gone.** The connection is
+  self-managed (`SipPhoneAccount` registers `CAPABILITY_SELF_MANAGED`, `SipConnection` sets
+  `PROPERTY_SELF_MANAGED`), so Telecom has already taken focus for the call and refuses a
+  second exclusive request over its own. Expected, not a fault — and warning about it put
+  noise exactly where a real audio fault would have to show itself. Info now, saying which.
+  The request stays, because it *is* granted when Telecom is not holding the call, and that
+  is the case the focus listener exists for.
+
+**Verified on hardware** — TC15 `24143524701316` (`1002@192.168.0.101`), a
+FreeSWITCH-originated inbound call to the echo, this APK, 2026-09-11 15:30–15:32:
+
+```
+I CallAudioCoordinator: Audio focus stays with Telecom, which holds this self-managed call
+   (info, immediately after MediaFocusControl's requestAudioFocus for uid/pid 10252/6130)
+grep -c "Audio focus was not granted"  ->  0
+I CallRecorder: Recording started on 8874d60d-…       <- through the awaited path
+files/recordings/721eb922-…__1789120878949__1789120934362.rec   5,326,152 bytes  (55 s)
+no .unsealed.wav left behind; no Fatal signal / FATAL EXCEPTION / Assert failed; same pid
+```
+
+JVM after both: **1189 tests, 0 failures, detekt clean.**
+
+### Two decisions written down rather than left to be rediscovered
+
+- **ADR-003 — there is no "Join conference" button, and none is wanted** (decided with the
+  stakeholder, 2026-09-11). Under that ADR a conference *is* an ordinary call, so joining is
+  dialling the bridge's extension in the dialler; a button would be a second name for the
+  same act. `JoinConferenceUseCase` keeps no caller and stays, because it is the one path
+  that marks a leg as a conference for a roster to attach to, and it is where an SFU swap
+  would be wired in. `conferenceEvents` never emits — the client renders nothing rather
+  than a fabricated roster, which is ADR-003's own second verify-bullet working.
+- **ADR-008 now carries Lyra's per-call cost: ~120 % of one CPU core** on the TC15 for
+  encode and decode together, observed during the 22-minute call of 2026-09-11 and not
+  re-measured since. Against this app's pinned Opus at 32 kbit/s
+  (`RealPjsipCoreGateway.OPUS_BITRATE`), Lyra's 3.1 kbit/s is ~10× less bandwidth for
+  roughly an order of magnitude more CPU. The ADR's stale "what is still owed" paragraph is
+  also corrected: the Lyra-linked `.so`, the audit line and a Lyra-carried call all exist.
+
+### The test setup — do not re-derive it
+
+- **Phone A**: TC15 serial `24110524701351`, `192.168.0.108`, accounts
+  `7000@192.168.80.145` (office) **and** `localfs` = `1001@192.168.0.101` (lyra, PCMU, opus).
+- **Phone B**: TC15 serial `24143524701316`, `192.168.0.117`, `1002@192.168.0.101`
+  (lyra, PCMU, opus; Rahul deleted 7004 on it).
+- **One USB cable.** `adb devices` first — only the plugged phone is driveable, Rahul
+  answers the other. `adb` is at `/Users/rahulsingh/Downloads/platform-tools/adb`.
+- **Driving the UI**: `uiautomator dump`, then tap the centre of the node's `bounds`.
+  After `input text` press `KEYCODE_BACK` once to drop the keyboard, **and the first tap
+  after that is often swallowed**. `Back` on the call screen *closes* it — reopen with
+  `cmd statusbar expand-notifications` → "Ongoing call". Close the keypad with its
+  "Hide the keypad" button, never Back. A reinstall kills the process and its registration
+  with it: relaunch (`monkey -p com.whatsappv2 -c android.intent.category.LAUNCHER 1`) and
+  confirm in `sofia status profile internal reg` before expecting a call to arrive.
+- **Local FreeSWITCH on the Mac**: `/usr/local/freeswitch/bin/freeswitch -nc -nonat`; binds
+  `en0` (192.168.0.101 on office Wi-Fi). `fs_cli` in the same directory; log at
+  `/usr/local/freeswitch/var/log/freeswitch/freeswitch.log`; user password `1234`.
+  Dialplan (outside the repo): `default/03_whatsapp_v2_test_apps.xml` → **9196** echo
+  (audio+video), **9197** bridge to `loopback/9196` (transferable), **9198** tone,
+  **9199** unrouted, **3000** `mod_conference`; `default/00_whatsapp_v2_bypass.xml` →
+  `bypass_media` for 1001↔1002, which Lyra needs (FreeSWITCH does not know Lyra and 488s a
+  Lyra-only offer).
+- **An inbound call without the other phone**:
+  `fs_cli -x "bgapi originate {origination_caller_id_number=9196,origination_caller_id_name=Echo,absolute_codec_string='PCMU'}user/1002 &echo"`
+  — drop `absolute_codec_string` to get an `m=video` offer. A second conference member:
+  `originate loopback/9196/default &conference(3000)`.
+- **FreeSWITCH answers every blind REFER with 200**, so the transfer-refused path cannot be
+  produced on it. It needs a phone as the far end that declines.
+- **Build**: `SWIG_LIB=$HOME/.local/share/swig/4.4.1 ./build.sh --install` (full native
+  ~5 min; `--reuse-native` for Kotlin-only changes, ~15 s). MacPorts `swig` lacks the Java
+  typemaps — `sudo port install swig-java` is the proper fix.
+- **Tests**: `./gradlew testDebugUnitTest test detekt -x :pjsip:api:generatePjsua2Bindings
+  -x :pjsip:buildPjsua2Native`.
+- **After any device test**: `adb logcat -d | grep -E "Fatal signal|FATAL EXCEPTION|Assert
+  failed"`, and compare `pidof com.whatsappv2` before and after.
+- **detekt caps `PjsipSipEngine` and `RealPjsipCoreGateway` with `LargeClass`** — both are
+  at the bound, so new pure logic goes to file level or a new file. `ReturnCount` is 3.
+
+### Still owed
+
+1. **The office server `192.168.80.145`** (7000 ↔ 7004, Zoiper 7001): audio heard, video
+   both ways, and the **transfer-REFUSED** path — a phone that declines the REFER target →
+   486 → `TransferFailed` → the call returns to Connected. This is the one path the local
+   FreeSWITCH cannot produce. Those extensions answered `480` all of 2026-09-11; **Rahul
+   registers them**, so this is blocked on him and on nothing else.
+2. A preview that follows a **rotation mid-call** is untested
+   (`LaunchedEffect(configuration)` covers a manifest that does not).
+3. `sudo port install swig-java`, so `./build.sh` runs without `SWIG_LIB`.
+4. Lyra and Opus have never been **measured side by side** on one handset. The CPU number
+   in ADR-008 is one observation of Lyra alone.
 
 ---
 

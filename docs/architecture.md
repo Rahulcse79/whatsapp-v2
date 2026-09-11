@@ -118,6 +118,26 @@ an implementation swap in `:data:sip`, not a domain rewrite.
   subscribe to. If it does not, Task 60's participant list shows what is actually known
   and says so — it does **not** render a fabricated list (§13).
 
+**Both answered on hardware, 2026-09-11, and the answer is settled rather than pending**
+(decided with the stakeholder, 2026-09-11): extension `3000` on the local FreeSWITCH joins
+`mod_conference`, and `conference list` showed this app's leg as
+`hear|speak|talking|floor` with DTMF `0` muting it over RFC 4733. No roster is subscribed
+to, so `SipCallGateway.conferenceEvents` **never emits** and
+`PjsipSipEngine.conferences` stays empty — which is the second bullet doing its job, not
+failing it: the client renders nothing rather than a fabricated list.
+
+Two consequences are deliberate and are written here so neither is rediscovered as a gap:
+
+- **There is no "Join conference" button, and none is wanted.** Joining is dialling the
+  bridge's extension in the ordinary dialler, because under this ADR a conference *is* an
+  ordinary call. A button beside it would be a second name for the same act.
+- **`JoinConferenceUseCase` therefore has no caller**, and it stays. It is the shape of
+  the seam, not dead weight: it is the one path that marks a leg as a conference so a
+  roster could attach to it, and it is what an SFU swap (the *Reversibility* paragraph
+  above) would be wired into. Before adding a roster, verify the bridge publishes one —
+  RFC 4575 conference-event `SUBSCRIBE` against `mod_conference` — because the domain is
+  ready for participants and the server is what currently has none to give.
+
 ---
 
 ### ADR-004 — Push wake path: **RFC 8599 client parameters + an ESL-driven push gateway**
@@ -418,16 +438,35 @@ own `--with-lyra` link test; and, run on a Zebra TC15 with the four model files,
 one-field message (patch `0001`). `pjsip/lyra/CMakeLists.txt` builds it offline from
 staged copies; `build-native.sh` runs it before pjproject.
 
-**What is still owed behind this decision** — said here so the ADR is not read as more
-than it is: `libpjsua2.so` *with Lyra linked in* has not been built (the Mac that did the
-above lacks SWIG's Java typemaps; CI can), so `lyra/16000/1` in a handset's codec audit and
-a call carried by it are unverified. Both are the next two lines of `docs/HANDOFF.md`.
-And the peer problem below is unchanged: this codec has no server that offers it.
+**Both of the things this owed are now done, 2026-09-11.** `libpjsua2.so` was built with
+Lyra linked in (locally, with SWIG's Java typemaps supplied user-side — `docs/HANDOFF.md`
+§4), the handset's codec audit reads `lyra/16000/1@254`, and a **22-minute call between two
+Zebra TC15s was carried by Lyra at 3.1 kbit/s with no loss**, media direct phone-to-phone.
+The peer problem below is unchanged and is why that call needed FreeSWITCH's
+`bypass_media`: no deployed server offers this codec, so it is app-to-app or nothing —
+which is what the title of this ADR says. Whether it is *intelligible* is a judgement only
+somebody who has listened to it can make.
 
 **Cost, measured.** ~420 MB more under `third_party/` (XNNPACK 158 MB, TensorFlow 41 MB
 after keeping 472 of its 28,000 files); ~25 minutes of TFLite compile per ABI, stamped
 locally, unpaid-for on CI until a cache is added (`docs/native-dependencies.md` §5.0);
 `liblyra.a` is 193 MB unstripped, of which the linker takes what `lyra.cpp` references.
+
+**And the cost that is paid per call, not per build: ~120 % of one CPU core** on the TC15
+for encode and decode together — observed during the 22-minute call above, not re-measured
+since. That is the price of running a neural vocoder on the handset, and it is the number
+to weigh against the 3.1 kbit/s, because §1.5 says battery is a budget the user notices at
+4pm. Two consequences follow and are stated so nobody has to discover them:
+
+- Lyra is **not** a default. `CodecPreferences.DEFAULT` is `OPUS, G722, PCMU, PCMA`
+  (`domain/…/model/Codecs.kt:83`) and carries no Lyra; it is chosen per account,
+  deliberately, by somebody who wants the bandwidth and accepts the drain.
+- The comparison that matters is not Lyra against PCMU but **Lyra against Opus**, which is
+  already compiled and costs a small fraction of a core. This app pins Opus at **32 kbit/s**
+  (`RealPjsipCoreGateway.OPUS_BITRATE`), so Lyra's measured 3.1 kbit/s is 32,000 / 3,100 ≈
+  **10× less bandwidth for roughly an order of magnitude more CPU**. Lyra earns its place
+  only on a link that cannot carry 32 kbit/s. The two have not been measured side by side
+  on one handset; when somebody does it, the numbers belong here.
 
 The record of the gate as it was run follows, unchanged.
 
