@@ -1,5 +1,6 @@
 package com.whatsappv2.feature.history
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -128,15 +129,31 @@ fun HistoryScreen(
                 onFilterChanged = actions.onFilterChanged,
             )
 
-            if (state.showsFilters) {
+            // Slides open rather than appearing, so the list below moves once, smoothly,
+            // instead of jumping by the row's height.
+            AnimatedVisibility(visible = state.showsFilters) {
                 AdvancedFilters(query = state.query, actions = actions, zone = zone)
             }
 
             if (rows.itemCount == 0) {
+                // The empty state says what to do next, and offers it: a first call from
+                // an empty log, or a way back to everything from a search that found
+                // nothing. A sentence with no button is advice; a button is a way out.
+                val narrowed = state.query.activeFilterCount > 0
                 EmptyState(
                     title = state.query.emptyTitle,
                     description = state.query.emptyDescription,
                     icon = Icons.Filled.History,
+                    actionLabel = when {
+                        state.query.isMatchAll -> "Make a call"
+                        narrowed -> "Clear filters"
+                        else -> null
+                    },
+                    onAction = when {
+                        state.query.isMatchAll -> actions.onOpenDialer
+                        narrowed -> actions.onFiltersCleared
+                        else -> null
+                    },
                     modifier = Modifier.testTag(TAG_EMPTY),
                 )
                 return@Column

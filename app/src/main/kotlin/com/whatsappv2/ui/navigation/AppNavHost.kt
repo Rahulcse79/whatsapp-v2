@@ -1,5 +1,9 @@
 package com.whatsappv2.ui.navigation
 
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -63,15 +67,59 @@ fun AppNavHost(
         context.startActivity(CallActivity.intentFor(context, callId))
     }
 
+    // Two kinds of move, two kinds of motion (item 5.6). Switching tabs is a change of
+    // place, so the screens cross-fade where they stand; going *into* a screen — the
+    // dialler, settings, an account — is a push, so it slides in from the end and slides
+    // back out on Back. The default was a scale-and-fade that read as a jump.
     NavHost(
         navController = navController,
         startDestination = AppDestination.START.route,
         modifier = modifier,
+        enterTransition = {
+            if (switchingTabs()) {
+                fadeIn(tween(TAB_FADE_MILLIS))
+            } else {
+                slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(PUSH_MILLIS)) +
+                    fadeIn(tween(PUSH_MILLIS))
+            }
+        },
+        exitTransition = {
+            if (switchingTabs()) {
+                fadeOut(tween(TAB_FADE_MILLIS))
+            } else {
+                // The screen underneath moves a quarter of the way, the way a stack does.
+                slideOutOfContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Start,
+                    tween(PUSH_MILLIS),
+                    targetOffset = { it / PARALLAX_DIVISOR },
+                ) + fadeOut(tween(PUSH_MILLIS))
+            }
+        },
+        popEnterTransition = {
+            slideIntoContainer(
+                AnimatedContentTransitionScope.SlideDirection.End,
+                tween(PUSH_MILLIS),
+                initialOffset = { it / PARALLAX_DIVISOR },
+            ) + fadeIn(tween(PUSH_MILLIS))
+        },
+        popExitTransition = {
+            slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.End, tween(PUSH_MILLIS)) +
+                fadeOut(tween(PUSH_MILLIS))
+        },
     ) {
         callRoutes(navController, openCall, videoGate)
         accountRoutes(navController)
     }
 }
+
+/** True when both ends of the move are tabs — a change of place rather than a push. */
+private fun AnimatedContentTransitionScope<NavBackStackEntry>.switchingTabs(): Boolean =
+    AppDestination.fromRoute(initialState.destination.route)?.isTopLevel == true &&
+        AppDestination.fromRoute(targetState.destination.route)?.isTopLevel == true
+
+private const val TAB_FADE_MILLIS = 180
+private const val PUSH_MILLIS = 260
+private const val PARALLAX_DIVISOR = 4
 
 /** The two tabs, and the two screens reached from them (Tasks 69, 70). */
 private fun NavGraphBuilder.callRoutes(
