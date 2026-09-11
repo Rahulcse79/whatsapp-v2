@@ -6,8 +6,8 @@
 > carries the measured baseline. This file says what is done, what is half-done, what is
 > wrong, and what to do next.
 >
-> **Read §0d, then §0c, then §0b, then §0a — they are newer than everything below them.**
-> §0d is the newest; §0c replaces the deleted `docs/HANDOFF-NEXT.txt`. The evening pass of 2026-09-10
+> **Read §0e, then §0d, then §0c, then §0b, then §0a — newest first.** §0e is the full
+> end-to-end sweep; §0c replaces the deleted `docs/HANDOFF-NEXT.txt`. The evening pass of 2026-09-10
 > built the APK, put it on a Zebra TC15, and placed, answered and held calls against two
 > FreeSWITCH servers. §3.4's "nothing has been run on a handset" is no longer true. Where
 > §0a and a later section disagree, §0a wins.
@@ -224,6 +224,100 @@ drives one phone by adb and Rahul answers the other.
 2. A preview that follows a *rotation* mid-call is untested (the activity recreates and
    re-reports; `LaunchedEffect(configuration)` covers a manifest that does not).
 3. `sudo port install swig-java` so `./build.sh` runs without `SWIG_LIB`.
+
+---
+
+## 0e. 2026-09-11, evening — the full end-to-end sweep, and the two defects it found
+
+**The newest section. Read it before §0d.** Every feature driven by `adb` against the local
+FreeSWITCH on one TC15 (`24110524701351`, `localfs` = 1001, office = **7001** — not 7000, the
+account was renamed), with a check after *every* step for: process death, `Fatal signal` /
+`FATAL EXCEPTION` / `Assert failed`, `ANR in com.whatsappv2`, `Skipped N frames` (main-thread
+stall), LeakCanary application leaks, and app-level `E` log lines.
+
+### What was exercised, and passed
+
+| Area | Evidence |
+|---|---|
+| Navigation, settings toggles, account editor ×5, screen in/out ×5 | `Activities: 1`, `Views: 13`, PSS flat |
+| Outgoing audio to 9196 | connected; mute, speaker, hold, resume all return to rest |
+| DTMF | FreeSWITCH logged `RTP RECV DTMF 1/2/3` — on the wire, not just tapped |
+| Video mid-call | on → flip → flip back → off → on, no crash (the sweep's defect 1 stays fixed) |
+| **Rotation mid-call** (was untested, §0b item 2) | landscape, portrait, then 4 rapid flips: call survived at 3:26, `android_dev.c: orientation set to 4`, still `ACTIVE` on the server |
+| Incoming: app in front / backgrounded / **screen off** | heads-up with DECLINE/ANSWER when backgrounded; screen-off woke to the full-screen answer UI |
+| 5 × incoming call cycles | no crash; LeakCanary: "All retained objects have been garbage collected" |
+| Call waiting | "Tone is calling / You are on a call with Echo"; hold-and-answer re-points the screen; swap both ways; **ending the active leg follows the held one** (§0c defect 4 both halves) |
+| Blind transfer | `REFER … Refer-To: sip:9198@…` → `202` → `NOTIFY terminated;reason=noresource` sipfrag `200 OK`; leg parked at 9198 |
+| Attended transfer | `REFER sip:9197@… Refer-To: <sip:9198@…?Require=replaces&Replaces=…>` → `202`; both legs released, the two parties left bridged |
+| Conference 3000 | member `hear|speak|talking|floor`; second member added; DTMF `0` → `hear|floor` |
+| Recording | start, indicator, stop, sealed `.rec`, no plaintext left (see §0d) |
+| Network loss and recovery | see below |
+| Logout / login | server showed **0** registrations for 1001 after logout; Registered again after |
+| Process restart | force-stop → relaunch → both accounts re-register |
+
+**Final tally after the fixes:** 0 crashes, 0 ANRs, 0 main-thread stalls, 0 application
+leaks, `Activities: 1`. (Bounded by the logcat ring buffer, which rotated during the run.)
+
+### Defect 1 — the known-leak matcher had stopped matching (`c5186f8e`)
+
+LeakCanary reported **1 APPLICATION LEAKS** after calls:
+`android.telecom.ConnectionService$5.this$0` → `SipConnectionService`, GC root *global
+variable in native code*, 2.7 kB. That retention was already understood and already written
+down in `LeakCanaryConfigProvider` — but the matcher named `ConnectionService$1`, and
+anonymous-class numbering belongs to the platform build. LeakCanary's own history showed the
+whole defect in two rows: `ConnectionService$1` last leaked 21 hours ago, `ConnectionService$5`
+last leaked 5 minutes ago, NEW.
+
+Worse than having no matcher: a leak report that is always wrong is one nobody reads, and the
+next real leak arrives in the same sentence. The pattern now covers the anonymous range, and
+uses `LibraryLeakReferenceMatcher` so the retention is still *printed* — under LIBRARY LEAKS,
+with its explanation — instead of being deleted from the output. Later in the same sweep the
+**`$1` variant appeared too**, on the same handset, and was classified correctly: proof that
+enumerating beats pinning.
+
+### Defect 2 — transfer and recording acted on the wrong call (`9768b282`)
+
+Two calls, end the active one, the screen correctly follows the held one — then Transfer says
+*"That call has already ended. The call is still connected."* about a call showing 2:43, one
+channel on FreeSWITCH, no BYE. The message contradicts itself because each half is about a
+different call.
+
+`CallRoute` closed over the route's `callId` for transfer-blind, start-consultation,
+confirm-recording and stop-recording, reasoning that "the screen is looking at exactly one
+call". True at any instant — but `followRemainingCall()`, `swapTo()` and
+`respondToSecondCall()` all re-point `watched`, which is what the screen renders from. The fix
+removes the parameter rather than passing a better value: both controllers take
+`currentCall: () -> CallId?` and read it when they act, so there is no way to hand them the
+wrong call. Recording was the worse half — a stale `stop()` succeeds quietly on an unknown
+call, leaving the real recording running and capturing a leg nobody consented to.
+
+### Three things that looked like defects and were not — recorded so nobody re-chases them
+
+1. **27 preview starts against 7 stops, 31 "Creating video window" against 0 destroyed.**
+   Not a leak: pjsua answers `Window already exists for cap_dev=-1, returning wid=1` every
+   time and `Video ports connection 3->4 already exists`. 31 log lines, one window.
+   `LocalPreview`'s idempotent re-attach works as documented.
+2. **"Incoming call while backgrounded shows no UI."** A measurement artefact —
+   `uiautomator dump` captures only the focused window, and a heads-up is not focused. A
+   screenshot showed the heads-up with DECLINE / ANSWER exactly as expected.
+3. **"1001 stuck on Reconnecting… while FreeSWITCH says Registered."** The phone had rejoined
+   a *different* network after `svc wifi disable/enable` — `192.168.137.140` on a Windows
+   hotspot, 100% packet loss to the Mac — so the REGISTER retransmissions correctly timed out
+   and "Reconnecting…" was honest. The server row was a pre-blip entry still inside its hour
+   TTL, not a fresh registration. Put back on `TEMP_WIFI_5G` by toggling Wi-Fi once (no
+   settings change), the app recovered unaided: `17:01:15 registration success, 200 OK`, both
+   accounts Registered. **Toggling Wi-Fi on this handset can move it to another SSID — check
+   the phone's IP before blaming the code.**
+
+### Still not covered, and why
+
+- **The transfer-REFUSED path.** FreeSWITCH answers every blind REFER with 200, so it cannot
+  produce it. Needs a far end that declines — a person on the other phone or Zoiper.
+- **Whether anything is audible.** Every audio claim here is "connected on the wire" with
+  packet counts, never "heard". Only Rahul can close that.
+- **APK ↔ APK.** One USB cable; Phone B was off the cable for this sweep.
+- **The office server** (7001 is registered and 7002 calls connected earlier today) — calls
+  through it still need a far end.
 
 ---
 
