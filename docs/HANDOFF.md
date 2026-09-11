@@ -186,11 +186,37 @@ hold → resume re-issues START_TRANSMIT and restarts the preview. RX 1088×612 
   for the contract). A "conference" is exactly a call to the bridge, which is ADR-003's
   design; the roster is future work, and so is a button.
 
+### APK ↔ APK, early afternoon — two TC15s on the local FreeSWITCH
+
+Second handset: TC15 `24143524701316` at `192.168.0.117`, accounts `7004@192.168.80.145`
+and `1002@192.168.0.101`. Only one of the two is ever on USB (one cable), so each test
+drives one phone by adb and Rahul answers the other.
+
+- **Audio 1002 → 1001**: connected, PCMU through FreeSWITCH, 3.4K packets each way, 0 %
+  loss. Two defects found on the *callee* and fixed in `7ca79296`: the morning's
+  CONNECTING skip had broken every answered incoming call (the callee negotiates before
+  CONNECTING, the caller after — the skip is now UAC-only), and an inbound call with the
+  app already on screen showed nothing (`IncomingCallPresenter` starts `CallActivity`
+  when one of our activities is resumed).
+- **Incoming video** (FreeSWITCH `originate user/1002 &echo`, default codec prefs so the
+  INVITE carries `m=video`): "Answer with video" → both pictures, upright, 1280×720 VP8
+  at 1 Mbit, 0 % loss.
+- **Lyra, 1001 → 1002 — a call carried by Lyra.** Both `localfs` accounts set to
+  `lyra, PCMU, opus` in the editor (audit `lyra/16000/1@254`); FreeSWITCH given
+  `dialplan/default/00_whatsapp_v2_bypass.xml` (outside the repo): `bypass_media=true`
+  for `1001 ↔ 1002`, so the SDP crosses untouched. Offer `m=audio … 96 0 97 9 8`,
+  `a=rtpmap:96 lyra/16000`; answer from `192.168.0.117` `m=audio 4002 RTP/AVP 96 120` —
+  **Lyra, media direct phone-to-phone**, FreeSWITCH legs in `CS_HIBERNATE`.
+  `lyra.cpp: Opening codec, model_path=…/files/lyra, enc_bit_rate=3200` → `audio
+  updated, stream #0: lyra (sendrecv)`. 66 s; RX and TX `pt=96` 3.3K packets, 26.8 KB,
+  **3.1 kbit/s**, 1 packet lost. ADR-008's last owed item is closed on the wire; whether
+  it is *intelligible* is Rahul's call — nobody but him has heard it.
+
 ### What is still owed after this pass
 
-1. **APK ↔ APK** on `80.145` (7000 ↔ 7002) and APK ↔ Zoiper (7001): audio heard, video
-   both ways, the transfer failure path with a phone that refuses, and the Lyra call
-   (bypass_media). Blocked only on those two being registered.
+1. **On `80.145`** (7000 ↔ 7004, Zoiper 7001): the same calls through the office server,
+   and the transfer failure path with a phone that refuses. The office extensions
+   answered `480` all morning.
 2. A preview that follows a *rotation* mid-call is untested (the activity recreates and
    re-reports; `LaunchedEffect(configuration)` covers a manifest that does not).
 3. `sudo port install swig-java` so `./build.sh` runs without `SWIG_LIB`.
