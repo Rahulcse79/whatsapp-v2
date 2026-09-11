@@ -1,5 +1,10 @@
 package com.whatsappv2.feature.calls
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +30,8 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,6 +51,7 @@ import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallControls
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.model.CallId
+import kotlinx.coroutines.delay
 
 /**
  * The call screen (Tasks 37 and 39).
@@ -110,12 +118,9 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
     // write during composition, which is how a recomposition loop starts.
     val keypadShown = keypadOpen && call.availability.canSendDtmf
 
-    // Behind everything, when there is a picture to draw. The identity and the controls
-    // stay on top of it: a video call still has to say who it is with and offer a way to
-    // end it, and putting the video in a panel of its own would waste most of the screen
-    // on a call whose whole point is the picture (Task 52).
-    // A conference's video is not a call's video: the bridge composes it, and the screen
-    // has to say so rather than present the server's arrangement as its own (Task 61).
+    // Behind everything, when there is a picture to draw. A conference's video is not a
+    // call's video: the bridge composes it, and the screen has to say so rather than
+    // present the server's arrangement as its own (Task 61).
     val conference = state.conference
     if (call.showsRemoteVideo) {
         if (conference != null) {
@@ -125,6 +130,85 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
         }
     }
 
+    val chrome = rememberCallChromeVisibility(state, keypadShown)
+
+    // Under the controls in z-order, so a tap on a button is a button press and only the
+    // picture itself toggles the chrome. Composed only when there is a picture to tap.
+    if (call.showsRemoteVideo) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() },
+                ) { chrome.value = !chrome.value },
+        )
+    }
+
+    AnimatedVisibility(
+        visible = chrome.value || !call.showsRemoteVideo,
+        enter = fadeIn(),
+        exit = fadeOut(),
+    ) {
+        InCallChrome(
+            state = state,
+            actions = actions,
+            keypadShown = keypadShown,
+            dialled = dialled,
+            onDialled = { dialled += it },
+            onToggleKeypad = { keypadOpen = it },
+        )
+    }
+
+    CallDialogs(state = state, actions = actions)
+}
+
+/**
+ * Whether the in-call controls are on screen, and when they get out of the way.
+ *
+ * Only ever hidden over video: an audio call has nothing underneath to reveal, so hiding
+ * its buttons would be a puzzle rather than a feature. Anything waiting on the user — a
+ * second call ringing, an escalation the far end has asked for, a transfer in flight, the
+ * recording consent — pins them open, because a prompt nobody can see is worse than no
+ * prompt at all.
+ */
+@Composable
+private fun rememberCallChromeVisibility(
+    state: CallUiState.Active,
+    keypadShown: Boolean,
+): MutableState<Boolean> {
+    val visible = remember(state.call.callId.value) { mutableStateOf(true) }
+    val mayHide = state.call.showsRemoteVideo && !keypadShown && !state.needsAttention
+
+    LaunchedEffect(mayHide, visible.value) {
+        if (mayHide && visible.value) {
+            delay(CHROME_IDLE_MILLIS)
+            visible.value = false
+        }
+    }
+    LaunchedEffect(state.needsAttention) {
+        if (state.needsAttention) visible.value = true
+    }
+    return visible
+}
+
+/**
+ * Everything drawn over the call: who it is with, the banners, and the controls.
+ *
+ * Its own composable so [ActiveCall] stays a layout and this can be faded in and out as
+ * one thing — which is what item 1 asks for, a video call whose picture is not covered by
+ * buttons nobody is pressing.
+ */
+@Composable
+private fun InCallChrome(
+    state: CallUiState.Active,
+    actions: CallActions,
+    keypadShown: Boolean,
+    dialled: String,
+    onDialled: (Char) -> Unit,
+    onToggleKeypad: (Boolean) -> Unit,
+) {
+    val call = state.call
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -144,7 +228,7 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
         // The roster stays even with video on: under a mixing bridge the composed picture
         // is the only place a participant appears, and it does not say who is muted or
         // who has just left (Task 60).
-        conference?.let {
+        state.conference?.let {
             ConferenceRoster(
                 state = it,
                 modifier = Modifier.padding(top = AppTheme.spacing.medium),
@@ -158,12 +242,10 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
             actions = actions,
             keypadShown = keypadShown,
             dialled = dialled,
-            onDialled = { dialled += it },
-            onToggleKeypad = { keypadOpen = it },
+            onDialled = onDialled,
+            onToggleKeypad = onToggleKeypad,
         )
     }
-
-    CallDialogs(state = state, actions = actions)
 }
 
 /**
@@ -638,3 +720,11 @@ private fun previewCall(
     durationSeconds = durationSeconds,
     videoOffered = false,
 )
+
+/**
+ * How long the in-call controls stay up on a video call before getting out of the way.
+ *
+ * Long enough to press something you came for, short enough that the picture is not
+ * covered for the rest of the call. A tap anywhere brings them back.
+ */
+private const val CHROME_IDLE_MILLIS = 4_000L

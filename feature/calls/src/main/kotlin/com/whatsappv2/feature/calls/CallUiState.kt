@@ -287,7 +287,22 @@ sealed interface CallUiState {
          * class of lie as a call drawn as held whose re-INVITE the far end rejected.
          */
         val pendingActions: Set<CallAction> = emptySet(),
-    ) : CallUiState
+    ) : CallUiState {
+
+        /**
+         * True when something on this screen is waiting on the user.
+         *
+         * Used to keep the in-call controls on screen during a video call, where they
+         * otherwise get out of the way of the picture. A prompt nobody can see is worse
+         * than no prompt at all, so a ringing second call, an escalation the far end is
+         * waiting on, or a transfer in flight all pin the controls open.
+         */
+        val needsAttention: Boolean
+            get() = secondCall != null ||
+                pendingVideoRequest != null ||
+                transfer !is TransferUiState.Idle ||
+                recording.askingConsent
+    }
 
     /**
      * The call is over and the screen should close.
