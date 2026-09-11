@@ -54,6 +54,16 @@ class CameraPolicyTest {
     }
 
     @Test
+    fun `a resuming video call keeps the camera, because it is about to need it`() {
+        // Releasing it for the length of a re-INVITE only to reopen it is churn the user
+        // sees as a black preview.
+        val calls = listOf(call(state = CallState.Resuming(sending)))
+
+        assertEquals(CallId("call-1"), CameraPolicy.ownerOf(calls))
+        assertTrue(CameraPolicy.shouldCapture(calls))
+    }
+
+    @Test
     fun `no calls means no camera, which is every terminal path at once`() {
         assertNull(CameraPolicy.ownerOf(emptyList()))
         assertFalse(CameraPolicy.shouldCapture(emptyList()))
@@ -115,12 +125,24 @@ class CameraPolicyTest {
     }
 
     @Test
-    fun `a held video call keeps the camera, because it is still ours to resume`() {
-        // Held on its own: the call is paused, not gone, and taking the camera away would
-        // mean re-acquiring it on resume - a visible stall at the worst moment.
+    fun `a held video call releases the camera`() {
+        // This used to assert the opposite — "still ours to resume", on the reasoning that
+        // re-acquiring the camera would be a visible stall at the worst moment. That trade
+        // was made without either number, and both are now measured on a TC15:
+        //
+        //   the stall:  CameraDevice onOpened -> onConfigured = 122 ms
+        //   the cost:   a held video call ran at 110% of a core against 70% for a held
+        //               audio one, because the capture kept feeding the local renderer
+        //
+        // A tenth of a second on resume is worth less than 40% of a core for the length of
+        // the hold — and the drain was never the worst of it. The camera stayed OPEN, so
+        // the system privacy indicator stayed lit and the user watched their own live
+        // preview while the call carried no video at all. A held call that looks like it
+        // is still sending is the kind of lie §1 exists to prevent.
         val calls = listOf(call(state = CallState.Held(HoldParty.LOCAL, sending)))
 
-        assertEquals(CallId("call-1"), CameraPolicy.ownerOf(calls))
+        assertNull(CameraPolicy.ownerOf(calls))
+        assertFalse(CameraPolicy.shouldCapture(calls))
     }
 
     @Test

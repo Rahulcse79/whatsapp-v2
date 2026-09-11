@@ -78,11 +78,24 @@ object CameraPolicy {
      * Once there is a negotiated stream, [CallControls.isVideoEnabled] is the user's own
      * answer — a video-muted call keeps its stream while sending nothing, and releases the
      * camera (Task 53).
+     *
+     * ## A held call does not want it, and [CallState.isEstablished] says it does
+     *
+     * `isEstablished` is true for [CallState.Held], so a video call put on hold used to
+     * keep the camera open: the privacy indicator stayed lit, the user watched their own
+     * preview for a call carrying no video, and the handset spent about 40 % of a core
+     * capturing frames for the local renderer and nothing else. Measured on a TC15 — a
+     * held video call cost 110 % against 70 % for a held audio one.
+     *
+     * [CallState.Resuming] deliberately still wants it. The camera is about to be needed
+     * and releasing it for the length of a re-INVITE only to reopen it is churn the user
+     * sees as a black preview.
      */
     private val CallSnapshot.wantsCamera: Boolean
         get() = media.hasVideo && when (state) {
             // Placed by this user, with video, and the offer is being built right now.
             is CallState.Outgoing -> true
+            is CallState.Held -> false
             else -> state.isEstablished && state.controlsOrNull?.isVideoEnabled == true
         }
 }

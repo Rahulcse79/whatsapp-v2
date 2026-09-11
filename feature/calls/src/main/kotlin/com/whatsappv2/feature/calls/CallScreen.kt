@@ -1,5 +1,6 @@
 package com.whatsappv2.feature.calls
 
+import android.view.accessibility.AccessibilityManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -39,7 +40,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import com.whatsappv2.core.designsystem.component.Avatar
 import com.whatsappv2.core.designsystem.component.CallActionButton
@@ -134,6 +138,10 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
 
     // Under the controls in z-order, so a tap on a button is a button press and only the
     // picture itself toggles the chrome. Composed only when there is a picture to tap.
+    //
+    // It carries a label because it is the ONLY thing on screen once the controls fade,
+    // and an unlabelled Box is invisible to accessibility: with the chrome hidden the
+    // whole tree was empty, so a screen-reader user had a blank screen and no way back.
     if (call.showsRemoteVideo) {
         Box(
             Modifier
@@ -141,7 +149,9 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
                 .clickable(
                     indication = null,
                     interactionSource = remember { MutableInteractionSource() },
-                ) { chrome.value = !chrome.value },
+                    onClickLabel = if (chrome.value) "Hide the call controls" else "Show the call controls",
+                ) { chrome.value = !chrome.value }
+                .semantics { contentDescription = "${call.title}, video call" },
         )
     }
 
@@ -178,7 +188,19 @@ private fun rememberCallChromeVisibility(
     keypadShown: Boolean,
 ): MutableState<Boolean> {
     val visible = remember(state.call.callId.value) { mutableStateOf(true) }
-    val mayHide = state.call.showsRemoteVideo && !keypadShown && !state.needsAttention
+
+    // Never auto-hide for somebody exploring by touch. Fading the controls is a visual
+    // convenience — it trades a control you can see for a picture you can see — and that
+    // trade is worthless to a screen-reader user, who is left hunting a surface with
+    // nothing on it.
+    val exploringByTouch = LocalContext.current
+        .getSystemService(AccessibilityManager::class.java)
+        ?.isTouchExplorationEnabled == true
+
+    val mayHide = state.call.showsRemoteVideo &&
+        !keypadShown &&
+        !state.needsAttention &&
+        !exploringByTouch
 
     LaunchedEffect(mayHide, visible.value) {
         if (mayHide && visible.value) {
