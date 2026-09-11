@@ -84,6 +84,19 @@
  * 48 kHz off by default). No deployed server offers it — it is app-to-app only. */
 #define PJMEDIA_HAS_LYRA_CODEC 1
 
+/*
+ * Assertions log, they do not abort. pjlib's pj_assert() is assert() while PJ_DEBUG is
+ * set, and PJ_DEBUG defaults to 1 because configure-android strips -DNDEBUG from the NDK
+ * flags it copies. On a handset that meant a library precondition — a media index of -1
+ * handed to pjsua_call_vid_stream_is_running() — was SIGABRT on the PJSIP thread and the
+ * end of the process, mid-call, when the user turned their video off (TC15, 2026-09-11).
+ * With PJ_DEBUG 0 the same line is `PJ_LOG(1, "Assert failed: …")` and PJ_EINVAL back to
+ * the caller, which is what pjproject's own release profile (config_site_sample.h,
+ * PJ_CONFIG_MAXIMUM_SPEED) chooses. The caller-side bug is fixed as well; this is the
+ * net under the next one. Grep the device log for "Assert failed" — it is still a bug.
+ */
+#define PJ_DEBUG 0
+
 /* Everything else pjproject decides for Android, including the acoustic echo canceller
  * (PJMEDIA_HAS_WEBRTC_AEC), the MediaCodec hardware path, the camera capture backend and
  * libyuv. `configure-android --use-ndk-cflags` sets those from the platform rather than

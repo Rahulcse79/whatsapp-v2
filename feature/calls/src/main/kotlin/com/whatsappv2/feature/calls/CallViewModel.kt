@@ -141,6 +141,29 @@ class CallViewModel @Inject constructor(
     init {
         watchVideoRequests()
         watchTransfers()
+        followRemainingCall()
+    }
+
+    /** Calls this screen has shown at least once, so a gone call is told apart from one not yet published. */
+    private val shown = mutableSetOf<CallId>()
+
+    /**
+     * Moves the screen to the call that is left when the one it shows ends (Task 56).
+     *
+     * Ending the active call of a pair used to finish the screen — the held call was still
+     * there, on hold, reachable only through the notification (TC15, 2026-09-11 14:41).
+     * The user who just hung up on one person is looking for the other one; the screen
+     * goes to them, established calls first.
+     */
+    private fun followRemainingCall() {
+        viewModelScope.launch {
+            combine(watched.filterNotNull(), calls.activeCalls) { id, active -> id to active }
+                .collect { (id, active) ->
+                    if (id !in shown || active.any { it.callId == id }) return@collect
+                    val remaining = active.firstOrNull { it.state.isEstablished } ?: active.firstOrNull()
+                    if (remaining != null) watched.value = remaining.callId
+                }
+        }
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -203,7 +226,10 @@ class CallViewModel @Inject constructor(
 
         return combine(engine, ticker(), contactFor(callId), inFlight) { state, now, contact, busy ->
             val call = state.calls.firstOrNull { it.callId == callId }
-            if (call != null) seen = true
+            if (call != null) {
+                seen = true
+                shown += callId
+            }
 
             when {
                 call != null -> CallUiState.Active(
@@ -413,9 +439,20 @@ class CallViewModel @Inject constructor(
 
     // ---------------------------------------------------------------- call waiting
 
-    /** One of the three answers to a second call (Task 56). */
+    /**
+     * One of the three answers to a second call (Task 56).
+     *
+     * An accept also re-points the screen at the call just answered, exactly as [swapTo]
+     * does: the user is now talking to *them*. Without this the screen kept showing the
+     * first call — now on hold, with a Resume button — under a banner claiming the second
+     * call was "on hold", which was the opposite of the truth (TC15, 2026-09-11 14:23).
+     */
     fun respondToSecondCall(callId: CallId, response: SecondCallResponse) {
-        act(CallAction.ANSWER) { callWaiting.respond(callId, response) }
+        act(CallAction.ANSWER) {
+            callWaiting.respond(callId, response).also { result ->
+                if (result is Outcome.Success && response != SecondCallResponse.REJECT) watched.value = callId
+            }
+        }
     }
 
     /**

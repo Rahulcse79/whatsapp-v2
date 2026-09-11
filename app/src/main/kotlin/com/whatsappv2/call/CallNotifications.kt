@@ -75,6 +75,9 @@ class CallNotifications @Inject constructor(
     fun buildIncoming(call: CallSnapshot): Notification =
         base(call)
             .setCategory(NotificationCompat.CATEGORY_CALL)
+            // Re-posted on every state render while the call rings; the first post is the
+            // alert and the rest must not stack heads-ups on it.
+            .setOnlyAlertOnce(true)
             .setFullScreenIntent(fullScreenIntent(call.callId), true)
             .setStyle(
                 NotificationCompat.CallStyle.forIncomingCall(
@@ -103,8 +106,13 @@ class CallNotifications @Inject constructor(
         NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification_call)
             .setOngoing(true)
-            // The app rings; the notification does not.
-            .setSilent(true)
+            // The app rings; the notification does not — and that is the CHANNEL's doing
+            // (no sound, no vibration in [createChannel]), deliberately not `setSilent`.
+            // `setSilent(true)` is implemented by putting the notification in a group named
+            // "silent" with GROUP_ALERT_SUMMARY, and Android 13 blocks the full-screen
+            // intent and the heads-up of any notification with that suppressive group
+            // behaviour (SystemUI, b/231322873). With it, a call rang into a dozing phone
+            // with no screen and no answer UI (TC15, 2026-09-11 14:52 and 14:57).
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentTitle(displayNameOf(call))
 

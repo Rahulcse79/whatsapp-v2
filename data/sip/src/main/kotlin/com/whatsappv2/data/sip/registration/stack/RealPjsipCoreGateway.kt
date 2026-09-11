@@ -48,6 +48,7 @@ import org.pjsip.pjsua2.OnCallStateParam
 import org.pjsip.pjsua2.OnCallTransferStatusParam
 import org.pjsip.pjsua2.OnCallTsxStateParam
 import org.pjsip.pjsua2.OnIncomingCallParam
+import org.pjsip.pjsua2.OnIpChangeProgressParam
 import org.pjsip.pjsua2.OnRegStateParam
 import org.pjsip.pjsua2.TlsConfig
 import org.pjsip.pjsua2.TransportConfig
@@ -67,6 +68,7 @@ import org.pjsip.pjsua2.pjsip_transport_type_e
 import org.pjsip.pjsua2.pjsua_call_flag
 import org.pjsip.pjsua2.pjsua_call_media_status
 import org.pjsip.pjsua2.pjsua_call_vid_strm_op
+import org.pjsip.pjsua2.pjsua_ip_change_op
 import org.pjsip.pjsua2.pjsua_vid_req_keyframe_method
 import java.io.File
 import java.util.UUID
@@ -313,6 +315,20 @@ internal class RealPjsipCoreGateway @Inject constructor(
     private var linkDownSeen = false
 
     /**
+     * True from [setNetworkReachable]'s `handleIpChange` until PJSIP reports the change
+     * completed. Same thread rule as [linkDownSeen].
+     *
+     * `handleIpChange` restarts the listeners *asynchronously* — the UDP socket comes
+     * back "in 10 ms" — and then re-registers every account itself. The recovery
+     * coordinator asks for a refresh of its own in the same instant, and that REGISTER
+     * left before the socket existed: `503 Transport not available`, the engine told the
+     * UI the registration had failed, and the gateway logged a stack trace, for a
+     * registration PJSIP then completed on its own 14 ms later (TC15, every Wi-Fi blip on
+     * 2026-09-11: 13:33 and 13:53). While this is set, [refreshAccount] is a no-op.
+     */
+    private var ipChangeInProgress = false
+
+    /**
      * Why [start] failed, when it did, so a later operation can say so instead of
      * failing silently.
      *
@@ -365,7 +381,17 @@ internal class RealPjsipCoreGateway @Inject constructor(
         // Note that only the FIRST attempt reports UnsatisfiedLinkError; a class whose
         // initialiser threw is permanently unusable, so every retry after it reports
         // NoClassDefFoundError instead, for the same underlying reason.
-        val created = Endpoint()
+        val created = object : Endpoint() {
+            // PJSIP's IP-change handling is asynchronous; this is the one signal that it
+            // has finished, and [refreshAccount] is gated on it. Every op is reported;
+            // only the last one clears the gate. Delivered on the PJSIP thread.
+            override fun onIpChangeProgress(prm: OnIpChangeProgressParam) {
+                if (prm.op == pjsua_ip_change_op.PJSUA_IP_CHANGE_OP_COMPLETED) {
+                    ipChangeInProgress = false
+                    logger.info(TAG, "IP change handled by PJSIP (status ${prm.status})")
+                }
+            }
+        }
         logger.info(TAG, "start: Endpoint constructed (JNI bindings loaded)")
 
         created.libCreate()
@@ -618,6 +644,20 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 return@onPjsip
             }
             linkDownSeen = false
+            ipChangeInProgress = true
+            // A gate that never opens would swallow every later refresh. PJSIP reports
+            // COMPLETED even on failure, but only after its registrations time out; past
+            // this the refreshes are wanted again whatever PJSIP is still doing.
+            pjsip.schedule(
+                {
+                    if (ipChangeInProgress) {
+                        ipChangeInProgress = false
+                        logger.warn(TAG, "IP change not reported complete in time; refreshes resume")
+                    }
+                },
+                IP_CHANGE_GATE_MILLIS,
+                TimeUnit.MILLISECONDS,
+            )
 
             running.handleIpChange(
                 IpChangeParam().apply {
@@ -826,6 +866,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     override fun refreshAccount(accountKey: String) {
         onPjsip("refreshAccount") {
+            if (ipChangeInProgress) {
+                logger.info(TAG, "Refresh of $accountKey folded into the IP change PJSIP is handling")
+                return@onPjsip
+            }
             accounts[accountKey]?.setRegistration(true)
         }
     }
@@ -1650,10 +1694,27 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
         fun stopPreview() = localPreview.stop()
 
-        /** Whether this call's video stream is encoding, i.e. capture has been set up. */
-        private fun isTransmittingVideo(): Boolean =
-            runCatching { vidStreamIsRunning(ANY_VIDEO_STREAM, pjmedia_dir.PJMEDIA_DIR_ENCODING) }
+        /**
+         * Whether this call's video stream is encoding, i.e. capture has been set up.
+         *
+         * The stream is found from the call's own media list first, and the question is
+         * only put to PJSIP when there is one. `vidStreamIsRunning(-1, …)` asks PJSIP to
+         * find it, and on a call whose video has just been removed it finds nothing and
+         * then *asserts* on the -1 it resolved to — `pjsua_vid.c:2873`, SIGABRT on the
+         * PJSIP thread, the whole process gone the moment "Turn off my video" was pressed
+         * (TC15, 2026-09-11 13:59). A library assertion is not an exception `runCatching`
+         * can see.
+         */
+        private fun isTransmittingVideo(): Boolean {
+            val info = infoOrNull() ?: return false
+            val index = info.media.firstOrNull { media ->
+                media.type == pjmedia_type.PJMEDIA_TYPE_VIDEO &&
+                    media.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE &&
+                    media.dir and pjmedia_dir.PJMEDIA_DIR_ENCODING != 0
+            }?.index ?: return false
+            return runCatching { vidStreamIsRunning(index.toInt(), pjmedia_dir.PJMEDIA_DIR_ENCODING) }
                 .getOrDefault(false)
+        }
 
         fun publish(state: StackCallState, info: CallInfo? = infoOrNull()) {
             val remote = NameAddr.of(info?.remoteUri)
@@ -1699,9 +1760,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
          * direction for a check whose failure hangs the call up.
          */
         private fun encryptedAudio(info: CallInfo?): Boolean {
+            // Live streams only. On DISCONNECTED the media is already gone and pjsua2
+            // logs `pjsua_call_get_stream_info … PJ_EINVAL` at ERROR for every hangup —
+            // an error about a stream nobody needs an answer for. There is nothing to
+            // encrypt in a stream that is not running, so the answer is the same.
             val audio = info?.media
                 ?.withIndex()
-                ?.filter { (_, m) -> m.type == pjmedia_type.PJMEDIA_TYPE_AUDIO }
+                ?.filter { (_, m) -> m.type == pjmedia_type.PJMEDIA_TYPE_AUDIO && m.isLive }
                 .orEmpty()
             if (audio.isEmpty()) return false
 
@@ -1872,9 +1937,6 @@ internal class RealPjsipCoreGateway @Inject constructor(
         /** Whatever `AccountConfig.videoConfig.defaultCaptureDevice` resolved to. */
         const val CAPTURE_DEVICE_DEFAULT = -1
 
-        /** `med_idx = -1` to `pjsua_call_vid_stream_is_running`: the first active video stream. */
-        const val ANY_VIDEO_STREAM = -1
-
         /**
          * How long a removed account may wait for its un-REGISTER to be answered before
          * it is shut down regardless. Longer than `PjsipSipEngine`'s five-second wait,
@@ -1882,6 +1944,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
          * gone away.
          */
         const val UNREGISTER_GRACE_MILLIS = 8_000L
+
+        /** How long a refresh defers to PJSIP's own IP-change re-registration at most. */
+        const val IP_CHANGE_GATE_MILLIS = 15_000L
     }
 }
 

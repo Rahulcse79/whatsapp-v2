@@ -6,6 +6,7 @@ import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallState
+import com.whatsappv2.domain.call.SecondCallResponse
 import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.engine.NoVideoSurfaces
 import com.whatsappv2.domain.engine.SipError
@@ -187,6 +188,51 @@ class CallViewModelTest {
 
             val connected = awaitDisplay { it.phase == CallPhase.CONNECTED }
             assertEquals(MediaProfile.AUDIO.hasVideo, connected.videoOffered)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `hold-and-answer moves the screen to the call just answered`() = runTest {
+        // On the TC15 the screen stayed on the first call — now on hold, Resume button and
+        // all — under a banner saying the second call was "on hold". The user had just
+        // answered it; it was the live one. An accept re-points the screen like a swap does.
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val viewModel = viewModel().also { it.watch(first) }
+        val second = engine.simulateIncomingCall(ACCOUNT.id, REMOTE)
+
+        viewModel.uiState.test {
+            skipItems(1)
+            viewModel.respondToSecondCall(second.callId, SecondCallResponse.ACCEPT_AND_HOLD)
+            runCurrent()
+
+            val shown = awaitDisplay { it.callId == second.callId && it.phase == CallPhase.CONNECTED }
+            assertEquals(second.callId, shown.callId)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `ending the active call of a pair moves the screen to the held one`() = runTest {
+        // The screen used to finish, leaving the held call reachable only from the
+        // notification.
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val viewModel = viewModel().also { it.watch(first) }
+        val second = engine.simulateIncomingCall(ACCOUNT.id, REMOTE)
+
+        viewModel.uiState.test {
+            skipItems(1)
+            viewModel.respondToSecondCall(second.callId, SecondCallResponse.ACCEPT_AND_HOLD)
+            runCurrent()
+            awaitDisplay { it.callId == second.callId && it.phase == CallPhase.CONNECTED }
+
+            engine.simulateRemoteHangup(second.callId)
+            runCurrent()
+
+            val shown = awaitDisplay { it.callId == first }
+            assertEquals(first, shown.callId)
             cancelAndIgnoreRemainingEvents()
         }
     }

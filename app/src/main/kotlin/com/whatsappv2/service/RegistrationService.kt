@@ -196,6 +196,7 @@ class RegistrationService : Service() {
     override fun onDestroy() {
         // A ringtone that outlives the service is a ringtone with nothing to answer.
         ringer.stop()
+        if (ringingShown) notificationManager().cancel(INCOMING_NOTIFICATION_ID)
         scope.cancel()
         super.onDestroy()
     }
@@ -217,11 +218,37 @@ class RegistrationService : Service() {
     private fun startOrUpdate(reason: ServiceReason, presentation: Presentation) {
         if (isForeground) {
             notificationManager().notify(NOTIFICATION_ID, notificationFor(presentation))
+        } else {
+            enterForeground(reason, presentation)
+        }
+        showOrClearRinging(presentation)
+    }
+
+    /**
+     * The ringing card is a notification of its own, posted fresh for each call.
+     *
+     * It used to be an *update* of the service's one notification (id 1), which the
+     * platform never treats as a new alert: SystemUI launches a full-screen intent and
+     * shows a heads-up only when a notification is **added**. So with the screen off the
+     * call rang into a dozing phone — no screen, no answer UI, `mWakefulness=Dozing` for
+     * the whole ring — and with the app in the background there was no heads-up either
+     * (TC15, 2026-09-11 14:52). Its own id makes every incoming call an add. Cleared the
+     * moment the presentation stops being an incoming call, so an answered or missed
+     * call leaves no stale card behind.
+     */
+    private fun showOrClearRinging(presentation: Presentation) {
+        val incoming = presentation.call as? CallNotification.Incoming
+        if (incoming == null) {
+            if (ringingShown) notificationManager().cancel(INCOMING_NOTIFICATION_ID)
+            ringingShown = false
             return
         }
-
-        enterForeground(reason, presentation)
+        notificationManager().notify(INCOMING_NOTIFICATION_ID, callNotifications.buildIncoming(incoming.call))
+        ringingShown = true
     }
+
+    /** Whether the ringing card is up, so it is cancelled once and not on every render. */
+    private var ringingShown = false
 
     /**
      * Goes foreground, and does not give up on the first refusal.
@@ -281,7 +308,9 @@ class RegistrationService : Service() {
      */
     private fun notificationFor(presentation: Presentation): Notification =
         when (val call = presentation.call) {
-            is CallNotification.Incoming -> callNotifications.buildIncoming(call.call)
+            // The ringing card is posted separately (see [showOrClearRinging]); the
+            // service's own notification carries the registration summary meanwhile.
+            is CallNotification.Incoming -> buildNotification(presentation.summary)
             is CallNotification.Ongoing -> callNotifications.buildOngoing(call.call)
             is CallNotification.None -> buildNotification(presentation.summary)
         }
@@ -382,6 +411,9 @@ class RegistrationService : Service() {
         private const val RECORD_AUDIO = android.Manifest.permission.RECORD_AUDIO
         private const val CHANNEL_ID = "sip-registration"
         private const val NOTIFICATION_ID = 1
+
+        /** The ringing card. Its own id, so each incoming call is an add rather than an update. */
+        private const val INCOMING_NOTIFICATION_ID = 2
 
         /**
          * Starts the service. Safe to call when it is already running — and safe to call
