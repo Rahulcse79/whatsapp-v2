@@ -1203,14 +1203,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
     override fun setVideoEnabled(callKey: String, enabled: Boolean) {
         onPjsip("setVideoEnabled") {
             val call = calls[callKey] ?: return@onPjsip
-            call.vidSetStream(
-                if (enabled) {
-                    pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_ADD
-                } else {
-                    pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_REMOVE
-                },
-                CallVidSetStreamParam(),
-            )
+            call.applyVideoEnabled(enabled, call.infoOrNull())
         }
     }
 
@@ -1272,15 +1265,15 @@ internal class RealPjsipCoreGateway @Inject constructor(
     override fun setCameraCapturing(capturing: Boolean) {
         onPjsip("setCameraCapturing") {
             cameraWanted = capturing
-            val op = if (capturing) {
-                pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_START_TRANSMIT
-            } else {
-                pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_STOP_TRANSMIT
-            }
+            val op = transmitOp(capturing)
             calls.values.forEach { call ->
                 // The preview holds its own reference on the capture window (see
                 // `PjCall.applyPreview`), so it goes first or the camera stays open.
                 if (!capturing) call.stopPreview()
+                // A stop is only asked of a stream that is sending. The camera is released
+                // as a call ends, and `STOP_TRANSMIT` on the terminated call had pjsua2
+                // logging `PJSIP_ESESSIONTERMINATED` at ERROR on every hangup.
+                if (!capturing && !call.isTransmittingVideo()) return@forEach
                 runCatching { call.vidSetStream(op, CallVidSetStreamParam()) }
                 if (capturing) call.applyPreview()
             }
@@ -1642,16 +1635,28 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
 
         /**
-         * Holds the far end's re-INVITE until the user answers it (Task 54).
+         * Holds the far end's re-INVITE until the user answers it (Task 54) — but only
+         * when it is an **escalation**: video offered on a call that has none running.
          *
          * `isAsync` is what defers the reply. Without it PJSIP answers immediately and the
          * first anybody knows about an escalation is their own camera light; with it the
          * call sits in this state until [respondToVideoUpdate] answers, which is what makes
          * the prompt §5.2 requires possible at all.
+         *
+         * It used to defer *every* re-INVITE whose offer had video in it. A session-timer
+         * refresh on a call already carrying video has video in its offer too, and so does
+         * the far end's hold; both were held for a user prompt that made no sense and was
+         * never shown, and never answered. FreeSWITCH registers as the refresher on the
+         * calls it originates (`Session-Expires: 120;refresher=uac`), so its refresh
+         * re-INVITE at 60 s went unanswered and our own session timer ended the call at
+         * 88 s with `BYE … cause=408 "No session refresh received"`. Every inbound video
+         * call died before the two-minute mark; outbound ones survived only because we
+         * are the refresher there. A re-INVITE on a call that already has an active video
+         * stream is answered by the stack, as any other renegotiation is.
          */
         override fun onCallRxReinvite(prm: OnCallRxReinviteParam) {
             val info = infoOrNull() ?: return
-            if (info.remVideoCount > 0) {
+            if (info.remVideoCount > 0 && !info.hasActiveVideo()) {
                 prm.isAsync = true
                 reinvitePending = true
                 publish(StackCallState.UPDATED_BY_REMOTE, info)
@@ -1742,7 +1747,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
          * (TC15, 2026-09-11 13:59). A library assertion is not an exception `runCatching`
          * can see.
          */
-        private fun isTransmittingVideo(): Boolean {
+        fun isTransmittingVideo(): Boolean {
             val info = infoOrNull() ?: return false
             val index = info.media.firstOrNull { media ->
                 media.type == pjmedia_type.PJMEDIA_TYPE_VIDEO &&
@@ -1767,10 +1772,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     // What the peer offered, read from their side of the negotiation
                     // rather than ours: ours says what we would accept, not what was asked.
                     videoOffered = (info?.remVideoCount ?: 0) > 0,
-                    videoActive = info?.media?.any {
-                        it.type == pjmedia_type.PJMEDIA_TYPE_VIDEO &&
-                            it.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE
-                    } == true,
+                    videoActive = info?.hasActiveVideo() == true,
                     mediaEncrypted = encryptedAudio(info),
                 ),
             )
@@ -1821,7 +1823,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
          * the ordinary teardown path rather than exceptionally — a callback can arrive
          * fractionally after the native object goes.
          */
-        private fun infoOrNull(): CallInfo? = runCatching { info }.getOrNull()
+        fun infoOrNull(): CallInfo? = runCatching { info }.getOrNull()
     }
 
     private fun callParams(videoEnabled: Boolean) = CallOpParam(true).apply {
@@ -2099,6 +2101,47 @@ private fun registrationStateOf(code: Int, expiration: Long): StackRegistrationS
  * `CallInfo.setting` is `call->opt` verbatim (`pjsua_call.c:2556`), so the counts
  * this call was placed or answered with are exactly what is re-offered.
  */
+/**
+ * Turns this call's video on or off (Task 51), without growing the SDP.
+ *
+ * Off is `REMOVE`: pjsua sets the m=video port to 0, which is the only way SDP has to
+ * take a stream away. On used to be `ADD`, and pjsua's `call_add_video` *always* appends
+ * a fresh m-line (`pjsua_vid.c`, `med_prov_cnt++`) — so every off/on cycle left one more
+ * dead `m=video 0` behind and opened one more RTP transport, and the sixteenth toggle
+ * would have failed with `PJ_ETOOMANY`. A handset showed it plainly: after one off/on the
+ * answer carried `m=video 0` *and* `m=video 21598`, "stream #1 unchanged (inactive)" and
+ * "stream #2: VP8 (sendrecv)". `CHANGE_DIR` to sendrecv on the stream that already exists
+ * is what pjsua provides for exactly this — `call_modify_video` re-creates the transport
+ * and the m-line in place when the port is 0. `ADD` is kept for a call that never had
+ * video at all.
+ */
+private fun Call.applyVideoEnabled(enabled: Boolean, info: CallInfo?) {
+    val existing = info?.media?.firstOrNull { it.type == pjmedia_type.PJMEDIA_TYPE_VIDEO }?.index?.toInt()
+    when {
+        !enabled -> vidSetStream(pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_REMOVE, CallVidSetStreamParam())
+        existing == null -> vidSetStream(pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_ADD, CallVidSetStreamParam())
+        else -> vidSetStream(
+            pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_CHANGE_DIR,
+            CallVidSetStreamParam().apply {
+                medIdx = existing
+                dir = pjmedia_dir.PJMEDIA_DIR_ENCODING_DECODING
+            },
+        )
+    }
+}
+
+/** The stream operation that starts or stops sending captured video. */
+private fun transmitOp(capturing: Boolean): Int = if (capturing) {
+    pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_START_TRANSMIT
+} else {
+    pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_STOP_TRANSMIT
+}
+
+/** True when a video stream is negotiated and running on this call, in either direction. */
+private fun CallInfo.hasActiveVideo(): Boolean = media.any {
+    it.type == pjmedia_type.PJMEDIA_TYPE_VIDEO && it.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE
+}
+
 private fun CallInfo.resumeParams(): CallOpParam {
     val resume = setting
     resume.flag = pjsua_call_flag.PJSUA_CALL_UNHOLD.toLong()
