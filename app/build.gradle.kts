@@ -36,11 +36,43 @@ androidComponents {
     }
 }
 
+// Push wake (Task 38 / ADR-004). Firebase is configured from `app/google-services.json`,
+// which is deployment configuration and gitignored. The google-services Gradle plugin is
+// deliberately NOT applied: it fails the build when the file is absent, and the file must
+// be absent in CI. This does the plugin's one useful job by hand - turning the file into
+// the string resources `FirebaseInitProvider` reads at start-up - and does nothing when
+// the file is not there, so the repository builds without it and `PushTokenPublisher`
+// logs "push is not configured" instead of the app crashing. Drop the file in, rebuild,
+// and the token is on the next REGISTER; no plugin, nothing committed.
+fun firebaseResValues(file: File, applicationId: String): Map<String, String> {
+    if (!file.isFile) return emptyMap()
+    val root = groovy.json.JsonSlurper().parse(file) as Map<*, *>
+    val project = root["project_info"] as Map<*, *>
+    val client = (root["client"] as List<*>).map { it as Map<*, *> }.firstOrNull { client ->
+        val info = client["client_info"] as Map<*, *>
+        (info["android_client_info"] as Map<*, *>)["package_name"] == applicationId
+    } ?: error("${file.name} has no client for package $applicationId - download it for this app")
+    val clientInfo = client["client_info"] as Map<*, *>
+    val apiKey = (client["api_key"] as List<*>).map { it as Map<*, *> }.firstNotNullOf { it["current_key"] as String? }
+
+    return buildMap {
+        put("google_app_id", clientInfo["mobilesdk_app_id"] as String)
+        put("gcm_defaultSenderId", project["project_number"] as String)
+        put("project_id", project["project_id"] as String)
+        put("google_api_key", apiKey)
+        (project["storage_bucket"] as String?)?.let { put("google_storage_bucket", it) }
+        (project["firebase_url"] as String?)?.let { put("firebase_database_url", it) }
+    }
+}
+
 android {
     namespace = "com.whatsappv2"
 
     defaultConfig {
         applicationId = "com.whatsappv2"
+        firebaseResValues(file("google-services.json"), checkNotNull(applicationId)).forEach { (name, value) ->
+            resValue("string", name, value)
+        }
 
         // The release tag is made from versionName — `.github/workflows/release.yml`
         // reads these two lines and tags `v$versionName` when a merge lands on `main`.

@@ -227,8 +227,8 @@ error, and never an optimistic "Registered" over a transport that is down (§6).
 |---|---|---|
 | SIP host, extension, password | the instrumented suite | Gradle properties or CI secrets — never committed |
 | A SIP account | using the app at all | entered in the UI; stored AES-GCM encrypted under a Keystore key |
-| `google-services.json` | the push wake path | **not committed and not required.** Without it the app builds and runs with no push; `PushTokenPublisher` logs that rather than hiding it |
-| An ESL push gateway | calls arriving while the app is asleep | a backend service outside this repository (ADR-004, open question Q6) |
+| `google-services.json` | the push wake path | **not committed and not required.** Drop it at `app/google-services.json` (gitignored) and the build emits the Firebase resources itself — no plugin. Without it the app builds and runs with no push; `PushTokenPublisher` logs that rather than hiding it |
+| An ESL push gateway | calls arriving while the app is asleep | `coralx-push-sender`, a backend service outside this repository (ADR-004) |
 | A release keystore | a signed APK | held by the release pipeline. `assembleRelease` here produces an **unsigned** APK on purpose — a keystore in git is a compromised keystore |
 
 ## Build variants
