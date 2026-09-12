@@ -3,14 +3,17 @@ package com.whatsappv2.push
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.whatsappv2.core.common.logging.Logger
+import com.whatsappv2.core.common.result.errorOrNull
 import com.whatsappv2.core.common.time.Clock
 import com.whatsappv2.di.ApplicationScope
 import com.whatsappv2.domain.engine.SipRegistrar
-import com.whatsappv2.domain.model.AccountId
+import com.whatsappv2.domain.repository.SipAccountRepository
 import com.whatsappv2.domain.usecase.LoginUseCase
+import com.whatsappv2.domain.usecase.RestoreRegistrationsUseCase
 import com.whatsappv2.service.RegistrationService
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -21,15 +24,24 @@ import javax.inject.Inject
  *
  * A registration alone does not survive Doze or process death, so on Android 12+ push is
  * the **primary** delivery path for an incoming call rather than a fallback. The sequence
- * ADR-004 specifies is: high-priority data message → wake → re-register if the binding is
- * stale → hold the process up with the foreground service → the INVITE arrives on the
- * restored registration → the incoming UI (Task 37) shows it.
+ * ADR-004 specifies is: high-priority data message → wake → REGISTER → the gateway sees
+ * the REGISTER and releases the call it was holding → the INVITE arrives on the restored
+ * registration → the incoming UI (Task 37) shows it.
  *
  * ## What this class decides: nothing
  *
- * [PushPayload] parses and [PushWakePolicy] decides; both are pure and both are tested.
- * What is left here is starting a service and asking the engine to register, which is the
- * part that genuinely needs a device.
+ * [PushPayload] parses, [PushWakePolicy] decides and [PushAccountResolver] names the
+ * account; all three are pure and all three are tested. What is left here is starting a
+ * service and asking the engine to register, which is the part that genuinely needs a
+ * device.
+ *
+ * ## The REGISTER is never skipped
+ *
+ * The gateway does not send the INVITE until it sees a REGISTER that arrived after the
+ * push. So whatever this process believes — registered, failed, never heard of the
+ * account — a `WAKE` ends in a REGISTER; the only question [RegisterStep] answers is which
+ * one. A process that trusted its own "Registered" and stayed quiet would leave the caller
+ * listening to ringback until the gateway gave up.
  *
  * ## What it does not do
  *
@@ -45,7 +57,13 @@ class SipMessagingService : FirebaseMessagingService() {
     lateinit var registrar: SipRegistrar
 
     @Inject
+    lateinit var accounts: SipAccountRepository
+
+    @Inject
     lateinit var login: LoginUseCase
+
+    @Inject
+    lateinit var restoreRegistrations: RestoreRegistrationsUseCase
 
     @Inject
     lateinit var tokens: PushTokenPublisher
@@ -62,19 +80,11 @@ class SipMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         val payload = PushPayload.from(message.data)
-        val accountId = payload?.accountId?.let(::AccountId)
-        val registration = accountId?.let { registrar.registrationState.value[it] }
 
-        when (PushWakePolicy.decide(payload, registration, clock.nowEpochMillis())) {
-            PushDecision.WAKE_AND_REGISTER -> {
-                // The service first: it is what keeps the process alive long enough for
-                // the REGISTER and the INVITE that follows it. Registering into a process
-                // the platform may kill a second later is how a woken call is still missed.
-                RegistrationService.start(this)
-                accountId?.let { id -> scope.launch { login(id) } }
-            }
-
-            PushDecision.WAKE_ONLY -> RegistrationService.start(this)
+        when (PushWakePolicy.decide(payload, clock.nowEpochMillis())) {
+            // `payload` is non-null on WAKE by construction; `decide` returns
+            // IGNORE_MALFORMED for null, and this is the one place that knowledge is used.
+            PushDecision.WAKE -> payload?.let(::wake)
 
             // Logged at info because each is a normal thing to see in the field: a push
             // that lost a race, a type this version does not act on, a malformed message
@@ -87,6 +97,33 @@ class SipMessagingService : FirebaseMessagingService() {
 
             PushDecision.IGNORE_MALFORMED ->
                 logger.warn(TAG, "Ignoring a push that does not match the ADR-004 contract")
+        }
+    }
+
+    private fun wake(payload: PushPayload) {
+        // The service first, and synchronously: it is what keeps the process alive long
+        // enough for the REGISTER and the INVITE that follows it, and the platform's
+        // permission to start a foreground service from a high-priority push is a window
+        // measured in seconds. Registering into a process the platform may kill a second
+        // later is how a woken call is still missed.
+        RegistrationService.start(this)
+
+        scope.launch {
+            val target = PushAccountResolver.resolve(payload.accountId, accounts.observeAccounts().first())
+            val step = PushWakePolicy.registerStep(target, target?.let { registrar.registrationState.value[it] })
+            logger.info(TAG, "Push wake: $step")
+
+            when (step) {
+                RegisterStep.LOGIN -> login(checkNotNull(target)).errorOrNull()
+                    ?.let { logger.warn(TAG, "Push wake could not log in: $it") }
+
+                RegisterStep.REFRESH -> registrar.refreshRegistration(checkNotNull(target)).errorOrNull()
+                    ?.let { logger.warn(TAG, "Push wake could not refresh the registration: $it") }
+
+                RegisterStep.RESTORE_ALL -> restoreRegistrations().forEach { (id, error) ->
+                    logger.warn(TAG, "Could not restore the registration of $id: $error")
+                }
+            }
         }
     }
 
