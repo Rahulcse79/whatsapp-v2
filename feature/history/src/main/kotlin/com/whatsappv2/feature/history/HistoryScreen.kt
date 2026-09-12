@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Videocam
@@ -262,6 +263,15 @@ private fun OverflowMenu(actions: HistoryActions) {
             shape = MaterialTheme.shapes.large,
             modifier = Modifier.testTag(TAG_OVERFLOW_MENU),
         ) {
+            DropdownMenuItem(
+                text = { Text("Call recordings") },
+                leadingIcon = { Icon(Icons.Filled.Mic, contentDescription = null) },
+                onClick = {
+                    open = false
+                    actions.onOpenRecordings()
+                },
+                modifier = Modifier.testTag(TAG_RECORDINGS),
+            )
             DropdownMenuItem(
                 text = { Text("Clear call history") },
                 leadingIcon = { Icon(Icons.Outlined.DeleteSweep, contentDescription = null) },
@@ -940,6 +950,7 @@ internal const val TAG_DETAIL = "history-detail"
 internal const val TAG_CONFIRM_CLEAR = "history-confirm-clear"
 internal const val TAG_CLEAR_ALL = "history-clear-all"
 internal const val TAG_OVERFLOW = "history-overflow"
+internal const val TAG_RECORDINGS = "history-recordings"
 internal const val TAG_OVERFLOW_MENU = "history-overflow-menu"
 internal const val TAG_SEARCH = "history-search"
 internal const val TAG_SEARCH_FIELD = "history-search-field"

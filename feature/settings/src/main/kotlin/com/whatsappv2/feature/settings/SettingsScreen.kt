@@ -16,7 +16,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AccountCircle
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -58,7 +57,6 @@ import com.whatsappv2.domain.model.ThemeMode
 @Composable
 fun SettingsScreen(
     onOpenAccounts: () -> Unit,
-    onOpenRecordings: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: SettingsViewModel = hiltViewModel(),
@@ -78,7 +76,7 @@ fun SettingsScreen(
     SettingsScreen(
         state = state,
         actions = actions,
-        links = SettingsLinks(onOpenAccounts = onOpenAccounts, onOpenRecordings = onOpenRecordings),
+        links = SettingsLinks(onOpenAccounts = onOpenAccounts),
         onBack = onBack,
         modifier = modifier,
     )
@@ -108,7 +106,6 @@ data class SettingsActions(
  */
 data class SettingsLinks(
     val onOpenAccounts: () -> Unit,
-    val onOpenRecordings: () -> Unit,
 )
 
 /** The stateless screen, so it can be previewed and tested with a literal state. */
@@ -236,14 +233,12 @@ private fun SettingsContent(
  * The two places reachable from here, or nothing in a preview.
  *
  * Accounts first, because it is the one thing without which the app cannot do anything
- * at all. Recordings beside them rather than among the app settings: not a preference
- * but a place — the other thing this app holds that is worth a screen of its own.
+ * at all.
  */
 @Composable
 private fun LinkCards(links: SettingsLinks?) {
     links ?: return
     SettingsCard { AccountsRow(onClick = links.onOpenAccounts) }
-    SettingsCard { RecordingsRow(onClick = links.onOpenRecordings) }
 }
 
 /**
@@ -372,47 +367,7 @@ private fun AccountsRow(onClick: () -> Unit) {
     }
 }
 
-/**
- * The way through to the recordings kept on this phone.
- *
- * The same shape as [AccountsRow], for the same reason: a list with playback and a
- * delete behind it is a screen, and folding it into a settings page would make one
- * screen do three jobs.
- */
-@Composable
-private fun RecordingsRow(onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = AppTheme.spacing.small)
-            .testTag(TAG_RECORDINGS),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.medium),
-    ) {
-        Icon(
-            imageVector = Icons.Filled.Mic,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-        )
-        Column(modifier = Modifier.weight(1f)) {
-            Text("Call recordings", style = MaterialTheme.typography.titleMedium)
-            Text(
-                text = "Listen to and delete the recordings kept on this phone.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Icon(
-            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
 internal const val TAG_ACCOUNTS = "settings-accounts"
-internal const val TAG_RECORDINGS = "settings-recordings"
 internal const val TAG_BACK = "settings-back"
 internal const val TAG_RETENTION = "settings-retention"
 
