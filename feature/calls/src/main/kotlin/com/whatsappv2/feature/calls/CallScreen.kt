@@ -48,6 +48,7 @@ import androidx.compose.ui.text.style.TextAlign
 import com.whatsappv2.core.designsystem.component.Avatar
 import com.whatsappv2.core.designsystem.component.CallActionButton
 import com.whatsappv2.core.designsystem.component.CallActionStyle
+import com.whatsappv2.core.designsystem.component.CallControlGrid
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
 import com.whatsappv2.core.designsystem.theme.AppTheme
@@ -505,7 +506,7 @@ private fun InCallActions(
 }
 
 /**
- * Mute, speaker, hold and the keypad.
+ * Mute, speaker, hold and the keypad — the four every call has.
  *
  * Every `enabled` here comes from [CallControlAvailability]; there is no flag to forget to
  * set, which is Task 39's second done-when expressed as code.
@@ -513,6 +514,11 @@ private fun InCallActions(
  * [pending] is the other half of that honesty (Task 76). A control the engine has not
  * answered yet is busy, not toggled: the icon still shows the state the call is actually
  * in, and the spinner says the press was received.
+ *
+ * On [CallControlGrid] rather than a `SpaceEvenly` row of its own, so this row and the one
+ * below it share a denominator and their columns line up. They did not before: each row
+ * divided the width by its own button count, and the second row's count changes with the
+ * call.
  */
 @Composable
 private fun CallControlRow(
@@ -527,47 +533,76 @@ private fun CallControlRow(
     val speakerOn = controls.audioRoute == AudioRoute.SPEAKER
     val held = availability.canResume
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceEvenly,
-    ) {
-        MuteButton(
-            muted = controls.isMuted,
-            enabled = availability.canMute,
-            pending = CallAction.MUTE in pending,
-            onToggle = actions.onToggleMute,
-        )
-        CallActionButton(
-            icon = Icons.AutoMirrored.Filled.VolumeUp,
-            contentDescription = if (speakerOn) "Turn off speakerphone" else "Turn on speakerphone",
-            activeStateDescription = if (speakerOn) "On" else "Off",
-            onClick = { actions.onToggleSpeaker(!speakerOn) },
-            enabled = availability.canChangeRoute,
-            active = speakerOn,
-            label = "Speaker",
-            pending = CallAction.SPEAKER in pending,
-            pendingStateDescription = "Switching audio",
-            modifier = Modifier.testTag(TAG_SPEAKER),
-        )
-        CallActionButton(
-            icon = if (held) Icons.Filled.PlayArrow else Icons.Filled.Pause,
-            contentDescription = if (held) "Resume call" else "Hold call",
-            activeStateDescription = if (held) "On hold" else "Not on hold",
-            onClick = { actions.onToggleHold(!held) },
-            // Task 39: unavailable before Connected, and it is the phase that says so.
-            enabled = availability.canHold || availability.canResume,
-            active = held,
-            label = "Hold",
-            pending = CallAction.HOLD in pending,
-            pendingStateDescription = if (held) "Resuming" else "Holding",
-            modifier = Modifier.testTag(TAG_HOLD),
-        )
-        KeypadToggle(
-            open = keypadOpen,
-            enabled = availability.canSendDtmf,
-            onToggle = onToggleKeypad,
-        )
-    }
+    CallControlGrid(
+        controls = listOf(
+            {
+                MuteButton(
+                    muted = controls.isMuted,
+                    enabled = availability.canMute,
+                    pending = CallAction.MUTE in pending,
+                    onToggle = actions.onToggleMute,
+                )
+            },
+            {
+                SpeakerButton(
+                    on = speakerOn,
+                    enabled = availability.canChangeRoute,
+                    pending = CallAction.SPEAKER in pending,
+                    onToggle = actions.onToggleSpeaker,
+                )
+            },
+            {
+                HoldButton(
+                    held = held,
+                    // Task 39: unavailable before Connected, and it is the phase that says so.
+                    enabled = availability.canHold || availability.canResume,
+                    pending = CallAction.HOLD in pending,
+                    onToggle = actions.onToggleHold,
+                )
+            },
+            {
+                KeypadToggle(
+                    open = keypadOpen,
+                    enabled = availability.canSendDtmf,
+                    onToggle = onToggleKeypad,
+                )
+            },
+        ),
+    )
+}
+
+/** The earpiece or the speaker, whichever the call is not on. */
+@Composable
+private fun SpeakerButton(on: Boolean, enabled: Boolean, pending: Boolean, onToggle: (Boolean) -> Unit) {
+    CallActionButton(
+        icon = Icons.AutoMirrored.Filled.VolumeUp,
+        contentDescription = if (on) "Turn off speakerphone" else "Turn on speakerphone",
+        activeStateDescription = if (on) "On" else "Off",
+        onClick = { onToggle(!on) },
+        enabled = enabled,
+        active = on,
+        label = "Speaker",
+        pending = pending,
+        pendingStateDescription = "Switching audio",
+        modifier = Modifier.testTag(TAG_SPEAKER),
+    )
+}
+
+/** Hold, and resume, which is the same button saying the opposite thing. */
+@Composable
+private fun HoldButton(held: Boolean, enabled: Boolean, pending: Boolean, onToggle: (Boolean) -> Unit) {
+    CallActionButton(
+        icon = if (held) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+        contentDescription = if (held) "Resume call" else "Hold call",
+        activeStateDescription = if (held) "On hold" else "Not on hold",
+        onClick = { onToggle(!held) },
+        enabled = enabled,
+        active = held,
+        label = "Hold",
+        pending = pending,
+        pendingStateDescription = if (held) "Resuming" else "Holding",
+        modifier = Modifier.testTag(TAG_HOLD),
+    )
 }
 
 /**
