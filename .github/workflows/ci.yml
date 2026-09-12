@@ -1,6 +1,27 @@
-# CI gate. Per ADR-005 this runs entirely on hosted runners and must stay green
-# WITHOUT reachability to the FreeSWITCH server — server-backed integration tests
-# are a separate, scheduled workflow added in Task 32.
+# CI gate — the JVM half of the build, on hosted runners, with no native stage.
+#
+# Per ADR-005 this must stay green WITHOUT reachability to the FreeSWITCH server;
+# server-backed integration tests are a separate, scheduled workflow (Task 32).
+#
+# ## Why there is no cross-compile and no APK here
+#
+# The native stage is a ~3 minute cross-compile PER ABI on top of the Lyra closure's
+# ~25 minute TensorFlow Lite build, and it needs a 1 GB NDK download before either can
+# start. None of it is reachable from a Kotlin unit test, a detekt rule or an
+# architecture assertion — so every minute of it was spent re-proving something no
+# check in this file looks at. It is built LOCALLY now (`./build.sh`), and the APK a
+# release carries comes from that build. See README, "Build policy".
+#
+# What that costs, stated plainly rather than left to be discovered: R8 and the
+# packaged APK are no longer exercised on every push. `tools/release.sh` builds both
+# before a release is published, which is the run that matters for an artifact anyone
+# installs.
+#
+# ## Two jobs, because they fail for different reasons and at different speeds
+#
+# `guards` reads files and runs in about a minute. `build` resolves dependencies,
+# compiles and tests. A vendoring mistake or a committed baseline should not wait
+# behind a Gradle daemon starting up.
 name: CI
 
 on:
@@ -22,11 +43,12 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build and check
+  guards:
+    name: Repository guards
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
 
       - name: Verify the Gradle wrapper is present
         run: |
@@ -57,185 +79,6 @@ jobs:
           sys.exit(1 if bad else 0)
           PY
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: "21"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
-
-      # ---------------------------------------------------------------------
-      # The native toolchain. Required from ADR-007 onward, and the reason is
-      # N-14: `:data:sip` takes `:pjsip` unconditionally, `:pjsip` builds
-      # libpjsua2.so from third_party/, and a build that produces no .so FAILS.
-      # There is no Java-only fallback to fall back to any more, deliberately —
-      # it was a path that compiled and could not run.
-      #
-      # swig is stage 1 (~15 s) and the NDK is stage 2 (~3 min per ABI). Both
-      # are TOOLCHAIN, exempt from N-1 and pinned per §2.1.1: an unpinned swig
-      # is a silently different JNI surface, so the version is asserted by
-      # GeneratePjsua2Bindings rather than accepted.
-      - name: Install swig (stage 1 — the pjsua2 Java bindings)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y swig
-          # Printed so a runner-image bump is visible in the log as well as being
-          # caught by the build's own version assertion.
-          swig -version
-
-      - name: Set up the NDK (stage 2 — r27+, for 16 KB page sizes)
-        id: ndk
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r27c
-          # NOT cached. With local-cache: true the action restored a tree with
-          # `toolchains/llvm/prebuilt` and nothing inside it — an NDK with no
-          # compiler, which is worse than no NDK because every later step still
-          # looks like it should work.
-          local-cache: false
-          add-to-path: true
-
-      # The pin, ENFORCED. Asking for r27c is not the same as compiling with it.
-      #
-      # The runner image ships its own NDK and exports ANDROID_NDK_ROOT pointing at it, so
-      # `setup-ndk` downloaded r27c and the build then compiled with the image's
-      # **27.3.13750724 — which is r27d**. Nobody would have noticed: r27d is >= r27, so the
-      # 16 KB alignment assertion passed and the .so was fine. What was lost is the pin
-      # itself, and with it N-11: two builds of the same commit on two runner images would
-      # produce different binaries, and the document would still claim r27c.
-      #
-      # This is the exact defect docs/native-dependencies.md §3 names for SWIG — "an
-      # unpinned tool is a silently different .so" — found in this workflow's own wiring.
-      - name: Point the build at the NDK we actually pinned
-        run: |
-          set -euo pipefail
-          ndk="${{ steps.ndk.outputs.ndk-path }}"
-          [ -n "$ndk" ] && [ -d "$ndk" ] || { echo "::error::setup-ndk reported no path"; exit 1; }
-
-          revision="$(sed -n -E 's/^Pkg.Revision *= *(.*)$/\1/p' "$ndk/source.properties")"
-          echo "NDK at        : $ndk"
-          echo "Pkg.Revision  : $revision"
-
-          # r27c is 27.2.x. A different revision here means the action resolved something
-          # else, and the build must say so rather than compile with it.
-          case "$revision" in
-            27.2.*) ;;
-            *) echo "::error::expected NDK r27c (27.2.x), got $revision. The pin in this"
-               echo "::error::workflow and the NDK being used disagree; N-11 is unmeasurable"
-               echo "::error::until they do not."
-               exit 1 ;;
-          esac
-
-          # Overrides the runner image's own export, which is what was winning before.
-          echo "ANDROID_NDK_ROOT=$ndk" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
-
-      # API 37 ships as MINOR-versioned platforms (android-37.0, android-37.1,
-      # android-37.2) - there is no plain "android-37" directory, so an exact-match
-      # check finds nothing even when the platform is installed.
-      - name: Ensure the Android platform this build compiles against is present
-        run: |
-          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
-          COMPILE_SDK=$(grep -E '^compileSdk' gradle/libs.versions.toml | grep -oE '[0-9]+')
-          echo "compileSdk from the version catalog: $COMPILE_SDK"
-          echo "installed platforms:"
-          ls -1 "$SDK/platforms" 2>/dev/null | sort -V | sed 's/^/  /' || echo "  (none)"
-
-          if compgen -G "$SDK/platforms/android-$COMPILE_SDK" > /dev/null ||
-             compgen -G "$SDK/platforms/android-$COMPILE_SDK.*" > /dev/null; then
-            echo "OK - a platform for API $COMPILE_SDK is already installed."
-            exit 0
-          fi
-
-          echo "installing platforms;android-$COMPILE_SDK"
-          yes 2>/dev/null | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
-          "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-$COMPILE_SDK"
-          ls -1 "$SDK/platforms" | sort -V
-
-      # Without this, every runner generates its own ~/.android/debug.keystore, so two
-      # builds of the same commit are signed by different keys. Android then refuses to
-      # update one with the other - INSTALL_FAILED_UPDATE_INCOMPATIBLE - and the only way
-      # onto a phone is `adb uninstall`, which takes the SIP accounts, their credentials
-      # and the call log with it. Every test build therefore started from an empty app.
-      #
-      # The keystore stays out of the repository: the gate below still fails the build if
-      # one is ever committed, and this writes it to the runner's temp directory, outside
-      # the checkout. A debug key signs nothing anyone trusts; it exists so that
-      # yesterday's build and today's are the same identity to the package manager.
-      #
-      # Optional by design. With no secret set - a fork, or a clone of this repo - the
-      # step says so and AGP falls back to its per-runner default, exactly as before.
-      - name: Stage the debug signing key
-        env:
-          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
-          DEBUG_KEYSTORE_PASSWORD: ${{ secrets.DEBUG_KEYSTORE_PASSWORD }}
-          DEBUG_KEY_ALIAS: ${{ secrets.DEBUG_KEY_ALIAS }}
-          DEBUG_KEY_PASSWORD: ${{ secrets.DEBUG_KEY_PASSWORD }}
-        run: |
-          if [ -z "${DEBUG_KEYSTORE_BASE64:-}" ]; then
-            echo "No DEBUG_KEYSTORE_BASE64 secret is set."
-            echo "AGP will generate a debug key for this runner, and the resulting APK"
-            echo "will not install over one built by any other run."
-            exit 0
-          fi
-
-          store="$RUNNER_TEMP/debug.keystore"
-          printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 -d > "$store"
-
-          # A truncated or mis-pasted secret decodes to something that is not a keystore,
-          # and the failure would otherwise surface much later as an unsigned APK.
-          if ! keytool -list -keystore "$store" \
-                 -storepass "${DEBUG_KEYSTORE_PASSWORD:-android}" >/dev/null 2>&1; then
-            echo "::error::DEBUG_KEYSTORE_BASE64 did not decode to a keystore readable"
-            echo "::error::with DEBUG_KEYSTORE_PASSWORD. Re-create the secret."
-            exit 1
-          fi
-
-          {
-            echo "DEBUG_KEYSTORE_FILE=$store"
-            echo "DEBUG_KEYSTORE_PASSWORD=${DEBUG_KEYSTORE_PASSWORD:-android}"
-            echo "DEBUG_KEY_ALIAS=${DEBUG_KEY_ALIAS:-androiddebugkey}"
-            echo "DEBUG_KEY_PASSWORD=${DEBUG_KEY_PASSWORD:-android}"
-          } >> "$GITHUB_ENV"
-
-          echo "Debug builds will be signed with the shared key:"
-          keytool -list -keystore "$store" \
-            -storepass "${DEBUG_KEYSTORE_PASSWORD:-android}" | grep -i "SHA-256" || true
-
-      # The Lyra closure (ADR-008, Exit A) costs ~25 minutes of TensorFlow Lite compile
-      # per ABI, and build-native.sh stamps the result by a content hash of the nineteen
-      # vendored trees plus pjsip/lyra/CMakeLists.txt. The stamp is content-based, not
-      # mtime-based, so a restored prefix on a fresh checkout is recognised as up to date
-      # and the stage is skipped. Only the installed prefix and the stamp are cached —
-      # the ~200 MB archive per ABI, not the build tree. The key is the same input set the
-      # stamp hashes; a bumped tree or an edited CMake file misses and rebuilds.
-      - name: Restore the Lyra closure from cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            pjsip/build/tmp/buildPjsua2Native/cmake/*/native/prefix/*/lib/liblyra.a
-            pjsip/build/tmp/buildPjsua2Native/cmake/*/native/prefix/*/lyra_encoder.h
-            pjsip/build/tmp/buildPjsua2Native/cmake/*/native/prefix/*/lyra_decoder.h
-            pjsip/build/tmp/buildPjsua2Native/cmake/*/native/prefix/*/lyra
-            pjsip/build/tmp/buildPjsua2Native/cmake/*/native/prefix/*/include
-            pjsip/build/tmp/buildPjsua2Native/cmake/*/native/prefix/*/model_coeffs
-            pjsip/build/tmp/buildPjsua2Native/cmake/*/native/*/.lyra.stamp
-          key: lyra-closure-${{ runner.os }}-${{ hashFiles('pjsip/lyra/CMakeLists.txt', 'third_party/lyra/**', 'third_party/tensorflow/**', 'third_party/abseil-cpp/**', 'third_party/cpuinfo/**', 'third_party/eigen/**', 'third_party/farmhash/**', 'third_party/fft2d/**', 'third_party/flatbuffers/**', 'third_party/FP16/**', 'third_party/FXdiv/**', 'third_party/gemmlowp/**', 'third_party/neon2sse/**', 'third_party/psimd/**', 'third_party/pthreadpool/**', 'third_party/ruy/**', 'third_party/xnnpack/**', 'third_party/audio_dsp/**', 'third_party/glog/**', 'third_party/gulrak-filesystem/**') }}
-
-      - name: Build
-        # warningsAsErrors is CI-only: locally a deprecation warning should not stop
-        # work, but in CI warnings must not be allowed to accumulate.
-        run: ./gradlew build --stacktrace -PwarningsAsErrors=true
-
-      - name: Static analysis
-        run: ./gradlew detekt lint --stacktrace
-
-      # Task 12: the layer rules run in the build, so a violation fails locally too -
-      # an architecture that is only documented is one that gets violated in week three.
-      - name: Architecture rules
-        run: ./gradlew :test:arch:test --stacktrace
 
       # The native mandate's own checks (§2). Cheap, file-reading, and each one caught a
       # real defect during phase 2a — see docs/native-dependencies.md §1.3. They also run
@@ -250,22 +93,8 @@ jobs:
           ./tools/vendor/verify-tensorflow-keep.sh
           ./tools/vendor/verify-no-fetch.sh
 
+
       # Task 3 done-when #2: "zero warnings suppressed by baseline abuse".
-      # A baseline file is how suppressed findings quietly become permanent.
-      # Task 13 done-when #2: CI must FAIL if an architecture rule is violated. Planting
-      # a violation and requiring the failure is the only way to know the gate is live -
-      # the same discipline as the :domain and android.util.Log negative tests.
-      - name: Assert the architecture rules gate the build
-        run: |
-          PROBE=domain/src/main/kotlin/com/whatsappv2/domain/ArchProbe.kt
-          printf 'package com.whatsappv2.domain\n\nimport android.content.Context\n\nclass ArchProbe(val c: Context)\n' > "$PROBE"
-          if ./gradlew :test:arch:test -q >/dev/null 2>&1; then
-            rm -f "$PROBE"
-            echo "::error::The architecture rules did NOT fail on an Android import in :domain."
-            exit 1
-          fi
-          rm -f "$PROBE"
-          echo "OK - an architecture violation fails the build."
 
       - name: Assert no detekt or lint baseline files
         run: |
@@ -278,6 +107,8 @@ jobs:
             exit 1
           fi
           echo "OK — no baselines."
+
+
 
       # Task 32 done-when #4: no hostname, credential, or certificate is committed.
       #
@@ -317,6 +148,7 @@ jobs:
           fi
           echo "OK - no host, credential or certificate outside the vendored trees."
 
+
       # Task 2 done-when #2: no Groovy build files anywhere.
       - name: Assert no Groovy build files
         run: |
@@ -344,6 +176,7 @@ jobs:
           fi
           echo "OK — Kotlin DSL only."
 
+
       # Task 2 done-when #3: every version lives in the catalog.
       - name: Assert no inline dependency versions
         run: |
@@ -356,6 +189,7 @@ jobs:
           fi
           echo "OK — all versions come from the version catalog."
 
+
       # Task 4 done-when #2 — cheap structural check, run before the expensive one.
       - name: Assert :domain applies no Android plugin
         run: |
@@ -366,43 +200,6 @@ jobs:
           fi
           echo "OK — :domain applies no Android plugin."
 
-      # Task 4 done-when #3 — the boundary must be enforced by the BUILD, not by
-      # convention. A JVM library cannot consume an AAR, so this must fail.
-      # Task 4 done-when #3 — the boundary must be enforced by the BUILD, not by
-      # convention. A JVM library cannot consume an AAR, so this must fail.
-      #
-      # Written with printf rather than a heredoc: a heredoc terminator must sit at
-      # column 0, which terminates the surrounding YAML block scalar and makes the
-      # whole workflow file invalid.
-      - name: Assert :domain rejects an Android dependency
-        run: |
-          cp domain/build.gradle.kts "$RUNNER_TEMP/domain.bak"
-          printf '\ndependencies {\n    implementation("androidx.core:core-ktx:1.19.0")\n}\n' \
-            >> domain/build.gradle.kts
-          if ./gradlew :domain:build -q >/dev/null 2>&1; then
-            cp "$RUNNER_TEMP/domain.bak" domain/build.gradle.kts
-            echo "::error:::domain accepted an Android dependency - the layer boundary is NOT enforced."
-            exit 1
-          fi
-          cp "$RUNNER_TEMP/domain.bak" domain/build.gradle.kts
-          echo "OK - :domain rejects Android dependencies at build time."
-
-      # Task 5 done-when #2 — the ban on android.util.Log must be ENFORCED, not just
-      # configured. Plant a violation in a module that is not exempt and require detekt
-      # to fail. Uses a here-string via printf: a heredoc terminator at column 0 would
-      # break the surrounding YAML block scalar.
-      - name: Assert android.util.Log is rejected outside the logging facade
-        run: |
-          PROBE=data/sip/src/main/kotlin/com/whatsappv2/data/sip/LogProbe.kt
-          mkdir -p "$(dirname "$PROBE")"
-          printf 'package com.whatsappv2.data.sip\n\nimport android.util.Log\n\nobject LogProbe {\n    fun leak() {\n        Log.d("probe", "should be rejected")\n    }\n}\n' > "$PROBE"
-          if ./gradlew :data:sip:detekt -q >/dev/null 2>&1; then
-            rm -f "$PROBE"
-            echo "::error::detekt accepted android.util.Log outside the facade - the ban is NOT enforced (Task 5, DoD 12)."
-            exit 1
-          fi
-          rm -f "$PROBE"
-          echo "OK - android.util.Log is rejected outside the logging facade."
 
       # Task 5 done-when #3 depends on BOTH variant loggers existing. A stray
       # "release/" entry in .gitignore once silenced the release one entirely, so the
@@ -420,6 +217,7 @@ jobs:
           [ "$missing" -eq 0 ] && echo "OK - both variant loggers are tracked."
           exit $missing
 
+
       - name: Assert the release logger stays silent below warn (Task 63, DoD 12)
         run: |
           # Release builds must emit no SIP messages, headers, credentials, phone numbers
@@ -435,6 +233,7 @@ jobs:
           done
           echo "The release logger discards verbose, debug and info by construction."
 
+
       - name: Assert the credential screen is marked secure (Tasks 21, 63)
         run: |
           # A SIP password is typed on exactly one screen, and a screenshot or a screen
@@ -445,6 +244,7 @@ jobs:
             exit 1
           }
           echo "The account editor marks its window secure."
+
 
       - name: Assert no credential is interpolated into a log line (Task 63, DoD 12)
         run: |
@@ -459,6 +259,7 @@ jobs:
             exit 1
           fi
           echo "No credential-named value reaches a log call."
+
 
       - name: Assert no permissive TrustManager (Task 62, DoD 13)
         run: |
@@ -480,6 +281,7 @@ jobs:
             exit 1
           fi
           echo "No TrustManager override anywhere in the tree."
+
 
       - name: Assert certificate validation is never switched off (Task 62, P-8)
         run: |
@@ -522,6 +324,7 @@ jobs:
 
           echo "The SIP stack validates certificates unconditionally, against a CA bundle."
 
+
       - name: Assert cleartext traffic is refused (Task 62)
         run: |
           manifest=app/src/main/AndroidManifest.xml
@@ -550,8 +353,137 @@ jobs:
           PY
           echo "Cleartext is refused in every build, with no debug override."
 
+  build:
+    name: Build and check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      # Stage 1 of the native build, and the ONLY part of it this workflow runs.
+      #
+      # SWIG generates the `org.pjsip.pjsua2` Java API from third_party/pjproject in
+      # about 15 seconds, with no NDK and no compiler. `:data:sip` compiles against that
+      # API, so without this there is nothing to run a unit test on. Stage 2 — the .so —
+      # is the expensive half and is not here; see the header.
+      #
+      # TOOLCHAIN, exempt from N-1 and pinned per §2.1.1: an unpinned swig is a silently
+      # different JNI surface, so the version is asserted by GeneratePjsua2Bindings
+      # rather than accepted.
+      - name: Install swig (stage 1 — the pjsua2 Java bindings)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y swig
+          # Printed so a runner-image bump is visible in the log as well as being
+          # caught by the build's own version assertion.
+          swig -version
+
+
+      # API 37 ships as MINOR-versioned platforms (android-37.0, android-37.1,
+      # android-37.2) - there is no plain "android-37" directory, so an exact-match
+      # check finds nothing even when the platform is installed.
+      - name: Ensure the Android platform this build compiles against is present
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          COMPILE_SDK=$(grep -E '^compileSdk' gradle/libs.versions.toml | grep -oE '[0-9]+')
+          echo "compileSdk from the version catalog: $COMPILE_SDK"
+          echo "installed platforms:"
+          ls -1 "$SDK/platforms" 2>/dev/null | sort -V | sed 's/^/  /' || echo "  (none)"
+
+          if compgen -G "$SDK/platforms/android-$COMPILE_SDK" > /dev/null ||
+             compgen -G "$SDK/platforms/android-$COMPILE_SDK.*" > /dev/null; then
+            echo "OK - a platform for API $COMPILE_SDK is already installed."
+            exit 0
+          fi
+
+          echo "installing platforms;android-$COMPILE_SDK"
+          yes 2>/dev/null | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-$COMPILE_SDK"
+          ls -1 "$SDK/platforms" | sort -V
+
+      # The whole JVM half in one task. `check` aggregates unit tests, detekt, lint and
+      # the architecture rules across every module, and — unlike `build` — it does not
+      # `assemble`, so nothing here tries to package an APK that has no .so behind it.
+      #
+      # `-Ppjsip.native=false` skips stage 2. This is NOT the fallback N-14 deletes: it
+      # produces no library and therefore no APK, rather than quietly assembling one
+      # that raises UnsatisfiedLinkError on the first call. No APK is uploaded from this
+      # workflow at all, precisely so that distinction cannot be blurred.
+      #
+      # warningsAsErrors is CI-only: locally a deprecation warning should not stop work,
+      # but in CI warnings must not be allowed to accumulate.
+      - name: Build and check
+        run: ./gradlew check -Ppjsip.native=false -PwarningsAsErrors=true --stacktrace
+
+      # A baseline file is how suppressed findings quietly become permanent.
+      # Task 13 done-when #2: CI must FAIL if an architecture rule is violated. Planting
+      # a violation and requiring the failure is the only way to know the gate is live -
+      # the same discipline as the :domain and android.util.Log negative tests.
+      - name: Assert the architecture rules gate the build
+        run: |
+          PROBE=domain/src/main/kotlin/com/whatsappv2/domain/ArchProbe.kt
+          printf 'package com.whatsappv2.domain\n\nimport android.content.Context\n\nclass ArchProbe(val c: Context)\n' > "$PROBE"
+          if ./gradlew :test:arch:test -q -Ppjsip.native=false >/dev/null 2>&1; then
+            rm -f "$PROBE"
+            echo "::error::The architecture rules did NOT fail on an Android import in :domain."
+            exit 1
+          fi
+          rm -f "$PROBE"
+          echo "OK - an architecture violation fails the build."
+
+
+      # Task 4 done-when #3 — the boundary must be enforced by the BUILD, not by
+      # convention. A JVM library cannot consume an AAR, so this must fail.
+      # Task 4 done-when #3 — the boundary must be enforced by the BUILD, not by
+      # convention. A JVM library cannot consume an AAR, so this must fail.
+      #
+      # Written with printf rather than a heredoc: a heredoc terminator must sit at
+      # column 0, which terminates the surrounding YAML block scalar and makes the
+      # whole workflow file invalid.
+      - name: Assert :domain rejects an Android dependency
+        run: |
+          cp domain/build.gradle.kts "$RUNNER_TEMP/domain.bak"
+          printf '\ndependencies {\n    implementation("androidx.core:core-ktx:1.19.0")\n}\n' \
+            >> domain/build.gradle.kts
+          if ./gradlew :domain:build -q -Ppjsip.native=false >/dev/null 2>&1; then
+            cp "$RUNNER_TEMP/domain.bak" domain/build.gradle.kts
+            echo "::error:::domain accepted an Android dependency - the layer boundary is NOT enforced."
+            exit 1
+          fi
+          cp "$RUNNER_TEMP/domain.bak" domain/build.gradle.kts
+          echo "OK - :domain rejects Android dependencies at build time."
+
+
+      # Task 5 done-when #2 — the ban on android.util.Log must be ENFORCED, not just
+      # configured. Plant a violation in a module that is not exempt and require detekt
+      # to fail. Uses a here-string via printf: a heredoc terminator at column 0 would
+      # break the surrounding YAML block scalar.
+      - name: Assert android.util.Log is rejected outside the logging facade
+        run: |
+          PROBE=data/sip/src/main/kotlin/com/whatsappv2/data/sip/LogProbe.kt
+          mkdir -p "$(dirname "$PROBE")"
+          printf 'package com.whatsappv2.data.sip\n\nimport android.util.Log\n\nobject LogProbe {\n    fun leak() {\n        Log.d("probe", "should be rejected")\n    }\n}\n' > "$PROBE"
+          if ./gradlew :data:sip:detekt -q -Ppjsip.native=false >/dev/null 2>&1; then
+            rm -f "$PROBE"
+            echo "::error::detekt accepted android.util.Log outside the facade - the ban is NOT enforced (Task 5, DoD 12)."
+            exit 1
+          fi
+          rm -f "$PROBE"
+          echo "OK - android.util.Log is rejected outside the logging facade."
+
+
       - name: Coverage
-        run: ./gradlew koverXmlReport koverHtmlReport --stacktrace
+        run: ./gradlew koverXmlReport koverHtmlReport -Ppjsip.native=false --stacktrace
+
 
       # Task 5 done-when #1: the Outcome type must be >= 95% line-covered.
       # Task 68 will extend this to >= 80% across :domain and :data:*.
@@ -715,6 +647,7 @@ jobs:
           sys.exit(1 if failed else 0)
           PY
 
+
       # Coverage is a deliverable, not just a gate: Task 68 has to report real measured
       # numbers, and a report that only exists inside a log line cannot be reviewed.
       - name: Publish coverage reports
@@ -725,6 +658,7 @@ jobs:
             **/build/reports/kover/**
           if-no-files-found: error
           retention-days: 30
+
 
       # Room exports the schema during the build. It must be COMMITTED: Room compares
       # against the committed copy to verify a migration, so an uncommitted schema change
@@ -753,6 +687,7 @@ jobs:
           git ls-files -- ':(glob)**/schemas/**' | sed 's/^/  /'
           echo "OK - the committed schema matches what the build exported."
 
+
       - name: Publish the exported Room schema
         if: always()
         uses: actions/upload-artifact@v7
@@ -762,280 +697,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      # §3: every bundled .so must be 16 KB page-size aligned. Recent Android refuses to
-      # load one that is not, and the failure appears as a crash on a specific device
-      # rather than as anything the build said. Checked here so it is a build failure.
-      - name: Assert native libraries are 16 KB page-size aligned
-        run: |
-          APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
-          if [ -z "$APK" ]; then
-            echo "::error::No APK to inspect."
-            exit 1
-          fi
-
-          WORK="$RUNNER_TEMP/apk-so"
-          rm -rf "$WORK" && mkdir -p "$WORK"
-          unzip -q -o "$APK" 'lib/*' -d "$WORK" || true
-
-          mapfile -t LIBS < <(find "$WORK" -name "*.so" 2>/dev/null)
-          if [ "${#LIBS[@]}" -eq 0 ]; then
-            echo "No native libraries in the APK - nothing to align."
-            exit 0
-          fi
-          echo "Found ${#LIBS[@]} native library(ies)"
-
-          # The ABI filter in :app is a claim about what ships. Check it: an unfiltered
-          # SIP stack drops four ABIs of native code into the APK, and nothing else in
-          # the build would say so.
-          EXPECTED="arm64-v8a armeabi-v7a x86_64"
-          ACTUAL=$(find "$WORK/lib" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort | tr '\n' ' ' | sed 's/ $//')
-          WANT=$(printf '%s\n' $EXPECTED | sort | tr '\n' ' ' | sed 's/ $//')
-          echo "ABIs packaged: $ACTUAL"
-          if [ "$ACTUAL" != "$WANT" ]; then
-            echo "::error::APK packages ABIs [$ACTUAL]; :app declares [$WANT]."
-            exit 1
-          fi
-
-          READELF=$(ls "$ANDROID_HOME"/ndk/*/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf 2>/dev/null | head -1)
-          if [ -z "$READELF" ]; then
-            READELF=$(command -v llvm-readelf || command -v readelf)
-          fi
-          if [ -z "$READELF" ]; then
-            echo "::error::No readelf available to verify alignment."
-            exit 1
-          fi
-
-          # 16 KB pages are a 64-bit concern, so this is a 64-bit assertion.
-          #
-          # Every device that ships with 16 KB pages is 64-bit-only, and a 32-bit process
-          # is 4 KB-paged on every device that has ever existed. So armeabi-v7a is built
-          # at 0x1000 by everyone shipping a SIP stack, and always will be. Requiring
-          # 0x4000 of it does not protect anything - it just asserts that the SIP stack
-          # is broken, which is what run 33953349572 did to all 13 of its libraries while
-          # all 32 of the 64-bit ones passed.
-          ALIGNED_ABIS="arm64-v8a x86_64"
-
-          BAD=0
-          CHECKED=0
-          for lib in "${LIBS[@]}"; do
-            ABI=$(basename "$(dirname "$lib")")
-            # A 16 KB-compatible library has LOAD segments aligned to 0x4000 or more.
-            ALIGN=$("$READELF" -lW "$lib" 2>/dev/null | awk '/LOAD/ {print $NF}' | sort -u | head -1)
-            case " $ALIGNED_ABIS " in
-              *" $ABI "*) ;;
-              *)
-                echo "  n/a  $ALIGN  $ABI/$(basename "$lib")  (32-bit, always 4 KB-paged)"
-                continue
-                ;;
-            esac
-            CHECKED=$((CHECKED + 1))
-            case "$ALIGN" in
-              0x4000|0x10000|0x40000) STATUS="ok" ;;
-              *) STATUS="MISALIGNED"; BAD=1 ;;
-            esac
-            echo "  $STATUS  $ALIGN  $ABI/$(basename "$lib")"
-          done
-
-          if [ "$BAD" -ne 0 ]; then
-            echo "::error::A 64-bit native library is not 16 KB page-size aligned (§3)."
-            exit 1
-          fi
-
-          # An assertion that examined nothing passes for the wrong reason. If the ABI
-          # filter or the ABI names ever change, this is what says so.
-          if [ "$CHECKED" -eq 0 ]; then
-            echo "::error::No 64-bit native library was examined - checked ABIs [$ALIGNED_ABIS] against a build that packages [$ACTUAL]."
-            exit 1
-          fi
-          echo "OK - all $CHECKED 64-bit native libraries are 16 KB page-size aligned."
-
-      # ---------------------------------------------------------------- APK
-      # Every push produces a downloadable, installable debug APK. Debug, not release:
-      # a release build needs a signing keystore, and keystores are not something CI
-      # should hold or this repo should carry.
-      # And it produces one that can PLACE A CALL, which until now it did not.
-      # `pjsip/libs/pjsua2.aar` is gitignored - 20 MB of native code does not belong in
-      # git - so a bare checkout falls back to `:pjsip:api`, the SWIG-generated Java API
-      # with no `.so` behind it. That APK compiled, installed, launched, and died on the
-      # first SIP call with UnsatisfiedLinkError. It was a compile gate wearing the name
-      # of a deliverable, and it cost a debugging session to notice.
-
-      - name: Restore the pjsua2 AAR from cache
-        id: aar-cache
-        uses: actions/cache@v4
-        with:
-          path: pjsip/libs/pjsua2.aar
-          # Keyed on the workflow that produces it, so bumping pjproject, OpenSSL, Opus
-          # or libvpx - all pinned in that file - invalidates this automatically. There
-          # is no second place to remember to edit.
-          key: pjsua2-aar-${{ hashFiles('.github/workflows/build-pjsip.yml') }}
-
-      # Self-healing: on a cache miss, take the AAR from the last green native build
-      # rather than failing and waiting for somebody to notice. The cache holds it for
-      # later runs, so this costs ~20s once per invalidation rather than the ~10 minutes
-      # a native rebuild would.
-      - name: Fetch the pjsua2 AAR from the last green native build
-        if: steps.aar-cache.outputs.cache-hit != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" \
-                      --workflow "Build PJSIP for Android" \
-                      --status success --limit 1 --json databaseId -q '.[0].databaseId')"
-          if [ -z "$run_id" ]; then
-            echo "::error::No successful 'Build PJSIP for Android' run to take an AAR from."
-            echo "Run that workflow once, then re-run this job."
-            exit 1
-          fi
-
-          # By prefix, not by a hardcoded version: the artifact is named after the
-          # pjproject tag, and pinning it here would be the second place to edit.
-          name="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" \
-                    -q '.artifacts[].name' | grep '^pjsua2-aar-' | head -1)"
-          if [ -z "$name" ]; then
-            echo "::error::Run $run_id produced no pjsua2-aar-* artifact."
-            exit 1
-          fi
-
-          echo "taking $name from run $run_id"
-          mkdir -p pjsip/libs aar-download
-          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" -n "$name" -D aar-download
-          cp aar-download/pjsua2-*.aar pjsip/libs/pjsua2.aar
-
-      # The AAR is what makes the difference, so prove it is intact before building
-      # against it. A truncated or wrong-wrapper AAR fails at run time on a handset,
-      # which is the most expensive place to find out.
-      - name: Verify the AAR carries the JNI wrapper
-        run: |
-          set -euo pipefail
-          aar=pjsip/libs/pjsua2.aar
-          test -f "$aar" || { echo "::error::$aar is missing"; exit 1; }
-          echo "AAR: $(du -h "$aar" | cut -f1)"
-
-          for abi in arm64-v8a armeabi-v7a x86_64; do
-            for lib in libpjsua2.so libc++_shared.so; do
-              unzip -l "$aar" | grep -q "jni/$abi/$lib" \
-                || { echo "::error::$aar is missing jni/$abi/$lib"; exit 1; }
-            done
-          done
-
-          # pjproject builds three libpjsua2.so - Java, maui and xamarin - and they are
-          # indistinguishable by name, size, ABI and alignment. Only the exports differ.
-          unzip -o -q "$aar" jni/arm64-v8a/libpjsua2.so -d aar-check
-          LC_ALL=C grep -aq "Java_org_pjsip_pjsua2_pjsua2JNI_swig_1module_1init" \
-            aar-check/jni/arm64-v8a/libpjsua2.so \
-            || { echo "::error::the AAR's wrapper exports no pjsua2JNI symbols"; exit 1; }
-          rm -rf aar-check
-          echo "OK - all three ABIs present, wrapper is the JNI one."
-
-      - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --stacktrace
-
-      # The check that would have caught the whole PJSIP episode on day one. An APK
-      # without these installs cleanly, launches, and dies on the first SIP call.
-      - name: Assert the APK carries the native SIP stack
-        run: |
-          set -euo pipefail
-          apk="$(find app/build/outputs/apk/debug -name '*.apk' -print -quit)"
-          [ -n "$apk" ] || { echo "::error::no APK was produced"; exit 1; }
-
-          missing=0
-          for abi in arm64-v8a armeabi-v7a x86_64; do
-            for lib in libpjsua2.so libc++_shared.so; do
-              if unzip -l "$apk" | grep -q "lib/$abi/$lib"; then
-                echo "  ok       lib/$abi/$lib"
-              else
-                echo "  MISSING  lib/$abi/$lib"
-                missing=1
-              fi
-            done
-          done
-          if [ "$missing" -ne 0 ]; then
-            echo "::error::This APK cannot place a call - the native stack is absent."
-            exit 1
-          fi
-          echo "OK - all three ABIs carry the SIP stack and its C++ runtime."
-
-      - name: Report APK size
-        run: |
-          APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
-          if [ -z "$APK" ]; then
-            echo "::error::No APK was produced."
-            exit 1
-          fi
-          echo "APK: $APK"
-          echo "Size: $(du -h "$APK" | cut -f1)"
-          {
-            echo "### Debug APK"
-            echo ""
-            echo "| | |"
-            echo "|---|---|"
-            echo "| File | \`$(basename "$APK")\` |"
-            echo "| Size | $(du -h "$APK" | cut -f1) |"
-            echo "| Commit | \`${GITHUB_SHA:0:7}\` |"
-            echo ""
-            echo "Download it from the **Artifacts** section at the bottom of this run."
-            echo ""
-            echo "> Carries the PJSIP native stack for all three ABIs, verified by the"
-            echo "> step above. This APK can register and place calls."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v7
-        with:
-          name: whatsapp-v2-debug-${{ github.sha }}
-          path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Build minified release APK (Task 64, DoD 1)
-        run: ./gradlew :app:assembleRelease --stacktrace
-
-      - name: Assert R8 actually ran and produced a mapping (Task 64)
-        run: |
-          # A release build that silently skipped minification is a release build nobody
-          # has tested the shape of - and the mapping file is the only way a crash from
-          # one is ever deobfuscated. Both are checked rather than assumed.
-          mapping=app/build/outputs/mapping/release/mapping.txt
-          if [ ! -s "$mapping" ]; then
-            echo "::error::No mapping file at $mapping. Did minification get switched off?"
-            exit 1
-          fi
-
-          apk=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
-          if [ -z "$apk" ]; then
-            echo "::error::assembleRelease produced no APK."
-            exit 1
-          fi
-
-          debug=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
-          {
-            echo "### Release APK (minified)"
-            echo ""
-            echo "| | |"
-            echo "|---|---|"
-            echo "| File | \`$(basename "$apk")\` |"
-            echo "| Size | $(du -h "$apk" | cut -f1) |"
-            if [ -n "$debug" ]; then
-              echo "| Debug APK, for comparison | $(du -h "$debug" | cut -f1) |"
-            fi
-            echo "| Mapping | $(wc -l < "$mapping") lines |"
-            echo ""
-            echo "> Unsigned on purpose: a keystore in git is a compromised keystore."
-            echo "> A release pipeline signs this with credentials it holds itself."
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "R8 ran; mapping is $(wc -l < "$mapping") lines."
-
-      - name: Upload the R8 mapping file (Task 64)
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          # Retained because a crash report from a release build is undecipherable without
-          # it, and the build that produced it may be long gone by the time one arrives.
-          name: mapping-${{ github.sha }}
-          path: app/build/outputs/mapping/release/
-          if-no-files-found: error
 
       - name: Upload build reports
         if: failure()

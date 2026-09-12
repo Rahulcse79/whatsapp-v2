@@ -1,0 +1,183 @@
+# The release, opened automatically when something lands on `main`.
+#
+# ## What this workflow does, and the one thing it deliberately does not
+#
+# It reads `versionName` out of `app/build.gradle.kts`, and if no tag for that version
+# exists yet it creates the tag and a **draft** GitHub Release with notes generated from
+# the commits since the previous tag.
+#
+# It does not build the APK, and it cannot: `:pjsip` compiles `libpjsua2.so` from the
+# vendored source in `third_party/`, there is no prebuilt fallback (N-14), and that
+# cross-compile is exactly the work that does not belong on a hosted runner on every
+# merge. The APK is built locally and attached by `tools/release.sh`, which also
+# publishes the draft. See README, "Build policy".
+#
+# ## Why a draft rather than a published release
+#
+# A published release with no APK in it is a broken download link for however long it
+# takes somebody to notice. A draft is invisible to everyone but the repository's own
+# maintainers, so the release becomes real at the moment its artifact does — one
+# command, on the machine that built it.
+#
+# ## Why the version comes from the build file
+#
+# Because the APK's manifest carries it. A tag invented by CI and a `versionName` left
+# at its old value is how `v1.0.2` ends up shipping an APK that says `0.1.0` to the
+# package manager — which is what this repository was doing. Bumping the version is a
+# line in the merge, and the tag is then a fact about the build rather than a guess
+# about it.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Never two releases at once, and never cancel one half-created: a cancelled run can
+  # leave a tag with no release attached to it.
+  group: release-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    name: Open the draft release
+    runs-on: ubuntu-latest
+    steps:
+      # Full history, because the notes are the commits since the previous tag and a
+      # shallow clone has neither the tags nor the commits to list.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Read the version out of the build file
+        id: version
+        run: |
+          set -euo pipefail
+          file=app/build.gradle.kts
+
+          name="$(sed -n -E 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$file")"
+          code="$(sed -n -E 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' "$file")"
+
+          if [ -z "$name" ] || [ -z "$code" ]; then
+            echo "::error::could not read versionName/versionCode from $file"
+            exit 1
+          fi
+
+          # A tag is a permanent name for a commit, so the string it is made from must be
+          # one this project actually uses. "1.0.3-wip" or a stray space would be tagged
+          # once and then be wrong for ever.
+          case "$name" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::versionName '$name' is not MAJOR.MINOR.PATCH"; exit 1 ;;
+          esac
+
+          echo "versionName : $name"
+          echo "versionCode : $code"
+          {
+            echo "name=$name"
+            echo "code=$code"
+            echo "tag=v$name"
+          } >> "$GITHUB_OUTPUT"
+
+      # The idempotent half. Most merges do not bump the version, and those must be a
+      # no-op rather than a failure — a red X on `main` for "you did not cut a release"
+      # trains people to ignore red X's.
+      - name: Has this version already been released?
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+             || git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "$tag already exists — nothing to do."
+            {
+              echo "### No release cut"
+              echo ""
+              echo "\`$tag\` already exists, so this merge changed no version."
+              echo "Bump \`versionName\` (and \`versionCode\`) in \`app/build.gradle.kts\`"
+              echo "to open the next release."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate the notes
+        if: steps.existing.outputs.exists == 'false'
+        id: notes
+        run: |
+          set -euo pipefail
+          previous="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          file="$RUNNER_TEMP/notes.md"
+
+          {
+            if [ -n "$previous" ]; then
+              echo "## What changed since $previous"
+              echo ""
+              git log --no-merges --pretty='- %s' "$previous..HEAD"
+              echo ""
+              echo "[Full diff](https://github.com/$GITHUB_REPOSITORY/compare/$previous...${{ steps.version.outputs.tag }})"
+            else
+              echo "## What is in this build"
+              echo ""
+              git log --no-merges --pretty='- %s' -20
+            fi
+
+            echo ""
+            echo "## Install"
+            echo ""
+            echo '```'
+            echo "adb install -r whatsapp-v2-${{ steps.version.outputs.tag }}-debug.apk"
+            echo '```'
+            echo ""
+            echo "Debug-variant build — the release variant compiles the debug logger's"
+            echo "calls to empty bodies, and the SIP message trace is what makes a failing"
+            echo "call diagnosable. Requires Android 8.0 (API 26) or later."
+            echo ""
+            echo "Built from \`${GITHUB_SHA:0:7}\`. versionCode ${{ steps.version.outputs.code }}."
+          } > "$file"
+
+          echo "notes=$file" >> "$GITHUB_OUTPUT"
+          cat "$file"
+
+      - name: Open the draft
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+
+          # --target pins the tag to the commit that was merged, not to whatever `main`
+          # points at by the time this step runs.
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$tag" \
+            --notes-file "${{ steps.notes.outputs.notes }}" \
+            --draft
+
+          url="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json url -q .url)"
+          {
+            echo "### Draft release $tag"
+            echo ""
+            echo "It has notes and no APK. The APK is built where the native stack is"
+            echo "built — on your machine — so finish the release with:"
+            echo ""
+            echo '```bash'
+            echo "git checkout main && git pull"
+            echo "./tools/release.sh"
+            echo '```'
+            echo ""
+            echo "That builds the APK for all three ABIs, checks it actually carries the"
+            echo "SIP stack, uploads it with the R8 mapping, and publishes the draft."
+            echo ""
+            echo "[Open the draft]($url)"
+          } >> "$GITHUB_STEP_SUMMARY"

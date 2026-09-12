@@ -41,8 +41,17 @@ android {
 
     defaultConfig {
         applicationId = "com.whatsappv2"
-        versionCode = 1
-        versionName = "0.1.0"
+
+        // The release tag is made from versionName — `.github/workflows/release.yml`
+        // reads these two lines and tags `v$versionName` when a merge lands on `main`.
+        // Bumping them IS how a release is cut; a merge that leaves them alone cuts none.
+        //
+        // They were left at 1 / "0.1.0" while v1.0.1 and v1.0.2 were released by hand, so
+        // every installed build reported a version nobody would recognise and the package
+        // manager saw no upgrade between them. versionCode must increase for Android to
+        // accept an update, so it tracks the version rather than staying at 1.
+        versionCode = 3
+        versionName = "1.0.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
