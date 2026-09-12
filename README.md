@@ -59,18 +59,32 @@ defeats the offline mandate outright and passed silently on CI because every run
 ```bash
 ./build.sh            # arm64-v8a debug APK, native stack compiled from source
 ./build.sh --help     # ABIs, --install, and what to do when swig is incomplete
+./launch.sh           # build for the phone on USB, install or update it there, open the app
+./launch.sh --help    # --no-build, --rebuild-native, --reinstall, --serial
 ```
 
 ### Cutting a release
 
-A release is a version bump plus one command. Bump `versionCode` and `versionName` in
-`app/build.gradle.kts` in whatever you are merging; when it lands on `main`, the
-**Release** workflow tags `v$versionName` and opens a **draft** release with notes
-generated from the commits since the last tag. A merge that does not change the version
-cuts no release, and says so rather than failing.
+A release is one command from a clean checkout:
 
-The draft has no APK in it, because CI cannot build one that can place a call. Finish it
-from a checkout of that commit:
+```bash
+./release.sh              # 1.0.3 -> 1.0.4: bump, commit, push, CI, arm64-v8a APK, publish
+./release.sh --help       # --minor, --major, --version, --all-abis, --reuse-native, --dry-run
+```
+
+It bumps `versionCode` and `versionName` in `app/build.gradle.kts` and commits that, pushes
+the branch, opens the draft release with generated notes, runs `tools/release.sh` to build,
+check and upload the APK, and publishes only once CI is green for the pushed commit —
+dispatching CI itself on a branch other than `main`, where nothing else would. It releases
+from whatever branch you are on and says which; `--dry-run` prints the plan and changes
+nothing.
+
+The two halves still work on their own. When a merge that bumped the version lands on
+`main`, the **Release** workflow tags `v$versionName` and opens a **draft** release with
+notes generated from the commits since the last tag (a merge that does not change the
+version cuts no release, and says so rather than failing). That draft has no APK in it,
+because CI cannot build one that can place a call; finish it from a checkout of that
+commit:
 
 ```bash
 git checkout main && git pull

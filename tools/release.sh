@@ -3,6 +3,10 @@
 # Finishes the release that merging to `main` opened: builds the APK here, checks it,
 # attaches it to the draft, and publishes.
 #
+# `./release.sh` at the repository root runs this as its second half, after bumping the
+# version, pushing and opening the draft. Run this one directly to finish a draft the
+# Release workflow already opened for a commit you have checked out.
+#
 #   ./tools/release.sh                  build all three ABIs, upload, publish
 #   ./tools/release.sh --reuse-native   skip the cross-compile, reuse the libraries built
 #   ./tools/release.sh --abi arm64-v8a  one ABI — a build that installs on ARM64 only
@@ -214,8 +218,15 @@ mapping=""
 if [ "$run_r8" -eq 1 ]; then
   # Task 64, DoD 1. The native libraries are already built by now, so this is R8 and
   # packaging rather than a second cross-compile.
+  #
+  # Same ABI set as the debug APK, and the native tasks excluded: without the override
+  # this variant asks :pjsip for all three ABIs and an NDK path it was never given, and a
+  # one-ABI release stops here with "property 'ndkRoot' doesn't have a configured value".
+  # The libraries it packages are the ones the debug build just produced or reused, and
+  # the N-6 check above has already examined every one of them.
   note "building the minified release variant (R8)"
-  ./gradlew :app:assembleRelease --stacktrace
+  ./gradlew :app:assembleRelease "-Ppjsip.abis=$(printf '%s\n' $abis | paste -sd, -)" \
+    -x :pjsip:api:generatePjsua2Bindings -x :pjsip:buildPjsua2Native --stacktrace
   mapping=app/build/outputs/mapping/release/mapping.txt
   [ -s "$mapping" ] || die "R8 produced no mapping at $mapping. Was minification switched off?"
   echo "  ok  R8 ran; mapping is $(wc -l < "$mapping" | tr -d ' ') lines"
