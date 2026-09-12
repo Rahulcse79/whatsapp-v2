@@ -10,7 +10,7 @@
 #     not from memory: Gradle 9.7.1 / AGP 9.4.0 / Kotlin 2.4.10 were the latest
 #     available at the time of pinning) ---
 agp = "9.4.0"
-kotlin = "2.4.10"
+kotlin = "2.4.20"
 ksp = "2.3.11"
 detekt = "1.23.8"
 hilt = "2.60.1"
