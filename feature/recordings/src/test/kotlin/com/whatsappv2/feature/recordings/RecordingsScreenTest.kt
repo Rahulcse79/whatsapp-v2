@@ -3,10 +3,12 @@ package com.whatsappv2.feature.recordings
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.recording.PlaybackState
@@ -143,7 +145,11 @@ class RecordingsScreenTest {
     fun `the confirmation names the recording, and confirming reports it`() {
         var confirmed = false
         setContent(
-            RecordingsUiState(recordings = listOf(recording), loaded = true, pendingDelete = recording),
+            RecordingsUiState(
+                recordings = listOf(recording),
+                loaded = true,
+                pendingDelete = PendingDelete.Single(recording),
+            ),
             RecordingsActions.NONE.copy(onDeleteConfirmed = { confirmed = true }),
         )
 
@@ -167,6 +173,83 @@ class RecordingsScreenTest {
     fun `sizes read in kB below a megabyte and in MB with one decimal above`() {
         assertEquals("820 kB", formatSize(SMALL_SIZE_BYTES))
         assertEquals("5.9 MB", formatSize(SIZE_BYTES))
+    }
+
+    @Test
+    fun `a long-press asks to enter selection`() {
+        var longPressed: Recording? = null
+        setContent(
+            RecordingsUiState(recordings = listOf(recording), loaded = true),
+            RecordingsActions.NONE.copy(onLongPress = { longPressed = it }),
+        )
+
+        compose.onNodeWithTag(rowTag(recording.id)).performTouchInput { longClick() }
+
+        assertEquals(recording, longPressed)
+    }
+
+    @Test
+    fun `in selection mode the bar counts and the row shows a checkbox, not play`() {
+        setContent(
+            RecordingsUiState(
+                recordings = listOf(recording, recording.copy(id = RecordingId("rec-2"))),
+                loaded = true,
+                selected = setOf(recording.id),
+            ),
+        )
+
+        compose.onNodeWithText("1 selected").assertIsDisplayed()
+        compose.onNodeWithTag(TAG_DELETE_SELECTED).assertIsDisplayed()
+        compose.onNodeWithTag(checkTag(recording.id)).assertIsDisplayed()
+        // The play and per-row delete give way while selecting.
+        compose.onNodeWithTag(playTag(recording.id)).assertDoesNotExist()
+        compose.onNodeWithTag(deleteTag(recording.id)).assertDoesNotExist()
+    }
+
+    @Test
+    fun `the selection delete reports it`() {
+        var deleteSelected = false
+        setContent(
+            RecordingsUiState(recordings = listOf(recording), loaded = true, selected = setOf(recording.id)),
+            RecordingsActions.NONE.copy(onDeleteSelectedRequested = { deleteSelected = true }),
+        )
+
+        compose.onNodeWithTag(TAG_DELETE_SELECTED).performClick()
+
+        assertEquals(true, deleteSelected)
+    }
+
+    @Test
+    fun `the selection confirmation counts, and confirming reports it`() {
+        var confirmed = false
+        setContent(
+            RecordingsUiState(
+                recordings = listOf(recording),
+                loaded = true,
+                selected = setOf(recording.id),
+                pendingDelete = PendingDelete.Selection(setOf(recording.id, RecordingId("rec-2"))),
+            ),
+            RecordingsActions.NONE.copy(onDeleteConfirmed = { confirmed = true }),
+        )
+
+        compose.onNodeWithText("2 recordings will be removed from this phone. This cannot be undone.")
+            .assertIsDisplayed()
+        compose.onNodeWithText("Delete").performClick()
+
+        assertEquals(true, confirmed)
+    }
+
+    @Test
+    fun `closing selection reports it`() {
+        var cleared = false
+        setContent(
+            RecordingsUiState(recordings = listOf(recording), loaded = true, selected = setOf(recording.id)),
+            RecordingsActions.NONE.copy(onSelectionCleared = { cleared = true }),
+        )
+
+        compose.onNodeWithTag(TAG_SELECTION_CLOSE).performClick()
+
+        assertEquals(true, cleared)
     }
 
     private companion object {
