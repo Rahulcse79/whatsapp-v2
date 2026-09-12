@@ -45,7 +45,8 @@ import javax.inject.Singleton
  * closed rather than denied: the plaintext lives in the app's private `filesDir` for the
  * length of the call, and [seal] rewrites it as AES-GCM ciphertext and **deletes the
  * plaintext before reporting success**. A crash in that window leaves a `.unsealed.wav`
- * file, which [sweepAbandoned] removes on the next start rather than leaving to be found later.
+ * file, which [sweepAbandoned] removes when the stack next starts rather than leaving to be
+ * found later.
  *
  * The key never leaves the Keystore, so a copy of the file taken off the device — by an
  * `adb` pull on a debug build, by anything that gets at the app's data — is unreadable.
@@ -71,11 +72,36 @@ internal class EncryptedRecordingStore @Inject constructor(
     private val directory: File
         get() = File(context.filesDir, DIRECTORY).apply { mkdirs() }
 
-    init {
-        sweepAbandoned()
+    /** Guards [sweepAbandoned] so it runs once, on whichever thread gets there first. */
+    private val sweepLock = Any()
+    private var swept = false
+
+    /**
+     * Removes plaintext files left behind by a crash mid-recording.
+     *
+     * Not from the constructor any more: Hilt built this singleton on the first thread to
+     * inject it, which was the main thread, and `listFiles` plus a delete per file is
+     * I/O the call screen paid for. The recorder calls this on the I/O dispatcher when the
+     * stack starts, and [allocate] calls it again before handing out a path -- the guard
+     * makes the second a no-op, and the second is what turns "before anything can add to
+     * them" from a hope into a rule.
+     */
+    override fun sweepAbandoned() {
+        synchronized(sweepLock) {
+            if (swept) return
+            swept = true
+            val abandoned = directory.listFiles().orEmpty().filter { it.name.endsWith(PLAINTEXT_SUFFIX) }
+            if (abandoned.isEmpty()) return
+
+            abandoned.forEach { it.delete() }
+            logger.warn(TAG, "Removed ${abandoned.size} unencrypted recording(s) left by an unclean stop")
+        }
     }
 
     override fun allocate(callId: CallId): Outcome<AllocatedRecording, RecordingError> {
+        // An `.unsealed.wav` is what this is about to create, and the sweep deletes every
+        // one it finds. Sweeping here, first, is what keeps it from ever finding this one.
+        sweepAbandoned()
         val id = RecordingId(UUID.randomUUID().toString())
         return try {
             val plaintext = File(directory, "${id.value}$PLAINTEXT_SUFFIX")
@@ -159,21 +185,6 @@ internal class EncryptedRecordingStore @Inject constructor(
             .filter { it.startedAtEpochMillis < cutoffEpochMillis }
             .count { delete(it.id) is Outcome.Success }
         return success(removed)
-    }
-
-    /**
-     * Removes plaintext files left behind by a crash mid-recording.
-     *
-     * On construction, so it happens before anything can add to them. An `.unsealed.wav` is
-     * an unencrypted recording, and one that survives a restart is one nothing is going to
-     * seal — there is no call left to attach it to.
-     */
-    private fun sweepAbandoned() {
-        val abandoned = directory.listFiles().orEmpty().filter { it.name.endsWith(PLAINTEXT_SUFFIX) }
-        if (abandoned.isEmpty()) return
-
-        abandoned.forEach { it.delete() }
-        logger.warn(TAG, "Removed ${abandoned.size} unencrypted recording(s) left by an unclean stop")
     }
 
     private fun encrypt(source: File, destination: File, key: SecretKey) {

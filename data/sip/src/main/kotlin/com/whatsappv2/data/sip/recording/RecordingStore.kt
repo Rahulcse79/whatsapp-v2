@@ -31,6 +31,18 @@ import com.whatsappv2.domain.recording.RecordingId
 internal interface RecordingStore {
 
     /**
+     * Removes plaintext left behind by a crash mid-recording.
+     *
+     * File I/O, so it must not run on the main thread -- which is where it ran when the
+     * store did it from its constructor, because Hilt builds a singleton on whichever
+     * thread first asks for it. The recorder calls this when the stack starts, on the I/O
+     * dispatcher. Implementations run the sweep at most once per process, and run it
+     * themselves before the first [allocate] if nothing has called this yet: a sweep that
+     * came *after* a fresh allocation would delete the recording that had just started.
+     */
+    fun sweepAbandoned()
+
+    /**
      * A path for a new recording of [callId], plus the id it will be known by.
      *
      * The file does not exist yet; the stack creates it. Failing here means storage is
