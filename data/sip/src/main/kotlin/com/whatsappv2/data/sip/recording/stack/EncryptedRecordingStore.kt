@@ -9,6 +9,7 @@ import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.failure
 import com.whatsappv2.core.common.result.success
 import com.whatsappv2.data.sip.recording.AllocatedRecording
+import com.whatsappv2.data.sip.recording.PlaybackCopy
 import com.whatsappv2.data.sip.recording.RecordingStore
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.recording.Recording
@@ -72,6 +73,16 @@ internal class EncryptedRecordingStore @Inject constructor(
     private val directory: File
         get() = File(context.filesDir, DIRECTORY).apply { mkdirs() }
 
+    /**
+     * Where a recording is decrypted to for playback.
+     *
+     * The cache directory, not `filesDir`: the platform excludes it from backup without
+     * being asked, may clear it under storage pressure (which for a copy that exists only
+     * while a screen is listening is the right call), and an uninstall takes it too.
+     */
+    private val playbackDirectory: File
+        get() = File(context.cacheDir, PLAYBACK_DIRECTORY).apply { mkdirs() }
+
     /** Guards [sweepAbandoned] so it runs once, on whichever thread gets there first. */
     private val sweepLock = Any()
     private var swept = false
@@ -90,7 +101,10 @@ internal class EncryptedRecordingStore @Inject constructor(
         synchronized(sweepLock) {
             if (swept) return
             swept = true
-            val abandoned = directory.listFiles().orEmpty().filter { it.name.endsWith(PLAINTEXT_SUFFIX) }
+            // Two kinds of plaintext, one rule: a recording the stack was writing when the
+            // process died, and a playback copy the player never got to close.
+            val abandoned = directory.listFiles().orEmpty().filter { it.name.endsWith(PLAINTEXT_SUFFIX) } +
+                playbackDirectory.listFiles().orEmpty()
             if (abandoned.isEmpty()) return
 
             abandoned.forEach { it.delete() }
@@ -199,13 +213,14 @@ internal class EncryptedRecordingStore @Inject constructor(
     }
 
     /**
-     * Decrypts a sealed recording into [destination].
+     * Decrypts a sealed recording into the playback directory.
      *
-     * Unused by the app itself today — there is no playback screen yet — and present
-     * because a store that can only write is a store nobody can prove encrypts anything.
-     * Its round trip is what an instrumented test asserts.
+     * The copy is named by id alone -- the player needs nothing else -- and any earlier
+     * copy of the same id is overwritten rather than left beside it. A failure part-way
+     * deletes what was written: half a phone call in the clear is still a phone call in
+     * the clear.
      */
-    fun decrypt(id: RecordingId, destination: File): Outcome<Unit, RecordingError> {
+    override fun openForPlayback(id: RecordingId): Outcome<PlaybackCopy, RecordingError> {
         val sealed = directory.listFiles()
             .orEmpty()
             .firstOrNull { it.name.startsWith("${id.value}$FIELD_SEPARATOR") }
@@ -213,22 +228,29 @@ internal class EncryptedRecordingStore @Inject constructor(
         val key = keyOrNull()
             ?: return failure(RecordingError.StorageUnavailable("the recording key is unavailable"))
 
+        val destination = File(playbackDirectory, "${id.value}$PLAYBACK_SUFFIX")
         return try {
             sealed.inputStream().use { raw -> raw.decryptInto(destination, key) }
-            success(Unit)
+            success(PlaybackCopy(id = id, plaintextPath = destination.absolutePath))
         } catch (e: IOException) {
+            destination.delete()
             failure(RecordingError.StorageUnavailable(e.message.orEmpty()))
         } catch (e: GeneralSecurityException) {
+            destination.delete()
             failure(RecordingError.StorageUnavailable(e.message.orEmpty()))
         }
+    }
+
+    override fun closePlayback(copy: PlaybackCopy) {
+        File(copy.plaintextPath).delete()
     }
 
     /**
      * Reads the IV off the front and copies the rest out, decrypted.
      *
-     * Its own function because the streams nest three deep and the reader of [decrypt]
-     * should see what it does — find the file, find the key, copy it out — rather than
-     * how a GCM stream is assembled.
+     * Its own function because the streams nest three deep and the reader of
+     * [openForPlayback] should see what it does — find the file, find the key, copy it
+     * out — rather than how a GCM stream is assembled.
      */
     private fun InputStream.decryptInto(destination: File, key: SecretKey) {
         // Written by `seal` as the first GCM_IV_BYTES of the file, before the ciphertext.
@@ -328,6 +350,12 @@ internal class EncryptedRecordingStore @Inject constructor(
 
         /** Named in `data_extraction_rules.xml` so backup cannot pick it up (§7). */
         const val DIRECTORY = "recordings"
+
+        /** Under `cacheDir`, which the platform never backs up. */
+        const val PLAYBACK_DIRECTORY = "recordings-playback"
+
+        /** What the platform's player is handed: the stack writes WAV, so this is WAV. */
+        const val PLAYBACK_SUFFIX = ".wav"
 
         const val PLAINTEXT_SUFFIX = RecordingFileNames.PLAINTEXT_SUFFIX
         const val SEALED_SUFFIX = ".rec"

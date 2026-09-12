@@ -406,6 +406,11 @@ private class FakeRecordingStore : RecordingStore {
         return success(recording)
     }
 
+    override fun openForPlayback(id: RecordingId): Outcome<PlaybackCopy, RecordingError> =
+        success(PlaybackCopy(id = id, plaintextPath = "/tmp/$id.wav"))
+
+    override fun closePlayback(copy: PlaybackCopy) = Unit
+
     override fun list(): List<Recording> = sealed.toList()
 
     override fun delete(id: RecordingId): Outcome<Unit, RecordingError> {

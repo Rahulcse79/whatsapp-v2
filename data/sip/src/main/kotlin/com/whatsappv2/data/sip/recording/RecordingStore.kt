@@ -75,6 +75,21 @@ internal interface RecordingStore {
     fun seal(allocated: AllocatedRecording, startedAtEpochMillis: Long, endedAtEpochMillis: Long):
         Outcome<Recording?, RecordingError>
 
+    /**
+     * A decrypted copy of [id], in a location the store chose, for the platform's player.
+     *
+     * The same rule as [allocate], from the other direction: the only plaintext of a
+     * recording that ever exists is one this store placed and this store will destroy.
+     * The copy lives in the cache directory -- excluded from backup by the platform, and
+     * cleared by [sweepAbandoned] if [closePlayback] never came -- and is the whole
+     * recording, because AES-GCM under the Keystore releases nothing until the tag checks,
+     * which also means a recording is held in memory once on the way through.
+     */
+    fun openForPlayback(id: RecordingId): Outcome<PlaybackCopy, RecordingError>
+
+    /** Destroys the copy [openForPlayback] made. Quiet if it is already gone. */
+    fun closePlayback(copy: PlaybackCopy)
+
     /** Every recording still held, newest first. */
     fun list(): List<Recording>
 
@@ -94,5 +109,16 @@ internal interface RecordingStore {
 internal data class AllocatedRecording(
     val id: RecordingId,
     val callId: CallId,
+    val plaintextPath: String,
+)
+
+/**
+ * A decrypted recording the player may read, for as long as playback lasts.
+ *
+ * `internal` for the same reason as [AllocatedRecording]: a path to a phone call in the
+ * clear is a value `:data:sip` may hold for a moment and nothing else may hold at all.
+ */
+internal data class PlaybackCopy(
+    val id: RecordingId,
     val plaintextPath: String,
 )

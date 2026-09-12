@@ -5,6 +5,7 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.ui.graphics.vector.ImageVector
 
@@ -54,6 +55,7 @@ enum class AppDestination(
     SETTINGS("settings", "Settings", Icons.Filled.Settings),
     DIALER("dialer", "Dialer", Icons.Filled.Dialpad),
     ACCOUNTS("accounts", "Accounts", Icons.Filled.AccountCircle),
+    RECORDINGS("recordings", "Recordings", Icons.Filled.Mic),
     ;
 
     /** True for the two destinations the bottom bar switches between, in bar order. */

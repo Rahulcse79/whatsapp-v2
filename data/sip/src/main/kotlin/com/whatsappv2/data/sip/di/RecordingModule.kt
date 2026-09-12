@@ -3,7 +3,9 @@ package com.whatsappv2.data.sip.di
 import com.whatsappv2.data.sip.recording.PjsipCallRecorder
 import com.whatsappv2.data.sip.recording.RecordingStore
 import com.whatsappv2.data.sip.recording.stack.EncryptedRecordingStore
+import com.whatsappv2.data.sip.recording.stack.MediaPlayerRecordingPlayer
 import com.whatsappv2.domain.recording.CallRecorder
+import com.whatsappv2.domain.recording.RecordingPlayer
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -29,4 +31,12 @@ internal abstract class RecordingModule {
     @Binds
     @Singleton
     abstract fun bindRecordingStore(store: EncryptedRecordingStore): RecordingStore
+
+    /**
+     * Playback, behind the same seam as recording: a screen can ask for a recording to be
+     * played and can never learn where its bytes are, decrypted or otherwise.
+     */
+    @Binds
+    @Singleton
+    abstract fun bindRecordingPlayer(player: MediaPlayerRecordingPlayer): RecordingPlayer
 }

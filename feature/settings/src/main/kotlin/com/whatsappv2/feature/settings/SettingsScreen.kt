@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -28,6 +29,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -56,40 +58,68 @@ import com.whatsappv2.domain.model.ThemeMode
 @Composable
 fun SettingsScreen(
     onOpenAccounts: () -> Unit,
+    onOpenRecordings: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val actions = remember(viewModel) {
+        SettingsActions(
+            onDtmfModeChange = viewModel::setDtmfMode,
+            onSrtpPolicyChange = viewModel::setDefaultSrtpPolicy,
+            onAudioRouteChange = viewModel::setPreferredAudioRoute,
+            onThemeModeChange = viewModel::setThemeMode,
+            onSipTraceChange = viewModel::setSipTraceEnabled,
+            onRetentionChange = viewModel::setCallHistoryRetention,
+        )
+    }
 
     SettingsScreen(
         state = state,
-        onDtmfModeChange = viewModel::setDtmfMode,
-        onSrtpPolicyChange = viewModel::setDefaultSrtpPolicy,
-        onAudioRouteChange = viewModel::setPreferredAudioRoute,
-        onThemeModeChange = viewModel::setThemeMode,
-        onSipTraceChange = viewModel::setSipTraceEnabled,
-        onRetentionChange = viewModel::setCallHistoryRetention,
-        onOpenAccounts = onOpenAccounts,
+        actions = actions,
+        links = SettingsLinks(onOpenAccounts = onOpenAccounts, onOpenRecordings = onOpenRecordings),
         onBack = onBack,
         modifier = modifier,
     )
 }
+
+/** Everything a setting can be changed to, in one value, so a preview and a test hand over one thing. */
+data class SettingsActions(
+    val onDtmfModeChange: (DtmfMode) -> Unit,
+    val onSrtpPolicyChange: (SrtpPolicy) -> Unit,
+    val onAudioRouteChange: (PreferredAudioRoute) -> Unit,
+    val onThemeModeChange: (ThemeMode) -> Unit,
+    val onSipTraceChange: (Boolean) -> Unit,
+    val onRetentionChange: (CallHistoryRetention) -> Unit,
+) {
+    companion object {
+        /** For previews and tests that are not about what a change does. */
+        val NONE = SettingsActions({}, {}, {}, {}, {}, {})
+    }
+}
+
+/**
+ * The screens reachable from Settings.
+ *
+ * One value rather than one parameter each: they are absent together (a preview has
+ * nowhere to go) and present together, and the content composable was one parameter
+ * from the limit that keeps its signature readable.
+ */
+data class SettingsLinks(
+    val onOpenAccounts: () -> Unit,
+    val onOpenRecordings: () -> Unit,
+)
 
 /** The stateless screen, so it can be previewed and tested with a literal state. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     state: SettingsUiState,
-    onDtmfModeChange: (DtmfMode) -> Unit,
-    onSrtpPolicyChange: (SrtpPolicy) -> Unit,
-    onAudioRouteChange: (PreferredAudioRoute) -> Unit,
-    onThemeModeChange: (ThemeMode) -> Unit,
-    onSipTraceChange: (Boolean) -> Unit,
-    onRetentionChange: (CallHistoryRetention) -> Unit,
+    actions: SettingsActions,
     modifier: Modifier = Modifier,
-    /** Opens the account list. Null in a preview, where there is nowhere to go. */
-    onOpenAccounts: (() -> Unit)? = null,
+    /** Where the accounts and recordings rows lead. Null in a preview, where there is nowhere to go. */
+    links: SettingsLinks? = null,
     onBack: (() -> Unit)? = null,
 ) {
     Scaffold(
@@ -112,13 +142,8 @@ fun SettingsScreen(
     ) { innerPadding ->
         SettingsContent(
             state = state,
-            onDtmfModeChange = onDtmfModeChange,
-            onSrtpPolicyChange = onSrtpPolicyChange,
-            onAudioRouteChange = onAudioRouteChange,
-            onThemeModeChange = onThemeModeChange,
-            onSipTraceChange = onSipTraceChange,
-            onRetentionChange = onRetentionChange,
-            onOpenAccounts = onOpenAccounts,
+            actions = actions,
+            links = links,
             modifier = Modifier.padding(innerPadding),
         )
     }
@@ -128,13 +153,8 @@ fun SettingsScreen(
 @Composable
 private fun SettingsContent(
     state: SettingsUiState,
-    onDtmfModeChange: (DtmfMode) -> Unit,
-    onSrtpPolicyChange: (SrtpPolicy) -> Unit,
-    onAudioRouteChange: (PreferredAudioRoute) -> Unit,
-    onThemeModeChange: (ThemeMode) -> Unit,
-    onSipTraceChange: (Boolean) -> Unit,
-    onRetentionChange: (CallHistoryRetention) -> Unit,
-    onOpenAccounts: (() -> Unit)?,
+    actions: SettingsActions,
+    links: SettingsLinks?,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -144,11 +164,7 @@ private fun SettingsContent(
             .padding(AppTheme.spacing.large),
         verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.large),
     ) {
-        // First, because it is the one thing here without which the app cannot do
-        // anything at all.
-        onOpenAccounts?.let { open ->
-            SettingsCard { AccountsRow(onClick = open) }
-        }
+        LinkCards(links)
 
         Text("App settings", style = MaterialTheme.typography.titleLarge)
 
@@ -161,7 +177,7 @@ private fun SettingsContent(
                 options = ThemeMode.entries,
                 selected = state.settings.themeMode,
                 labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
-                onSelect = onThemeModeChange,
+                onSelect = actions.onThemeModeChange,
                 chipTag = ::themeChipTag,
             )
         }
@@ -174,12 +190,12 @@ private fun SettingsContent(
                 options = DtmfMode.entries,
                 selected = state.settings.dtmfMode,
                 labelOf = { if (it == DtmfMode.RFC_4733) "RFC 4733" else "SIP INFO" },
-                onSelect = onDtmfModeChange,
+                onSelect = actions.onDtmfModeChange,
             )
         }
 
         SettingsCard {
-            EncryptionGroup(selected = state.settings.defaultSrtpPolicy, onSelect = onSrtpPolicyChange)
+            EncryptionGroup(selected = state.settings.defaultSrtpPolicy, onSelect = actions.onSrtpPolicyChange)
         }
 
         SettingsCard {
@@ -189,12 +205,12 @@ private fun SettingsContent(
                 options = PreferredAudioRoute.entries,
                 selected = state.settings.preferredAudioRoute,
                 labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
-                onSelect = onAudioRouteChange,
+                onSelect = actions.onAudioRouteChange,
             )
         }
 
         SettingsCard {
-            RetentionGroup(selected = state.settings.callHistoryRetention, onSelect = onRetentionChange)
+            RetentionGroup(selected = state.settings.callHistoryRetention, onSelect = actions.onRetentionChange)
         }
 
         // Absent in release builds rather than disabled: a disabled control invites
@@ -203,7 +219,7 @@ private fun SettingsContent(
             SettingsCard {
                 SipTraceToggle(
                     enabled = state.settings.sipTraceEnabled,
-                    onChange = onSipTraceChange,
+                    onChange = actions.onSipTraceChange,
                 )
             }
         }
@@ -214,6 +230,20 @@ private fun SettingsContent(
         // already knows to look.
         AppVersionFooter()
     }
+}
+
+/**
+ * The two places reachable from here, or nothing in a preview.
+ *
+ * Accounts first, because it is the one thing without which the app cannot do anything
+ * at all. Recordings beside them rather than among the app settings: not a preference
+ * but a place — the other thing this app holds that is worth a screen of its own.
+ */
+@Composable
+private fun LinkCards(links: SettingsLinks?) {
+    links ?: return
+    SettingsCard { AccountsRow(onClick = links.onOpenAccounts) }
+    SettingsCard { RecordingsRow(onClick = links.onOpenRecordings) }
 }
 
 /**
@@ -342,7 +372,47 @@ private fun AccountsRow(onClick: () -> Unit) {
     }
 }
 
+/**
+ * The way through to the recordings kept on this phone.
+ *
+ * The same shape as [AccountsRow], for the same reason: a list with playback and a
+ * delete behind it is a screen, and folding it into a settings page would make one
+ * screen do three jobs.
+ */
+@Composable
+private fun RecordingsRow(onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = AppTheme.spacing.small)
+            .testTag(TAG_RECORDINGS),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.medium),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Mic,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Call recordings", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "Listen to and delete the recordings kept on this phone.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
 internal const val TAG_ACCOUNTS = "settings-accounts"
+internal const val TAG_RECORDINGS = "settings-recordings"
 internal const val TAG_BACK = "settings-back"
 internal const val TAG_RETENTION = "settings-retention"
 
@@ -411,11 +481,6 @@ private fun SipTraceToggle(enabled: Boolean, onChange: (Boolean) -> Unit) {
 private fun SettingsScreenPreview() = PreviewSurface {
     SettingsScreen(
         state = SettingsUiState(AppSettings.DEFAULT, traceToggleAvailable = true),
-        onDtmfModeChange = {},
-        onSrtpPolicyChange = {},
-        onAudioRouteChange = {},
-        onThemeModeChange = {},
-        onSipTraceChange = {},
-        onRetentionChange = {},
+        actions = SettingsActions.NONE,
     )
 }

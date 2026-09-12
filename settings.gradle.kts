@@ -68,6 +68,7 @@ include(":feature:calls")
 include(":feature:accounts")
 include(":feature:history")
 include(":feature:settings")
+include(":feature:recordings")
 
 // Architecture rules (Task 12). A module of its own so the rules are not buried in
 // :app, and so they run for every module rather than only where they happen to live.

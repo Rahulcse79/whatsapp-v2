@@ -156,6 +156,7 @@ dependencies {
     implementation(project(":feature:dialer"))
     implementation(project(":feature:history"))
     implementation(project(":feature:settings"))
+    implementation(project(":feature:recordings"))
     // Task 38 / ADR-004. The SDK only - the google-services PLUGIN is deliberately not
     // applied, because it requires a google-services.json, and a checked-in one would tie
     // every build to one Firebase project and put deployment configuration in git. Adding
