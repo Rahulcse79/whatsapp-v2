@@ -47,6 +47,17 @@ import shark.ReferencePattern
  * knowledge stays where the next person to read a heap analysis will find it, instead of
  * being deleted from the output.
  *
+ * ## Heap dumps are capped, and why the cap alone is not enough
+ *
+ * Every analysis keeps its `.hprof` — 40 MB each on this app — and LeakCanary writes them
+ * to the phone's shared `Download/leakcanary-<package>/`, not to the app's own files. On
+ * Android 11+ a file there belongs to the UID that created it, and an uninstall does not
+ * take it along: a reinstalled app is a new UID that can neither delete the old pile nor
+ * count it against `maxStoredHeapDumps`. One test phone reached 21 dumps and 859 MB that
+ * way, every one of them orphaned. So the cap below keeps *this* install's dumps to the
+ * two most recent, and `./launch.sh --reinstall` clears the directory before the uninstall
+ * that would otherwise orphan it — the only moment anything can.
+ *
  * A `ContentProvider` because LeakCanary's own installer is one, and every provider runs
  * before `Application.onCreate` — so the configuration is in place before the first heap
  * analysis, without the debug variant needing its own `Application` subclass.
@@ -56,6 +67,7 @@ class LeakCanaryConfigProvider : ContentProvider() {
     override fun onCreate(): Boolean {
         LeakCanary.config = LeakCanary.config.copy(
             referenceMatchers = AndroidReferenceMatchers.appDefaults + connectionServiceStubMatchers(),
+            maxStoredHeapDumps = MAX_STORED_HEAP_DUMPS,
         )
         return true
     }
@@ -90,5 +102,13 @@ class LeakCanaryConfigProvider : ContentProvider() {
     private companion object {
         /** Android 13 numbers the stub `$5`; the range covers the builds either side of it. */
         const val ANONYMOUS_CLASS_BOUND = 20
+
+        /**
+         * The analysis is what is read; the dump is only needed to re-run it. Two is the
+         * one being looked at and the one before it, which is as far back as anyone has
+         * ever compared — at ~40 MB a dump, the default of seven was 280 MB of a test
+         * phone for nothing.
+         */
+        const val MAX_STORED_HEAP_DUMPS = 2
     }
 }

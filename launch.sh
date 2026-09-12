@@ -164,6 +164,14 @@ esac
 
 if [ "$reinstall" -eq 1 ] && [ "$before" != "not installed" ]; then
   step "uninstalling $pkg first (--reinstall): its accounts and call log are erased"
+  # LeakCanary's heap dumps live in shared storage and belong to the UID that wrote them.
+  # The reinstalled app is a new UID that can never delete them, and 40 MB apiece they
+  # outlast every install that follows -- so they go now, while something still can.
+  leaks="/sdcard/Download/leakcanary-$pkg"
+  if [ -n "$(adb shell "ls $leaks 2>/dev/null" | tr -d '\r')" ]; then
+    echo "  removing $(adb shell "du -sh $leaks" | tr -d '\r' | cut -f1) of LeakCanary heap dumps the new install could not"
+    adb shell "rm -rf $leaks"
+  fi
   adb uninstall "$pkg" >/dev/null || warn "uninstall reported failure; trying the install anyway."
 fi
 
