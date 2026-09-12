@@ -52,6 +52,25 @@ confirm() {
 note() { printf '\033[36m%s\033[0m\n' "$1"; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$1" >&2; }
 
+# Gradle needs JVM 17+ (CI runs 21). build.sh selects a JDK for the debug APK in its own
+# process; the R8 step below is this script's own Gradle call, so it must select one too —
+# otherwise a shell whose JAVA_HOME points at an older JDK fails R8 with "requires JVM 17".
+select_jdk() {
+  if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+    local major
+    major="$(sed -n 's/^JAVA_VERSION="\{0,1\}\([0-9][0-9]*\).*/\1/p' "$JAVA_HOME/release" 2>/dev/null | head -1)"
+    [ -n "$major" ] && [ "$major" -ge 17 ] && return
+  fi
+  local home
+  if [ -x /usr/libexec/java_home ]; then
+    for v in 21 17; do
+      home="$(/usr/libexec/java_home -v "$v" 2>/dev/null || true)"
+      [ -n "$home" ] && [ -x "$home/bin/java" ] && { export JAVA_HOME="$home"; return; }
+    done
+  fi
+  die "no JDK 17 or newer found for the R8 build. Install one (e.g. Temurin 21) or set JAVA_HOME."
+}
+
 abi=""          # empty means all three
 extra_args=()
 publish=1
@@ -224,8 +243,10 @@ if [ "$run_r8" -eq 1 ]; then
   # one-ABI release stops here with "property 'ndkRoot' doesn't have a configured value".
   # The libraries it packages are the ones the debug build just produced or reused, and
   # the N-6 check above has already examined every one of them.
-  note "building the minified release variant (R8)"
+  select_jdk
+  note "building the minified release variant (R8) with JDK $JAVA_HOME"
   ./gradlew :app:assembleRelease "-Ppjsip.abis=$(printf '%s\n' $abis | paste -sd, -)" \
+    "-Dorg.gradle.java.home=$JAVA_HOME" \
     -x :pjsip:api:generatePjsua2Bindings -x :pjsip:buildPjsua2Native --stacktrace
   mapping=app/build/outputs/mapping/release/mapping.txt
   [ -s "$mapping" ] || die "R8 produced no mapping at $mapping. Was minification switched off?"
