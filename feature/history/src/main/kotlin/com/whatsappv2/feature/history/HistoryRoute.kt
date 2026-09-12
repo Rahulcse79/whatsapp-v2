@@ -68,7 +68,6 @@ fun HistoryRoute(
             onSearchTextChanged = viewModel::onSearchTextChanged,
             onDirectionChanged = viewModel::onDirectionChanged,
             onDateRangeChanged = viewModel::onDateRangeChanged,
-            onFiltersToggled = viewModel::onFiltersToggled,
             onFiltersCleared = viewModel::onFiltersCleared,
             onEntryOpened = viewModel::onEntryOpened,
             onDetailDismissed = viewModel::onDetailDismissed,

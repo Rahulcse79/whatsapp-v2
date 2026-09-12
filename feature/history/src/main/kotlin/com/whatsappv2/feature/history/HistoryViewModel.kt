@@ -161,8 +161,6 @@ class HistoryViewModel @Inject constructor(
 
     fun onSearchTextChanged(text: String) = state.update { it.copy(query = it.query.copy(text = text)) }
 
-    fun onFiltersToggled(open: Boolean) = state.update { it.copy(filtersOpen = open) }
-
     fun onDirectionChanged(direction: CallDirectionFilter) = state.update {
         it.copy(query = it.query.copy(direction = direction))
     }
@@ -171,14 +169,9 @@ class HistoryViewModel @Inject constructor(
         it.copy(query = it.query.copy(fromEpochMillis = from, toEpochMillis = to))
     }
 
-    /**
-     * Back to everything, without closing the search field the user is still typing in.
-     *
-     * The row stays open: clearing is something done *in* the row, and a row that vanished
-     * under the finger that pressed Clear would look like a crash.
-     */
+    /** Back to everything, without closing the search field the user is still typing in. */
     fun onFiltersCleared() = state.update {
-        it.copy(query = CallLogQuery(text = it.query.text), filtersOpen = true)
+        it.copy(query = CallLogQuery(text = it.query.text))
     }
 
     fun onEntryOpened(row: HistoryRow.Call) = state.update { it.copy(openEntry = row) }

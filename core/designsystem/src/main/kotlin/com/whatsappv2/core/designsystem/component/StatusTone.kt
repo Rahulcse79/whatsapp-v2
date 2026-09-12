@@ -17,6 +17,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
 import com.whatsappv2.core.designsystem.theme.AppTheme
+import com.whatsappv2.core.designsystem.theme.StatusColors
 
 /**
  * The four states a status dot can show (item 5.5).
@@ -50,11 +51,13 @@ enum class StatusTone {
 fun StatusDot(
     tone: StatusTone,
     modifier: Modifier = Modifier,
+    /** The palette to draw from: the page's by default, or the bar's for a dot drawn on a bar. */
+    colors: StatusColors = AppTheme.statusColors,
 ) {
     Box(
         modifier = modifier
             .size(AppTheme.sizing.statusDot)
-            .background(tone.colour(), CircleShape)
+            .background(tone.colour(colors), CircleShape)
             .clearAndSetSemantics { },
     )
 }
@@ -72,13 +75,14 @@ fun StatusLabel(
     text: String,
     modifier: Modifier = Modifier,
     color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    colors: StatusColors = AppTheme.statusColors,
 ) {
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraSmall),
     ) {
-        StatusDot(tone)
+        StatusDot(tone, colors = colors)
         Text(
             text = text,
             style = MaterialTheme.typography.labelMedium,
@@ -88,12 +92,11 @@ fun StatusLabel(
     }
 }
 
-@Composable
-private fun StatusTone.colour(): Color = when (this) {
-    StatusTone.ONLINE -> AppTheme.statusColors.online
-    StatusTone.CONNECTING -> AppTheme.statusColors.connecting
-    StatusTone.FAILED -> AppTheme.statusColors.failed
-    StatusTone.OFFLINE -> AppTheme.statusColors.offline
+private fun StatusTone.colour(colors: StatusColors): Color = when (this) {
+    StatusTone.ONLINE -> colors.online
+    StatusTone.CONNECTING -> colors.connecting
+    StatusTone.FAILED -> colors.failed
+    StatusTone.OFFLINE -> colors.offline
 }
 
 @ThemePreviews

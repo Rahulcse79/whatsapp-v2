@@ -2,9 +2,14 @@ package com.whatsappv2.feature.history
 
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.ui.test.assertContentDescriptionEquals
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.filterToOne
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onChildren
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
@@ -99,32 +104,87 @@ class HistoryScreenTest {
     }
 
     @Test
-    fun `the filter row is hidden at rest and the funnel reveals it`() {
-        // A resting log is a list, not a form. The funnel is how the filters are found.
-        var toggledTo: Boolean? = null
-        setContent(actions = HistoryActions(onFiltersToggled = { toggledTo = it }))
+    fun `clearing the whole log is behind the overflow, not a button in the bar`() {
+        // Deleting everything was one tap from the bar it shares with Search. It is a
+        // once-a-year action, so it lives where once-a-year actions live.
+        var requested = false
+        setContent(actions = HistoryActions(onClearAllRequested = { requested = true }))
 
-        compose.onNodeWithTag(TAG_FILTER_ROW).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_CLEAR_ALL).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_OVERFLOW).performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag(TAG_CLEAR_ALL).performClick()
+        compose.waitForIdle()
+
+        assertTrue(requested)
+    }
+
+    @Test
+    fun `at rest there is one filter control and no chips`() {
+        // A resting log is a list, not a form: the direction and date filters live behind
+        // the one icon, and the strip of active filters is absent until one is on.
+        setContent()
+
+        compose.onNodeWithTag(TAG_FILTERS).assertIsDisplayed()
+        compose.onNodeWithTag(TAG_ACTIVE_FILTERS).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_FILTER_MENU).assertDoesNotExist()
+    }
+
+    @Test
+    fun `the filter icon opens a menu with every direction, the one in force ticked`() {
+        setContent(state = HistoryUiState(query = CallLogQuery(direction = CallDirectionFilter.OUTGOING)))
+
         compose.onNodeWithTag(TAG_FILTERS).performClick()
         compose.waitForIdle()
 
-        assertEquals(true, toggledTo)
+        compose.onNodeWithTag(TAG_FILTER_MENU).assertIsDisplayed()
+        CallDirectionFilter.entries.forEach { compose.onNodeWithTag(directionItemTag(it)).assertIsDisplayed() }
+        // Exactly one tick, on the direction that is on — the "clearly highlighted" rule.
+        compose.onAllNodesWithContentDescription("Selected").assertCountEquals(1)
+        compose.onNodeWithTag(directionItemTag(CallDirectionFilter.OUTGOING), useUnmergedTree = true)
+            .onChildren()
+            .filterToOne(hasContentDescription("Selected"))
+            .assertExists()
     }
 
     @Test
-    fun `the filter row is shown once the funnel has been pressed`() {
-        setContent(state = HistoryUiState(filtersOpen = true))
+    fun `choosing a direction in the menu reports it and closes the menu`() {
+        var chosen: CallDirectionFilter? = null
+        setContent(actions = HistoryActions(onDirectionChanged = { chosen = it }))
 
-        compose.onNodeWithTag(TAG_FILTER_ROW).assertIsDisplayed()
-        compose.onNodeWithTag(TAG_DATE_CHIP).assertIsDisplayed()
+        compose.onNodeWithTag(TAG_FILTERS).performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag(directionItemTag(CallDirectionFilter.INCOMING)).performClick()
+        compose.waitForIdle()
+
+        assertEquals(CallDirectionFilter.INCOMING, chosen)
+        compose.onNodeWithTag(TAG_FILTER_MENU).assertDoesNotExist()
     }
 
     @Test
-    fun `the filter row is shown while something is narrowed, funnel or not`() {
-        setContent(state = HistoryUiState(query = CallLogQuery(direction = CallDirectionFilter.OUTGOING)))
+    fun `a filter in force is counted on the icon and shown as a chip with a way off`() {
+        var cleared: CallDirectionFilter? = null
+        setContent(
+            state = HistoryUiState(query = CallLogQuery(direction = CallDirectionFilter.INCOMING)),
+            actions = HistoryActions(onDirectionChanged = { cleared = it }),
+        )
 
-        compose.onNodeWithTag(TAG_FILTER_ROW).assertIsDisplayed()
         compose.onNodeWithContentDescription("Filters, 1 active").assertIsDisplayed()
+        compose.onNodeWithTag(TAG_ACTIVE_FILTERS).assertIsDisplayed()
+        compose.onNodeWithTag(activeDirectionTag(CallDirectionFilter.INCOMING)).performClick()
+        compose.waitForIdle()
+
+        assertEquals(CallDirectionFilter.ANY, cleared)
+    }
+
+    @Test
+    fun `missed is the tab's job, so it is neither counted nor chipped`() {
+        // Missed is a direction and a tab because it is one axis. With the Missed tab lit,
+        // a badge saying "1" and a chip saying "Missed" would both be the tab, repeated.
+        setContent(state = HistoryUiState(query = CallLogQuery.MISSED))
+
+        compose.onNodeWithContentDescription("Filters").assertIsDisplayed()
+        compose.onNodeWithTag(TAG_ACTIVE_FILTERS).assertDoesNotExist()
     }
 
     @Test
@@ -139,21 +199,51 @@ class HistoryScreenTest {
         )
 
         // Locale-independent: the day number is the same in every dictionary.
-        compose.onNodeWithTag(TAG_DATE_CHIP).assertIsDisplayed().assertTextContains("12", substring = true)
-        compose.onNodeWithTag(TAG_DATE_CLEAR, useUnmergedTree = true).performClick()
+        compose.onNodeWithTag(TAG_ACTIVE_DATE).assertIsDisplayed().assertTextContains("12", substring = true)
+        compose.onNodeWithTag(TAG_ACTIVE_DATE).performClick()
         compose.waitForIdle()
 
         assertTrue(cleared)
     }
 
     @Test
-    fun `the date chip opens the range picker`() {
-        setContent(state = HistoryUiState(filtersOpen = true))
+    fun `the date row in the menu opens the range picker`() {
+        setContent()
 
-        compose.onNodeWithTag(TAG_DATE_CHIP).performClick()
+        compose.onNodeWithTag(TAG_FILTERS).performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag(TAG_DATE_ITEM).performClick()
         compose.waitForIdle()
 
         compose.onNodeWithTag(TAG_DATE_DIALOG).assertIsDisplayed()
+    }
+
+    @Test
+    fun `the menu offers nothing to reset while nothing is narrowed`() {
+        // A reset row on a log that is showing everything is a control with no effect.
+        setContent()
+
+        compose.onNodeWithTag(TAG_FILTERS).performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithTag(TAG_FILTER_MENU).assertIsDisplayed()
+        compose.onNodeWithTag(TAG_RESET_FILTERS).assertDoesNotExist()
+    }
+
+    @Test
+    fun `reset appears once something is narrowed, and resets`() {
+        var reset = false
+        setContent(
+            state = HistoryUiState(query = CallLogQuery(direction = CallDirectionFilter.OUTGOING)),
+            actions = HistoryActions(onFiltersCleared = { reset = true }),
+        )
+
+        compose.onNodeWithTag(TAG_FILTERS).performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag(TAG_RESET_FILTERS).performClick()
+        compose.waitForIdle()
+
+        assertTrue(reset)
     }
 
     private companion object {

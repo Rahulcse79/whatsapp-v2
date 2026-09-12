@@ -22,37 +22,42 @@ import androidx.compose.material.icons.automirrored.filled.CallMade
 import androidx.compose.material.icons.automirrored.filled.CallMissed
 import androidx.compose.material.icons.automirrored.filled.CallReceived
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.DateRange
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dialpad
-import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.outlined.DateRange
+import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.FilterListOff
+import androidx.compose.material.icons.outlined.Phone
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DateRangePicker
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
@@ -65,6 +70,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -73,8 +79,11 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.paging.compose.LazyPagingItems
+import com.whatsappv2.core.designsystem.component.AppHeaderTabs
+import com.whatsappv2.core.designsystem.component.AppTopBar
 import com.whatsappv2.core.designsystem.component.Avatar
 import com.whatsappv2.core.designsystem.component.ConfirmDialog
 import com.whatsappv2.core.designsystem.component.EmptyState
@@ -119,20 +128,15 @@ fun HistoryScreen(
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        topBar = { HistoryTopBar(state = state, actions = actions) },
-        floatingActionButton = { HistoryFabs(actions = actions) },
+        topBar = { HistoryHeader(state = state, actions = actions, zone = zone) },
+        floatingActionButton = { HistoryFab(actions = actions) },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
         Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-            FilterTabs(
-                selected = state.query.tabFilter,
-                onFilterChanged = actions.onFilterChanged,
-            )
-
-            // Slides open rather than appearing, so the list below moves once, smoothly,
-            // instead of jumping by the row's height.
-            AnimatedVisibility(visible = state.showsFilters) {
-                AdvancedFilters(query = state.query, actions = actions, zone = zone)
+            // Only the filters that are *on*, and only while one is. Slides open rather
+            // than appearing, so the list moves once instead of jumping by the row's height.
+            AnimatedVisibility(visible = state.query.hasMenuFilters) {
+                ActiveFilters(query = state.query, actions = actions, zone = zone)
             }
 
             if (rows.itemCount == 0) {
@@ -181,21 +185,25 @@ fun HistoryScreen(
 }
 
 /**
- * The title, search, and the one destructive action.
+ * The header: title or search field, its actions, and the All / Missed tabs — one green
+ * block in light, one near-black block in dark (`AppTopBar`).
  *
- * The settings gear that used to live here is gone: Settings is behind the gear on Chats,
- * and two doors into one screen is one more than a top bar should spend.
+ * All and Missed stay where the thumb can reach them because they are what people
+ * actually flip between. Everything else that narrows the list — direction, date — lives
+ * behind the one filter icon, in [FilterMenu]. Five chips and a funnel used to sit under
+ * the tabs together; two of them said "Missed", and none of them said which was on.
+ *
+ * That leaves three things in the bar: search, filters, and the three dots everything
+ * rare lives behind.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HistoryTopBar(state: HistoryUiState, actions: HistoryActions) {
-    TopAppBar(
-        title = {
-            if (state.searching) {
-                SearchField(text = state.query.text, onTextChanged = actions.onSearchTextChanged)
-            } else {
-                Text("Calls")
-            }
+private fun HistoryHeader(state: HistoryUiState, actions: HistoryActions, zone: ZoneId) {
+    AppTopBar(
+        title = "Calls",
+        titleContent = if (state.searching) {
+            { SearchField(text = state.query.text, onTextChanged = actions.onSearchTextChanged) }
+        } else {
+            null
         },
         navigationIcon = {
             // Only while searching. A back arrow on the app's home screen invites a press
@@ -214,42 +222,58 @@ private fun HistoryTopBar(state: HistoryUiState, actions: HistoryActions) {
                 ) {
                     Icon(Icons.Filled.Search, contentDescription = "Search calls")
                 }
-                FilterButton(state = state, actions = actions)
-                IconButton(
-                    onClick = actions.onClearAllRequested,
-                    modifier = Modifier.testTag(TAG_CLEAR_ALL),
-                ) {
-                    Icon(Icons.Filled.Delete, contentDescription = "Clear call history")
-                }
             }
+            FilterMenu(query = state.query, actions = actions, zone = zone)
+            if (!state.searching) {
+                OverflowMenu(actions = actions)
+            }
+        },
+        below = {
+            AppHeaderTabs(
+                tabs = CallLogFilter.entries.map { if (it == CallLogFilter.ALL) "All" else "Missed" },
+                selectedIndex = CallLogFilter.entries.indexOf(state.query.tabFilter),
+                onSelect = { actions.onFilterChanged(CallLogFilter.entries[it]) },
+                tabModifier = { Modifier.testTag(filterTag(CallLogFilter.entries[it])) },
+            )
         },
     )
 }
 
 /**
- * The funnel: how the filter row is found on a log nobody has started narrowing.
+ * The screen's rare actions, behind the usual three dots.
  *
- * The row hides at rest (see [AdvancedFilters]), and a control that only appears once you
- * have used it is one nobody finds. The badge carries the number of active criteria, so a
- * narrowed list says so even when the row itself has been folded away.
+ * Clearing the whole log was an icon of its own in the bar: a permanent, one-tap-from-a-
+ * dialog invitation to delete everything, sitting next to Search. It is something a person
+ * does once a year, and the bar is for what they do every day — so it moved in here, in
+ * the error colour, which is where a destructive action reads as destructive.
  */
 @Composable
-private fun FilterButton(state: HistoryUiState, actions: HistoryActions) {
-    val active = state.query.activeFilterCount
-    IconButton(
-        onClick = { actions.onFiltersToggled(!state.filtersOpen) },
-        modifier = Modifier.testTag(TAG_FILTERS),
-    ) {
-        BadgedBox(
-            badge = {
-                if (active > 0) {
-                    Badge { Text(active.toString()) }
-                }
-            },
+private fun OverflowMenu(actions: HistoryActions) {
+    var open by rememberSaveable { mutableStateOf(false) }
+
+    Box {
+        IconButton(onClick = { open = true }, modifier = Modifier.testTag(TAG_OVERFLOW)) {
+            Icon(Icons.Filled.MoreVert, contentDescription = "More options")
+        }
+
+        DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+            shape = MaterialTheme.shapes.large,
+            modifier = Modifier.testTag(TAG_OVERFLOW_MENU),
         ) {
-            Icon(
-                imageVector = Icons.Filled.FilterList,
-                contentDescription = if (active > 0) "Filters, $active active" else "Filters",
+            DropdownMenuItem(
+                text = { Text("Clear call history") },
+                leadingIcon = { Icon(Icons.Outlined.DeleteSweep, contentDescription = null) },
+                colors = MenuDefaults.itemColors(
+                    textColor = MaterialTheme.colorScheme.error,
+                    leadingIconColor = MaterialTheme.colorScheme.error,
+                ),
+                onClick = {
+                    open = false
+                    actions.onClearAllRequested()
+                },
+                modifier = Modifier.testTag(TAG_CLEAR_ALL),
             )
         }
     }
@@ -260,17 +284,21 @@ private fun FilterButton(state: HistoryUiState, actions: HistoryActions) {
 private fun SearchField(text: String, onTextChanged: (String) -> Unit) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
+    val bar = AppTheme.barColors
 
     TextField(
         value = text,
         onValueChange = onTextChanged,
         singleLine = true,
-        placeholder = { Text("Name, number or address") },
+        placeholder = { Text("Name, number or address", color = bar.onTopVariant) },
         colors = TextFieldDefaults.colors(
             focusedContainerColor = Color.Transparent,
             unfocusedContainerColor = Color.Transparent,
             focusedIndicatorColor = Color.Transparent,
             unfocusedIndicatorColor = Color.Transparent,
+            focusedTextColor = bar.onTop,
+            unfocusedTextColor = bar.onTop,
+            cursorColor = bar.onTop,
         ),
         modifier = Modifier
             .fillMaxWidth()
@@ -280,91 +308,259 @@ private fun SearchField(text: String, onTextChanged: (String) -> Unit) {
 }
 
 /**
- * Direction and date, as chips under the tabs.
+ * The one filter control: an icon with a count, and a menu behind it (redesign, item 1).
  *
- * Shown while searching, while something is narrowed, or while the funnel in the top bar
- * has been pressed — and hidden otherwise, because on a resting call log they would be
- * five controls for a list nobody is looking through yet. The decision lives in
- * [HistoryUiState.showsFilters]; this is only the row.
+ * The menu has two groups and nothing else. *Show* is the direction — All, Incoming,
+ * Outgoing, Missed — one of which is always on and is marked with a tick, in bold, in the
+ * accent colour, so the selected filter is never in doubt. *Date* is a range from the
+ * calendar, named once one is applied. A reset row appears only when there is something
+ * to reset. The count on the icon is the number of menu filters in force, so a narrowed
+ * list says so even from the far end of the screen.
+ *
+ * Missed is both a tab and a direction because it is the same axis; choosing it here
+ * moves the tab, and the count does not include it — the tab is already showing it.
+ */
+@Composable
+private fun FilterMenu(query: CallLogQuery, actions: HistoryActions, zone: ZoneId) {
+    var open by rememberSaveable { mutableStateOf(false) }
+    var pickingDates by rememberSaveable { mutableStateOf(false) }
+    val active = query.menuFilterCount
+    val bar = AppTheme.barColors
+
+    Box {
+        // The count wraps the button rather than the glyph inside it. An IconButton clips
+        // its content to the circle it draws its ripple in, and a badge pinned to the
+        // corner of a 24dp glyph in the middle of that circle loses its outer edge to the
+        // clip — a number with its corner shaved off, which reads as a rendering fault.
+        BadgedBox(
+            badge = {
+                if (active > 0) {
+                    Badge(containerColor = bar.topBadge, contentColor = bar.onTopBadge) {
+                        Text(active.toString())
+                    }
+                }
+            },
+        ) {
+            IconButton(onClick = { open = true }, modifier = Modifier.testTag(TAG_FILTERS)) {
+                Icon(
+                    imageVector = Icons.Outlined.Tune,
+                    contentDescription = if (active > 0) "Filters, $active active" else "Filters",
+                )
+            }
+        }
+
+        DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+            shape = MaterialTheme.shapes.large,
+            modifier = Modifier.testTag(TAG_FILTER_MENU),
+        ) {
+            FilterMenuItems(
+                query = query,
+                actions = actions,
+                zone = zone,
+                onPickDates = { pickingDates = true },
+                onDone = { open = false },
+            )
+        }
+    }
+
+    if (pickingDates) {
+        DateRangeDialog(
+            initialFrom = query.fromEpochMillis?.toUtcDayMillis(zone),
+            initialTo = query.toEpochMillis?.toUtcDayMillis(zone),
+            onConfirm = { start, end ->
+                pickingDates = false
+                val bounds = dateRangeBounds(start, end, zone)
+                actions.onDateRangeChanged(bounds.fromEpochMillis, bounds.toEpochMillis)
+            },
+            onDismiss = { pickingDates = false },
+        )
+    }
+}
+
+/** The menu's rows: the direction group, the date row, and a reset when there is something to reset. */
+@Composable
+private fun FilterMenuItems(
+    query: CallLogQuery,
+    actions: HistoryActions,
+    zone: ZoneId,
+    onPickDates: () -> Unit,
+    onDone: () -> Unit,
+) {
+    MenuHeading("Show")
+    CallDirectionFilter.entries.forEach { direction ->
+        val selected = query.direction == direction
+        DropdownMenuItem(
+            text = { MenuLabel(direction.label, selected) },
+            leadingIcon = { Icon(direction.icon(), contentDescription = null) },
+            trailingIcon = { if (selected) SelectedMark() },
+            onClick = {
+                onDone()
+                actions.onDirectionChanged(direction)
+            },
+            colors = menuItemColors(selected),
+            modifier = Modifier
+                .selectedRow(selected)
+                .testTag(directionItemTag(direction)),
+        )
+    }
+
+    HorizontalDivider(modifier = Modifier.padding(vertical = AppTheme.spacing.extraSmall))
+    MenuHeading("Date")
+    val range = query.dateRangeLabel(zone)
+    DropdownMenuItem(
+        text = { MenuLabel(range ?: "Choose a date range", selected = range != null) },
+        leadingIcon = { Icon(Icons.Outlined.DateRange, contentDescription = null) },
+        trailingIcon = { if (range != null) SelectedMark() },
+        onClick = {
+            onDone()
+            onPickDates()
+        },
+        colors = menuItemColors(range != null),
+        modifier = Modifier
+            .selectedRow(range != null)
+            .testTag(TAG_DATE_ITEM),
+    )
+
+    if (query.hasMenuFilters) {
+        HorizontalDivider(modifier = Modifier.padding(vertical = AppTheme.spacing.extraSmall))
+        DropdownMenuItem(
+            text = { Text("Reset filters") },
+            leadingIcon = { Icon(Icons.Outlined.FilterListOff, contentDescription = null) },
+            onClick = {
+                onDone()
+                actions.onFiltersCleared()
+            },
+            modifier = Modifier.testTag(TAG_RESET_FILTERS),
+        )
+    }
+}
+
+/** A group's name inside the menu — quiet, so the options are what the eye reads. */
+@Composable
+private fun MenuHeading(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(
+            start = AppTheme.spacing.medium,
+            end = AppTheme.spacing.medium,
+            top = AppTheme.spacing.small,
+            bottom = AppTheme.spacing.extraSmall,
+        ),
+    )
+}
+
+/** The selected option is bold as well as tinted, so it reads as selected without colour. */
+@Composable
+private fun MenuLabel(text: String, selected: Boolean) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodyLarge,
+        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+    )
+}
+
+/** The tick on the option in force. Untinted, so it takes the row's content colour. */
+@Composable
+private fun SelectedMark() {
+    Icon(imageVector = Icons.Filled.Check, contentDescription = "Selected")
+}
+
+/**
+ * The pill behind the option in force.
+ *
+ * Three channels say which filter is on — a filled row, a bold label, and a tick — because
+ * "the selected filter is clearly highlighted" cannot rest on a tint of the text alone:
+ * at a glance a menu of four similar rows with one of them slightly greener is a menu of
+ * four similar rows. Inset from the menu's edges and rounded, so it reads as a chosen
+ * thing rather than as a band across the sheet.
+ */
+@Composable
+private fun Modifier.selectedRow(selected: Boolean): Modifier = if (selected) {
+    padding(horizontal = AppTheme.spacing.small)
+        .clip(MaterialTheme.shapes.medium)
+        .background(MaterialTheme.colorScheme.primaryContainer)
+} else {
+    this
+}
+
+/** On the pill, every part of the row is drawn in the colour paired with it. */
+@Composable
+private fun menuItemColors(selected: Boolean) = if (selected) {
+    MenuDefaults.itemColors(
+        textColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        leadingIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        trailingIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+    )
+} else {
+    MenuDefaults.itemColors()
+}
+
+/**
+ * The filters in force, each with its own way off (redesign, item 1).
+ *
+ * Under the header, only while a menu filter is on: a direction other than the tabs
+ * already show, or a date range. One chip per filter and a cross on each, so what is
+ * narrowing the list is visible without opening the menu and can be dropped without
+ * finding it there. Empty and absent otherwise — a resting log is a list, not a form.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AdvancedFilters(query: CallLogQuery, actions: HistoryActions, zone: ZoneId) {
-    // Wraps rather than scrolls sideways. Five chips do not fit one line on a phone, and a
-    // control that has to be scrolled into view is a control nobody knows is there — the
-    // date chip, the one this row was reopened for, was the one that fell off the edge.
+private fun ActiveFilters(query: CallLogQuery, actions: HistoryActions, zone: ZoneId) {
     FlowRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = AppTheme.spacing.large, vertical = AppTheme.spacing.small)
-            .testTag(TAG_FILTER_ROW),
+            .testTag(TAG_ACTIVE_FILTERS),
         horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
         verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraSmall),
     ) {
-        CallDirectionFilter.entries.forEach { direction ->
-            FilterChip(
-                selected = query.direction == direction,
-                onClick = { actions.onDirectionChanged(direction) },
-                label = { Text(direction.label) },
-                modifier = Modifier.testTag(directionChipTag(direction)),
+        if (query.direction.isMenuOnly) {
+            ActiveFilterChip(
+                label = query.direction.label,
+                icon = query.direction.icon(),
+                onClear = { actions.onDirectionChanged(CallDirectionFilter.ANY) },
+                clearDescription = "Show all directions",
+                modifier = Modifier.testTag(activeDirectionTag(query.direction)),
             )
         }
-        DateRangeChip(query = query, actions = actions, zone = zone)
-        if (!query.isMatchAll) {
-            TextButton(onClick = actions.onFiltersCleared) { Text("Clear") }
+        query.dateRangeLabel(zone)?.let { label ->
+            ActiveFilterChip(
+                label = label,
+                icon = Icons.Outlined.DateRange,
+                onClear = { actions.onDateRangeChanged(null, null) },
+                clearDescription = "Clear the date range",
+                modifier = Modifier.testTag(TAG_ACTIVE_DATE),
+            )
         }
     }
 }
 
-/**
- * The date range, as one chip: "Date" at rest, the range once one is applied, and a
- * cross to drop it without opening the picker again (item 5.3).
- *
- * The picker is Material's range calendar in a dialog. Its days come back as UTC
- * midnights and the query wants bounds in the log's zone — [dateRangeBounds] is the
- * conversion, and the reason a 02:00 call lands on the day it was made.
- */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DateRangeChip(query: CallLogQuery, actions: HistoryActions, zone: ZoneId) {
-    var picking by rememberSaveable { mutableStateOf(false) }
-    val from = query.fromEpochMillis
-    val to = query.toEpochMillis
-    val applied = from != null && to != null
-
-    FilterChip(
-        selected = applied,
-        onClick = { picking = true },
-        label = { Text(if (applied) dateRangeLabel(from, to, zone) else "Date") },
-        leadingIcon = { Icon(Icons.Filled.DateRange, contentDescription = null) },
-        trailingIcon = if (applied) {
-            {
-                Icon(
-                    imageVector = Icons.Filled.Close,
-                    contentDescription = "Clear the date range",
-                    modifier = Modifier
-                        .clickable { actions.onDateRangeChanged(null, null) }
-                        .testTag(TAG_DATE_CLEAR),
-                )
-            }
-        } else {
-            null
+private fun ActiveFilterChip(
+    label: String,
+    icon: ImageVector,
+    onClear: () -> Unit,
+    clearDescription: String,
+    modifier: Modifier = Modifier,
+) {
+    InputChip(
+        selected = true,
+        onClick = onClear,
+        label = { Text(label) },
+        leadingIcon = { Icon(icon, contentDescription = null, modifier = Modifier.size(AppTheme.sizing.chipIcon)) },
+        trailingIcon = {
+            Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = clearDescription,
+                modifier = Modifier.size(AppTheme.sizing.chipIcon),
+            )
         },
-        modifier = Modifier.testTag(TAG_DATE_CHIP),
+        modifier = modifier,
     )
-
-    if (picking) {
-        DateRangeDialog(
-            initialFrom = from?.toUtcDayMillis(zone),
-            initialTo = to?.toUtcDayMillis(zone),
-            onConfirm = { start, end ->
-                picking = false
-                val bounds = dateRangeBounds(start, end, zone)
-                actions.onDateRangeChanged(bounds.fromEpochMillis, bounds.toEpochMillis)
-            },
-            onDismiss = { picking = false },
-        )
-    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -443,41 +639,13 @@ private fun CallList(
  * the dialler already places it.
  */
 @Composable
-private fun HistoryFabs(actions: HistoryActions) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.medium),
+private fun HistoryFab(actions: HistoryActions) {
+    FloatingActionButton(
+        onClick = actions.onOpenDialer,
+        elevation = FloatingActionButtonDefaults.elevation(),
+        modifier = Modifier.testTag(TAG_DIALER),
     ) {
-        FloatingActionButton(
-            onClick = actions.onOpenDialer,
-            elevation = FloatingActionButtonDefaults.elevation(),
-            modifier = Modifier.testTag(TAG_DIALER),
-        ) {
-            Icon(Icons.Filled.Dialpad, contentDescription = "Open the dialler")
-        }
-    }
-}
-
-@Composable
-private fun FilterTabs(
-    selected: CallLogFilter,
-    onFilterChanged: (CallLogFilter) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    // PrimaryTabRow, not TabRow: the plain one is deprecated in Material 3 and CI
-    // builds warnings as errors.
-    PrimaryTabRow(
-        selectedTabIndex = CallLogFilter.entries.indexOf(selected),
-        modifier = modifier,
-    ) {
-        CallLogFilter.entries.forEach { filter ->
-            Tab(
-                selected = filter == selected,
-                onClick = { onFilterChanged(filter) },
-                text = { Text(if (filter == CallLogFilter.ALL) "All" else "Missed") },
-                modifier = Modifier.testTag(filterTag(filter)),
-            )
-        }
+        Icon(Icons.Filled.Dialpad, contentDescription = "Open the dialler")
     }
 }
 
@@ -653,16 +821,6 @@ private fun SwipeAffordance(direction: SwipeToDismissBoxValue) {
     }
 }
 
-/**
- * The direction, as a filled circle rather than a bare glyph (Task 75).
- *
- * Three things carry the meaning, not one: the glyph differs per direction, the colour
- * differs per direction, and a missed call gets the error role so it stands out of a
- * scrolling list. Colour on its own would be invisible to a lot of people, and a glyph on
- * its own is what this row had — three small monochrome arrows that all read the same at
- * a glance.
- */
-
 @Composable
 private fun CallDetail(row: HistoryRow.Call, actions: HistoryActions, zone: ZoneId) {
     val entry = row.entry
@@ -687,6 +845,37 @@ private fun CallDetail(row: HistoryRow.Call, actions: HistoryActions, zone: Zone
 
 // ---------------------------------------------------------------- presentation
 
+/** The glyph a direction filter wears in the menu and on its chip; the row's own glyphs are the same family. */
+private fun CallDirectionFilter.icon(): ImageVector = when (this) {
+    CallDirectionFilter.ANY -> Icons.Outlined.Phone
+    CallDirectionFilter.INCOMING -> Icons.AutoMirrored.Filled.CallReceived
+    CallDirectionFilter.OUTGOING -> Icons.AutoMirrored.Filled.CallMade
+    CallDirectionFilter.MISSED -> Icons.AutoMirrored.Filled.CallMissed
+}
+
+/** A direction the tabs cannot show — the ones the menu exists for. */
+private val CallDirectionFilter.isMenuOnly: Boolean
+    get() = this == CallDirectionFilter.INCOMING || this == CallDirectionFilter.OUTGOING
+
+/** The applied range, named, or null when there is none. */
+private fun CallLogQuery.dateRangeLabel(zone: ZoneId): String? {
+    val from = fromEpochMillis ?: return null
+    val to = toEpochMillis ?: return null
+    return dateRangeLabel(from, to, zone)
+}
+
+/**
+ * How many filters the menu is holding that the tabs are not already showing.
+ *
+ * The badge on the filter icon. Missed is excluded on purpose: it is on the tab row
+ * with the tab lit, and counting it would say "1 filter" over a screen that is visibly
+ * on Missed.
+ */
+private val CallLogQuery.menuFilterCount: Int
+    get() = listOf(direction.isMenuOnly, fromEpochMillis != null && toEpochMillis != null).count { it }
+
+private val CallLogQuery.hasMenuFilters: Boolean get() = menuFilterCount > 0
+
 private fun HistoryRow.key(): Any = when (this) {
     is HistoryRow.DayHeader -> "day-$epochDay"
     is HistoryRow.Call -> "call-${entry.id.value}"
@@ -698,20 +887,21 @@ private fun CallLogEntry.directionIcon(): ImageVector = when {
     else -> Icons.AutoMirrored.Filled.CallMade
 }
 
-/** The badge's fill. Roles from the scheme, so dark mode and dynamic colour both hold. */
-@Composable
-private fun CallLogEntry.directionContainer(): Color = when {
-    wasMissed -> MaterialTheme.colorScheme.errorContainer
-    direction == CallDirection.INCOMING -> MaterialTheme.colorScheme.secondaryContainer
-    else -> MaterialTheme.colorScheme.primaryContainer
-}
-
-/** The glyph on top of [directionContainer], paired so contrast holds in both themes. */
+/**
+ * The arrow's colour, from roles meant to be drawn on the page.
+ *
+ * These were the `on*Container` roles, which are the colours you put *on* a filled badge:
+ * near-black in light by design. The badge they were paired with is gone, so all three
+ * arrows were the same black mark on the surface and only their shape told them apart —
+ * at 12dp, next to the time, that is no distinction at all. Primary, secondary and error
+ * are the page-level roles, they differ at a glance, and the missed one is the red the
+ * title above it already uses.
+ */
 @Composable
 private fun CallLogEntry.directionTint(): Color = when {
-    wasMissed -> MaterialTheme.colorScheme.onErrorContainer
-    direction == CallDirection.INCOMING -> MaterialTheme.colorScheme.onSecondaryContainer
-    else -> MaterialTheme.colorScheme.onPrimaryContainer
+    wasMissed -> MaterialTheme.colorScheme.error
+    direction == CallDirection.INCOMING -> MaterialTheme.colorScheme.secondary
+    else -> MaterialTheme.colorScheme.primary
 }
 
 private fun CallLogEntry.directionDescription() = when {
@@ -749,15 +939,22 @@ internal const val TAG_EMPTY = "history-empty"
 internal const val TAG_DETAIL = "history-detail"
 internal const val TAG_CONFIRM_CLEAR = "history-confirm-clear"
 internal const val TAG_CLEAR_ALL = "history-clear-all"
+internal const val TAG_OVERFLOW = "history-overflow"
+internal const val TAG_OVERFLOW_MENU = "history-overflow-menu"
 internal const val TAG_SEARCH = "history-search"
 internal const val TAG_SEARCH_FIELD = "history-search-field"
 
-/** Identifies a direction chip, so a test presses the one it means. */
-internal fun directionChipTag(direction: CallDirectionFilter) = "history-direction-${direction.name.lowercase()}"
+/** Identifies a direction in the filter menu, so a test presses the one it means. */
+internal fun directionItemTag(direction: CallDirectionFilter) = "history-direction-${direction.name.lowercase()}"
+
+/** The active-filter chip for a direction, with its cross. */
+internal fun activeDirectionTag(direction: CallDirectionFilter) = "history-active-${direction.name.lowercase()}"
 internal const val TAG_FILTERS = "history-filters"
-internal const val TAG_FILTER_ROW = "history-filter-row"
-internal const val TAG_DATE_CHIP = "history-date-chip"
-internal const val TAG_DATE_CLEAR = "history-date-clear"
+internal const val TAG_FILTER_MENU = "history-filter-menu"
+internal const val TAG_RESET_FILTERS = "history-reset-filters"
+internal const val TAG_ACTIVE_FILTERS = "history-active-filters"
+internal const val TAG_ACTIVE_DATE = "history-active-date"
+internal const val TAG_DATE_ITEM = "history-date-item"
 internal const val TAG_DATE_DIALOG = "history-date-dialog"
 internal const val TAG_DATE_CONFIRM = "history-date-confirm"
 internal const val TAG_DIALER = "history-dialer"

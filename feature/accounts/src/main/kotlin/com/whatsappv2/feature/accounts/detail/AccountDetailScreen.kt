@@ -15,11 +15,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import com.whatsappv2.core.designsystem.component.AppTopBar
 import com.whatsappv2.core.designsystem.component.EmptyState
 import com.whatsappv2.core.designsystem.component.LoadingState
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
@@ -53,8 +53,8 @@ fun AccountDetailScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
-            TopAppBar(
-                title = { Text("Account status") },
+            AppTopBar(
+                title = "Account status",
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")

@@ -8,7 +8,7 @@ import com.whatsappv2.domain.repository.CallLogFilter
 /**
  * What the history screen can do, gathered into one value.
  *
- * Fourteen callbacks, all the same kind of thing: something the user did. Grouping them
+ * Thirteen callbacks, all the same kind of thing: something the user did. Grouping them
  * keeps the screen's signature readable and means the next control adds a field here rather
  * than another argument threaded through the rows. `:feature:dialer` and `:feature:calls`
  * group their own for the same reason.
@@ -33,9 +33,6 @@ data class HistoryActions(
 
     /** Bounds on when a call started, inclusive, in epoch millis; nulls for no bound. */
     val onDateRangeChanged: (from: Long?, to: Long?) -> Unit = { _, _ -> },
-
-    /** Shows or hides the filter row when nothing is narrowed yet — the funnel in the top bar. */
-    val onFiltersToggled: (Boolean) -> Unit = {},
 
     /** Back to everything, without closing a search field still being typed in. */
     val onFiltersCleared: () -> Unit = {},

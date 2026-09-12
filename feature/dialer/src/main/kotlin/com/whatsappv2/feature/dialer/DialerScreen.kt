@@ -30,7 +30,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -44,6 +43,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.whatsappv2.core.designsystem.component.AppTopBar
 import com.whatsappv2.core.designsystem.component.Avatar
 import com.whatsappv2.core.designsystem.component.CallActionButton
 import com.whatsappv2.core.designsystem.component.CallActionStyle
@@ -215,8 +215,8 @@ private fun DialledNumber(state: DialerUiState, actions: DialerActions) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DialerTopBar(onBack: () -> Unit) {
-    TopAppBar(
-        title = { Text("Dialler") },
+    AppTopBar(
+        title = "Dialler",
         navigationIcon = {
             IconButton(onClick = onBack, modifier = Modifier.testTag(TAG_BACK)) {
                 Icon(

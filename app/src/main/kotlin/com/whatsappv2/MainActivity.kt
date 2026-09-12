@@ -58,7 +58,7 @@ class MainActivity : ComponentActivity() {
         logger.debug(TAG, "MainActivity created")
 
         setContent {
-            AppThemed(settings) {
+            AppThemed(settings, statusBarOverHeader = true) {
                 // Provided here rather than passed down: a permission request happens
                 // deep inside a screen, and threading the coordinator through every
                 // composable in between would couple them all to it.

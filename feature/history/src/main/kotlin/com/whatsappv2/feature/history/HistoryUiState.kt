@@ -47,15 +47,6 @@ data class HistoryUiState(
     val searching: Boolean = false,
 
     /**
-     * True while the user has asked for the filter row without searching or narrowing.
-     *
-     * The row also shows itself whenever search is open or a filter is active; this flag
-     * is for the funnel in the top bar, which is how someone finds the filters at all on
-     * a log they have not started narrowing.
-     */
-    val filtersOpen: Boolean = false,
-
-    /**
      * The row whose detail is open, or null for the list.
      *
      * The row and not the bare entry, so the sheet's heading is the name the list showed.
@@ -66,11 +57,7 @@ data class HistoryUiState(
 
     /** True while the "clear all history" confirmation is up. */
     val confirmingClearAll: Boolean = false,
-) {
-    /** Whether the direction and date chips are on screen — see [filtersOpen]. */
-    val showsFilters: Boolean
-        get() = searching || filtersOpen || query.activeFilterCount > 0
-}
+)
 
 /**
  * Something that happened once, that the list cannot show.

@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.Color
  * universally; red is reserved for ending a call and must not be spent on anything else.
  */
 internal object Palette {
+    val Green30 = Color(0xFF005A30)
     val Green40 = Color(0xFF006D3B)
     val Green80 = Color(0xFF6DDD9A)
     val GreenContainer = Color(0xFF97F7B7)
@@ -215,4 +216,93 @@ internal val DarkStatusColors = StatusColors(
     connecting = Palette.Orange80,
     failed = Palette.Red80,
     offline = Palette.Neutral60,
+)
+
+/**
+ * The app's two bars — the top bar and the bottom navigation — as one palette.
+ *
+ * Their own colours rather than the scheme's, because the bars are the app's identity:
+ * a calling app is recognised by its header the way a chat app is, and Material's
+ * default (a surface-coloured bar with black text) reads as a demo. The two bars share
+ * this so they cannot drift apart, and so a screen that draws a control *on* the bar —
+ * the registration chip — has colours that were chosen against the bar rather than
+ * against a white page.
+ *
+ * Light is a deep green header with white content, gradient top to bottom so it has
+ * depth without a shadow; the bottom bar is white with a green pill. Dark is one
+ * near-black tone for both bars against the slightly lighter page, with green as the
+ * only accent — high contrast, few colours.
+ */
+data class BarColors(
+    /** Top bar, from the status-bar edge… */
+    val topStart: Color,
+    /** …to the content edge. Equal to [topStart] for a flat bar. */
+    val topEnd: Color,
+    /** Text and icons on the top bar. */
+    val onTop: Color,
+    /** Secondary text on the top bar — a subtitle, a state word. */
+    val onTopVariant: Color,
+    /** The selected tab's underline in a tab row that sits inside the top bar. */
+    val topIndicator: Color,
+    /** A count on a top-bar control — how many filters are on, say. */
+    val topBadge: Color,
+    /** The number on [topBadge]. */
+    val onTopBadge: Color,
+    /** Status dot colours that read against the top bar. */
+    val status: StatusColors,
+
+    val navContainer: Color,
+    /** The pill behind the selected tab. */
+    val navIndicator: Color,
+    /** The selected tab's icon, on [navIndicator]. */
+    val onNavIndicator: Color,
+    /** The selected tab's label, on [navContainer]. */
+    val navSelectedLabel: Color,
+    /** Every unselected tab's icon and label. */
+    val navUnselected: Color,
+    /** The hairline between the page and the bottom bar. */
+    val navEdge: Color,
+)
+
+internal val LightBarColors = BarColors(
+    topStart = Palette.Green40,
+    topEnd = Palette.Green30,
+    onTop = Palette.White,
+    onTopVariant = Palette.GreenContainer,
+    topIndicator = Palette.White,
+    // Material's badge is `error` red. Red is this app's hang-up colour and is not spent
+    // on anything else (see the top of this file), least of all on "two filters are on",
+    // which is not a fault. The brand's own light green says it without alarming anybody.
+    topBadge = Palette.GreenContainer,
+    onTopBadge = Palette.GreenOnContainer,
+    // The bar is dark green in both themes, so the dots are the dark theme's.
+    status = StatusColors(
+        online = Palette.GreenContainer,
+        connecting = Palette.Orange80,
+        failed = Palette.Red80,
+        offline = Palette.Neutral90,
+    ),
+    navContainer = Palette.White,
+    navIndicator = Palette.GreenContainer,
+    onNavIndicator = Palette.GreenOnContainer,
+    navSelectedLabel = Palette.Green40,
+    navUnselected = Palette.NeutralVariant50,
+    navEdge = Palette.Neutral92,
+)
+
+internal val DarkBarColors = BarColors(
+    topStart = Palette.Neutral6,
+    topEnd = Palette.Neutral6,
+    onTop = Palette.Neutral90,
+    onTopVariant = Palette.NeutralVariant80,
+    topIndicator = Palette.Green80,
+    topBadge = Palette.Green80,
+    onTopBadge = Palette.GreenOnContainer,
+    status = DarkStatusColors,
+    navContainer = Palette.Neutral6,
+    navIndicator = Palette.GreenContainerDark,
+    onNavIndicator = Palette.GreenContainer,
+    navSelectedLabel = Palette.Green80,
+    navUnselected = Palette.NeutralVariant60,
+    navEdge = Palette.Neutral17,
 )

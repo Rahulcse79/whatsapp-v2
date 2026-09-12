@@ -1,33 +1,21 @@
 package com.whatsappv2.ui
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBarDefaults
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.whatsappv2.core.designsystem.component.AppNavigationBar
+import com.whatsappv2.core.designsystem.component.AppNavigationItem
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
-import com.whatsappv2.core.designsystem.theme.AppTheme
 import com.whatsappv2.ui.navigation.AppDestination
 import com.whatsappv2.ui.navigation.AppNavHost
 
@@ -110,47 +98,21 @@ fun AppRoot(
  * The two places the app can be.
  *
  * Labels always shown: an icon-only bar makes people guess, and "Chats" and "Calls" are
- * one word each.
- *
- * ## Why this is a `Row` of `NavigationBarItem`s and not a `NavigationBar`
- *
- * Material's `NavigationBar` is 80 dp tall and centres a 32 dp indicator and a label
- * inside it, which leaves a quarter of the bar as empty space above the icons — the
- * "extra space above the icons" that was reported. Material's own answer is the 64 dp
- * short bar, but in this Compose release that API is still sealed behind an internal
- * opt-in, so the bar is assembled here from the same items on a row of the height the
- * design system says (`AppTheme.sizing.bottomBar`). The items, their pill, their ripple
- * and their colours are Material's; only the container height is ours.
- *
- * The screen's own colour, with no tonal lift. Material's default containerColor is a
- * raised surface, which on the dark theme drew the bar as a distinct slab with a black
- * band beneath it — the app looked like two apps stacked. The bar is part of the
- * screen, so it is the same colour as the screen, and the selected pill is what says
- * where you are. The system navigation inset is padded *inside* the surface, so the
- * colour runs under the gesture bar rather than stopping above it.
+ * one word each. The bar itself — its colours, its height, the hairline above it, the
+ * inset it pads inside its own colour — is the design system's `AppNavigationBar`, so
+ * it matches the header every screen wears (`BarColors`) and nothing here is a colour.
  */
 @Composable
 private fun AppBottomBar(current: AppDestination, onSelect: (AppDestination) -> Unit) {
-    Surface(color = MaterialTheme.colorScheme.surface) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .windowInsetsPadding(NavigationBarDefaults.windowInsets)
-                .height(AppTheme.sizing.bottomBar)
-                .selectableGroup(),
-            horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            AppDestination.TOP_LEVEL.forEach { destination ->
-                NavigationBarItem(
-                    selected = destination == current,
-                    onClick = { onSelect(destination) },
-                    icon = { Icon(destination.icon, contentDescription = null) },
-                    label = { Text(destination.label) },
-                    alwaysShowLabel = true,
-                    modifier = Modifier.testTag(tabTag(destination)),
-                )
-            }
+    AppNavigationBar {
+        AppDestination.TOP_LEVEL.forEach { destination ->
+            AppNavigationItem(
+                selected = destination == current,
+                onClick = { onSelect(destination) },
+                icon = destination.icon,
+                label = destination.label,
+                modifier = Modifier.testTag(tabTag(destination)),
+            )
         }
     }
 }

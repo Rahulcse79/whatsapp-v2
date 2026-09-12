@@ -67,6 +67,12 @@ data class Sizing(
     /** A glyph at the end of a list row that says what the row is, not what it does. */
     val listTrailingIcon: Dp = 20.dp,
 
+    /** An icon inside a chip — Material's 18dp, which the chip's own defaults assume. */
+    val chipIcon: Dp = 18.dp,
+
+    /** The selected tab's underline in the header. Shorter than the tab, so it points rather than underlines. */
+    val tabIndicatorWidth: Dp = 40.dp,
+
     /** Avatar on the in-call screen. */
     val avatarLarge: Dp = 96.dp,
 

@@ -40,10 +40,15 @@ import kotlinx.coroutines.flow.map
  * night mode, not ours. Someone who forces Light on a dark phone would otherwise have
  * light icons on a light bar — a clock nobody can read. The insets controller is told
  * the theme every time it resolves, so the icons follow the app rather than the phone.
+ *
+ * [statusBarOverHeader] is for the main activity, whose every screen wears the brand
+ * header (`BarColors`) — deep green in light, near-black in dark — so the clock above it
+ * must be light in both themes. The call screen has no header and follows the theme.
  */
 @Composable
 fun AppThemed(
     settings: AppSettingsRepository,
+    statusBarOverHeader: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val mode by remember(settings) {
@@ -57,7 +62,7 @@ fun AppThemed(
         // A preview and a test have no window; only a real activity's bars are adjusted.
         val window = (view.context as? Activity)?.window ?: return@SideEffect
         WindowCompat.getInsetsController(window, view).apply {
-            isAppearanceLightStatusBars = !darkTheme
+            isAppearanceLightStatusBars = !darkTheme && !statusBarOverHeader
             isAppearanceLightNavigationBars = !darkTheme
         }
     }

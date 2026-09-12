@@ -14,6 +14,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,6 +24,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -30,6 +32,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.whatsappv2.core.designsystem.component.AppTopBar
 import com.whatsappv2.core.designsystem.component.StatusDot
 import com.whatsappv2.core.designsystem.component.StatusLabel
 import com.whatsappv2.core.designsystem.component.StatusTone
@@ -212,9 +215,14 @@ private fun IndicatorChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Drawn on the header, so every colour is the header's (`BarColors`): the content
+    // colour the bar provides, its secondary tone, and a dot palette chosen against the
+    // bar rather than against a white page — a green dot on a green bar is no dot.
+    val bar = AppTheme.barColors
     Row(
         modifier = modifier
             .heightIn(min = AppTheme.sizing.minimumTouchTarget)
+            .clip(MaterialTheme.shapes.small)
             .clickable(onClick = onClick)
             .semantics(mergeDescendants = true) {
                 role = Role.Button
@@ -224,18 +232,18 @@ private fun IndicatorChip(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
     ) {
-        StatusDot(tone)
+        StatusDot(tone, colors = bar.status)
         Column {
             Text(
                 text = headline,
                 style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = LocalContentColor.current,
                 maxLines = 1,
             )
             Text(
                 text = detail,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = bar.onTopVariant,
                 maxLines = 1,
             )
         }
@@ -270,20 +278,36 @@ private fun RegistrationIndicatorPreview() = PreviewSurface {
     val failing = office.copy(status = AccountStatus.FAILED_NEEDS_ATTENTION, isDefault = true)
 
     Column(verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.small)) {
-        RegistrationIndicator(
-            state = RegistrationStatusUiState.Content(accounts = listOf(local, office), default = local),
-            onSetDefault = {},
-            onManageAccounts = {},
+        // On the header it is designed for, so the colours are judged where they are used.
+        AppTopBar(
+            title = "Chats",
+            actions = {
+                RegistrationIndicator(
+                    state = RegistrationStatusUiState.Content(accounts = listOf(local, office), default = local),
+                    onSetDefault = {},
+                    onManageAccounts = {},
+                )
+            },
         )
-        RegistrationIndicator(
-            state = RegistrationStatusUiState.Content(accounts = listOf(failing), default = failing),
-            onSetDefault = {},
-            onManageAccounts = {},
+        AppTopBar(
+            title = "Chats",
+            actions = {
+                RegistrationIndicator(
+                    state = RegistrationStatusUiState.Content(accounts = listOf(failing), default = failing),
+                    onSetDefault = {},
+                    onManageAccounts = {},
+                )
+            },
         )
-        RegistrationIndicator(
-            state = RegistrationStatusUiState.NoAccounts,
-            onSetDefault = {},
-            onManageAccounts = {},
+        AppTopBar(
+            title = "Chats",
+            actions = {
+                RegistrationIndicator(
+                    state = RegistrationStatusUiState.NoAccounts,
+                    onSetDefault = {},
+                    onManageAccounts = {},
+                )
+            },
         )
     }
 }

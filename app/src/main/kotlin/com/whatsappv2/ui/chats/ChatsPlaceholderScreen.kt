@@ -9,19 +9,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
+import com.whatsappv2.core.designsystem.component.AppTopBar
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
 import com.whatsappv2.core.designsystem.theme.AppTheme
@@ -50,7 +49,6 @@ import com.whatsappv2.core.designsystem.theme.AppTheme
  * answer without being asked. It is `:feature:accounts`' composable placed here; this
  * module knows where the bar is, that one knows what registration means.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatsPlaceholderScreen(
     modifier: Modifier = Modifier,
@@ -65,8 +63,8 @@ fun ChatsPlaceholderScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
-            TopAppBar(
-                title = { Text("Chats") },
+            AppTopBar(
+                title = "Chats",
                 actions = {
                     registrationIndicator?.invoke()
                     onOpenSettings?.let { open ->
