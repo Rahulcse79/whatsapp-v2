@@ -150,6 +150,7 @@ private fun NavGraphBuilder.callRoutes(
         HistoryRoute(
             onCallPlaced = openCall,
             onOpenDialer = { navController.navigate(AppDestination.DIALER.route) },
+            onOpenRecordings = { navController.navigate(AppDestination.RECORDINGS.route) },
             videoGate = videoGate,
         )
     }
@@ -165,7 +166,6 @@ private fun NavGraphBuilder.callRoutes(
     composable(AppDestination.SETTINGS.route) {
         SettingsScreen(
             onOpenAccounts = { navController.navigate(AppDestination.ACCOUNTS.route) },
-            onOpenRecordings = { navController.navigate(AppDestination.RECORDINGS.route) },
             onBack = { navController.popBackStack() },
         )
     }

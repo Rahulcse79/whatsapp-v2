@@ -49,4 +49,6 @@ data class HistoryActions(
     val onVideoCallBack: (CallLogEntry) -> Unit = {},
     /** Open the dialler, which is a floating button on this screen rather than a tab (Task 70). */
     val onOpenDialer: () -> Unit = {},
+    /** Open the call recordings. Leaves this module, so :app decides the destination. */
+    val onOpenRecordings: () -> Unit = {},
 )

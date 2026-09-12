@@ -39,7 +39,6 @@ class SettingsScreenTest {
         onTrace: (Boolean) -> Unit = {},
         onTheme: (ThemeMode) -> Unit = {},
         onRetention: (CallHistoryRetention) -> Unit = {},
-        onOpenRecordings: () -> Unit = {},
     ) {
         compose.setContent {
             WhatsAppV2Theme {
@@ -53,7 +52,7 @@ class SettingsScreenTest {
                         onSipTraceChange = onTrace,
                         onRetentionChange = onRetention,
                     ),
-                    links = SettingsLinks(onOpenAccounts = {}, onOpenRecordings = onOpenRecordings),
+                    links = SettingsLinks(onOpenAccounts = {}),
                     onBack = {},
                 )
             }
@@ -69,17 +68,6 @@ class SettingsScreenTest {
         compose.onNodeWithText("Default media encryption").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Audio route").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Call history").performScrollTo().assertIsDisplayed()
-    }
-
-    @Test
-    fun `the recordings row is shown and opens the recordings`() {
-        var opened = false
-        setContent(onOpenRecordings = { opened = true })
-
-        compose.onNodeWithText("Call recordings").assertIsDisplayed()
-        compose.onNodeWithTag(TAG_RECORDINGS).performClick()
-
-        assertEquals(true, opened)
     }
 
     @Test

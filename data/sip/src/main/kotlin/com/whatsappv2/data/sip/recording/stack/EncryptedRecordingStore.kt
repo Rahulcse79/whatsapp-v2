@@ -11,6 +11,7 @@ import com.whatsappv2.core.common.result.success
 import com.whatsappv2.data.sip.recording.AllocatedRecording
 import com.whatsappv2.data.sip.recording.PlaybackCopy
 import com.whatsappv2.data.sip.recording.RecordingStore
+import com.whatsappv2.data.sip.recording.WavHeader
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.recording.Recording
 import com.whatsappv2.domain.recording.RecordingError
@@ -19,6 +20,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.io.RandomAccessFile
 import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.util.UUID
@@ -231,6 +233,10 @@ internal class EncryptedRecordingStore @Inject constructor(
         val destination = File(playbackDirectory, "${id.value}$PLAYBACK_SUFFIX")
         return try {
             sealed.inputStream().use { raw -> raw.decryptInto(destination, key) }
+            // PJSIP leaves the WAV size fields at zero unless it closed the writer cleanly,
+            // and MediaPlayer reads a zero data size as "no samples" and plays nothing. The
+            // real sizes are the file's own length; write them in before handing it over.
+            repairWavSizes(destination)
             success(PlaybackCopy(id = id, plaintextPath = destination.absolutePath))
         } catch (e: IOException) {
             destination.delete()
@@ -243,6 +249,29 @@ internal class EncryptedRecordingStore @Inject constructor(
 
     override fun closePlayback(copy: PlaybackCopy) {
         File(copy.plaintextPath).delete()
+    }
+
+    /**
+     * Rewrites the RIFF and `data` sizes of [file] from its real length, best-effort.
+     *
+     * Only the first bytes are read and, if wrong, rewritten in place; the PCM samples are
+     * untouched. A file that is not a canonical WAV, or already correct, is left alone, and
+     * an I/O failure here is not fatal — playback then behaves as it did before, no worse.
+     */
+    private fun repairWavSizes(file: File) {
+        try {
+            val length = file.length()
+            val headLength = minOf(length, HEADER_SCAN_BYTES.toLong()).toInt()
+            RandomAccessFile(file, "rw").use { raf ->
+                val head = ByteArray(headLength)
+                raf.readFully(head)
+                val fixed = WavHeader.corrected(head, length) ?: return
+                raf.seek(0)
+                raf.write(fixed)
+            }
+        } catch (e: IOException) {
+            logger.warn(TAG, "Could not repair the WAV header for playback: ${e.javaClass.simpleName}")
+        }
     }
 
     /**
@@ -371,5 +400,8 @@ internal class EncryptedRecordingStore @Inject constructor(
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val GCM_IV_BYTES = 12
         const val GCM_TAG_BITS = 128
+
+        /** Enough to reach the data chunk past fmt and any extension chunks. */
+        const val HEADER_SCAN_BYTES = 128
     }
 }
