@@ -580,7 +580,7 @@ jobs:
 
     steps:
       - name: Collect every ABI's build
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: pjsip-${{ inputs.pjsip-version }}-*
           path: parts
@@ -714,7 +714,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Take the AAR this run just built
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: pjsua2-aar-${{ inputs.pjsip-version }}
           path: aar
