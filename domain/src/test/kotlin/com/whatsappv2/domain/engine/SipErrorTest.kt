@@ -90,6 +90,7 @@ class SipErrorTest {
             SipError.NotRegistered,
             SipError.EngineUnavailable,
             SipError.CallNotPermitted,
+            SipError.PlatformUnavailable,
             SipError.InvalidState("not held"),
             SipError.TransportFailure(TransportFailureKind.CONNECTION_LOST),
         )
@@ -168,6 +169,8 @@ class SipErrorTest {
             // Telecom refused before the INVITE, so nothing failed on the wire: the call
             // was called off before it started (Task 35, §3).
             Case(SipError.CallNotPermitted, HangupReason.CANCELLED),
+            // Telecom never answered, so nothing was sent either: called off, not failed.
+            Case(SipError.PlatformUnavailable, HangupReason.CANCELLED),
         )
 
         for (case in cases) {

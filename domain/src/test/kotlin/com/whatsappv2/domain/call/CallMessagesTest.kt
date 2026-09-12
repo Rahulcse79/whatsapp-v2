@@ -58,6 +58,9 @@ class CallMessagesTest {
         Case(SipError.InvalidState("resuming a call that is not held"), "Not possible right now"),
         Case(SipError.EngineUnavailable, "Calling is not available right now"),
         Case(SipError.CallNotPermitted, "Your phone is on another call"),
+        // A Telecom that did not answer is not a phone on another call, and the sentence
+        // must not send the user looking for one.
+        Case(SipError.PlatformUnavailable, "The phone's calling service did not respond"),
         Case(SipError.Unexpected("stack said 199"), "The call could not be completed"),
     )
 

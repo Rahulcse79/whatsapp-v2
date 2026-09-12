@@ -34,17 +34,25 @@ interface PlatformCallRegistry {
     /**
      * Registers an outgoing call **before** its INVITE.
      *
-     * @return false when the platform refused — almost always a cellular call in
-     *   progress. A refusal is final: the caller must not place the call anyway.
+     * Answered with a [PlatformDecision] rather than a boolean, because two of its three
+     * answers used to be one: a platform that refused and a platform that never replied
+     * both came back `false`, the engine turned both into `CallNotPermitted`, and the
+     * screen told a user whose phone was on no call at all that it was. Only
+     * [PlatformDecision.Permitted] places the call; the other two differ in what the user
+     * is told, not in whether an INVITE goes out.
      */
-    suspend fun registerOutgoing(call: CallSnapshot): Boolean
+    suspend fun registerOutgoing(call: CallSnapshot): PlatformDecision
 
     /**
      * Registers an inbound INVITE before anything rings.
      *
-     * @return false when the platform refused, in which case the call must be rejected
-     *   rather than shown. Forcing our own full-screen UI over a cellular call is the
-     *   behaviour §3 rejects.
+     * Still a boolean, deliberately: a refusal and a silence lead to the same act here —
+     * the INVITE is rejected and nobody is shown a sentence — so a finer answer would be
+     * a distinction with nothing to do.
+     *
+     * @return false when the platform refused or did not answer, in which case the call
+     *   must be rejected rather than shown. Forcing our own full-screen UI over a cellular
+     *   call is the behaviour §3 rejects.
      */
     suspend fun registerIncoming(call: IncomingCall): Boolean
 
@@ -91,6 +99,29 @@ interface PlatformCallRegistry {
 }
 
 /**
+ * What the platform said when asked to take an outgoing call.
+ *
+ * A refusal is a rule to respect; a silence is a fault to report. They share only the
+ * outcome that no INVITE is sent — a call the platform does not know about has no audio
+ * focus, no arbitration with the cellular radio and no way to end it from the lock screen
+ * (§3) — and they must not share a sentence.
+ */
+sealed interface PlatformDecision {
+
+    /** The platform created the connection, or has none to create. Place the call. */
+    data object Permitted : PlatformDecision
+
+    /** The platform said no, and a refusal is final: almost always a cellular call in progress. */
+    data object Refused : PlatformDecision
+
+    /**
+     * The platform never answered inside its own timeout, or would not take the handover
+     * at all. Nothing said the phone was busy, and the user must not be told it was.
+     */
+    data object Unavailable : PlatformDecision
+}
+
+/**
  * The registry for a platform that has none.
  *
  * Permits everything and remembers nothing. Two uses, and both are honest: a JVM test
@@ -99,7 +130,7 @@ interface PlatformCallRegistry {
  * at all.
  */
 object UnmanagedCallRegistry : PlatformCallRegistry {
-    override suspend fun registerOutgoing(call: CallSnapshot): Boolean = true
+    override suspend fun registerOutgoing(call: CallSnapshot): PlatformDecision = PlatformDecision.Permitted
     override suspend fun registerIncoming(call: IncomingCall): Boolean = true
     override fun onConnected(callId: CallId) = Unit
     override fun onHoldChanged(callId: CallId, held: Boolean) = Unit

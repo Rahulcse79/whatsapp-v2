@@ -217,7 +217,7 @@ class UnmanagedCallRegistryTest {
             receivedAtEpochMillis = 0L,
         )
 
-        assertTrue(UnmanagedCallRegistry.registerOutgoing(snapshot))
+        assertEquals(PlatformDecision.Permitted, UnmanagedCallRegistry.registerOutgoing(snapshot))
         assertTrue(UnmanagedCallRegistry.registerIncoming(incoming))
     }
 

@@ -6,6 +6,7 @@ import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.CallSnapshot
 import com.whatsappv2.domain.engine.IncomingCall
+import com.whatsappv2.domain.engine.PlatformDecision
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.HangupReason
@@ -32,10 +33,10 @@ class FakePlatformCallRegistryTest {
 
     @Test
     fun `a refusal is what the test asked for, not what the fake prefers`() = runTest {
-        registry.permitOutgoing = false
+        registry.outgoingDecision = PlatformDecision.Refused
         registry.permitIncoming = false
 
-        assertFalse(registry.registerOutgoing(snapshot()))
+        assertEquals(PlatformDecision.Refused, registry.registerOutgoing(snapshot()))
         assertFalse(registry.registerIncoming(incoming()))
         // Recorded even when refused: "the platform was asked and said no" and "the
         // platform was never asked" are different bugs.

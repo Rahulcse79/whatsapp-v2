@@ -22,6 +22,7 @@ import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.HoldParty
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.CameraAvailability
+import com.whatsappv2.domain.engine.PlatformDecision
 import com.whatsappv2.domain.engine.PushToken
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
@@ -368,12 +369,29 @@ class PjsipSipEngineCallTest : PjsipSipEngineFixture() {
         // A native call is in progress. §3 says honour it: no INVITE, and no row left
         // behind for a call that will never exist.
         val engine = registeredEngine()
-        platform.permitOutgoing = false
+        platform.outgoingDecision = PlatformDecision.Refused
 
         val result = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO)
         runCurrent()
 
         assertEquals(SipError.CallNotPermitted, result.errorOrNull())
+        assertTrue(gateway.placedCalls.isEmpty(), "nothing may reach the wire")
+        assertTrue(engine.activeCalls.value.isEmpty())
+        engine.stop()
+    }
+
+    @Test
+    fun `a Telecom that does not answer fails the call as its own fault, not as a busy phone`() = runTest {
+        // The same outcome on the wire as a refusal — no INVITE, no row — and a different
+        // error, because the screen turns the error into a sentence and "your phone is on
+        // another call" was being shown to a user whose phone was idle.
+        val engine = registeredEngine()
+        platform.outgoingDecision = PlatformDecision.Unavailable
+
+        val result = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO)
+        runCurrent()
+
+        assertEquals(SipError.PlatformUnavailable, result.errorOrNull())
         assertTrue(gateway.placedCalls.isEmpty(), "nothing may reach the wire")
         assertTrue(engine.activeCalls.value.isEmpty())
         engine.stop()

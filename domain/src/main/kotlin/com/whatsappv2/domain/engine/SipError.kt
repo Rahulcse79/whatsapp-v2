@@ -219,6 +219,20 @@ sealed interface SipError {
     data object CallNotPermitted : SipError
 
     /**
+     * The platform was asked to take the call and did not.
+     *
+     * On Android that is Telecom neither creating nor refusing the connection inside its
+     * timeout, or not accepting the handover at all. Its own case rather than a second
+     * meaning of [CallNotPermitted], because it is a different fact and needs a different
+     * sentence: nothing said the phone was busy, and saying so sends the user looking for a
+     * call that does not exist. The INVITE is still not sent — a call the platform does not
+     * know about has no audio focus and no lock-screen control (§3).
+     *
+     * Raised locally: no SIP response maps to this, because nothing was ever sent.
+     */
+    data object PlatformUnavailable : SipError
+
+    /**
      * The stack reported something with no domain meaning. Carries whatever it said so
      * a bug report is actionable; never shown to the user verbatim.
      *
@@ -331,7 +345,7 @@ fun SipError.toHangupReason(): HangupReason = when (this) {
     is SipError.Busy -> HangupReason.BUSY
     // Nothing was ever sent, so nothing failed on the wire: the call was called off
     // before it started, which is what CANCELLED means in the log.
-    is SipError.CallNotPermitted -> HangupReason.CANCELLED
+    is SipError.CallNotPermitted, is SipError.PlatformUnavailable -> HangupReason.CANCELLED
     is SipError.Declined -> HangupReason.DECLINED
     is SipError.Timeout, is SipError.TemporarilyUnavailable -> HangupReason.NO_ANSWER
     is SipError.Cancelled -> HangupReason.CANCELLED

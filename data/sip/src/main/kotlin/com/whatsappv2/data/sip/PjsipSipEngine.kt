@@ -37,6 +37,7 @@ import com.whatsappv2.domain.engine.ConferenceSession
 import com.whatsappv2.domain.engine.IncomingCall
 import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.engine.PlatformCallRegistry
+import com.whatsappv2.domain.engine.PlatformDecision
 import com.whatsappv2.domain.engine.PushToken
 import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.engine.SipEngine
@@ -818,12 +819,21 @@ internal class PjsipSipEngine @Inject constructor(
 
         // Telecom, before the INVITE. It knows about the cellular call this app cannot
         // see, and a refusal is honoured rather than worked around (Task 34, §3). The
-        // snapshot goes back out again on refusal: a call that will never exist must not
-        // be left on screen.
-        if (!platform.registerOutgoing(snapshot)) {
+        // snapshot goes back out again on anything but a yes: a call that will never exist
+        // must not be left on screen. A refusal and a silence part company only in what
+        // the user is told — the first names the other call, the second must not.
+        val notPlaced = when (platform.registerOutgoing(snapshot)) {
+            PlatformDecision.Permitted -> null
+            PlatformDecision.Refused -> SipError.CallNotPermitted
+            PlatformDecision.Unavailable -> SipError.PlatformUnavailable
+        }
+        if (notPlaced != null) {
             updateCalls { it - callId }
-            logger.info(TAG, "Telecom refused an outgoing call")
-            return failure(SipError.CallNotPermitted)
+            when (notPlaced) {
+                SipError.CallNotPermitted -> logger.info(TAG, "Telecom refused an outgoing call")
+                else -> logger.error(TAG, "Telecom did not take an outgoing call; it is not placed")
+            }
+            return failure(notPlaced)
         }
 
         callGateway.placeCall(
