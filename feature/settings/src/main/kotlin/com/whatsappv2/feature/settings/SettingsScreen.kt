@@ -33,11 +33,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.whatsappv2.core.designsystem.component.AppDropdownField
 import com.whatsappv2.core.designsystem.component.AppTopBar
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
 import com.whatsappv2.core.designsystem.theme.AppTheme
 import com.whatsappv2.domain.model.AppSettings
+import com.whatsappv2.domain.model.CallHistoryRetention
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
@@ -67,6 +69,7 @@ fun SettingsScreen(
         onAudioRouteChange = viewModel::setPreferredAudioRoute,
         onThemeModeChange = viewModel::setThemeMode,
         onSipTraceChange = viewModel::setSipTraceEnabled,
+        onRetentionChange = viewModel::setCallHistoryRetention,
         onOpenAccounts = onOpenAccounts,
         onBack = onBack,
         modifier = modifier,
@@ -83,6 +86,7 @@ fun SettingsScreen(
     onAudioRouteChange: (PreferredAudioRoute) -> Unit,
     onThemeModeChange: (ThemeMode) -> Unit,
     onSipTraceChange: (Boolean) -> Unit,
+    onRetentionChange: (CallHistoryRetention) -> Unit,
     modifier: Modifier = Modifier,
     /** Opens the account list. Null in a preview, where there is nowhere to go. */
     onOpenAccounts: (() -> Unit)? = null,
@@ -113,6 +117,7 @@ fun SettingsScreen(
             onAudioRouteChange = onAudioRouteChange,
             onThemeModeChange = onThemeModeChange,
             onSipTraceChange = onSipTraceChange,
+            onRetentionChange = onRetentionChange,
             onOpenAccounts = onOpenAccounts,
             modifier = Modifier.padding(innerPadding),
         )
@@ -128,6 +133,7 @@ private fun SettingsContent(
     onAudioRouteChange: (PreferredAudioRoute) -> Unit,
     onThemeModeChange: (ThemeMode) -> Unit,
     onSipTraceChange: (Boolean) -> Unit,
+    onRetentionChange: (CallHistoryRetention) -> Unit,
     onOpenAccounts: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
@@ -185,6 +191,10 @@ private fun SettingsContent(
                 labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
                 onSelect = onAudioRouteChange,
             )
+        }
+
+        SettingsCard {
+            RetentionGroup(selected = state.settings.callHistoryRetention, onSelect = onRetentionChange)
         }
 
         // Absent in release builds rather than disabled: a disabled control invites
@@ -252,6 +262,48 @@ private fun EncryptionGroup(selected: SrtpPolicy, onSelect: (SrtpPolicy) -> Unit
 }
 
 /**
+ * How long the call log is kept, chosen from a list.
+ *
+ * A dropdown rather than a chip row, because nine options do not fit on a row — see
+ * `AppDropdownField`. The description names both kinds of call on purpose: a user who
+ * has just made a video call and wonders whether "call history" means that too should
+ * find the answer here, not by waiting to see whether it disappears.
+ */
+@Composable
+private fun RetentionGroup(selected: CallHistoryRetention, onSelect: (CallHistoryRetention) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.small)) {
+        Text("Call history", style = MaterialTheme.typography.titleMedium)
+        Text(
+            text = "Calls older than this are removed automatically. Audio and video " +
+                "calls are kept for the same time.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        AppDropdownField(
+            label = "Keep call history for",
+            options = CallHistoryRetention.PRESETS,
+            selected = selected,
+            labelOf = ::retentionLabel,
+            onSelect = onSelect,
+            optionTag = ::retentionOptionTag,
+            modifier = Modifier.testTag(TAG_RETENTION),
+        )
+    }
+}
+
+/**
+ * The words for one retention, in the dropdown and in the field.
+ *
+ * Plain "days" throughout rather than "3 weeks" or "1 year": the list is a scale, and a
+ * scale whose units change halfway down is one the eye has to convert to compare.
+ */
+internal fun retentionLabel(retention: CallHistoryRetention): String = when {
+    retention.keepsEverything -> "Forever"
+    retention.days == 1 -> "1 day"
+    else -> "${retention.days} days"
+}
+
+/**
  * The way through to the SIP accounts (Task 69).
  *
  * A row rather than the list inlined here: an account has a detail screen and an editor
@@ -292,6 +344,10 @@ private fun AccountsRow(onClick: () -> Unit) {
 
 internal const val TAG_ACCOUNTS = "settings-accounts"
 internal const val TAG_BACK = "settings-back"
+internal const val TAG_RETENTION = "settings-retention"
+
+/** Identifies one retention option, so a test picks the length it means. */
+internal fun retentionOptionTag(retention: CallHistoryRetention) = "settings-retention-${retention.days}"
 
 /** Identifies one appearance chip, so a test presses the mode it means. */
 internal fun themeChipTag(mode: ThemeMode) = "settings-theme-${mode.name.lowercase()}"
@@ -360,5 +416,6 @@ private fun SettingsScreenPreview() = PreviewSurface {
         onAudioRouteChange = {},
         onThemeModeChange = {},
         onSipTraceChange = {},
+        onRetentionChange = {},
     )
 }

@@ -101,6 +101,16 @@ data class AppSettings(
      * file.
      */
     val sipTraceEnabled: Boolean = false,
+
+    /**
+     * How long the call log is kept before old entries are removed.
+     *
+     * One setting for the whole log, and deliberately not one per kind: a call is a call,
+     * and somebody who wants three weeks of history wants three weeks of it whether the
+     * camera was on or not. The pruning is by time alone, so audio and video are covered
+     * by the same rule rather than by two that could drift.
+     */
+    val callHistoryRetention: CallHistoryRetention = CallHistoryRetention.DEFAULT,
 ) {
     companion object {
         /** What a fresh install starts with. */

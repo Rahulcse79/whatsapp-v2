@@ -1,6 +1,7 @@
 package com.whatsappv2.domain.testing
 
 import com.whatsappv2.domain.model.AppSettings
+import com.whatsappv2.domain.model.CallHistoryRetention
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
@@ -39,5 +40,9 @@ class FakeAppSettingsRepository(
 
     override suspend fun setSipTraceEnabled(enabled: Boolean) {
         settings.value = settings.value.copy(sipTraceEnabled = enabled)
+    }
+
+    override suspend fun setCallHistoryRetention(retention: CallHistoryRetention) {
+        settings.value = settings.value.copy(callHistoryRetention = retention)
     }
 }

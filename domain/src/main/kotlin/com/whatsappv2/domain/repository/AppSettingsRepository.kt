@@ -1,6 +1,7 @@
 package com.whatsappv2.domain.repository
 
 import com.whatsappv2.domain.model.AppSettings
+import com.whatsappv2.domain.model.CallHistoryRetention
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
@@ -47,4 +48,7 @@ interface AppSettingsRepository {
      * storage layer, where nobody reviewing the UI would find it.
      */
     suspend fun setSipTraceEnabled(enabled: Boolean)
+
+    /** How long the call log is kept. Takes effect on the next prune, not retroactively undone. */
+    suspend fun setCallHistoryRetention(retention: CallHistoryRetention)
 }

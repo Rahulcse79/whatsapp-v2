@@ -2,6 +2,7 @@ package com.whatsappv2
 
 import android.app.Application
 import com.whatsappv2.audio.CallAudioCoordinator
+import com.whatsappv2.calllog.CallHistoryPruner
 import com.whatsappv2.call.IncomingCallPresenter
 import com.whatsappv2.calllog.CallLogWriter
 import com.whatsappv2.core.common.logging.Logger
@@ -55,6 +56,9 @@ class SipApplication : Application() {
     lateinit var callAudio: CallAudioCoordinator
 
     @Inject
+    lateinit var historyPruner: CallHistoryPruner
+
+    @Inject
     lateinit var callLog: CallLogWriter
 
     @Inject
@@ -89,6 +93,10 @@ class SipApplication : Application() {
         // user is elsewhere - or with nothing on screen at all - is still a call to
         // record, and those are the missed ones (Task 47).
         callLog.start()
+        // Beside the writer, because it is the same subscription shape and the same
+        // bargain: nothing held until the first emission, and a log that stays inside its
+        // retention without anybody opening the history screen.
+        historyPruner.start()
         // Nothing started the foreground service until now, so it never ran: an account
         // could register and a call could arrive with no service to post a notification
         // from. The same ServiceRunPolicy that stops it decides when to start it.

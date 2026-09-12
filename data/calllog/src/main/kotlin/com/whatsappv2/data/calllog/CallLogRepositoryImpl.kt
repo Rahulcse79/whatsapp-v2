@@ -84,4 +84,7 @@ class CallLogRepositoryImpl @Inject constructor(
     override suspend fun delete(id: CallLogId) = dao.deleteById(id.value)
 
     override suspend fun clear() = dao.deleteAll()
+
+    override suspend fun deleteStartedBefore(cutoffEpochMillis: Long): Int =
+        dao.deleteStartedBefore(cutoffEpochMillis)
 }

@@ -4,9 +4,11 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.domain.model.AppSettings
+import com.whatsappv2.domain.model.CallHistoryRetention
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
@@ -65,6 +67,9 @@ class DataStoreAppSettingsRepository @Inject constructor(
     override suspend fun setSipTraceEnabled(enabled: Boolean) =
         edit { it[SIP_TRACE] = enabled }
 
+    override suspend fun setCallHistoryRetention(retention: CallHistoryRetention) =
+        edit { it[HISTORY_RETENTION_DAYS] = retention.days }
+
     private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
         dataStore.edit(block)
     }
@@ -83,6 +88,11 @@ class DataStoreAppSettingsRepository @Inject constructor(
             ?: AppSettings.DEFAULT.preferredAudioRoute,
         themeMode = this[THEME_MODE]?.toEnumOrNull<ThemeMode>() ?: AppSettings.DEFAULT.themeMode,
         sipTraceEnabled = this[SIP_TRACE] ?: AppSettings.DEFAULT.sipTraceEnabled,
+        // Through `ofDays`, so a value written by a build with a longer maximum — or
+        // corrupted to something absurd — is clamped rather than used to compute a cutoff
+        // that would delete the wrong rows.
+        callHistoryRetention = this[HISTORY_RETENTION_DAYS]?.let(CallHistoryRetention::ofDays)
+            ?: AppSettings.DEFAULT.callHistoryRetention,
     )
 
     private inline fun <reified T : Enum<T>> String.toEnumOrNull(): T? =
@@ -96,5 +106,6 @@ class DataStoreAppSettingsRepository @Inject constructor(
         val AUDIO_ROUTE = stringPreferencesKey("preferred_audio_route")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val SIP_TRACE = booleanPreferencesKey("sip_trace_enabled")
+        val HISTORY_RETENTION_DAYS = intPreferencesKey("call_history_retention_days")
     }
 }

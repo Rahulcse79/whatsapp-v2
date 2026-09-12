@@ -85,6 +85,14 @@ class FakeCallLogRepository : CallLogRepository {
         entries.value = emptyList()
     }
 
+    override suspend fun deleteStartedBefore(cutoffEpochMillis: Long): Int {
+        val before = entries.value
+        // Start time only, exactly as the SQL does. A fake that also looked at `hasVideo`
+        // would let a test pass that the database would fail.
+        entries.value = before.filter { it.startedAtEpochMillis >= cutoffEpochMillis }
+        return before.size - entries.value.size
+    }
+
     // `wanted`, not `filter`: naming it after the parameter would shadow the stdlib
     // function used in the same expression, which reads as a bug even when it is not.
     private fun List<CallLogEntry>.matching(wanted: CallLogFilter): List<CallLogEntry> =

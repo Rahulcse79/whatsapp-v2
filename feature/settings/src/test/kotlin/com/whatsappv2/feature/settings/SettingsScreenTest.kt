@@ -8,6 +8,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
 import com.whatsappv2.domain.model.AppSettings
+import com.whatsappv2.domain.model.CallHistoryRetention
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.ThemeMode
@@ -37,6 +38,7 @@ class SettingsScreenTest {
         onSrtp: (SrtpPolicy) -> Unit = {},
         onTrace: (Boolean) -> Unit = {},
         onTheme: (ThemeMode) -> Unit = {},
+        onRetention: (CallHistoryRetention) -> Unit = {},
     ) {
         compose.setContent {
             WhatsAppV2Theme {
@@ -47,6 +49,7 @@ class SettingsScreenTest {
                     onAudioRouteChange = {},
                     onThemeModeChange = onTheme,
                     onSipTraceChange = onTrace,
+                    onRetentionChange = onRetention,
                     onOpenAccounts = {},
                     onBack = {},
                 )
@@ -62,6 +65,54 @@ class SettingsScreenTest {
         compose.onNodeWithText("DTMF").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Default media encryption").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Audio route").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Call history").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `the current retention is shown without opening the list`() {
+        // "Clearly show the currently selected retention period": the value is in the
+        // field itself, readable on the way past, not behind a tap.
+        setContent(
+            state = SettingsUiState(
+                AppSettings.DEFAULT.copy(callHistoryRetention = CallHistoryRetention.ofDays(NINETY)),
+                traceToggleAvailable = true,
+            ),
+        )
+
+        compose.onNodeWithText("90 days").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `a fresh install shows twenty days`() {
+        setContent()
+
+        compose.onNodeWithText("20 days").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `choosing a retention reports it`() {
+        var chosen: CallHistoryRetention? = null
+        setContent(onRetention = { chosen = it })
+
+        compose.onNodeWithTag(TAG_RETENTION).performScrollTo().performClick()
+        compose.onNodeWithTag(retentionOptionTag(CallHistoryRetention.ofDays(SEVEN))).performClick()
+        compose.waitForIdle()
+
+        assertEquals(CallHistoryRetention.ofDays(SEVEN), chosen)
+    }
+
+    @Test
+    fun `the retention list ends with forever, in words`() {
+        // Zero days is the stored value; "0 days" on screen would read as "keep nothing",
+        // which is the opposite of what it does.
+        setContent()
+
+        compose.onNodeWithTag(TAG_RETENTION).performScrollTo().performClick()
+        // Last of nine, so below the fold of the menu until scrolled to.
+        compose.onNodeWithTag(retentionOptionTag(CallHistoryRetention.KEEP_EVERYTHING))
+            .performScrollTo()
+            .assertIsDisplayed()
+        compose.onNodeWithText("Forever").assertIsDisplayed()
     }
 
     @Test
@@ -135,5 +186,10 @@ class SettingsScreenTest {
         setContent()
 
         compose.onNodeWithTag(TAG_APP_VERSION).performScrollTo().assertIsDisplayed()
+    }
+
+    private companion object {
+        const val SEVEN = 7
+        const val NINETY = 90
     }
 }
