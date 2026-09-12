@@ -91,6 +91,16 @@ class CallViewModel @Inject constructor(
 
     private val watched = MutableStateFlow<CallId?>(null)
 
+    /**
+     * The calls this device is mixing right now (ADR-009).
+     *
+     * Held here rather than read back from the engine because the engine has no
+     * conference *object* to report — local mixing is a property of the bridge, not a
+     * session with a URI. The screen needs to know so it can say "3 calls merged"
+     * instead of leaving the merge silent, and so the button stops offering itself.
+     */
+    private val mixed = MutableStateFlow<Set<CallId>>(emptySet())
+
     private val eventChannel = Channel<CallEvent>(Channel.BUFFERED)
     val events: Flow<CallEvent> = eventChannel.receiveAsFlow()
 
@@ -129,18 +139,41 @@ class CallViewModel @Inject constructor(
      * interest to the rest of this screen. Split out so the call screen's own surface stays
      * readable; see [CallTransferController].
      */
-    internal val transfer = CallTransferController(viewModelScope, transfers) { message ->
+    internal val transfer = CallTransferController(viewModelScope, transfers, { watched.value }) { message ->
         eventChannel.send(CallEvent.ActionFailed(CallAction.TRANSFER, message))
     }
 
     /** The consent dialog and the recording it gates (Task 58, §2.6). */
-    internal val recording = CallRecordingController(viewModelScope, recorder, clock) { message ->
+    internal val recording = CallRecordingController(viewModelScope, recorder, clock, { watched.value }) { message ->
         eventChannel.send(CallEvent.ActionFailed(CallAction.RECORD, message))
     }
 
     init {
         watchVideoRequests()
         watchTransfers()
+        followRemainingCall()
+    }
+
+    /** Calls this screen has shown at least once, so a gone call is told apart from one not yet published. */
+    private val shown = mutableSetOf<CallId>()
+
+    /**
+     * Moves the screen to the call that is left when the one it shows ends (Task 56).
+     *
+     * Ending the active call of a pair used to finish the screen — the held call was still
+     * there, on hold, reachable only through the notification (TC15, 2026-09-11 14:41).
+     * The user who just hung up on one person is looking for the other one; the screen
+     * goes to them, established calls first.
+     */
+    private fun followRemainingCall() {
+        viewModelScope.launch {
+            combine(watched.filterNotNull(), calls.activeCalls) { id, active -> id to active }
+                .collect { (id, active) ->
+                    if (id !in shown || active.any { it.callId == id }) return@collect
+                    val remaining = active.firstOrNull { it.state.isEstablished } ?: active.firstOrNull()
+                    if (remaining != null) watched.value = remaining.callId
+                }
+        }
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -173,6 +206,7 @@ class CallViewModel @Inject constructor(
         val recording: RecordingUiState,
         val pendingVideo: PendingVideoRequest?,
         val transfer: TransferUiState,
+        val mixed: Set<CallId> = emptySet(),
     )
 
     private fun stateFor(callId: CallId): Flow<CallUiState> {
@@ -199,11 +233,17 @@ class CallViewModel @Inject constructor(
                 pendingVideo = video?.takeIf { it.callId == callId },
                 transfer = transfer,
             )
-        }
+            // Folded in after the five above rather than as a sixth source: `combine`
+            // stops being type-checked past five, and an indexed array of Any is a worse
+            // trade than one extra operator.
+        }.combine(mixed) { state, mixedNow -> state.copy(mixed = mixedNow) }
 
         return combine(engine, ticker(), contactFor(callId), inFlight) { state, now, contact, busy ->
             val call = state.calls.firstOrNull { it.callId == callId }
-            if (call != null) seen = true
+            if (call != null) {
+                seen = true
+                shown += callId
+            }
 
             when {
                 call != null -> CallUiState.Active(
@@ -214,6 +254,8 @@ class CallViewModel @Inject constructor(
                     transfer = state.transfer,
                     recording = state.recording,
                     conference = state.conference?.toUiState(UNKNOWN_PARTICIPANT),
+                    canMerge = state.calls.count { it.state.isEstablished } >= MIN_MERGEABLE,
+                    mixedCallCount = state.mixed.size,
                     pendingActions = busy,
                 )
                 // Absent after it was present means the call ended. Absent before it was
@@ -406,11 +448,27 @@ class CallViewModel @Inject constructor(
         surfaces.detach()
     }
 
+    /** The screen's rotation, so the camera's picture is sent the way up the screen is. */
+    fun reportDisplayRotation(degrees: Int) {
+        surfaces.setDisplayRotation(degrees)
+    }
+
     // ---------------------------------------------------------------- call waiting
 
-    /** One of the three answers to a second call (Task 56). */
+    /**
+     * One of the three answers to a second call (Task 56).
+     *
+     * An accept also re-points the screen at the call just answered, exactly as [swapTo]
+     * does: the user is now talking to *them*. Without this the screen kept showing the
+     * first call — now on hold, with a Resume button — under a banner claiming the second
+     * call was "on hold", which was the opposite of the truth (TC15, 2026-09-11 14:23).
+     */
     fun respondToSecondCall(callId: CallId, response: SecondCallResponse) {
-        act(CallAction.ANSWER) { callWaiting.respond(callId, response) }
+        act(CallAction.ANSWER) {
+            callWaiting.respond(callId, response).also { result ->
+                if (result is Outcome.Success && response != SecondCallResponse.REJECT) watched.value = callId
+            }
+        }
     }
 
     /**
@@ -419,6 +477,31 @@ class CallViewModel @Inject constructor(
      * Also re-points the screen, because after a swap the call the user is looking at
      * should be the one they are talking to.
      */
+    /**
+     * Mixes every established call this device is holding into one conference (ADR-009).
+     *
+     * Everything on the device, not a chosen pair: the phone has one audio bridge and one
+     * microphone, so "merge" can only ever mean all of them. Ringing calls are left out —
+     * they have no audio to contribute — and join by themselves when they are answered,
+     * because the stack re-plans the mix on every media change.
+     *
+     * The result is what the stack accepted, not what was asked for, so a member the
+     * bridge refused never appears on screen as merged.
+     */
+    fun merge() {
+        val establishedCalls = calls.activeCalls.value
+            .filter { it.state.isEstablished }
+            .map { it.callId }
+            .toSet()
+        if (establishedCalls.size < MIN_MERGEABLE) return
+
+        act(CallAction.MERGE) {
+            conferences.mixCalls(establishedCalls).also { result ->
+                if (result is Outcome.Success) mixed.value = result.value
+            }
+        }
+    }
+
     fun swapTo(callId: CallId) {
         viewModelScope.launch {
             when (val result = callWaiting.swapTo(callId)) {
@@ -466,6 +549,9 @@ class CallViewModel @Inject constructor(
         action !in inFlight.getAndUpdate { it + action }
 
     private companion object {
+        /** Two established calls is the least that can be mixed (ADR-009). */
+        const val MIN_MERGEABLE = 2
+
         const val SUBSCRIPTION_TIMEOUT_MILLIS = 5_000L
 
         /** One second, which is the resolution a call timer is read at. */

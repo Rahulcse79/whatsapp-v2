@@ -37,7 +37,7 @@ message names a version and nothing else. Remove the file, or run on JDK 21.
 
 | | Runs | Needs a server | Gates every push |
 |---|---|---|---|
-| Unit tests + `FakeSipEngine` journeys | `./gradlew build` | no | **yes** |
+| Unit tests + `FakeSipEngine` journeys | `./gradlew check -Ppjsip.native=false` | no | **yes** |
 | Integration tests | `./gradlew :data:sip:connectedAndroidTest` | yes | no |
 
 This split is the point of the task. The server is shared and non-hermetic — someone can

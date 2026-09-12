@@ -80,9 +80,17 @@ object ArchitectureRules {
      * `docs/module-structure.md` §2.2 already said vendored trees are exempt from the house
      * style. This is where that stopped being prose. The exemption is from **style** only —
      * rule 12 still hashes every one of these files, so provenance is not exempt.
+     *
+     * **`bin` is the second one that had to be added, and it made every rule fail at once.**
+     * Eclipse and the IDE's Kotlin plugin copy sources into `<module>/bin/main`, including
+     * this module's own `fixtures/` — the files that violate every rule *on purpose*. The
+     * scan then found each deliberate violation at a second path that no exclusion covered,
+     * and reported it as real. Gitignoring `bin/` fixed the commit and not the scan: this
+     * walks the filesystem, so it has to be told separately. Nothing is lost by skipping it,
+     * because everything under it is a copy of a file already scanned at its real path.
      */
     private val EXCLUDED =
-        listOf("build", ".git", ".gradle", ".idea", ".kotlin", "resources", "third_party")
+        listOf("build", "bin", ".git", ".gradle", ".idea", ".kotlin", "resources", "third_party")
 
     /**
      * The repository root.

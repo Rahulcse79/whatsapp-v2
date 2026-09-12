@@ -10,6 +10,7 @@ import com.whatsappv2.core.common.time.SystemClock
 import com.whatsappv2.data.sip.call.CallStateMapper
 import com.whatsappv2.data.sip.call.ConferenceMapper
 import com.whatsappv2.data.sip.call.SipCallGateway
+import com.whatsappv2.data.sip.call.SipConferenceGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
@@ -37,6 +38,7 @@ import com.whatsappv2.domain.engine.IncomingCall
 import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.engine.PlatformCallRegistry
 import com.whatsappv2.domain.engine.PushToken
+import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.engine.SipEngine
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.TransferEvent
@@ -126,6 +128,7 @@ internal class PjsipSipEngine @Inject constructor(
     private val gateway: SipCoreGateway,
     private val callGateway: SipCallGateway,
     private val videoGateway: SipVideoGateway,
+    private val conferenceGateway: SipConferenceGateway,
     private val accounts: SipAccountRepository,
     /**
      * App-wide preferences, read for the DTMF transport (Task 43, §5.1).
@@ -274,24 +277,16 @@ internal class PjsipSipEngine @Inject constructor(
      */
     private val pendingVideoRequests = mutableMapOf<CallId, VideoRequest>()
 
-    private val videoOffers = MutableSharedFlow<VideoRequest>(
-        replay = 0,
-        extraBufferCapacity = INCOMING_BUFFER,
-        // Stated, not inherited. On overflow the emitter suspends; because this one is
-        // published with tryEmit from a non-suspend path, [emitOrReport] turns a refusal
-        // into a WARN rather than nothing. A dropped offer is recoverable —
-        // pendingVideoRequests still holds it — so a reported drop is the right trade here.
-        onBufferOverflow = BufferOverflow.SUSPEND,
-    )
+    // Stated, not inherited. On overflow the emitter suspends; because this one is
+    // published with tryEmit from a non-suspend path, [emitOrReport] turns a refusal
+    // into a WARN rather than nothing. A dropped offer is recoverable —
+    // pendingVideoRequests still holds it — so a reported drop is the right trade here.
+    private val videoOffers = eventFlow<VideoRequest>()
     override val videoRequests: Flow<VideoRequest> = videoOffers.asSharedFlow()
 
-    private val transfers = MutableSharedFlow<TransferEvent>(
-        replay = 0,
-        extraBufferCapacity = INCOMING_BUFFER,
-        // A dropped transfer event loses the OUTCOME, never the call: the state machine has
-        // already advanced and the call is correct either way. Reported, not fatal.
-        onBufferOverflow = BufferOverflow.SUSPEND,
-    )
+    // A dropped transfer event loses the OUTCOME, never the call: the state machine has
+    // already advanced and the call is correct either way. Reported, not fatal.
+    private val transfers = eventFlow<TransferEvent>()
     override val transferEvents: Flow<TransferEvent> = transfers.asSharedFlow()
 
     /**
@@ -303,8 +298,24 @@ internal class PjsipSipEngine @Inject constructor(
      */
     private val transferTypes = mutableMapOf<CallId, TransferType>()
 
+    /**
+     * Calls whose hold re-INVITE is out and unanswered.
+     *
+     * `Held` arrives on the stack's event, not on the button, so between the request and
+     * the far end's 200 the FSM still says `Connected` and would let a second `LocalHold`
+     * through. Two things ask in that window on every attended transfer: the transfer
+     * itself, and Telecom's `holdActiveCallForNewCall` 200 ms later when the consultation
+     * call goes active. pjsua refuses the second with `PJ_EINVALIDOP`, which the gateway
+     * logged as "pauseCall failed" — a failure that was not one (TC15, 2026-09-11). The
+     * second ask is answered here instead: it wants what is already happening.
+     */
+    private val pendingHolds = mutableSetOf<CallId>()
+
     private val conferenceSessions = MutableStateFlow<List<ConferenceSession>>(emptyList())
     override val conferences: StateFlow<List<ConferenceSession>> = conferenceSessions.asStateFlow()
+
+    private val mixed = MutableStateFlow<Set<CallId>>(emptySet())
+    override val mixedCalls: StateFlow<Set<CallId>> = mixed.asStateFlow()
 
     /**
      * The one way a call ends here (Task 47).
@@ -325,7 +336,10 @@ internal class PjsipSipEngine @Inject constructor(
         // The conference leg and the conference are the same thing under a dial-in MCU
         // (ADR-003), so one ending is the other's (Task 60).
         conferenceSessions.update { sessions -> sessions.filterNot { it.callId == callId } }
+        // A member leaving shrinks the mix; one member left is no conference (ADR-009).
+        mixed.update { (it - callId).asConferenceOrEmpty() }
         pendingVideoRequests -= callId
+        pendingHolds -= callId
         transferTypes -= callId
         platform.onEnded(callId, reason)
         ending?.let { ended.emitOrReport(logger, it, "endedCalls") }
@@ -340,14 +354,10 @@ internal class PjsipSipEngine @Inject constructor(
      * a collector at that instant is a call the user never hears about. Replay would be
      * the opposite mistake — re-ringing a call that was answered minutes ago.
      */
-    private val incoming = MutableSharedFlow<IncomingCall>(
-        replay = 0,
-        extraBufferCapacity = INCOMING_BUFFER,
-        // The one stream that must never drop, and the only one published with a suspending
-        // `emit` (see the emit site). A dropped inbound call is a call that never rang and
-        // never reached the log — the single worst loss in the app.
-        onBufferOverflow = BufferOverflow.SUSPEND,
-    )
+    // The one stream that must never drop, and the only one published with a suspending
+    // `emit` (see the emit site). A dropped inbound call is a call that never rang and
+    // never reached the log — the single worst loss in the app.
+    private val incoming = eventFlow<IncomingCall>()
     override val incomingCalls: Flow<IncomingCall> = incoming.asSharedFlow()
 
     /**
@@ -357,15 +367,11 @@ internal class PjsipSipEngine @Inject constructor(
      * one row per emission, so replaying would duplicate rows on every re-collection, and
      * dropping would lose the missed call nobody was watching for.
      */
-    private val ended = MutableSharedFlow<CallSnapshot>(
-        replay = 0,
-        extraBufferCapacity = INCOMING_BUFFER,
-        // The call log writes one row per emission, so a drop is a call that happened and is
-        // not in the history. [endCall] is not a suspend function, so this cannot suspend at
-        // its only emit site; [emitOrReport] makes the loss visible instead of silent, which
-        // is the difference between a bug that can be diagnosed and one that cannot.
-        onBufferOverflow = BufferOverflow.SUSPEND,
-    )
+    // The call log writes one row per emission, so a drop is a call that happened and is
+    // not in the history. [endCall] is not a suspend function, so this cannot suspend at
+    // its only emit site; [emitOrReport] makes the loss visible instead of silent, which
+    // is the difference between a bug that can be diagnosed and one that cannot.
+    private val ended = eventFlow<CallSnapshot>()
     override val endedCalls: Flow<CallSnapshot> = ended.asSharedFlow()
 
     private var started = false
@@ -566,6 +572,9 @@ internal class PjsipSipEngine @Inject constructor(
             return
         }
 
+        // Any answer from the stack settles the hold that was in flight — the 200 that
+        // holds it, or a refusal that leaves it connected — so the next ask is a real one.
+        pendingHolds -= id
         val next = nextStateFor(id, current, event)
 
         // §7, DoD 13: a call that reached media without encrypting it, on an account that
@@ -575,36 +584,13 @@ internal class PjsipSipEngine @Inject constructor(
 
         val justConnected = current.connectedAtEpochMillis == null &&
             CallStateMapper.isConnected(event.state)
-        reportToPlatform(id, current, next, justConnected)
-        store(id, current, next, event, justConnected)
-        if (justConnected) adoptNegotiatedVideo(id)
-    }
-
-    /**
-     * Makes the controls agree with the video that was actually negotiated.
-     *
-     * ## The bug this fixes
-     *
-     * [CallControls.isVideoEnabled] defaults to `false` and, until this existed, the only
-     * thing that ever set it was the user pressing the in-call video button. A call placed
-     * *as* a video call therefore connected with video negotiated and running while its
-     * controls still said video was off — and two things read that flag:
-     * [com.whatsappv2.domain.call.CameraPolicy], which then never claimed the camera, and
-     * the call screen, which then never drew the local preview. Video calling did not work,
-     * and nothing in the SIP layer was wrong.
-     *
-     * ## Only at connect
-     *
-     * Once, on the transition where media starts running — the same moment
-     * [negotiatedMedia] reads the stack's params for the same reason. Re-applying it on
-     * every later event would undo a deliberate video mute, whose whole shape is
-     * `isVideoEnabled = false` while a stream is still negotiated (Task 53).
-     */
-    private fun adoptNegotiatedVideo(id: CallId) {
-        val call = calls.value[id] ?: return
-        if (!call.media.hasVideo) return
-        if (call.state.controlsOrNull?.isVideoEnabled == true) return
-        applyControl(id, CallEvent.SetVideoEnabled(true))
+        val media = negotiatedMedia(current, event)
+        // Both folds happen before the store, for the same reason: the first established
+        // snapshot is the one every observer acts on, and a control applied one emission
+        // later is a control the observers have already acted against.
+        val settled = withNegotiatedVideo(current, withRequestedRoute(current, next), media)
+        reportToPlatform(id, current, settled, justConnected)
+        store(id, current, settled, media, justConnected)
     }
 
     /**
@@ -633,6 +619,12 @@ internal class PjsipSipEngine @Inject constructor(
      * display or a lock screen must show a resume button rather than a hold one. Reported
      * only on a change, because setting the same state again is a no-op the platform still
      * has to process (Task 41).
+     *
+     * `Resuming` counts as held here. The media is still paused while the re-INVITE is in
+     * flight, and the far end can refuse it — in which case the call returns to `Held`
+     * and, if Telecom had been told "active" on the way out, would now have to be told
+     * "held" again for a call that never moved. Telecom learns the call is active when
+     * media is, which is the same rule the state machine applies for `Connected`.
      */
     private fun reportToPlatform(
         id: CallId,
@@ -642,8 +634,8 @@ internal class PjsipSipEngine @Inject constructor(
     ) {
         if (justConnected) platform.onConnected(id)
 
-        val wasHeld = current.state is CallState.Held
-        val isHeld = next is CallState.Held
+        val wasHeld = current.state.isHeldForPlatform
+        val isHeld = next?.isHeldForPlatform == true
         if (next != null && wasHeld != isHeld) platform.onHoldChanged(id, isHeld)
     }
 
@@ -652,35 +644,23 @@ internal class PjsipSipEngine @Inject constructor(
         id: CallId,
         current: CallSnapshot,
         next: CallState?,
-        event: StackCallEvent,
+        media: MediaProfile,
         justConnected: Boolean,
     ) {
         updateCalls { live ->
             live + (
                 id to current.copy(
                     state = next ?: current.state,
-                    media = negotiatedMedia(current, event),
+                    media = media,
                     connectedAtEpochMillis = current.connectedAtEpochMillis
                         ?: clock.nowEpochMillis().takeIf { justConnected },
+                    // Consumed by the controls the moment they exist; see withRequestedRoute.
+                    requestedAudioRoute = current.requestedAudioRoute
+                        .takeIf { next?.controlsOrNull == null },
                 )
                 )
         }
     }
-
-    /**
-     * What is actually negotiated, not what was asked for when the call was placed.
-     *
-     * This is the only place a re-INVITE that added or dropped video reaches the screen
-     * (Task 54). Read only once media is running: before that the stack's params describe
-     * an offer nobody has answered, and taking them as the negotiated truth would show a
-     * video call as audio for the length of its ring.
-     */
-    private fun negotiatedMedia(current: CallSnapshot, event: StackCallEvent): MediaProfile =
-        if (CallStateMapper.isConnected(event.state)) {
-            MediaProfile.of(audio = true, video = event.videoActive) ?: current.media
-        } else {
-            current.media
-        }
 
     /**
      * Drops a call whose media is not encrypted when the account requires it (Task 62).
@@ -974,6 +954,10 @@ internal class PjsipSipEngine @Inject constructor(
             return failure(SipError.InvalidState("cannot ${if (held) "hold" else "resume"} in ${call.state}"))
         }
 
+        if (held && !pendingHolds.add(callId)) {
+            logger.debug(TAG, "Hold already requested for $callId; waiting for the far end")
+            return success(Unit)
+        }
         logger.info(TAG, "Asking the stack to ${if (held) "hold" else "resume"} $callId")
         if (held) callGateway.pauseCall(callId.value) else callGateway.resumeCall(callId.value)
         return success(Unit)
@@ -1031,13 +1015,34 @@ internal class PjsipSipEngine @Inject constructor(
      * The route reaches the FSM only once the platform has accepted it, which is what
      * keeps the in-call screen showing where audio actually is rather than where it was
      * asked to go.
+     *
+     * ## Before media, the request is kept rather than refused
+     *
+     * The route is the one control that exists before the call does: Telecom routes the
+     * ringback and any early media from the moment it has the connection, and a user who
+     * presses Speaker while the far end is still ringing has said where they want the
+     * call. The FSM cannot hold that yet — `Outgoing` and `Incoming` carry no controls,
+     * and rightly, because mute and video have nothing to act on — so the accepted route
+     * is kept on the snapshot as [CallSnapshot.requestedAudioRoute] and folded into the
+     * controls by [advance] on the transition that creates them.
+     *
+     * Measured on a Zebra TC15 on 2026-09-10, before this: a Speaker press between the
+     * 183 and the 200 reached nothing and logged nothing, and the answered call came up
+     * on the earpiece. The same press a few seconds later, on the connected call, worked
+     * at once — which is the "it only works after a Settings round trip" that was
+     * reported: the round trip was the time it took the call to connect.
      */
     override suspend fun setAudioRoute(callId: CallId, route: AudioRoute): Outcome<Unit, SipError> {
         if (!started) return failure(SipError.EngineUnavailable)
-        if (callId !in calls.value) return failure(SipError.UnknownCall)
+        val call = calls.value[callId] ?: return failure(SipError.UnknownCall)
+        if (!call.state.isActive) return failure(SipError.InvalidState("call is ${call.state}"))
 
         if (!platform.requestAudioRoute(callId, route)) {
             return failure(SipError.InvalidState("$route is not available"))
+        }
+        if (call.state.controlsOrNull == null) {
+            updateCalls { it + (callId to call.copy(requestedAudioRoute = route)) }
+            return success(Unit)
         }
         return applyControl(callId, CallEvent.SetAudioRoute(route))
     }
@@ -1206,6 +1211,51 @@ internal class PjsipSipEngine @Inject constructor(
     }
 
     /**
+     * Mixes established calls on this device (ADR-009).
+     *
+     * Everything that can be decided without the stack is decided here, so the gateway is
+     * handed a membership it can simply apply:
+     *
+     *  - **Not established, not mixed.** A ringing or held call has no audio to
+     *    contribute; including it would ask the bridge for a port that does not exist.
+     *  - **The ceiling is enforced above the stack**, because `PJSUA_MAX_CALLS` refusing
+     *    the eighth call is a native error at the wrong moment, and this is a number the
+     *    user can be told about.
+     *
+     * The whole membership goes down every time. Adding a participant, dropping one and
+     * ending the conference are the same call with a different set, which is why there is
+     * no add/remove pair to get out of order.
+     */
+    override suspend fun mixCalls(callIds: Set<CallId>): Outcome<Set<CallId>, SipError> {
+        if (!started) return failure(SipError.EngineUnavailable)
+
+        if (callIds.size > SipConferenceController.MAX_LOCAL_CONFERENCE) {
+            return failure(SipError.InvalidState("this device mixes at most 8 calls"))
+        }
+
+        // Published as the intent, before a single resume goes out. Telecom answers each
+        // resume by holding another member within milliseconds, and the bridge that
+        // declines those holds reads this set — a membership published only once the
+        // stack accepted it would arrive after the holds it exists to refuse.
+        mixed.value = establishedForMix(activeCalls.value, callIds).asConferenceOrEmpty()
+        resumeHeldForMix(activeCalls, callIds, logger) { setHold(it, held = false) }
+        val live = liveForMix(activeCalls.value, callIds)
+
+        return when (val accepted = conferenceGateway.setConferenceMembers(live.map { it.value }.toSet())) {
+            is Outcome.Failure -> {
+                mixed.value = emptySet()
+                failure(SipError.EngineUnavailable)
+            }
+            is Outcome.Success -> {
+                val ids = accepted.value.map(::CallId).toSet()
+                mixed.value = ids.asConferenceOrEmpty()
+                logger.info(TAG, "Mixing ${ids.size} call(s) on this device")
+                success(ids)
+            }
+        }
+    }
+
+    /**
      * Runs a control event through the FSM and, if it is legal, does the thing.
      *
      * The order is the point. `CallStateMachine` is asked first, so an action the call
@@ -1359,35 +1409,6 @@ internal class PjsipSipEngine @Inject constructor(
         live.forEach { platform.onEnded(it, HangupReason.NETWORK_FAILURE) }
     }
 
-    private fun SipAccount.toStackAccount(password: String) = StackAccount(
-        key = id.value,
-        username = username,
-        authUsername = effectiveAuthUsername,
-        password = password,
-        domain = domain,
-        registrarUri = "sip:$effectiveRegistrar",
-        proxyUri = outboundProxy?.let { "sip:${it.render()}" },
-        transport = transport.token,
-        expirySeconds = registrationExpirySeconds,
-        // §5.1 and §5.2. These were modelled, validated, persisted and then dropped on the
-        // floor: nothing below this seam had ever read them, so every account offered
-        // whatever the stack's built-in defaults happened to be and the codec editor
-        // changed nothing at all. The stack takes RTP mime types, which is what
-        // `payloadName` is.
-        iceEnabled = natPolicy.iceEnabled,
-        stunEnabled = natPolicy.stunEnabled,
-        keepaliveIntervalSeconds = natPolicy.keepaliveIntervalSeconds,
-        audioCodecs = codecs.audio.map { it.payloadName },
-        videoCodecs = codecs.video.map { it.payloadName },
-        // §7, DoD 13. MANDATORY becomes `setMediaEncryptionMandatory(true)` on the stack,
-        // which is what makes it fail a call it cannot encrypt rather than downgrade.
-        mediaEncryption = when (srtpPolicy) {
-            SrtpPolicy.DISABLED -> StackMediaEncryption.NONE
-            SrtpPolicy.OPTIONAL -> StackMediaEncryption.OPTIONAL
-            SrtpPolicy.MANDATORY -> StackMediaEncryption.MANDATORY
-        },
-    )
-
     /**
      * True when this account no longer holds a registration.
      *
@@ -1397,7 +1418,7 @@ internal class PjsipSipEngine @Inject constructor(
     private val RegistrationState?.isGone: Boolean
         get() = this == null || this == RegistrationState.Unregistered
 
-    private companion object {
+    internal companion object {
         const val TAG = "PjsipSipEngine"
         const val DEFAULT_EXPIRY_SECONDS = 3_600
 
@@ -1417,5 +1438,194 @@ internal class PjsipSipEngine @Inject constructor(
          * enough that logging out of a dead server does not feel broken.
          */
         const val UNREGISTER_ACK_TIMEOUT_MILLIS = 5_000L
+
+        /**
+         * How long a merge waits for held members to come off hold.
+         *
+         * A resume is a re-INVITE and a round trip; 5 s is the same bound the
+         * unregister acknowledgement uses, and long enough that a slow far end is not
+         * mistaken for one that refused.
+         */
+        const val RESUME_FOR_MIX_TIMEOUT_MILLIS = 5_000L
     }
 }
+
+/** Whether Telecom should show this call as held: see `PjsipSipEngine.reportToPlatform`. */
+private val CallState.isHeldForPlatform: Boolean
+    get() = this is CallState.Held || this is CallState.Resuming
+
+/**
+ * Folds a route requested before the call had controls into the controls it now has.
+ *
+ * Applied by `PjsipSipEngine.advance` before `store` emits, and not afterwards:
+ * `CallAudioCoordinator.begin` runs on the first established snapshot it sees and seeds
+ * its own idea of the chosen route from that snapshot's controls. A route applied one
+ * emission later would be a route the coordinator had already overridden with the
+ * earpiece. [withNegotiatedVideo] sits before the store for the same reason.
+ */
+private fun withRequestedRoute(current: CallSnapshot, next: CallState?): CallState? {
+    val route = current.requestedAudioRoute ?: return next
+    if (next == null || next.controlsOrNull == null) return next
+    return when (val folded = CallStateMachine.transition(next, CallEvent.SetAudioRoute(route))) {
+        is TransitionResult.Moved -> folded.state
+        is TransitionResult.Rejected -> next
+    }
+}
+
+/**
+ * What is actually negotiated, not what was asked for when the call was placed.
+ *
+ * This is the only place a re-INVITE that added or dropped video reaches the screen
+ * (Task 54). Read only once media is running: before that the stack's params describe
+ * an offer nobody has answered, and taking them as the negotiated truth would show a
+ * video call as audio for the length of its ring.
+ */
+private fun negotiatedMedia(current: CallSnapshot, event: StackCallEvent): MediaProfile =
+    if (CallStateMapper.isConnected(event.state)) {
+        MediaProfile.of(audio = true, video = event.videoActive) ?: current.media
+    } else {
+        current.media
+    }
+
+/**
+ * Makes the controls agree with the video that was actually negotiated, on the transition
+ * that creates them.
+ *
+ * ## The bug this fixes, twice
+ *
+ * [CallControls.isVideoEnabled] defaults to `false`, and the only thing that set it was the
+ * in-call video button. A call placed *as* a video call therefore connected with video
+ * negotiated while its controls said video was off — `CameraPolicy` released the camera
+ * and the screen drew no preview. The first fix adopted the negotiated video *after* the
+ * connected snapshot was stored, and on one handset that was still wrong: the snapshot it
+ * read came from PJSIP's CONNECTING, before the video stream existed, so `media.hasVideo`
+ * was false, the adoption did nothing, and the stack was told to stop transmitting twelve
+ * milliseconds after the 200 OK (TC15, 2026-09-11). The gateway no longer reports
+ * CONNECTING, and the adoption is folded into the state *before* it is stored, so the
+ * first established snapshot already says video is on and the camera never flaps.
+ *
+ * Only on the transition into an established state. Re-applying it on every later event
+ * would undo a deliberate video mute, whose whole shape is `isVideoEnabled = false` while
+ * a stream is still negotiated (Task 53).
+ */
+private fun withNegotiatedVideo(current: CallSnapshot, next: CallState?, media: MediaProfile): CallState? {
+    if (next == null || current.state.controlsOrNull != null) return next
+    val controls = next.controlsOrNull ?: return next
+    if (!media.hasVideo || controls.isVideoEnabled) return next
+    return when (val folded = CallStateMachine.transition(next, CallEvent.SetVideoEnabled(true))) {
+        is TransitionResult.Moved -> folded.state
+        is TransitionResult.Rejected -> next
+    }
+}
+
+/** The account as the stack takes it — every modelled preference carried across the seam. */
+private fun SipAccount.toStackAccount(password: String) = StackAccount(
+    key = id.value,
+    username = username,
+    authUsername = effectiveAuthUsername,
+    password = password,
+    domain = domain,
+    registrarUri = "sip:$effectiveRegistrar",
+    proxyUri = outboundProxy?.let { "sip:${it.render()}" },
+    transport = transport.token,
+    expirySeconds = registrationExpirySeconds,
+    // §5.1 and §5.2. These were modelled, validated, persisted and then dropped on the
+    // floor: nothing below this seam had ever read them, so every account offered
+    // whatever the stack's built-in defaults happened to be and the codec editor
+    // changed nothing at all. The stack takes RTP mime types, which is what
+    // `payloadName` is.
+    iceEnabled = natPolicy.iceEnabled,
+    stunEnabled = natPolicy.stunEnabled,
+    keepaliveIntervalSeconds = natPolicy.keepaliveIntervalSeconds,
+    audioCodecs = codecs.audio.map { it.payloadName },
+    videoCodecs = codecs.video.map { it.payloadName },
+    // §7, DoD 13. MANDATORY becomes `setMediaEncryptionMandatory(true)` on the stack,
+    // which is what makes it fail a call it cannot encrypt rather than downgrade.
+    mediaEncryption = when (srtpPolicy) {
+        SrtpPolicy.DISABLED -> StackMediaEncryption.NONE
+        SrtpPolicy.OPTIONAL -> StackMediaEncryption.OPTIONAL
+        SrtpPolicy.MANDATORY -> StackMediaEncryption.MANDATORY
+    },
+)
+
+/**
+ * Takes every requested member off hold and waits until their media is running (ADR-009).
+ *
+ * The waiting is the whole point, and it cost a run on hardware to learn: a resume is a
+ * re-INVITE, so the call stays Held until the far end answers and then passes through
+ * Resuming before media flows. Reading the call list straight after issuing the resumes
+ * finds nobody ready, mixes nobody, and reports a conference of one — which is exactly
+ * what the first device run produced ("Mixing 1 call(s)", and a bridge showing only
+ * microphone-to-call links, never call-to-call).
+ *
+ * Bounded like every wait here (§1.4). A far end that never answers leaves that member out
+ * of the mix rather than holding the merge open; the others are still worth connecting.
+ */
+private suspend fun resumeHeldForMix(
+    calls: StateFlow<List<CallSnapshot>>,
+    requested: Set<CallId>,
+    logger: Logger,
+    resume: suspend (CallId) -> Unit,
+) {
+    val held = heldForMix(calls.value, requested)
+    if (held.isEmpty()) return
+
+    held.forEach { resume(it) }
+    withTimeoutOrNull(PjsipSipEngine.RESUME_FOR_MIX_TIMEOUT_MILLIS) {
+        calls.first { pendingForMix(it, requested).isEmpty() }
+    } ?: logger.warn("PjsipSipEngine", "Some calls did not finish resuming in time; mixing the rest")
+}
+
+/**
+ * Members of a requested mix that are on hold, and must be resumed first (ADR-009).
+ *
+ * At file level because `PjsipSipEngine` is at detekt's `LargeClass` bound, and because
+ * these two are pure: which calls to resume and which to mix is decided from a snapshot
+ * list, with no stack involved, so it is testable the way §1.3 asks for.
+ */
+private fun heldForMix(calls: List<CallSnapshot>, requested: Set<CallId>): List<CallId> =
+    calls.filter { it.callId in requested && it.state is CallState.Held }.map { it.callId }
+
+/**
+ * Members of a requested mix that can contribute audio right now.
+ *
+ * Established and **not** held: a call still ringing has no media port, and a held one has
+ * a port that is stopped. Either would be a member the bridge cannot reach.
+ */
+private fun liveForMix(calls: List<CallSnapshot>, requested: Set<CallId>): Set<CallId> =
+    calls.filterTo(mutableSetOf()) {
+        it.callId in requested && it.state.isEstablished && !it.state.isMixPending
+    }.mapTo(mutableSetOf()) { it.callId }
+
+/** Requested members that are established at all, held or not: the mix as intended. */
+private fun establishedForMix(calls: List<CallSnapshot>, requested: Set<CallId>): Set<CallId> =
+    calls.filterTo(mutableSetOf()) { it.callId in requested && it.state.isEstablished }
+        .mapTo(mutableSetOf()) { it.callId }
+
+/**
+ * Requested members whose media is not running yet, so a mix must wait for them.
+ *
+ * `Held` is the obvious one. `Resuming` is the one that cost a run on hardware: the
+ * re-INVITE is out and the state has left Held, but no media is flowing, so a mix that
+ * only checked for Held would connect a port with nothing behind it.
+ */
+private fun pendingForMix(calls: List<CallSnapshot>, requested: Set<CallId>): List<CallId> =
+    calls.filter { it.callId in requested && it.state.isMixPending }.map { it.callId }
+
+/** Established, but with no media running: nothing for the bridge to connect yet. */
+private val CallState.isMixPending: Boolean
+    get() = this is CallState.Held || this is CallState.Resuming
+
+/**
+ * The shape every event stream in the engine takes: unreplayed, buffered, and suspending
+ * rather than dropping on overflow — each declaration says why that is right for it.
+ */
+private fun <T> eventFlow(): MutableSharedFlow<T> = MutableSharedFlow(
+    replay = 0,
+    extraBufferCapacity = PjsipSipEngine.INCOMING_BUFFER,
+    onBufferOverflow = BufferOverflow.SUSPEND,
+)
+
+/** Fewer than two mixed calls is a call, not a conference, and the published set says so by being empty. */
+private fun Set<CallId>.asConferenceOrEmpty(): Set<CallId> =
+    takeIf { it.size >= SipConferenceController.MINIMUM_MIXED } ?: emptySet()

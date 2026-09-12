@@ -6,6 +6,7 @@ import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallState
+import com.whatsappv2.domain.call.SecondCallResponse
 import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.engine.NoVideoSurfaces
 import com.whatsappv2.domain.engine.SipError
@@ -41,6 +42,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * The call screen's state, driven by [FakeSipEngine] (Tasks 37 and 39).
@@ -189,6 +191,159 @@ class CallViewModelTest {
             assertEquals(MediaProfile.AUDIO.hasVideo, connected.videoOffered)
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    @Test
+    fun `hold-and-answer moves the screen to the call just answered`() = runTest {
+        // On the TC15 the screen stayed on the first call — now on hold, Resume button and
+        // all — under a banner saying the second call was "on hold". The user had just
+        // answered it; it was the live one. An accept re-points the screen like a swap does.
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val viewModel = viewModel().also { it.watch(first) }
+        val second = engine.simulateIncomingCall(ACCOUNT.id, REMOTE)
+
+        viewModel.uiState.test {
+            skipItems(1)
+            viewModel.respondToSecondCall(second.callId, SecondCallResponse.ACCEPT_AND_HOLD)
+            runCurrent()
+
+            val shown = awaitDisplay { it.callId == second.callId && it.phase == CallPhase.CONNECTED }
+            assertEquals(second.callId, shown.callId)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `ending the active call of a pair moves the screen to the held one`() = runTest {
+        // The screen used to finish, leaving the held call reachable only from the
+        // notification.
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val viewModel = viewModel().also { it.watch(first) }
+        val second = engine.simulateIncomingCall(ACCOUNT.id, REMOTE)
+
+        viewModel.uiState.test {
+            skipItems(1)
+            viewModel.respondToSecondCall(second.callId, SecondCallResponse.ACCEPT_AND_HOLD)
+            runCurrent()
+            awaitDisplay { it.callId == second.callId && it.phase == CallPhase.CONNECTED }
+
+            engine.simulateRemoteHangup(second.callId)
+            runCurrent()
+
+            val shown = awaitDisplay { it.callId == first }
+            assertEquals(first, shown.callId)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `a transfer after the screen re-points goes to the call on screen`() = runTest {
+        // The defect this covers, seen on a TC15: two calls, end the first, the screen
+        // correctly follows the second — and Transfer then reported "That call has
+        // already ended" about the call that had, while the one on screen was connected
+        // and audible. The screen was handing the transfer the call id its route was
+        // opened with, which a re-point makes stale.
+        accounts.given(ACCOUNT)
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val viewModel = viewModel().also { it.watch(first) }
+        val second = engine.simulateIncomingCall(ACCOUNT.id, REMOTE)
+
+        viewModel.uiState.test {
+            // The first call has to be *shown* before the re-point, or the screen never
+            // had the stale id in the first place and the test proves nothing.
+            awaitDisplay { it.callId == first }
+            viewModel.respondToSecondCall(second.callId, SecondCallResponse.ACCEPT_AND_HOLD)
+            runCurrent()
+            awaitDisplay { it.callId == second.callId && it.phase == CallPhase.CONNECTED }
+            cancelAndIgnoreRemainingEvents()
+        }
+
+        viewModel.transfer.blind("9198")
+        runCurrent()
+
+        // The second call is the one on screen, so it is the one that gets the REFER.
+        val referred = engine.invocations.last { it.operation == FakeSipEngine.Operation.TRANSFER }
+        assertTrue(
+            referred.detail.startsWith("${second.callId.value}:"),
+            "the REFER named ${referred.detail}, not the call on screen",
+        )
+    }
+
+    @Test
+    fun `recording after the screen re-points records the call on screen`() = runTest {
+        accounts.given(ACCOUNT)
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val viewModel = viewModel().also { it.watch(first) }
+        val second = engine.simulateIncomingCall(ACCOUNT.id, REMOTE)
+
+        viewModel.uiState.test {
+            awaitDisplay { it.callId == first }
+            viewModel.respondToSecondCall(second.callId, SecondCallResponse.ACCEPT_AND_HOLD)
+            runCurrent()
+            awaitDisplay { it.callId == second.callId && it.phase == CallPhase.CONNECTED }
+            cancelAndIgnoreRemainingEvents()
+        }
+
+        viewModel.recording.confirm()
+        runCurrent()
+
+        // Recording the call that ended would refuse; recording the wrong live call would
+        // be worse — it captures a conversation nobody consented to on that leg.
+        assertEquals(setOf(second.callId), recorder.active.value)
+    }
+
+    @Test
+    fun `merging mixes every established call on this device`() = runTest {
+        // ADR-009: the phone has one audio bridge and one microphone, so "merge" can only
+        // mean all of them — there is no pair to choose.
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val viewModel = viewModel().also { it.watch(first) }
+        val second = engine.simulateIncomingCall(ACCOUNT.id, REMOTE)
+        engine.answer(second.callId, MediaProfile.AUDIO)
+        runCurrent()
+
+        viewModel.merge()
+        runCurrent()
+
+        assertEquals(listOf(setOf(first, second.callId)), engine.mixRequests)
+    }
+
+    @Test
+    fun `a call that is still ringing is not mixed in`() = runTest {
+        // It has no audio to contribute. It joins by itself when it is answered, because
+        // the stack re-plans the mix on every media change.
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val second = placeCall()
+        engine.simulateRemoteAnswer(second)
+        val ringing = engine.simulateIncomingCall(ACCOUNT.id, REMOTE)
+        val viewModel = viewModel().also { it.watch(first) }
+        runCurrent()
+
+        viewModel.merge()
+        runCurrent()
+
+        val mixed = engine.mixRequests.single()
+        assertTrue(ringing.callId !in mixed, "a ringing call was mixed in: $mixed")
+        assertEquals(setOf(first, second), mixed)
+    }
+
+    @Test
+    fun `one call is not a conference, and the stack is never asked`() = runTest {
+        val only = placeCall()
+        engine.simulateRemoteAnswer(only)
+        val viewModel = viewModel().also { it.watch(only) }
+        runCurrent()
+
+        viewModel.merge()
+        runCurrent()
+
+        assertTrue(engine.mixRequests.isEmpty(), "the stack was asked to mix ${engine.mixRequests}")
     }
 
     @Test

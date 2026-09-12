@@ -1,5 +1,6 @@
 package com.whatsappv2.data.sip.call
 
+import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.domain.call.CallEvent
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.CallStateMachine
@@ -8,6 +9,7 @@ import com.whatsappv2.domain.call.TransitionResult
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.HangupReason
+import com.whatsappv2.domain.model.SipUri
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -74,6 +76,34 @@ class CallStateMapperTest {
     }
 
     @Test
+    fun `a second CONNECTED for a call that is already established is not a second answer`() {
+        // PJSIP raises on_call_state for CONNECTING (200 in, ACK out) and again for
+        // CONFIRMED, and the gateway maps both to CONNECTED. The FSM rejected the second
+        // one, at WARN, on every answered call. A call with controls has been answered.
+        assertNull(CallStateMapper.toCallEvent(event(StackCallState.CONNECTED), CallState.Connected()))
+        assertNull(
+            CallStateMapper.toCallEvent(
+                event(StackCallState.CONNECTED),
+                CallState.Held(HoldParty.LOCAL),
+                direction = CallDirection.INCOMING,
+            ),
+        )
+        // The first one still answers, in both directions.
+        assertEquals(
+            CallEvent.RemoteAnswered,
+            CallStateMapper.toCallEvent(event(StackCallState.CONNECTED), CallState.Outgoing.Ringing),
+        )
+        assertEquals(
+            CallEvent.LocalAnswered(),
+            CallStateMapper.toCallEvent(
+                event(StackCallState.CONNECTED),
+                CallState.Incoming(REMOTE),
+                direction = CallDirection.INCOMING,
+            ),
+        )
+    }
+
+    @Test
     fun `an inbound INVITE carries no transition, because there is nothing to move`() {
         // The engine creates the call in CallState.Incoming when this arrives, exactly as
         // it creates an outgoing one in Outgoing.Calling. Neither is a transition.
@@ -104,6 +134,21 @@ class CallStateMapperTest {
             CallStateMapper.toCallEvent(event(StackCallState.ENDED)),
         )
         assertEquals(HangupReason.REMOTE_HANGUP, terminate.reason)
+    }
+
+    @Test
+    fun `a BYE answered 200 is still a remote hangup`() {
+        // The case that actually happens. A BYE is answered 200 and the stack carries
+        // that 200 as the call's last status code, so an ENDED event has a code on it
+        // — and a mapping that only excused a missing code sent every normal hangup
+        // through the error taxonomy, which has no arm for success and answered
+        // SERVER_ERROR. Measured on a handset on 2026-09-10, after a 75-second call the
+        // far end ended normally: "ended: SERVER_ERROR (status 200)".
+        val terminate = assertIs<CallEvent.Terminate>(
+            CallStateMapper.toCallEvent(event(StackCallState.ENDED, statusCode = OK)),
+        )
+        assertEquals(HangupReason.REMOTE_HANGUP, terminate.reason)
+        assertEquals(HangupReason.REMOTE_HANGUP, CallStateMapper.toHangupReason(event(StackCallState.ENDED, OK)))
     }
 
     @Test
@@ -219,6 +264,42 @@ class CallStateMapperTest {
     }
 
     @Test
+    fun `a refused resume is an event only from Resuming, where it returns the call to held`() {
+        // The stack reports the refusal off the INVITE transaction, and the gateway only
+        // does so while a resume is outstanding — but the mapper holds the line too: a
+        // call that is not resuming has no resume to fail, and the FSM rejects the
+        // event from anywhere else.
+        assertEquals(
+            CallEvent.ResumeFailed,
+            CallStateMapper.toCallEvent(event(StackCallState.RESUME_FAILED), CallState.Resuming()),
+        )
+        assertNull(CallStateMapper.toCallEvent(event(StackCallState.RESUME_FAILED), CallState.Held(HoldParty.LOCAL)))
+        assertNull(CallStateMapper.toCallEvent(event(StackCallState.RESUME_FAILED), CallState.Connected()))
+    }
+
+    @Test
+    fun `resuming a held call needs the stack to say it started, or media coming back means nothing`() {
+        // The §2.1 bug, stated at the level it can be stated on the JVM. From
+        // Held(LOCAL), running media on its own is not a resume — the mapper has no
+        // event for it and the FSM has no single transition to Connected — so a stack
+        // that reports the end of a resume without its beginning strands the call held.
+        // The gateway is what reports the beginning, which is the fix, and the
+        // SipCallGateway contract is what now requires it; the fake honours it and
+        // PjsipSipEngineMediaTest asserts the whole path. This test is the reason the
+        // contract has to say so.
+        val held = CallState.Held(HoldParty.LOCAL)
+        assertNull(CallStateMapper.toCallEvent(event(StackCallState.STREAMS_RUNNING), held))
+
+        val reported = listOf(StackCallState.RESUMING, StackCallState.STREAMS_RUNNING)
+        val reached = reported.fold<StackCallState, CallState>(held) { state, stackState ->
+            val mapped = CallStateMapper.toCallEvent(event(stackState), state)
+            assertTrue(mapped != null, "$stackState carries no transition from $state")
+            assertIs<TransitionResult.Moved>(CallStateMachine.transition(state, mapped)).state
+        }
+        assertEquals(CallState.Connected(), reached)
+    }
+
+    @Test
     fun `media running again means whatever the call was doing before it`() {
         // One stack state, three meanings. Getting this wrong either loses the resume or
         // reports a second transition out of a state that never moved.
@@ -249,6 +330,7 @@ class CallStateMapperTest {
             StackCallState.PAUSED,
             StackCallState.PAUSED_BY_REMOTE,
             StackCallState.RESUMING,
+            StackCallState.RESUME_FAILED,
             StackCallState.STREAMS_RUNNING,
         )
 
@@ -269,6 +351,8 @@ class CallStateMapperTest {
     private fun errorEvent(code: Int?) = event(StackCallState.ERROR, statusCode = code)
 
     private companion object {
+        val REMOTE: SipUri = SipUri.parse("sip:bob@sip.example.com").getOrNull()!!
+        const val OK = 200
         const val BUSY_HERE = 486
         const val NOT_FOUND = 404
         const val REQUEST_TIMEOUT = 408

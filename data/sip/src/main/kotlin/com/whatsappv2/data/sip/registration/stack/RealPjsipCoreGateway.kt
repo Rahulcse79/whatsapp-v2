@@ -4,22 +4,30 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.hardware.camera2.CameraManager
 import com.whatsappv2.core.common.logging.Logger
+import com.whatsappv2.core.common.result.Outcome
+import com.whatsappv2.core.common.result.failure
+import com.whatsappv2.core.common.result.map
+import com.whatsappv2.core.common.result.success
 import com.whatsappv2.data.sip.call.SipCallGateway
+import com.whatsappv2.data.sip.call.SipConferenceGateway
 import com.whatsappv2.data.sip.call.SipRecordingGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.StackConferenceEvent
 import com.whatsappv2.data.sip.call.StackTransferEvent
+import com.whatsappv2.data.sip.call.TransferEventMapper
 import com.whatsappv2.data.sip.registration.NameAddr
 import com.whatsappv2.data.sip.registration.SipCoreGateway
 import com.whatsappv2.data.sip.registration.StackAccount
-import com.whatsappv2.data.sip.registration.StackMediaEncryption
 import com.whatsappv2.data.sip.registration.StackPushParameters
 import com.whatsappv2.data.sip.registration.StackRegistrationEvent
 import com.whatsappv2.data.sip.registration.StackRegistrationState
 import com.whatsappv2.domain.codec.CodecAudit
+import com.whatsappv2.domain.codec.CodecPriorities
+import com.whatsappv2.domain.engine.SipConferenceController
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -27,12 +35,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withTimeoutOrNull
 import org.pjsip.PjCameraInfo2
 import org.pjsip.pjsua2.Account
 import org.pjsip.pjsua2.AccountConfig
 import org.pjsip.pjsua2.AudioMedia
 import org.pjsip.pjsua2.AudioMediaRecorder
-import org.pjsip.pjsua2.AuthCredInfo
 import org.pjsip.pjsua2.Call
 import org.pjsip.pjsua2.CallInfo
 import org.pjsip.pjsua2.CallOpParam
@@ -46,28 +54,35 @@ import org.pjsip.pjsua2.OnCallMediaStateParam
 import org.pjsip.pjsua2.OnCallRxReinviteParam
 import org.pjsip.pjsua2.OnCallStateParam
 import org.pjsip.pjsua2.OnCallTransferStatusParam
+import org.pjsip.pjsua2.OnCallTsxStateParam
 import org.pjsip.pjsua2.OnIncomingCallParam
+import org.pjsip.pjsua2.OnIpChangeProgressParam
 import org.pjsip.pjsua2.OnRegStateParam
 import org.pjsip.pjsua2.TlsConfig
 import org.pjsip.pjsua2.TransportConfig
+import org.pjsip.pjsua2.VidDevManager
 import org.pjsip.pjsua2.VideoWindowHandle
 import org.pjsip.pjsua2.pj_ssl_sock_proto
 import org.pjsip.pjsua2.pjmedia_dir
-import org.pjsip.pjsua2.pjmedia_srtp_use
+import org.pjsip.pjsua2.pjmedia_orient
 import org.pjsip.pjsua2.pjmedia_tp_proto
 import org.pjsip.pjsua2.pjmedia_type
-import org.pjsip.pjsua2.pjmedia_vid_stream_rc_method
+import org.pjsip.pjsua2.pjmedia_vid_dev_std_index
 import org.pjsip.pjsua2.pjsip_inv_state
+import org.pjsip.pjsua2.pjsip_role_e
 import org.pjsip.pjsua2.pjsip_ssl_method
 import org.pjsip.pjsua2.pjsip_status_code
 import org.pjsip.pjsua2.pjsip_transport_type_e
 import org.pjsip.pjsua2.pjsua_call_flag
 import org.pjsip.pjsua2.pjsua_call_media_status
 import org.pjsip.pjsua2.pjsua_call_vid_strm_op
-import org.pjsip.pjsua2.pjsua_stun_use
+import org.pjsip.pjsua2.pjsua_ip_change_op
+import org.pjsip.pjsua2.pjsua_vid_req_keyframe_method
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -114,7 +129,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
     @ApplicationContext private val context: Context,
     private val trustStore: PjsipTrustStore,
     private val logger: Logger,
-) : SipCoreGateway, SipCallGateway, SipVideoGateway, SipRecordingGateway {
+) : SipCoreGateway, SipCallGateway, SipVideoGateway, SipRecordingGateway, SipConferenceGateway {
 
     private val events = MutableSharedFlow<StackRegistrationEvent>(
         replay = 0,
@@ -158,7 +173,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
      *
      * A daemon thread, so it cannot hold the process up if [stop] is never reached.
      */
-    private val pjsip = Executors.newSingleThreadExecutor { runnable ->
+    private val pjsip = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, PJSIP_THREAD).apply { isDaemon = true }
     }
 
@@ -228,6 +243,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * the answer is a property of the running library, not of the process.
      */
     private val audit = MutableStateFlow<CodecAudit?>(null)
+
+    /**
+     * Why Lyra's model files cannot be used, or null. Set once by [start] and read by
+     * every audit after it, so a codec that registered without its weights is reported
+     * as such on every account rather than only at the moment the copy failed.
+     */
+    @Volatile
+    private var lyraModelProblem: String? = null
     override val codecAudit: StateFlow<CodecAudit?> = audit.asStateFlow()
 
     private var endpoint: Endpoint? = null
@@ -292,12 +315,29 @@ internal class RealPjsipCoreGateway @Inject constructor(
     /** Recorders by call key, so [stopRecording] can find and release the right one. */
     private val recorders = ConcurrentHashMap<String, AudioMediaRecorder>()
 
+    /** Conference mixing, and everything it needs to remember (ADR-009). */
+    private val conference = ConferenceBridge(logger) { key -> calls[key]?.currentAudioPort() }
+
     /**
      * Whether a `setNetworkReachable(false)` has arrived since the last IP change was
      * handled. Read and written only on the [pjsip] executor thread, so it needs no
      * synchronisation of its own.
      */
     private var linkDownSeen = false
+
+    /**
+     * True from [setNetworkReachable]'s `handleIpChange` until PJSIP reports the change
+     * completed. Same thread rule as [linkDownSeen].
+     *
+     * `handleIpChange` restarts the listeners *asynchronously* — the UDP socket comes
+     * back "in 10 ms" — and then re-registers every account itself. The recovery
+     * coordinator asks for a refresh of its own in the same instant, and that REGISTER
+     * left before the socket existed: `503 Transport not available`, the engine told the
+     * UI the registration had failed, and the gateway logged a stack trace, for a
+     * registration PJSIP then completed on its own 14 ms later (TC15, every Wi-Fi blip on
+     * 2026-09-11: 13:33 and 13:53). While this is set, [refreshAccount] is a no-op.
+     */
+    private var ipChangeInProgress = false
 
     /**
      * Why [start] failed, when it did, so a later operation can say so instead of
@@ -352,7 +392,17 @@ internal class RealPjsipCoreGateway @Inject constructor(
         // Note that only the FIRST attempt reports UnsatisfiedLinkError; a class whose
         // initialiser threw is permanently unusable, so every retry after it reports
         // NoClassDefFoundError instead, for the same underlying reason.
-        val created = Endpoint()
+        val created = object : Endpoint() {
+            // PJSIP's IP-change handling is asynchronous; this is the one signal that it
+            // has finished, and [refreshAccount] is gated on it. Every op is reported;
+            // only the last one clears the gate. Delivered on the PJSIP thread.
+            override fun onIpChangeProgress(prm: OnIpChangeProgressParam) {
+                if (prm.op == pjsua_ip_change_op.PJSUA_IP_CHANGE_OP_COMPLETED) {
+                    ipChangeInProgress = false
+                    logger.info(TAG, "IP change handled by PJSIP (status ${prm.status})")
+                }
+            }
+        }
         logger.info(TAG, "start: Endpoint constructed (JNI bindings loaded)")
 
         created.libCreate()
@@ -387,8 +437,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
         // is what registers the codecs, so there is nothing to configure before it;
         // a stream created after libStart has already taken its parameters, so
         // configuring later changes nothing until the next call.
-        created.tuneOpus()
-        created.tuneVideoCodecs()
+        created.tuneOpus(logger)
+        created.tuneVideoCodecs(logger)
+        lyraModelProblem = created.tuneLyra(context, logger)
 
         // All three, once, at startup. PJSIP binds an account to a transport by id,
         // so the transport an account needs has to exist before the account does —
@@ -525,70 +576,6 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
     }
 
-    /**
-     * Opus, configured rather than left at whatever the codec defaults to (§5.2).
-     *
-     * Opus is the only wideband codec in the default preference list, so its settings are
-     * most of what "audio quality" means here.
-     *
-     *  - `sample_rate` matches the bridge, so nothing resamples on the way in or out.
-     *  - `bit_rate` is well above the 16-24 kbps that narrowband deployments settle for;
-     *    at 48 kHz mono this is transparent for speech.
-     *  - `complexity` is the encoder's own quality/CPU dial, 0..10.
-     *  - `packet_loss` is not a measurement, it is a *hint*: it tells the encoder how much
-     *    FEC to carry. Zero means no redundancy, and the first lost packet is a hole.
-     *  - CBR off, because VBR spends the bits where the speech is.
-     */
-    private fun Endpoint.tuneOpus() {
-        runCatching {
-            val opus = codecOpusConfig
-            opus.sample_rate = CORE_CLOCK_RATE
-            opus.channel_cnt = MONO
-            opus.bit_rate = OPUS_BITRATE
-            opus.complexity = OPUS_COMPLEXITY
-            opus.packet_loss = OPUS_EXPECTED_LOSS_PCT
-            opus.cbr = false
-            codecOpusConfig = opus
-        }.onFailure {
-            // Not fatal: a build without Opus still registers PCMU and G722, and a call
-            // on those is worth more than no call. Loud, because it means the native
-            // library was built without PJMEDIA_HAS_OPUS_CODEC and §5.2 is not being met.
-            logger.error(TAG, "Opus not configured - is it compiled in? ${it.message}")
-        }
-    }
-
-    /**
-     * Video encoder parameters, per codec (§5.2).
-     *
-     * PJSIP's defaults here are conservative enough to look like a fault: a small frame at
-     * a low bitrate, which on a modern handset reads as a broken camera rather than a
-     * bandwidth choice. Every registered codec gets the same ceiling, because the codec
-     * that ends up negotiated is the far end's decision, not ours.
-     *
-     * A ceiling, not a target - `rateControlBandwidth` on the account is what actually
-     * holds the stream to it, and PJSIP drops below it on its own when the link cannot
-     * carry it. Applied per codec inside `runCatching` so one codec rejecting a format
-     * does not cost the others theirs.
-     */
-    private fun Endpoint.tuneVideoCodecs() {
-        videoCodecEnum2().forEach { info ->
-            runCatching {
-                val param = getVideoCodecParam(info.codecId)
-                param.encFmt.apply {
-                    width = VIDEO_WIDTH
-                    height = VIDEO_HEIGHT
-                    fpsNum = VIDEO_FPS
-                    fpsDenum = 1
-                    avgBps = VIDEO_AVG_BPS
-                    maxBps = VIDEO_MAX_BPS
-                }
-                setVideoCodecParam(info.codecId, param)
-            }.onFailure {
-                logger.warn(TAG, "Video codec ${info.codecId} kept its defaults: ${it.message}")
-            }
-        }
-    }
-
     override fun stop() {
         onPjsip("stop") {
             val running = endpoint ?: return@onPjsip
@@ -606,9 +593,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
             accounts.values.forEach { account ->
                 runCatching { account.setRegistration(false) }
-                runCatching { account.shutdown() }
+                account.finishRemoval("stop")
             }
             accounts.clear()
+            // Deleted while the library is still up: `Call::~Call` touches the call slot
+            // unconditionally, and after libDestroy there is no slot to touch. See
+            // [PjAccount.release] for why a finalizer must never be the one to do this.
+            calls.values.forEach { call -> runCatching { call.delete() } }
             calls.clear()
             transports.clear()
 
@@ -664,6 +655,20 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 return@onPjsip
             }
             linkDownSeen = false
+            ipChangeInProgress = true
+            // A gate that never opens would swallow every later refresh. PJSIP reports
+            // COMPLETED even on failure, but only after its registrations time out; past
+            // this the refreshes are wanted again whatever PJSIP is still doing.
+            pjsip.schedule(
+                {
+                    if (ipChangeInProgress) {
+                        ipChangeInProgress = false
+                        logger.warn(TAG, "IP change not reported complete in time; refreshes resume")
+                    }
+                },
+                IP_CHANGE_GATE_MILLIS,
+                TimeUnit.MILLISECONDS,
+            )
 
             running.handleIpChange(
                 IpChangeParam().apply {
@@ -689,7 +694,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
             }
 
             accountConfigs[account.key] = account
-            val config = account.toAccountConfig()
+            val config = account.toAccountConfig(
+                transportParam = transportUriParameter(account.transport),
+                pushParameters = pushParameters,
+            )
 
             // Replaced in place rather than added again. Two PJSIP accounts for one
             // identity fight over the same registrar binding, and the loser's calls go to
@@ -715,7 +723,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
                         "modify failed for ${account.key}; rebuilding it: ${failure.message}",
                     )
                     rebuildAccount(account.key, config)
-                }
+                }.onSuccess { existing.registerAfterModify(account.key, ipChangeInProgress, logger) }
             } else {
                 val created = PjAccount(account.key)
                 created.create(config, accounts.isEmpty())
@@ -745,12 +753,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * "the stack is not running" is not an answer anybody can act on.
      */
     private fun reportStackUnavailable(accountKey: String, operation: String) {
-        val cause = startFailure
-        val reason = cause
+        val reason = startFailure
             ?.let { "${it.javaClass.simpleName}: ${it.message ?: "no message"}" }
             ?: "the SIP stack was never started"
 
-        logger.error(TAG, "$operation refused - $reason", cause)
+        logger.error(TAG, "$operation refused - $reason", startFailure)
         events.tryEmit(
             StackRegistrationEvent(
                 accountKey = accountKey,
@@ -775,7 +782,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // Best effort, and unchecked on purpose: the reason we are here is usually
             // that the registrar is not answering, so neither of these can be relied on.
             runCatching { stale.setRegistration(false) }
-            runCatching { stale.shutdown() }
+            stale.finishRemoval("rebuilt")
         }
 
         runCatching {
@@ -800,10 +807,63 @@ internal class RealPjsipCoreGateway @Inject constructor(
             val account = accounts.remove(accountKey) ?: return@onPjsip
             accountConfigs -= accountKey
             // Unregister before shutdown so the registrar hears `Expires: 0` rather than
-            // simply losing the binding when it lapses.
-            runCatching { account.setRegistration(false) }
-            account.shutdown()
+            // simply losing the binding when it lapses — and shut down only once the
+            // registrar has answered, because a deleted account has no callback left to
+            // report the answer through.
+            //
+            // This used to shut the account down on the very next line. Measured on a
+            // TC15, 2026-09-10: `Expires: 0` sent at :02.066, "Deleting account 0" at
+            // :02.067, the registrar's 200 at :02.112 — forty-five milliseconds too late
+            // for anyone to hear it. The engine, promised a CLEARED event by this
+            // interface, waited its full five seconds on every logout and every policy
+            // edit and then logged "not acknowledged; dropping it locally". The wire was
+            // always fine; the report was thrown away.
+            account.leaving = true
+            val sent = runCatching { account.setRegistration(false) }.isSuccess
+            if (!sent) {
+                // Nothing registered, so nothing to wait for. PJSIP says so as an error.
+                account.finishRemoval("not registered")
+                return@onPjsip
+            }
+            // A registrar that never answers must not keep the credentials in memory
+            // for the life of the process (Task 29). Longer than the engine's own wait,
+            // so that the ordinary case is the answer and not this.
+            pjsip.schedule(
+                { account.finishRemoval("no answer in ${UNREGISTER_GRACE_MILLIS} ms") },
+                UNREGISTER_GRACE_MILLIS,
+                TimeUnit.MILLISECONDS,
+            )
         }
+    }
+
+    /**
+     * Frees a director's native peer now, on this thread, rather than whenever the
+     * garbage collector gets round to it.
+     *
+     * ## The crash this closes
+     *
+     * SIGABRT on a Zebra TC15, 2026-09-10 22:14:57, tid `FinalizerDaemon`:
+     * `SwigDirector_Account::~SwigDirector_Account → Account::~Account → shutdown() →
+     * pjsua_acc_del2 → pj_log → pj_thread_this` — *"Calling pjlib from unknown/external
+     * thread"*. A `PjAccount` had been dropped from [accounts] on logout, the user logged
+     * in again, and the collector then finalised the old Java object on its own thread.
+     *
+     * Two things are wrong with letting a finalizer do it, and the assertion only catches
+     * the first. The finalizer thread is not registered with pjlib, so any pjlib call
+     * from it is undefined and, in a debug build, an abort. Worse, `Account::~Account`
+     * calls `shutdown()`, which asks `isValid()`, which checks **the slot number** —
+     * `pjsua_var.acc[id].valid` (`pjsua_acc.c:115-119`) — and pjsua reuses freed slots.
+     * The new account had slot 0, the old object still said 0, and the destructor was
+     * deleting the *live* account. `Call::~Call` has the same shape (`pjsua2/call.cpp:
+     * 525-544`): it clears the slot's user data and hangs up whatever is active in it.
+     *
+     * `delete()` runs the destructor here, while the slot is still the one this object
+     * owned and already invalid, so the destructor's own `shutdown()` is a no-op; SWIG
+     * then zeroes the pointer so the eventual finalizer finds nothing to do. The pjsua2
+     * Android sample does exactly this for its calls and accounts.
+     */
+    private fun PjAccount.release() {
+        runCatching { delete() }.onFailure { logger.warn(TAG, "delete of $accountKey failed: ${it.message}") }
     }
 
     override fun setTraceEnabled(enabled: Boolean) {
@@ -816,6 +876,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     override fun refreshAccount(accountKey: String) {
         onPjsip("refreshAccount") {
+            if (ipChangeInProgress) {
+                logger.info(TAG, "Refresh of $accountKey folded into the IP change PJSIP is handling")
+                return@onPjsip
+            }
             accounts[accountKey]?.setRegistration(true)
         }
     }
@@ -832,7 +896,12 @@ internal class RealPjsipCoreGateway @Inject constructor(
         onPjsip("setPushParameters") {
             pushParameters = parameters
             accountConfigs.forEach { (key, stored) ->
-                accounts[key]?.modify(stored.toAccountConfig())
+                accounts[key]?.modify(
+                    stored.toAccountConfig(
+                        transportParam = transportUriParameter(stored.transport),
+                        pushParameters = pushParameters,
+                    ),
+                )
             }
         }
     }
@@ -855,105 +924,6 @@ internal class RealPjsipCoreGateway @Inject constructor(
             else -> ""
         }
 
-    private fun StackAccount.toAccountConfig(): AccountConfig = AccountConfig().apply {
-        // The transport is selected by the URI parameter, which is what RFC 3261 §19.1.1
-        // defines it for — NOT by pinning `sipConfig.transportId`. See the note below on
-        // why the pinned form sent nothing at all.
-        val transportParam = transportUriParameter(transport)
-
-        idUri = "sip:$username@$domain$transportParam"
-
-        regConfig.registrarUri = registrarUri + transportParam
-        regConfig.timeoutSec = expirySeconds.toLong()
-        regConfig.registerOnAdd = registerEnabled
-        pushParameters?.let { push ->
-            regConfig.contactParams =
-                ";pn-provider=${push.provider};pn-param=${push.param};pn-prid=${push.prid}"
-        }
-
-        sipConfig.authCreds.add(
-            // Realm `*` because the registrar names its own realm in the challenge, and
-            // pinning ours would fail every deployment that does not happen to match.
-            // `0` is PJSIP's data type for a plaintext password rather than a digest.
-            AuthCredInfo("Digest", "*", authUsername, 0, password),
-        )
-        proxyUri?.let { sipConfig.proxies.add(it) }
-
-        // `sipConfig.transportId` is deliberately NEVER set. Not for UDP, and — this is
-        // the change — not for TCP or TLS either.
-        //
-        // For UDP, pinning defeats RFC 3261 §18.1.1: PJSIP rewrites the destination of a
-        // request over 1300 bytes to TCP, `pjsip_endpt_acquire_transport2` then refuses it
-        // because the pinned transport is a UDP one, and the message falls back to UDP as
-        // one oversized, IP-fragmented datagram that routers drop.
-        //
-        // For TCP and TLS, pinning is worse: it sends **nothing at all**. `transportCreate`
-        // returns the id of a *listener* (a `pjsip_tpfactory`), not of a connected
-        // transport, and `pjsua_acc_config.transport_id` turns that into a
-        // `PJSIP_TPSELECTOR_TRANSPORT` on the dialog. Acquiring a transport for an outbound
-        // request against a selector that names a listener yields nothing usable, so the
-        // REGISTER is never put on the wire. Observed exactly that way: the account sat in
-        // "Registering…" for 32 seconds and timed out, while the registrar's own log showed
-        // **no packet of any kind** from the handset — and a raw TCP connection from the
-        // same device to the same port succeeded. No error, no retry, no datagram.
-        //
-        // The transport is chosen by the `;transport=` URI parameter instead, which is what
-        // RFC 3261 §19.1.1 defines it for. PJSIP resolves it per request, so an account can
-        // still upgrade an oversized message to TCP the way §18.1.1 requires.
-
-        // The account's policy, not a constant. This was `= true` regardless of what the
-        // account said, which made three settings in the account form do nothing - and
-        // forced `a=ice-ufrag`, `a=ice-pwd` and `a=candidate` into every SDP offer this
-        // app sends. On a flat LAN that buys nothing, and a B2BUA that does not want to
-        // parse it has one more reason to answer 488.
-        // Read out before the `apply`, because inside it `iceEnabled` would resolve to
-        // AccountNatConfig's own property rather than this account's.
-        val wantIce = iceEnabled
-        val wantStun = if (stunEnabled) {
-            pjsua_stun_use.PJSUA_STUN_USE_DEFAULT
-        } else {
-            pjsua_stun_use.PJSUA_STUN_USE_DISABLED
-        }
-        val keepalive = keepaliveIntervalSeconds.toLong()
-
-        natConfig.apply {
-            iceEnabled = wantIce
-            sipStunUse = wantStun
-            mediaStunUse = wantStun
-            udpKaIntervalSec = keepalive
-        }
-
-        // Per account, and genuinely so. A core-wide setting would let the last
-        // account added decide encryption for every other one, which is the
-        // limitation docs/security.md used to record.
-        mediaConfig.srtpUse = when (mediaEncryption) {
-            StackMediaEncryption.NONE -> pjmedia_srtp_use.PJMEDIA_SRTP_DISABLED
-            StackMediaEncryption.OPTIONAL -> pjmedia_srtp_use.PJMEDIA_SRTP_OPTIONAL
-            StackMediaEncryption.MANDATORY -> pjmedia_srtp_use.PJMEDIA_SRTP_MANDATORY
-        }
-        mediaConfig.srtpSecureSignaling = if (mediaEncryption == StackMediaEncryption.MANDATORY) 1 else 0
-
-        // Nothing automatic. `autoTransmitOutgoing` left on would add a camera stream to
-        // every call somebody places, and the Task 54 escalation prompt exists precisely
-        // because the far end asking for video is a question, not an instruction.
-        videoConfig.autoShowIncoming = false
-        videoConfig.autoTransmitOutgoing = false
-
-        // The ceiling the encoder parameters are allowed to reach, and the thing that
-        // actually holds them there. Without rate control PJSIP encodes at the format's
-        // bitrate whatever the link is doing, and a 2.5 Mbit stream on a cell connection
-        // does not degrade - it stalls, because the packets it needs are the ones being
-        // dropped.
-        videoConfig.rateControlMethod =
-            pjmedia_vid_stream_rc_method.PJMEDIA_VID_STREAM_RC_SIMPLE_BLOCKING
-        videoConfig.rateControlBandwidth = VIDEO_MAX_BPS
-
-        // A few keyframes up front. The first frame a decoder can actually show is a
-        // keyframe, and one every two seconds means up to two seconds of grey.
-        videoConfig.startKeyframeCount = VIDEO_START_KEYFRAMES
-        videoConfig.startKeyframeInterval = VIDEO_START_KEYFRAME_INTERVAL_MS
-    }
-
     /**
      * The account's codec preferences, as PJSIP priorities (§5.1, §5.2).
      *
@@ -967,16 +937,25 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * `codecId.startsWith(name)` is the comparison, case-insensitively.
      */
     private fun Endpoint.applyCodecs(account: StackAccount) {
+        // Every OTHER configured account's preferences. PJSIP's priorities are endpoint-wide,
+        // so without this the last account to register decides what the rest may negotiate.
+        val otherAudio = otherAccountPreferences(account.key) { it.audioCodecs }
+        val otherVideo = otherAccountPreferences(account.key) { it.videoCodecs }
+
         applyPriorities(
             kind = "Audio",
+            accountKey = account.key,
             available = codecEnum2().map { it.codecId },
             preferred = account.audioCodecs,
+            alsoRequired = otherAudio,
         ) { id, priority -> codecSetPriority(id, priority) }
 
         applyPriorities(
             kind = "Video",
-            available = videoCodecEnum2().map { it.codecId },
+            accountKey = account.key,
+            available = videoCodecEnum2().map { it.codecId }.softwareVp8First(),
             preferred = account.videoCodecs,
+            alsoRequired = otherVideo,
         ) { id, priority -> videoCodecSetPriority(id, priority) }
 
         logger.info(
@@ -984,34 +963,76 @@ internal class RealPjsipCoreGateway @Inject constructor(
             "Codecs for ${account.key}: audio=${account.audioCodecs} video=${account.videoCodecs}",
         )
 
-        audit.value = auditCodecs(logger)
+        audit.value = auditCodecs(logger, lyraModelProblem)
     }
 
+    /** What every account except [exceptKey] needs kept enabled. See [applyCodecs]. */
+    private fun otherAccountPreferences(
+        exceptKey: String,
+        select: (StackAccount) -> List<String>,
+    ): Set<String> = accountConfigs
+        .filterKeys { it != exceptKey }
+        .values
+        .flatMapTo(mutableSetOf(), select)
+
+    /**
+     * Writes one kind of codec priority, having asked [CodecPriorities] what it should be.
+     *
+     * The ranking itself is a pure function in `:domain` and is tested there. What is left
+     * here is the two things only the adapter can do: read the registry, and write the
+     * numbers back one `runCatching` at a time so one codec refusing a priority does not
+     * cost the others theirs.
+     *
+     * ## The refusal that matters
+     *
+     * [CodecPriorities.Assignment.wouldDisableEverything] is the guard against the defect of
+     * 2026-09-10: an account saved with `audio=[lyra]` — a codec this build does not contain
+     * — matched nothing, so the previous version of this function set **every** registered
+     * audio codec to priority 0, endpoint-wide. `pjmedia_endpt_create_audio_sdp` then built
+     * an m-line with no formats in it, and pjsua deactivated the line. Outgoing offers went
+     * out as `m=audio 0 RTP/AVP 0`; inbound calls rang and then died on
+     * `PJMEDIA_SDPNEG_ENOMEDIA` the moment the user answered, with this app sending itself a
+     * `488 Unable to create media session`.
+     *
+     * The assignment comes back empty in that case, so applying it is already a no-op. This
+     * says so at ERROR rather than relying on that: a preference list nothing can honour is
+     * a configuration the user has to fix, and until it is fixed the endpoint keeps the
+     * priorities pjmedia registered rather than losing its voice.
+     */
     private inline fun applyPriorities(
         kind: String,
+        accountKey: String,
         available: List<String>,
         preferred: List<String>,
+        alsoRequired: Set<String>,
         set: (String, Short) -> Unit,
     ) {
-        available.forEach { codecId ->
-            val rank = preferred.indexOfFirst { codecId.startsWith(it, ignoreCase = true) }
-            // Descending from the top so the first preference outranks the second, and
-            // everything unnamed is disabled rather than left at whatever PJSIP chose.
-            val priority = if (rank < 0) CODEC_DISABLED else (CODEC_TOP - rank).toShort()
+        val assignment = CodecPriorities.assign(available, preferred, alsoRequired)
+
+        if (assignment.wouldDisableEverything) {
+            logger.error(
+                TAG,
+                "$kind codecs for $accountKey match nothing this build registered " +
+                    "($preferred); keeping the library's own priorities, because disabling " +
+                    "them all makes every call fail to negotiate media",
+            )
+            return
+        }
+
+        assignment.priorities.forEach { (codecId, priority) ->
             runCatching { set(codecId, priority) }
         }
 
-        // A preference the build cannot honour is not an error - the call still connects
-        // on whatever else was offered - but it is never what the author meant, and until
-        // now it was invisible. `CodecPreferences.DEFAULT` names H264 while the native
-        // build sets PJMEDIA_HAS_OPENH264_CODEC to 0, so H264 is silently never
-        // negotiated and an H264-only peer gets no video at all. Said out loud, once per
-        // account, rather than discovered on a call that half worked.
-        val missing = preferred.filter { name ->
-            available.none { it.startsWith(name, ignoreCase = true) }
-        }
-        if (missing.isNotEmpty()) {
-            logger.warn(TAG, "$kind codecs preferred but not in this build: $missing")
+        // A preference the build cannot honour is not an error on its own - the call still
+        // connects on whatever else was offered - but it is never what the author meant, and
+        // it used to be invisible. `CodecPreferences.DEFAULT` names H264 while the native
+        // build sets PJMEDIA_HAS_OPENH264_CODEC to 0, so H264 was silently never negotiated
+        // and an H264-only peer got no video at all.
+        if (assignment.unmatchedPreferences.isNotEmpty()) {
+            logger.warn(
+                TAG,
+                "$kind codecs preferred but not in this build: ${assignment.unmatchedPreferences}",
+            )
         }
     }
 
@@ -1075,12 +1096,38 @@ internal class RealPjsipCoreGateway @Inject constructor(
     override fun resumeCall(callKey: String) {
         onPjsip("resumeCall") {
             val call = calls[callKey] ?: return@onPjsip
-            // PJSUA_CALL_UNHOLD is what makes this a resume rather than an ordinary
-            // re-INVITE; without the flag the offer keeps the `sendonly` direction and
-            // the far end stays held.
-            call.reinvite(
-                CallOpParam(true).apply { options = pjsua_call_flag.PJSUA_CALL_UNHOLD.toLong() },
-            )
+
+            // This is the producer RESUMING had been missing since the state was written.
+            // Without it the FSM never leaves Held(LOCAL): media comes back as
+            // PJSUA_CALL_MEDIA_ACTIVE, the mapper is asked what STREAMS_RUNNING means
+            // from Held(LOCAL), and `resumeEventFor` has no arm for it because the arm
+            // it has is `Resuming` — the state only this line can produce. The re-INVITE
+            // went out, the far end answered, the audio came back, and the app stayed
+            // held for the rest of the call. Hold worked; resume was unreachable.
+            //
+            // Published *before* the send, on this thread. The answer is published from
+            // PJSIP's worker thread, and publishing RESUMING after `reinvite` returned
+            // would race it: a 200 OK processed in the gap would put STREAMS_RUNNING
+            // ahead of RESUMING in the flow, and the FSM would read that as nothing and
+            // then as a resume that never lands. Before the send there is no gap. What
+            // it costs is a Resuming that lasts the length of a synchronous call that
+            // either sends or throws — and a throw is answered below.
+            //
+            // A hold has no equivalent because it needs none: PJSIP reports
+            // PJSUA_CALL_MEDIA_LOCAL_HOLD on its own and the mapper turns that into
+            // LocalHold.
+            call.pendingResume.begin()
+            call.publish(StackCallState.RESUMING)
+
+            runCatching {
+                call.reinvite(call.info.resumeParams())
+            }.onFailure {
+                // Never left this device — a re-INVITE already in flight, most likely.
+                // The call is exactly where it was, and the FSM has to be told so, or
+                // the Resuming just published is the stuck state under a new name.
+                call.pendingResume.cancel()
+                call.publish(StackCallState.RESUME_FAILED)
+            }.getOrThrow()
         }
     }
 
@@ -1156,14 +1203,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
     override fun setVideoEnabled(callKey: String, enabled: Boolean) {
         onPjsip("setVideoEnabled") {
             val call = calls[callKey] ?: return@onPjsip
-            call.vidSetStream(
-                if (enabled) {
-                    pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_ADD
-                } else {
-                    pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_REMOVE
-                },
-                CallVidSetStreamParam(),
-            )
+            call.applyVideoEnabled(enabled, call.infoOrNull())
         }
     }
 
@@ -1197,20 +1237,20 @@ internal class RealPjsipCoreGateway @Inject constructor(
         onPjsip("switchCamera") {
             val running = endpoint ?: return@onPjsip
             val call = calls[callKey] ?: return@onPjsip
-
-            val devices = (0 until running.vidDevManager().devCount.toInt()).toList()
-            if (devices.size < 2) {
+            val next = cameraAfter(running.vidDevManager(), call.captureDevice)
+            if (next == null) {
                 logger.info(TAG, "Only one camera on this device; nothing to switch to")
                 return@onPjsip
             }
-
-            val current = call.captureDevice
-            val next = devices[(devices.indexOf(current).coerceAtLeast(0) + 1) % devices.size]
+            // The preview is bound to the old device's window; PJSIP replaces that window
+            // on the change, so the preview is stopped first and re-drawn on the new one.
+            call.stopPreview()
             call.captureDevice = next
             call.vidSetStream(
                 pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_CHANGE_CAP_DEV,
                 CallVidSetStreamParam().apply { capDev = next },
             )
+            call.applyPreview()
         }
     }
 
@@ -1224,16 +1264,44 @@ internal class RealPjsipCoreGateway @Inject constructor(
      */
     override fun setCameraCapturing(capturing: Boolean) {
         onPjsip("setCameraCapturing") {
-            val op = if (capturing) {
-                pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_START_TRANSMIT
-            } else {
-                pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_STOP_TRANSMIT
-            }
+            cameraWanted = capturing
+            val op = transmitOp(capturing)
             calls.values.forEach { call ->
+                // The preview holds its own reference on the capture window (see
+                // `PjCall.applyPreview`), so it goes first or the camera stays open.
+                if (!capturing) call.stopPreview()
+                // A stop is only asked of a stream that is sending. The camera is released
+                // as a call ends, and `STOP_TRANSMIT` on the terminated call had pjsua2
+                // logging `PJSIP_ESESSIONTERMINATED` at ERROR on every hangup.
+                if (!capturing && !call.isTransmittingVideo()) return@forEach
                 runCatching { call.vidSetStream(op, CallVidSetStreamParam()) }
+                if (capturing) call.applyPreview()
             }
         }
     }
+
+    /**
+     * What [setCameraCapturing] last asked for, so a video stream that appears *after* the
+     * asking can be given the same answer.
+     *
+     * `START_TRANSMIT` is per stream, and `CameraPolicy` asks for the camera before the
+     * INVITE is sent so the offer can carry video — at which point there is no stream, the
+     * request is `PJ_ENOTFOUND`, and the `runCatching` above swallows it, correctly. With
+     * `autoTransmitOutgoing` off (`AccountConfigFactory`, §5.2) nothing in PJSIP starts
+     * capture when the stream is finally negotiated either, so until this existed a video
+     * call placed as one connected with a renderer, an encoder, and no camera behind it:
+     * `pjsua_vid.c` logged "Setting up TX.." and then nothing (TC15, 2026-09-11). The same
+     * gap reopens on every re-INVITE, because `pjsua_vid_stop_stream` drops the capture
+     * window and the rebuilt stream starts without one. `PjCall.onCallMediaState` reads
+     * this when a video stream comes up and re-issues the start.
+     *
+     * Only the start is re-issued. A stream PJSIP builds with auto-transmit off is not
+     * transmitting until told to, so a `false` here needs nothing done to it — and
+     * `STOP_TRANSMIT` on a stream that never captured walks `dec_vid_win` with an invalid
+     * window id when another call holds the preview, which is a crash rather than a no-op.
+     */
+    @Volatile
+    private var cameraWanted = false
 
     /**
      * Takes the surfaces the call screen draws into, or releases them with nulls (Task 52).
@@ -1250,7 +1318,32 @@ internal class RealPjsipCoreGateway @Inject constructor(
         remoteSurface = remoteView
         previewSurface = localPreview
         onPjsip("setVideoWindows") {
-            calls.values.forEach { it.applyVideoWindows() }
+            calls.values.forEach {
+                it.applyVideoWindows()
+                it.applyPreview()
+            }
+        }
+    }
+
+    /**
+     * Rotates what the cameras capture so a portrait call sends a portrait picture.
+     *
+     * Applied to every capture device rather than the one in use, and with `keep`, so
+     * the setting survives a camera switch and reaches captures that have not started
+     * yet — PJSIP holds it per device and applies it when the device opens. The mapping
+     * from display rotation to `pjmedia_orient` is pjsua2's own Android sample's
+     * (`CallActivity.updateCaptureOrientation`): the camera sensor sits landscape, so a
+     * portrait screen (rotation 0) needs the frame turned 270°, and `android_dev.c:1023`
+     * mirrors that for a back-facing camera on its own.
+     */
+    override fun setCaptureRotation(degrees: Int) {
+        val orient = captureOrientFor(degrees) ?: return
+        onPjsip("setCaptureRotation") {
+            val manager = endpoint?.vidDevManager() ?: return@onPjsip
+            manager.cameras().forEach { id ->
+                runCatching { manager.setCaptureOrient(id, orient, true) }
+                    .onFailure { logger.warn(TAG, "Camera $id did not take rotation $degrees: ${it.message}") }
+            }
         }
     }
 
@@ -1262,21 +1355,40 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * PJSIP has no per-call record flag. A recorder is a media port, so both legs are
      * transmitted into it: the far end's stream and this device's capture. Nothing here
      * decides whether recording is allowed — `RecordingPolicy` has already answered that.
+     *
+     * The answer is *waited for*. Posting the work and returning was the reason a refusal
+     * never reached the screen: the recorder marked the call as recording the instant the
+     * job was queued, so a call with no audio stream yet showed "Recording this call" over
+     * a file nothing ever opened.
      */
-    override fun startRecording(callKey: String, filePath: String) {
+    override suspend fun startRecording(callKey: String, filePath: String): Outcome<Unit, String> {
+        val answer = CompletableDeferred<Outcome<Unit, String>>()
         onPjsip("startRecording") {
-            val running = endpoint ?: return@onPjsip
-            val media = calls[callKey]?.audioMedia ?: run {
-                logger.warn(TAG, "Recording asked for a call with no audio stream")
-                return@onPjsip
-            }
-
-            val recorder = AudioMediaRecorder()
-            recorder.createRecorder(filePath)
-            media.startTransmit(recorder)
-            running.audDevManager().captureDevMedia.startTransmit(recorder)
-            recorders[callKey] = recorder
+            val running = endpoint
+            val media = calls[callKey]?.audioMedia
+            answer.complete(
+                when {
+                    running == null -> failure("the stack is not running")
+                    media == null -> failure("the call has no audio stream")
+                    else -> openRecorder(media, running.audDevManager().captureDevMedia, filePath, logger)
+                        .map { recorders[callKey] = it }
+                },
+            )
         }
+        // Bounded, like every other wait in this app (§1.4). One thread serves pjsua2, a
+        // media operation can be ahead of this one, and a wait with no end would hang the
+        // caller's coroutine for the life of the process rather than report anything.
+        return withTimeoutOrNull(RECORDING_START_TIMEOUT_MILLIS) { answer.await() }
+            ?: failure("the stack did not answer in $RECORDING_START_TIMEOUT_MILLIS ms")
+    }
+
+    // -------------------------------------------------------------- conference
+
+    override suspend fun setConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String> {
+        val answer = CompletableDeferred<Set<String>>()
+        onPjsip("setConferenceMembers") { answer.complete(conference.set(callKeys)) }
+        return withTimeoutOrNull(CONFERENCE_MIX_TIMEOUT_MILLIS) { success(answer.await()) }
+            ?: failure("the stack did not answer in $CONFERENCE_MIX_TIMEOUT_MILLIS ms")
     }
 
     override fun stopRecording(callKey: String) {
@@ -1296,6 +1408,16 @@ internal class RealPjsipCoreGateway @Inject constructor(
     /** One configured identity, and the callbacks PJSIP raises for it. */
     private inner class PjAccount(val accountKey: String) : Account() {
 
+        /**
+         * True once [removeAccount] has sent the un-REGISTER: the next registration
+         * answer is the one that finishes the removal.
+         */
+        @Volatile
+        var leaving: Boolean = false
+
+        /** PJSIP thread only: [finishRemoval] runs once, whichever caller gets there first. */
+        private var finished = false
+
         override fun onRegState(prm: OnRegStateParam) {
             val code = prm.code
             events.tryEmit(
@@ -1308,6 +1430,24 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     message = prm.reason,
                 ),
             )
+            // Posted, not done here: this callback runs in the account's own native
+            // frame, and deleting the object under it is the same crash as deleting a
+            // call inside its callback. Whatever the answer was — a 2xx or a failure —
+            // the registrar has spoken, and the account is done.
+            if (leaving) onPjsip("finishRemoval") { finishRemoval("unregistration answered $code") }
+        }
+
+        /**
+         * Shuts the account down and frees its native peer. Idempotent, so the answer
+         * and the fallback timer can both call it.
+         */
+        fun finishRemoval(why: String) {
+            if (finished) return
+            finished = true
+            logger.debug(TAG, "Releasing account $accountKey: $why")
+            runCatching { shutdown() }
+                .onFailure { logger.warn(TAG, "shutdown of $accountKey failed: ${it.message}") }
+            release()
         }
 
         override fun onIncomingCall(prm: OnIncomingCallParam) {
@@ -1352,6 +1492,15 @@ internal class RealPjsipCoreGateway @Inject constructor(
         @Volatile
         var reinvitePending: Boolean = false
 
+        /**
+         * Our resume re-INVITE, between going out and being answered.
+         *
+         * Read by [onCallTsxState], which is otherwise told about every transaction on
+         * the call and has no way to know which one anybody is waiting for. The rule
+         * for what settles it is [PendingResume]'s, where it has a test.
+         */
+        val pendingResume = PendingResume()
+
         constructor(callKey: String, account: PjAccount) : super(account) {
             this.callKey = callKey
             this.accountKey = account.accountKey
@@ -1364,14 +1513,45 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
         override fun onCallState(prm: OnCallStateParam) {
             val info = infoOrNull() ?: return
+            // CONNECTING is the moment between the 200 and the ACK, and which side sent
+            // the 200 decides whether the media is negotiated by then (`sip_inv.c`):
+            //
+            //  - As the *caller* (UAC) it is not — the state is set first and the answer's
+            //    SDP is processed after (`inv_on_state_early`, the RX_MSG branch). Reported
+            //    as CONNECTED, the engine took it as the answer, read `videoActive` as
+            //    false, and released the camera 12 ms after the far end accepted a video
+            //    call (TC15, 2026-09-11, `set video stream, op=6`). The media-state
+            //    callback and CONFIRMED both follow the update and are the ones to report.
+            //  - As the *callee* (UAS) it is — `pjsip_inv_answer` negotiates while building
+            //    the 200, before this state, so the media-state callback has already fired
+            //    with the call still INCOMING and reported nothing that connects. Skipping
+            //    CONNECTING here too left every answered incoming call stuck on the ringing
+            //    screen: the second Answer got "already answered" (PJ_EINVALIDOP) and
+            //    Decline the same (second TC15, 12:44 the same day). For the callee this
+            //    *is* the answer.
+            if (info.state == pjsip_inv_state.PJSIP_INV_STATE_CONNECTING &&
+                info.role == pjsip_role_e.PJSIP_ROLE_UAC
+            ) {
+                return
+            }
             publish(callStateOf(info), info)
 
             if (info.state == pjsip_inv_state.PJSIP_INV_STATE_DISCONNECTED) {
+                pendingResume.cancel()
+                stopPreview()
                 // Only now. The native peer is finished with this director, and holding it
                 // any longer is the leak; releasing it any earlier is a crash.
                 calls -= callKey
                 recorders -= callKey
+                // Before the media goes: a conference link into a released port is a
+                // use-after-free in a native bridge, not a stale entry in a map.
+                conference.remove(callKey)
                 audioMedia = null
+                // And freed on the PJSIP thread, after this callback has returned — not
+                // from inside it, where the native frame is still this object's, and not
+                // by the garbage collector, whose thread pjlib has never seen and whose
+                // timing lets pjsua reuse this call's slot first. See [PjAccount.release].
+                onPjsip("releaseCall") { runCatching { delete() } }
             }
         }
 
@@ -1406,25 +1586,77 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
                     media.type == pjmedia_type.PJMEDIA_TYPE_VIDEO &&
                         media.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE -> {
-                        captureDevice = media.videoCapDev
+                        // Only once capture is set up: before `START_TRANSMIT` PJSIP
+                        // reports INVALID (-3) here, and a preview asked for on -3 fails.
+                        if (media.videoCapDev != pjmedia_vid_dev_std_index.PJMEDIA_VID_INVALID_DEV) {
+                            captureDevice = media.videoCapDev
+                        }
                         applyVideoWindows()
+                        if (media.dir and pjmedia_dir.PJMEDIA_DIR_ENCODING != 0) startTransmitIfWanted()
                     }
                 }
             }
-            publish(callStateOf(info), info)
+            // A member that was still ringing now has an audio port, so the conference
+            // can take it. Idempotent, so calling it on every media change costs nothing
+            // when there is no conference or when nothing moved (ADR-009).
+            if (conference.isActive) conference.remix()
+
+            val state = callStateOf(info)
+            // Media running again is our resume landing; anything else, LOCAL_HOLD
+            // restated mid-flight included, leaves it outstanding.
+            pendingResume.onMediaState(state)
+            publish(state, info)
         }
 
         /**
-         * Holds the far end's re-INVITE until the user answers it (Task 54).
+         * Notices the resume re-INVITE the far end refused (§2.1).
+         *
+         * The only signal there is: PJSIP reports a refused re-INVITE through no other
+         * callback, for the reasons [PendingResume] gives. A call that moved to
+         * `Resuming` on the strength of the request going out would otherwise stay
+         * there for the rest of its life.
+         *
+         * The event body is only a transaction for a transaction-state event; pjsua2
+         * leaves it default-constructed for the others, which is an empty method and
+         * a status of 0, and [PendingResume.refusedBy] does not match either.
+         */
+        override fun onCallTsxState(prm: OnCallTsxStateParam) {
+            if (!pendingResume.isOutstanding) return
+            val tsx = runCatching { prm.e.body.tsxState.tsx }.getOrNull() ?: return
+            val refused = pendingResume.refusedBy(
+                isClient = tsx.role == pjsip_role_e.PJSIP_ROLE_UAC,
+                method = tsx.method,
+                statusCode = tsx.statusCode,
+            )
+            if (!refused) return
+
+            logger.warn(TAG, "Resume refused on $callKey with ${tsx.statusCode}; the call is still held")
+            publish(StackCallState.RESUME_FAILED)
+        }
+
+        /**
+         * Holds the far end's re-INVITE until the user answers it (Task 54) — but only
+         * when it is an **escalation**: video offered on a call that has none running.
          *
          * `isAsync` is what defers the reply. Without it PJSIP answers immediately and the
          * first anybody knows about an escalation is their own camera light; with it the
          * call sits in this state until [respondToVideoUpdate] answers, which is what makes
          * the prompt §5.2 requires possible at all.
+         *
+         * It used to defer *every* re-INVITE whose offer had video in it. A session-timer
+         * refresh on a call already carrying video has video in its offer too, and so does
+         * the far end's hold; both were held for a user prompt that made no sense and was
+         * never shown, and never answered. FreeSWITCH registers as the refresher on the
+         * calls it originates (`Session-Expires: 120;refresher=uac`), so its refresh
+         * re-INVITE at 60 s went unanswered and our own session timer ended the call at
+         * 88 s with `BYE … cause=408 "No session refresh received"`. Every inbound video
+         * call died before the two-minute mark; outbound ones survived only because we
+         * are the refresher there. A re-INVITE on a call that already has an active video
+         * stream is answered by the stack, as any other renegotiation is.
          */
         override fun onCallRxReinvite(prm: OnCallRxReinviteParam) {
             val info = infoOrNull() ?: return
-            if (info.remVideoCount > 0) {
+            if (info.remVideoCount > 0 && !info.hasActiveVideo()) {
                 prm.isAsync = true
                 reinvitePending = true
                 publish(StackCallState.UPDATED_BY_REMOTE, info)
@@ -1435,7 +1667,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             transferEventFlow.tryEmit(
                 StackTransferEvent(
                     callKey = callKey,
-                    state = if (prm.statusCode == SIP_OK) StackCallState.CONNECTED else StackCallState.ERROR,
+                    state = TransferEventMapper.stateOf(prm.statusCode, prm.finalNotify),
                     statusCode = prm.statusCode,
                 ),
             )
@@ -1464,6 +1696,89 @@ internal class RealPjsipCoreGateway @Inject constructor(
             }
         }
 
+        /**
+         * Gives a video stream that has just come up the camera decision already made
+         * (see [cameraWanted]). Posted rather than done inline: this runs inside PJSIP's
+         * media-state callback, and `pjsua_call_set_vid_strm` re-acquires the call it is
+         * being told about, which is safe on the same thread but clearer after the
+         * callback has returned.
+         */
+        private fun startTransmitIfWanted() {
+            if (!cameraWanted) return
+            onPjsip("startTransmit") {
+                if (!cameraWanted || !calls.containsKey(callKey)) return@onPjsip
+                vidSetStream(
+                    pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_START_TRANSMIT,
+                    CallVidSetStreamParam(),
+                )
+                applyPreview()
+            }
+        }
+
+        private val localPreview = LocalPreview(logger)
+
+        /**
+         * Draws this device's own picture into the preview surface, or takes it down when
+         * the surface is gone — see [LocalPreview] for why a sendrecv stream needs this
+         * at all. Only while capture is running: started earlier, the preview would open
+         * the camera itself, which is the decision `CameraPolicy` owns, and a surface
+         * that arrives first is picked up when [startTransmitIfWanted] runs.
+         */
+        fun applyPreview() {
+            val surface = previewSurface
+            if (surface == null) {
+                localPreview.stop()
+                return
+            }
+            if (!isTransmittingVideo()) return
+            localPreview.draw(captureDevice, surface)
+        }
+
+        fun stopPreview() = localPreview.stop()
+
+        /**
+         * Whether this call's video stream is encoding, i.e. capture has been set up.
+         *
+         * The stream is found from the call's own media list first, and the question is
+         * only put to PJSIP when there is one. `vidStreamIsRunning(-1, …)` asks PJSIP to
+         * find it, and on a call whose video has just been removed it finds nothing and
+         * then *asserts* on the -1 it resolved to — `pjsua_vid.c:2873`, SIGABRT on the
+         * PJSIP thread, the whole process gone the moment "Turn off my video" was pressed
+         * (TC15, 2026-09-11 13:59). A library assertion is not an exception `runCatching`
+         * can see.
+         */
+        /**
+         * This call's bridge port, only while it is the port pjsua currently holds for it.
+         *
+         * [audioMedia] is refreshed on the media-state callback, but pjsua tears a
+         * stream down *before* that callback fires for its replacement — a resume
+         * re-INVITE logs `Remove port 4 … Add port 8` first and reports media state
+         * after. In that window the cached object names a slot that is gone, and that
+         * pjsua may already have handed to another call: linking through it connected
+         * two members to one slot, which is a port transmitting to itself, which is a
+         * participant hearing their own voice. The slot pjsua reports for the live audio
+         * stream is the truth; a cached port that disagrees with it is treated as absent,
+         * and the bridge links the member when the callback brings the new one.
+         */
+        fun currentAudioPort(): ConferencePort? {
+            val media = audioMedia ?: return null
+            val slot = infoOrNull()?.media
+                ?.firstOrNull { it.type == pjmedia_type.PJMEDIA_TYPE_AUDIO && it.isLive }
+                ?.audioConfSlot ?: return null
+            return if (slot == media.portId) PjConferencePort(media) else null
+        }
+
+        fun isTransmittingVideo(): Boolean {
+            val info = infoOrNull() ?: return false
+            val index = info.media.firstOrNull { media ->
+                media.type == pjmedia_type.PJMEDIA_TYPE_VIDEO &&
+                    media.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE &&
+                    media.dir and pjmedia_dir.PJMEDIA_DIR_ENCODING != 0
+            }?.index ?: return false
+            return runCatching { vidStreamIsRunning(index.toInt(), pjmedia_dir.PJMEDIA_DIR_ENCODING) }
+                .getOrDefault(false)
+        }
+
         fun publish(state: StackCallState, info: CallInfo? = infoOrNull()) {
             val remote = NameAddr.of(info?.remoteUri)
             callEventFlow.tryEmit(
@@ -1478,10 +1793,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     // What the peer offered, read from their side of the negotiation
                     // rather than ours: ours says what we would accept, not what was asked.
                     videoOffered = (info?.remVideoCount ?: 0) > 0,
-                    videoActive = info?.media?.any {
-                        it.type == pjmedia_type.PJMEDIA_TYPE_VIDEO &&
-                            it.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE
-                    } == true,
+                    videoActive = info?.hasActiveVideo() == true,
                     mediaEncrypted = encryptedAudio(info),
                 ),
             )
@@ -1508,9 +1820,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
          * direction for a check whose failure hangs the call up.
          */
         private fun encryptedAudio(info: CallInfo?): Boolean {
+            // Live streams only. On DISCONNECTED the media is already gone and pjsua2
+            // logs `pjsua_call_get_stream_info … PJ_EINVAL` at ERROR for every hangup —
+            // an error about a stream nobody needs an answer for. There is nothing to
+            // encrypt in a stream that is not running, so the answer is the same.
             val audio = info?.media
                 ?.withIndex()
-                ?.filter { (_, m) -> m.type == pjmedia_type.PJMEDIA_TYPE_AUDIO }
+                ?.filter { (_, m) -> m.type == pjmedia_type.PJMEDIA_TYPE_AUDIO && m.isLive }
                 .orEmpty()
             if (audio.isEmpty()) return false
 
@@ -1528,61 +1844,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
          * the ordinary teardown path rather than exceptionally — a callback can arrive
          * fractionally after the native object goes.
          */
-        private fun infoOrNull(): CallInfo? = runCatching { info }.getOrNull()
-    }
-
-    // ------------------------------------------------------------------ mapping
-
-    /**
-     * PJSIP's invite state as the app's, or null for one that maps to nothing.
-     *
-     * `CONNECTING` is deliberately absent: it is the moment between the 200 and the ACK,
-     * and the app has nothing different to do during it.
-     */
-    private fun callStateOf(info: CallInfo): StackCallState = when (info.state) {
-        pjsip_inv_state.PJSIP_INV_STATE_CALLING -> StackCallState.OUTGOING_INIT
-        pjsip_inv_state.PJSIP_INV_STATE_INCOMING -> StackCallState.INCOMING_RECEIVED
-        // 180 is ringing; 183 with SDP is early media, and the difference is audible.
-        pjsip_inv_state.PJSIP_INV_STATE_EARLY ->
-            if (info.lastStatusCode == SIP_PROGRESS) {
-                StackCallState.OUTGOING_EARLY_MEDIA
-            } else {
-                StackCallState.OUTGOING_RINGING
-            }
-
-        pjsip_inv_state.PJSIP_INV_STATE_CONFIRMED -> confirmedStateOf(info)
-        pjsip_inv_state.PJSIP_INV_STATE_DISCONNECTED ->
-            if (info.lastStatusCode >= SIP_ERROR_FLOOR) StackCallState.ERROR else StackCallState.ENDED
-
-        else -> StackCallState.CONNECTED
-    }
-
-    /**
-     * A confirmed call is running, held, or held by the far end, and only its media says
-     * which. PJSIP reports hold per stream rather than per call, so the audio stream is
-     * what is asked.
-     */
-    private fun confirmedStateOf(info: CallInfo): StackCallState {
-        val audio = info.media.firstOrNull { it.type == pjmedia_type.PJMEDIA_TYPE_AUDIO }
-        return when (audio?.status) {
-            pjsua_call_media_status.PJSUA_CALL_MEDIA_LOCAL_HOLD -> StackCallState.PAUSED
-            pjsua_call_media_status.PJSUA_CALL_MEDIA_REMOTE_HOLD -> StackCallState.PAUSED_BY_REMOTE
-            pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE -> StackCallState.STREAMS_RUNNING
-            else -> StackCallState.CONNECTED
-        }
-    }
-
-    /**
-     * A registration status code as the app's state.
-     *
-     * `expiration == 0` on a 2xx is an unregister the server accepted, not a registration —
-     * the same response code means opposite things depending on what was asked.
-     */
-    private fun registrationStateOf(code: Int, expiration: Long): StackRegistrationState = when {
-        code in SIP_OK until SIP_ERROR_FLOOR && expiration == 0L -> StackRegistrationState.CLEARED
-        code in SIP_OK until SIP_ERROR_FLOOR -> StackRegistrationState.OK
-        code >= SIP_ERROR_FLOOR -> StackRegistrationState.FAILED
-        else -> StackRegistrationState.PROGRESS
+        fun infoOrNull(): CallInfo? = runCatching { info }.getOrNull()
     }
 
     private fun callParams(videoEnabled: Boolean) = CallOpParam(true).apply {
@@ -1590,6 +1852,17 @@ internal class RealPjsipCoreGateway @Inject constructor(
             audioCount = 1
             // There is no `isVideoEnabled` in PJSIP. The stream count *is* the profile.
             videoCount = if (videoEnabled) 1L else 0L
+            // How a lost packet gets repaired. `CallSetting()` zeroes this (only
+            // `CallSetting(true)` takes pjsua's defaults, and those also offer a text
+            // stream), and zero meant no `a=rtcp-fb:* nack pli` in the SDP: the decoder
+            // could not ask for a keyframe and libvpx sends one on its own every 60 s, so
+            // one lost packet on Wi-Fi left the far end a smear of macroblocks for up to
+            // a minute (TC15, 0.4 % loss, 2026-09-11). PLI is the RTCP request, SIP INFO
+            // the fallback for a peer without RTCP-FB; both are what pjsua defaults to.
+            reqKeyframeMethod = (
+                pjsua_vid_req_keyframe_method.PJSUA_VID_REQ_KEYFRAME_RTCP_PLI or
+                    pjsua_vid_req_keyframe_method.PJSUA_VID_REQ_KEYFRAME_SIP_INFO
+                ).toLong()
         }
     }
 
@@ -1634,7 +1907,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
         return block()
     }
 
-    private companion object {
+    internal companion object {
         const val TAG = "PjsipGateway"
 
         /**
@@ -1654,6 +1927,18 @@ internal class RealPjsipCoreGateway @Inject constructor(
         const val SRTP_PROFILE = pjmedia_tp_proto.PJMEDIA_TP_PROFILE_SRTP
 
         const val PJSIP_THREAD = "pjsip-main"
+
+        /**
+         * How long [startRecording] waits for the PJSIP thread before giving up.
+         *
+         * Matches the unregister acknowledgement in `PjsipSipEngine`: long enough that
+         * a busy media thread is not mistaken for a refusal, short enough that the tap
+         * that asked for the recording still gets an answer.
+         */
+        const val RECORDING_START_TIMEOUT_MILLIS = 5_000L
+
+        /** Same bound and same reasoning as the recording start: a wait must end (§1.4). */
+        const val CONFERENCE_MIX_TIMEOUT_MILLIS = 5_000L
         const val EVENT_BUFFER = 64
 
         const val TRANSPORT_UDP = "UDP"
@@ -1666,8 +1951,20 @@ internal class RealPjsipCoreGateway @Inject constructor(
          */
         const val USER_AGENT = "whatsapp-v2 (PJSIP)"
 
-        /** Simultaneous calls the stack will hold: one active, one held, room to transfer. */
-        const val MAX_CALLS = 4L
+        /**
+         * Simultaneous calls the stack will hold (ADR-009).
+         *
+         * Taken from the domain's conference ceiling, not written again here, because
+         * this number is declared in three places and the runtime one silently wins.
+         * Raising `PJSUA_MAX_CALLS` in `config_site.h` alone did nothing: pjsua answered
+         * the fifth INVITE `486 Busy Here` with "Unable to accept incoming call (too many
+         * calls)" because `uaConfig.maxCalls` was still 4 — the compile-time value is only
+         * the default this overrides. Found on a handset, at the fifth participant.
+         *
+         * It was 4 — one active, one held, room to transfer — which is right for a
+         * softphone and not enough for a conference.
+         */
+        val MAX_CALLS = SipConferenceController.MAX_LOCAL_CONFERENCE.toLong()
 
         const val MONO = 1L
 
@@ -1717,13 +2014,6 @@ internal class RealPjsipCoreGateway @Inject constructor(
         const val VIDEO_HEIGHT = 720L
         const val VIDEO_FPS = 30
         const val VIDEO_AVG_BPS = 1_500_000L
-        const val VIDEO_MAX_BPS = 2_500_000L
-        const val VIDEO_START_KEYFRAMES = 3L
-        const val VIDEO_START_KEYFRAME_INTERVAL_MS = 1_000L
-
-        /** PJSIP priorities run 0 (disabled) to 255 (first choice). */
-        const val CODEC_TOP = 255
-        const val CODEC_DISABLED: Short = 0
 
         /** `PJSUA_DTMF_METHOD_SIP_INFO`; RFC 2833 is method 0 and is `dialDtmf`'s default. */
         const val DTMF_METHOD_SIP_INFO = 1
@@ -1731,8 +2021,387 @@ internal class RealPjsipCoreGateway @Inject constructor(
         /** Whatever `AccountConfig.videoConfig.defaultCaptureDevice` resolved to. */
         const val CAPTURE_DEVICE_DEFAULT = -1
 
-        const val SIP_OK = 200
-        const val SIP_PROGRESS = 183
-        const val SIP_ERROR_FLOOR = 300
+        /**
+         * How long a removed account may wait for its un-REGISTER to be answered before
+         * it is shut down regardless. Longer than `PjsipSipEngine`'s five-second wait,
+         * so the ordinary path is the answer and this is only ever a registrar that has
+         * gone away.
+         */
+        const val UNREGISTER_GRACE_MILLIS = 8_000L
+
+        /** How long a refresh defers to PJSIP's own IP-change re-registration at most. */
+        const val IP_CHANGE_GATE_MILLIS = 15_000L
     }
+}
+
+private const val SIP_OK = 200
+private const val SIP_PROGRESS = 183
+private const val SIP_ERROR_FLOOR = 300
+
+// ---------------------------------------------------------------------- mapping
+//
+// Pure functions of pjsua2 values, kept outside the class: they read no gateway state,
+// and detekt's LargeClass limit is the budget the class spends on the things that do.
+
+/**
+ * PJSIP's invite state as the app's.
+ *
+ * `CONNECTING` has no arm of its own and falls into `else`; `PjCall.onCallState` publishes
+ * it only for the callee — see the comment there for what each side broke.
+ */
+private fun callStateOf(info: CallInfo): StackCallState = when (info.state) {
+    pjsip_inv_state.PJSIP_INV_STATE_CALLING -> StackCallState.OUTGOING_INIT
+    pjsip_inv_state.PJSIP_INV_STATE_INCOMING -> StackCallState.INCOMING_RECEIVED
+    // EARLY is a 1xx in flight. For the callee that is the 180 *we* sent, and the call
+    // is still an incoming one — the media-state callback fires in this state while the
+    // 200 is being built, and reporting it as "ringing at the far end" was a wrong event
+    // for an inbound call. For the caller, 180 is ringing and 183 with SDP is early
+    // media, and the difference is audible.
+    pjsip_inv_state.PJSIP_INV_STATE_EARLY -> when {
+        info.role == pjsip_role_e.PJSIP_ROLE_UAS -> StackCallState.INCOMING_RECEIVED
+        info.lastStatusCode == SIP_PROGRESS -> StackCallState.OUTGOING_EARLY_MEDIA
+        else -> StackCallState.OUTGOING_RINGING
+    }
+
+    pjsip_inv_state.PJSIP_INV_STATE_CONFIRMED -> confirmedStateOf(info)
+    pjsip_inv_state.PJSIP_INV_STATE_DISCONNECTED ->
+        if (info.lastStatusCode >= SIP_ERROR_FLOOR) StackCallState.ERROR else StackCallState.ENDED
+
+    else -> StackCallState.CONNECTED
+}
+
+/**
+ * A confirmed call is running, held, or held by the far end, and only its media says
+ * which. PJSIP reports hold per stream rather than per call, so the audio stream is
+ * what is asked.
+ */
+private fun confirmedStateOf(info: CallInfo): StackCallState {
+    val audio = info.media.firstOrNull { it.type == pjmedia_type.PJMEDIA_TYPE_AUDIO }
+    return when (audio?.status) {
+        pjsua_call_media_status.PJSUA_CALL_MEDIA_LOCAL_HOLD -> StackCallState.PAUSED
+        pjsua_call_media_status.PJSUA_CALL_MEDIA_REMOTE_HOLD -> StackCallState.PAUSED_BY_REMOTE
+        pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE -> StackCallState.STREAMS_RUNNING
+        else -> StackCallState.CONNECTED
+    }
+}
+
+/**
+ * A registration status code as the app's state.
+ *
+ * `expiration == 0` on a 2xx is an unregister the server accepted, not a registration —
+ * the same response code means opposite things depending on what was asked.
+ */
+private fun registrationStateOf(code: Int, expiration: Long): StackRegistrationState = when {
+    code in SIP_OK until SIP_ERROR_FLOOR && expiration == 0L -> StackRegistrationState.CLEARED
+    code in SIP_OK until SIP_ERROR_FLOOR -> StackRegistrationState.OK
+    code >= SIP_ERROR_FLOOR -> StackRegistrationState.FAILED
+    else -> StackRegistrationState.PROGRESS
+}
+
+/**
+ * The re-INVITE that lifts our hold, and only that.
+ *
+ * `PJSUA_CALL_UNHOLD` goes on `opt.flag`. It used to go on `CallOpParam.options`,
+ * which `Call::reinvite` never reads — pjsua2 passes only `prm.opt` to
+ * `pjsua_call_reinvite2` (`third_party/pjproject/pjsip/src/pjsua2/call.cpp:810-816`);
+ * `options` is read by `setHold` and `xferReplaces` alone. With the flag missing,
+ * `pjsua_call_reinvite2` took the `local_hold` branch and built the SDP *of a hold*
+ * (`pjsua_call.c:3531-3532`), so the resume went out as `a=sendonly` — a second hold.
+ *
+ * The setting is the call's own, not `CallSetting(true)`. The default setting is
+ * `aud_cnt=1, vid_cnt=1, txt_cnt=1` (`pjsua_call.c:656-670`), and `apply_call_setting`
+ * replaces the call's setting and re-initialises its media to match
+ * (`pjsua_call.c:699-745`) — which put an `m=video` and an `m=text` line into the
+ * resume of an audio call. Measured on the handset on 2026-09-10: the hold re-INVITE
+ * was answered 200 in 280 ms; the resume was 1852 bytes, escalated to TCP per
+ * RFC 3261 §18.1.1, was refused there, fell back to an 1846-byte UDP datagram, and
+ * got no response of any kind through seven retransmissions. Both halves of the
+ * handoff's diagnosis — "the re-INVITE is sent and the media does resume on the
+ * wire" — were wrong; nothing resumed, because nothing arrived.
+ *
+ * `CallInfo.setting` is `call->opt` verbatim (`pjsua_call.c:2556`), so the counts
+ * this call was placed or answered with are exactly what is re-offered.
+ */
+/**
+ * Turns this call's video on or off (Task 51), without growing the SDP.
+ *
+ * Off is `REMOVE`: pjsua sets the m=video port to 0, which is the only way SDP has to
+ * take a stream away. On used to be `ADD`, and pjsua's `call_add_video` *always* appends
+ * a fresh m-line (`pjsua_vid.c`, `med_prov_cnt++`) — so every off/on cycle left one more
+ * dead `m=video 0` behind and opened one more RTP transport, and the sixteenth toggle
+ * would have failed with `PJ_ETOOMANY`. A handset showed it plainly: after one off/on the
+ * answer carried `m=video 0` *and* `m=video 21598`, "stream #1 unchanged (inactive)" and
+ * "stream #2: VP8 (sendrecv)". `CHANGE_DIR` to sendrecv on the stream that already exists
+ * is what pjsua provides for exactly this — `call_modify_video` re-creates the transport
+ * and the m-line in place when the port is 0. `ADD` is kept for a call that never had
+ * video at all.
+ */
+private fun Call.applyVideoEnabled(enabled: Boolean, info: CallInfo?) {
+    val existing = info?.media?.firstOrNull { it.type == pjmedia_type.PJMEDIA_TYPE_VIDEO }?.index?.toInt()
+    when {
+        !enabled -> vidSetStream(pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_REMOVE, CallVidSetStreamParam())
+        existing == null -> vidSetStream(pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_ADD, CallVidSetStreamParam())
+        else -> vidSetStream(
+            pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_CHANGE_DIR,
+            CallVidSetStreamParam().apply {
+                medIdx = existing
+                dir = pjmedia_dir.PJMEDIA_DIR_ENCODING_DECODING
+            },
+        )
+    }
+}
+
+/** The stream operation that starts or stops sending captured video. */
+private fun transmitOp(capturing: Boolean): Int = if (capturing) {
+    pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_START_TRANSMIT
+} else {
+    pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_STOP_TRANSMIT
+}
+
+/** True when a video stream is negotiated and running on this call, in either direction. */
+private fun CallInfo.hasActiveVideo(): Boolean = media.any {
+    it.type == pjmedia_type.PJMEDIA_TYPE_VIDEO && it.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE
+}
+
+private fun CallInfo.resumeParams(): CallOpParam {
+    val resume = setting
+    resume.flag = pjsua_call_flag.PJSUA_CALL_UNHOLD.toLong()
+    return CallOpParam().apply { opt = resume }
+}
+
+/**
+ * Opus, configured rather than left at whatever the codec defaults to (§5.2).
+ *
+ * Opus is the only wideband codec in the default preference list, so its settings are
+ * most of what "audio quality" means here.
+ *
+ *  - `sample_rate` matches the bridge, so nothing resamples on the way in or out.
+ *  - `bit_rate` is well above the 16-24 kbps that narrowband deployments settle for;
+ *    at 48 kHz mono this is transparent for speech.
+ *  - `complexity` is the encoder's own quality/CPU dial, 0..10.
+ *  - `packet_loss` is not a measurement, it is a *hint*: it tells the encoder how much
+ *    FEC to carry. Zero means no redundancy, and the first lost packet is a hole.
+ *  - CBR off, because VBR spends the bits where the speech is.
+ */
+private fun Endpoint.tuneOpus(logger: Logger) {
+    runCatching {
+        val opus = codecOpusConfig
+        opus.sample_rate = RealPjsipCoreGateway.CORE_CLOCK_RATE
+        opus.channel_cnt = RealPjsipCoreGateway.MONO
+        opus.bit_rate = RealPjsipCoreGateway.OPUS_BITRATE
+        opus.complexity = RealPjsipCoreGateway.OPUS_COMPLEXITY
+        opus.packet_loss = RealPjsipCoreGateway.OPUS_EXPECTED_LOSS_PCT
+        opus.cbr = false
+        codecOpusConfig = opus
+    }.onFailure {
+        // Not fatal: a build without Opus still registers PCMU and G722, and a call
+        // on those is worth more than no call. Loud, because it means the native
+        // library was built without PJMEDIA_HAS_OPUS_CODEC and §5.2 is not being met.
+        logger.error(RealPjsipCoreGateway.TAG, "Opus not configured - is it compiled in? ${it.message}")
+    }
+}
+
+/**
+ * Video encoder parameters, per codec (§5.2).
+ *
+ * PJSIP's defaults here are conservative enough to look like a fault: a small frame at
+ * a low bitrate, which on a modern handset reads as a broken camera rather than a
+ * bandwidth choice. Every registered codec gets the same ceiling, because the codec
+ * that ends up negotiated is the far end's decision, not ours.
+ *
+ * A ceiling, not a target - `rateControlBandwidth` on the account is what actually
+ * holds the stream to it, and PJSIP drops below it on its own when the link cannot
+ * carry it. Applied per codec inside `runCatching` so one codec rejecting a format
+ * does not cost the others theirs.
+ */
+private fun Endpoint.tuneVideoCodecs(logger: Logger) {
+    videoCodecEnum2().forEach { info ->
+        runCatching {
+            val param = getVideoCodecParam(info.codecId)
+            param.encFmt.apply {
+                width = RealPjsipCoreGateway.VIDEO_WIDTH
+                height = RealPjsipCoreGateway.VIDEO_HEIGHT
+                fpsNum = RealPjsipCoreGateway.VIDEO_FPS
+                fpsDenum = 1
+                avgBps = RealPjsipCoreGateway.VIDEO_AVG_BPS
+                maxBps = VIDEO_MAX_BPS
+            }
+            setVideoCodecParam(info.codecId, param)
+        }.onFailure {
+            logger.warn(RealPjsipCoreGateway.TAG, "Video codec ${info.codecId} kept its defaults: ${it.message}")
+        }
+    }
+}
+
+/**
+ * Points the Lyra codec at its model files (ADR-008, Exit A).
+ *
+ * After `libInit`, which is when the codec registers and writes its *default* path —
+ * the relative string `"model_coeffs"`, which exists nowhere on a device — and before
+ * `libStart`. `lyra.cpp:199-203` writes that default at the end of init, so a path set
+ * earlier is overwritten; a path set later is not read until the next stream.
+ *
+ * Returns what is wrong, or null. A problem is not fatal to the stack — every other
+ * codec still works — but it is fatal to *this* codec in a way the registry cannot
+ * show: `lyra/16000/1` registers from the library alone and then fails when a stream
+ * opens. The audit carries the problem against the codec for exactly that reason.
+ */
+private fun Endpoint.tuneLyra(context: Context, logger: Logger): String? {
+    val dir = File(context.filesDir, LyraModels.ASSET_DIR)
+    val installed = LyraModels.install(
+        open = { name -> runCatching { context.assets.open("${LyraModels.ASSET_DIR}/$name") }.getOrNull() },
+        dir = dir,
+    )
+    if (installed != null) {
+        logger.error(LYRA_TAG, "Lyra model files unusable: $installed")
+        return installed
+    }
+    return runCatching {
+        val lyra = codecLyraConfig
+        lyra.modelPath = dir.absolutePath
+        codecLyraConfig = lyra
+    }.exceptionOrNull()?.let { failure ->
+        // The library was built without PJMEDIA_HAS_LYRA_CODEC, or the setter refused
+        // the path. Either way the codec cannot be used and config_site.h says it can.
+        logger.error(LYRA_TAG, "Lyra not configured — is it compiled in? ${failure.message}")
+        "pjsua2 refused the Lyra configuration: ${failure.message}"
+    }
+}
+
+private const val LYRA_TAG = "PjsipGateway"
+
+/**
+ * The camera to switch to after [current], or null when there is nothing to switch to.
+ *
+ * Cameras only. PJSIP's device list also holds every renderer and its colour-bar
+ * generator, and cycling through the whole list pointed the encoder at a device that
+ * cannot capture. "Default" (-1) is an alias, not a position in the list, so it is
+ * resolved to the device it stands for before the next one is looked up.
+ */
+private fun cameraAfter(manager: VidDevManager, current: Int): Int? {
+    val cameras = manager.cameras()
+    if (cameras.size < 2) return null
+    val resolved = if (current == pjmedia_vid_dev_std_index.PJMEDIA_VID_DEFAULT_CAPTURE_DEV) {
+        runCatching { manager.getDevInfo(current).id }.getOrDefault(current)
+    } else {
+        current
+    }
+    return cameras[(cameras.indexOf(resolved).coerceAtLeast(0) + 1) % cameras.size]
+}
+
+/**
+ * The video registry with libvpx's VP8 ahead of Android MediaCodec's.
+ *
+ * Both register as `VP8`, and `CodecPriorities` offers same-name codecs in the order it is
+ * given — so this is the one place that decides which VP8 the offer leads with. Software:
+ * on the TC15 the MediaCodec decoder never produced a picture (`and_vid_mediacodec.cpp:
+ * Decoder failed to get input Buffer`, every frame `PJ_ETOOSMALL`), while libvpx decoded
+ * the same echoed stream at 1088×612 without a dropped frame (2026-09-11). MediaCodec's
+ * VP8 stays registered, one step below, so a far end that only speaks to it still gets an
+ * answer. Stable, so nothing else in the registry moves.
+ */
+private fun List<String>.softwareVp8First(): List<String> =
+    sortedBy { if (it.equals(MEDIACODEC_VP8_ID, ignoreCase = true)) 1 else 0 }
+
+/** `VP8/<PJMEDIA_RTP_PT_VP8_RSV1>`: the id `and_vid_mediacodec.cpp:76` registers its VP8 under. */
+private const val MEDIACODEC_VP8_ID = "VP8/103"
+
+/**
+ * The indices of the real cameras: capture devices of the platform's camera driver.
+ *
+ * PJSIP's device list also holds every renderer and a colour-bar test-pattern generator,
+ * and the generator reports itself as a capture device — so the first version of this
+ * filtered on direction alone and the second "Flip" of a call pointed the encoder at
+ * `Colorbar generator [Colorbar]` (TC15, 2026-09-11). The driver name is what tells the
+ * camera apart: `android_dev.c` registers its devices under `Android`.
+ */
+private fun VidDevManager.cameras(): List<Int> = (0 until devCount.toInt()).filter { id ->
+    runCatching {
+        val info = getDevInfo(id)
+        info.dir and pjmedia_dir.PJMEDIA_DIR_CAPTURE != 0 && info.driver.equals(CAMERA_DRIVER, ignoreCase = true)
+    }.getOrDefault(false)
+}
+
+/** What `android_dev.c` calls its factory: `pj_ansi_strxcpy(info->driver, "Android", ...)`. */
+private const val CAMERA_DRIVER = "Android"
+
+/**
+ * pjsua2's Android sample mapping from `Display.getRotation()` degrees to the capture
+ * orientation, or null for a value that is not a rotation.
+ */
+private fun captureOrientFor(degrees: Int): Int? = when (degrees) {
+    0 -> pjmedia_orient.PJMEDIA_ORIENT_ROTATE_270DEG
+    QUARTER_TURN_DEGREES -> pjmedia_orient.PJMEDIA_ORIENT_NATURAL
+    HALF_TURN_DEGREES -> pjmedia_orient.PJMEDIA_ORIENT_ROTATE_90DEG
+    THREE_QUARTER_TURN_DEGREES -> pjmedia_orient.PJMEDIA_ORIENT_ROTATE_180DEG
+    else -> null
+}
+
+private const val QUARTER_TURN_DEGREES = 90
+private const val HALF_TURN_DEGREES = 180
+private const val THREE_QUARTER_TURN_DEGREES = 270
+
+/**
+ * Opens a pjsua2 recorder on [filePath] and transmits both legs into it (Task 58).
+ *
+ * At file level rather than in `RealPjsipCoreGateway` because the class is already at
+ * detekt's `LargeClass` bound, and because this needs nothing of the gateway but the two
+ * media ports it is handed. Runs on the PJSIP thread — its caller is inside `onPjsip`.
+ *
+ * Total by construction: every path returns a value, including the throwing ones, because
+ * the caller is completing a deferred that somebody is waiting on.
+ */
+private fun openRecorder(
+    media: AudioMedia,
+    captureDevMedia: AudioMedia,
+    filePath: String,
+    logger: Logger,
+): Outcome<AudioMediaRecorder, String> {
+    val recorder = AudioMediaRecorder()
+    return runCatching {
+        recorder.createRecorder(filePath)
+        media.startTransmit(recorder)
+        captureDevMedia.startTransmit(recorder)
+    }.fold(
+        onSuccess = { success(recorder) },
+        onFailure = { thrown ->
+            // Half-started is worse than not started: a port created and never handed back
+            // is a conference slot `stopRecording` can no longer find, so it is freed here.
+            runCatching { media.stopTransmit(recorder) }
+            runCatching { recorder.delete() }
+            logger.error(RealPjsipCoreGateway.TAG, "startRecording failed: ${thrown.message}", thrown)
+            failure(thrown.message ?: thrown.javaClass.simpleName)
+        },
+    )
+}
+
+/**
+ * Sends the REGISTER that `modify` alone does not.
+ *
+ * `pjsua_acc_modify` re-registers only when something in the config moved — identity,
+ * registrar, proxy, credentials, expiry. "Register now" on an account whose config is
+ * unchanged moved nothing, so the stack logged `Modifying account 0` and did nothing else —
+ * while the engine had already published `Registering`. The spinner never resolved and the
+ * registrar never heard a thing; a handset showed "Registering..." for a minute over a
+ * binding the server still listed as fresh. So the REGISTER is asked for explicitly.
+ * `PJSIP_EBUSY` here means `modify` did send one, and its answer will move the state.
+ * Skipped while PJSIP is re-registering for an IP change, for the reason
+ * `RealPjsipCoreGateway.refreshAccount` gives.
+ *
+ * File level because the gateway is at detekt's `LargeClass` bound.
+ */
+private fun Account.registerAfterModify(accountKey: String, ipChangeInProgress: Boolean, logger: Logger) {
+    if (ipChangeInProgress) return
+    runCatching { setRegistration(true) }.onFailure {
+        logger.debug(RealPjsipCoreGateway.TAG, "REGISTER for $accountKey already in flight: ${it.message}")
+    }
+}
+
+/** [ConferencePort] over a live `AudioMedia`. Equality is the port slot, which is what the bridge keys on. */
+private class PjConferencePort(private val media: AudioMedia) : ConferencePort {
+    override val id: Int get() = media.portId
+
+    override fun transmitTo(other: ConferencePort) = media.startTransmit((other as PjConferencePort).media)
+
+    override fun stopTransmitTo(other: ConferencePort) = media.stopTransmit((other as PjConferencePort).media)
 }

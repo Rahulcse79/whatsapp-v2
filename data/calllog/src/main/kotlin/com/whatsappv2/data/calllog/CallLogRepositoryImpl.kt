@@ -6,6 +6,7 @@ import com.whatsappv2.data.calllog.mapper.toEntity
 import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.model.CallLogId
 import com.whatsappv2.domain.repository.CallLogFilter
+import com.whatsappv2.domain.repository.CallLogQuery
 import com.whatsappv2.domain.repository.CallLogRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -34,6 +35,28 @@ class CallLogRepositoryImpl @Inject constructor(
     override suspend fun page(filter: CallLogFilter, offset: Int, limit: Int): List<CallLogEntry> =
         dao.page(missedOnly = if (filter == CallLogFilter.MISSED) 1 else 0, offset = offset, limit = limit)
             .mapNotNull { it.toDomain() }
+
+    /**
+     * A search, translated into the DAO's flag-and-value pairs.
+     *
+     * The text is wrapped in `%` here rather than in the query, so the SQL stays a plain
+     * `LIKE :text` and the one place that decides "contains" rather than "starts with" is
+     * this line. `LIKE` is already case-insensitive for ASCII in SQLite.
+     */
+    override suspend fun search(query: CallLogQuery, offset: Int, limit: Int): List<CallLogEntry> {
+        val text = query.text.trim()
+        return dao.search(
+            hasText = if (text.isEmpty()) 0 else 1,
+            text = "%$text%",
+            direction = query.direction.name,
+            hasFrom = if (query.fromEpochMillis == null) 0 else 1,
+            from = query.fromEpochMillis ?: 0L,
+            hasTo = if (query.toEpochMillis == null) 0 else 1,
+            to = query.toEpochMillis ?: Long.MAX_VALUE,
+            offset = offset,
+            limit = limit,
+        ).mapNotNull { it.toDomain() }
+    }
 
     /**
      * The table's own change signal, with the count discarded.

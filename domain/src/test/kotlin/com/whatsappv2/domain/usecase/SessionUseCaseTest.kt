@@ -103,6 +103,72 @@ class LoginUseCaseTest {
     }
 }
 
+class RegistrationIntentTest {
+
+    private val repository = FakeSipAccountRepository()
+    private val engine = FakeSipEngine()
+    private val login = LoginUseCase(repository, engine)
+    private val logout = LogoutUseCase(repository, engine, engine)
+    private val restore = RestoreRegistrationsUseCase(repository, login)
+
+    @Test
+    fun `logging in records the intent, and logging out clears it`() = runTest {
+        // The intent is what survives the process; the registration itself does not.
+        repository.given(account())
+
+        assertIs<Outcome.Success<Unit>>(login(AccountId("acct-1")))
+        assertEquals(true, repository.findById(AccountId("acct-1"))?.registrationWanted)
+
+        assertIs<Outcome.Success<Unit>>(logout(AccountId("acct-1")))
+        assertEquals(false, repository.findById(AccountId("acct-1"))?.registrationWanted)
+        assertEquals(
+            listOf(AccountId("acct-1") to true, AccountId("acct-1") to false),
+            repository.registrationWantedWrites,
+        )
+    }
+
+    @Test
+    fun `a rejected login records no intent`() = runTest {
+        repository.given(account())
+        engine.failNext(FakeSipEngine.Operation.REGISTER, SipError.AuthenticationFailed(401))
+
+        login(AccountId("acct-1"))
+
+        assertEquals(false, repository.findById(AccountId("acct-1"))?.registrationWanted)
+    }
+
+    @Test
+    fun `at start, every account the user left logged in comes back, and no other`() = runTest {
+        // Measured three times on one handset in one evening: a process death left the
+        // account Offline until somebody pressed Log in, and no call could arrive.
+        repository.given(
+            account(id = "acct-1", username = "alice").copy(registrationWanted = true),
+            account(id = "acct-2", username = "bob").copy(registrationWanted = false, isDefault = false),
+            account(id = "acct-3", username = "carol").copy(registrationWanted = true, isDefault = false),
+        )
+
+        val failures = restore()
+
+        assertTrue(failures.isEmpty(), "$failures")
+        assertEquals(setOf("alice", "carol"), engine.registeredAccounts.map { it.username }.toSet())
+    }
+
+    @Test
+    fun `one account's failure to restore does not stop the others`() = runTest {
+        repository.given(
+            account(id = "acct-1", username = "alice").copy(registrationWanted = true),
+            account(id = "acct-2", username = "bob").copy(registrationWanted = true, isDefault = false),
+        )
+        engine.failNext(FakeSipEngine.Operation.REGISTER, SipError.AuthenticationFailed(401))
+
+        val failures = restore()
+
+        assertEquals(setOf(AccountId("acct-1")), failures.keys)
+        assertTrue("bob" in engine.registeredAccounts.map { it.username }, "bob must still be registered")
+        assertIs<RegistrationState.Failed>(engine.registrationState.value[AccountId("acct-1")])
+    }
+}
+
 class LogoutUseCaseTest {
 
     private val repository = FakeSipAccountRepository()

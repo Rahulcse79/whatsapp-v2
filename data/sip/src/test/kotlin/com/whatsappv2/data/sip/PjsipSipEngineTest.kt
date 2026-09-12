@@ -45,6 +45,8 @@ import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -57,6 +59,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -139,10 +142,11 @@ open class PjsipSipEngineFixture {
     private fun engineScope(scope: TestScope) = CoroutineScope(scope.coroutineContext + Job())
 
     internal fun engine(scope: TestScope) =
-        // The same fake three times: one object implements every half of the seam, exactly
-        // as the real gateway does, because one `Core` owns registration, calls and video
-        // alike.
+        // The same fake four times: one object implements every half of the seam, exactly
+        // as the real gateway does, because one `Core` owns registration, calls, video and
+        // the conference bridge alike.
         PjsipSipEngine(
+            gateway,
             gateway,
             gateway,
             gateway,
@@ -191,6 +195,21 @@ open class PjsipSipEngineFixture {
         return engine
     }
 
+    /** Two established calls, the first of them held — what a merge starts from. */
+    internal suspend fun TestScope.twoCallsOneHeld(): PjsipSipEngine {
+        val engine = connectedCall()
+        val first = engine.activeCalls.value.single().callId
+        engine.setHold(first, held = true)
+        gateway.emitCall(first.value, StackCallState.PAUSED)
+        runCurrent()
+
+        val second = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+        gateway.emitCall(second.value, StackCallState.CONNECTED)
+        runCurrent()
+        return engine
+    }
+
     internal companion object {
         /** Fixed instant, so a call's timestamps are equalities rather than ranges. */
         const val NOW = 1_700_000_000_000L
@@ -199,6 +218,9 @@ open class PjsipSipEngineFixture {
 
         /** 486 Busy Here, named so the assertions read as intent rather than arithmetic. */
         const val BUSY_HERE = 486
+
+        /** 488 Not Acceptable Here: the answer to a re-INVITE whose offer was refused. */
+        const val NOT_ACCEPTABLE_HERE = 488
     }
 }
 
@@ -542,6 +564,73 @@ class PjsipSipEngineMediaTest : PjsipSipEngineFixture() {
             engine.stop()
         }
 
+    @Test
+    fun `a route chosen while the far end rings is kept, and is on the call when it connects`() =
+        runTest {
+            // Measured on a TC15, 2026-09-10: a Speaker press between the 183 and the 200
+            // reached nothing, and the answered call came up on the earpiece. The route
+            // is the one control that exists before media — Telecom routes the ringback —
+            // so the press is accepted, sent to the platform, and folded into the
+            // controls on the very emission that creates them, which is what the audio
+            // coordinator seeds its choice from.
+            val engine = registeredEngine()
+            val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+            runCurrent()
+            gateway.emitCall(callId.value, StackCallState.OUTGOING_EARLY_MEDIA)
+            runCurrent()
+
+            assertTrue(engine.setAudioRoute(callId, AudioRoute.SPEAKER) is Outcome.Success)
+            assertEquals(listOf(callId to AudioRoute.SPEAKER), platform.requestedRoutes)
+            val ringing = engine.activeCalls.value.single()
+            assertIs<CallState.Outgoing.EarlyMedia>(ringing.state)
+            assertEquals(AudioRoute.SPEAKER, ringing.requestedAudioRoute)
+
+            // The first established snapshot already carries it: nothing between the
+            // answer and this could have seen a Connected call on the earpiece.
+            val firstConnected = async {
+                engine.activeCalls.first { calls -> calls.any { it.state.controlsOrNull != null } }.single()
+            }
+            gateway.emitCall(callId.value, StackCallState.CONNECTED)
+            runCurrent()
+
+            val connected = firstConnected.await()
+            assertEquals(AudioRoute.SPEAKER, connected.state.controlsOrNull?.audioRoute)
+            assertNull(connected.requestedAudioRoute, "consumed by the controls, not carried twice")
+            engine.stop()
+        }
+
+    @Test
+    fun `a route the platform refuses while ringing is refused, not remembered`() = runTest {
+        val engine = registeredEngine()
+        val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+        platform.availableRoutes = setOf(AudioRoute.EARPIECE, AudioRoute.SPEAKER)
+
+        assertIs<SipError.InvalidState>(engine.setAudioRoute(callId, AudioRoute.BLUETOOTH).errorOrNull())
+        assertNull(engine.activeCalls.value.single().requestedAudioRoute)
+        engine.stop()
+    }
+
+    @Test
+    fun `the last route chosen while ringing is the one that lands`() = runTest {
+        // The coordinator asks for the earpiece on early media; the user presses Speaker
+        // after it. Whoever spoke last is right, exactly as on a connected call.
+        val engine = registeredEngine()
+        val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+
+        engine.setAudioRoute(callId, AudioRoute.EARPIECE)
+        engine.setAudioRoute(callId, AudioRoute.SPEAKER)
+        gateway.emitCall(callId.value, StackCallState.CONNECTED)
+        runCurrent()
+
+        assertEquals(
+            AudioRoute.SPEAKER,
+            engine.activeCalls.value.single().state.controlsOrNull?.audioRoute,
+        )
+        engine.stop()
+    }
+
     // ---------------------------------------------------------------- hold (Task 41)
 
     @Test
@@ -569,23 +658,83 @@ class PjsipSipEngineMediaTest : PjsipSipEngineFixture() {
         }
 
     @Test
+    fun `a second hold while the first is unanswered is accepted and not sent again`() = runTest {
+        // Every attended transfer asks twice: the transfer holds the call, and 200 ms later
+        // Telecom's holdActiveCallForNewCall asks for the same hold when the consultation
+        // call goes active. The FSM still says Connected in that window, and pjsua refuses
+        // the second re-INVITE with PJ_EINVALIDOP, logged as a failure (TC15, 2026-09-11).
+        val engine = connectedCall()
+        val callId = engine.activeCalls.value.single().callId
+
+        assertTrue(engine.setHold(callId, held = true) is Outcome.Success)
+        assertTrue(engine.setHold(callId, held = true) is Outcome.Success)
+        assertEquals(listOf(callId.value to true), gateway.holdRequests, "one re-INVITE, not two")
+
+        // Once the stack has answered, and the call has been resumed, a hold is a real
+        // request again.
+        gateway.emitCall(callId.value, StackCallState.PAUSED)
+        runCurrent()
+        assertTrue(engine.setHold(callId, held = false) is Outcome.Success)
+        runCurrent()
+        gateway.emitCall(callId.value, StackCallState.STREAMS_RUNNING)
+        runCurrent()
+        assertIs<CallState.Connected>(engine.activeCalls.value.single().state)
+        assertTrue(engine.setHold(callId, held = true) is Outcome.Success)
+        assertEquals(2, gateway.holdRequests.count { it.second })
+        engine.stop()
+    }
+
+    @Test
     fun `resuming goes through Resuming and only reaches Connected when media runs again`() =
         runTest {
+            // RESUMING is the gateway's to report as the re-INVITE goes out — the fake
+            // does, per the SipCallGateway contract — and nothing here emits it by
+            // hand. This test used to, which is how a real gateway that never reported
+            // it passed every test and stranded every resumed call in Held(LOCAL).
             val engine = heldCall()
             val callId = engine.activeCalls.value.single().callId
 
             assertTrue(engine.setHold(callId, held = false) is Outcome.Success)
             assertEquals(callId.value to false, gateway.holdRequests.last())
-
-            gateway.emitCall(callId.value, StackCallState.RESUMING)
             runCurrent()
             assertIs<CallState.Resuming>(engine.activeCalls.value.single().state)
+            // Telecom is not told yet either: the media is still paused, and the far end
+            // can still say no.
+            assertEquals(listOf(callId to true), platform.holdChanges)
 
             gateway.emitCall(callId.value, StackCallState.STREAMS_RUNNING)
             runCurrent()
 
             assertIs<CallState.Connected>(engine.activeCalls.value.single().state)
             assertEquals(listOf(callId to true, callId to false), platform.holdChanges)
+            engine.stop()
+        }
+
+    @Test
+    fun `a resume the far end refuses returns the call to held, not stuck resuming`() =
+        runTest {
+            // PJSIP reports a refused re-INVITE through no media or call state; the
+            // gateway reads it off the transaction and reports RESUME_FAILED. Without
+            // that event the call would show "resuming" for the rest of its life, and
+            // the hold button would be as dead as it was before RESUMING existed.
+            val engine = heldCall()
+            val callId = engine.activeCalls.value.single().callId
+
+            engine.setHold(callId, held = false)
+            runCurrent()
+            assertIs<CallState.Resuming>(engine.activeCalls.value.single().state)
+
+            gateway.emitCall(callId.value, StackCallState.RESUME_FAILED, statusCode = NOT_ACCEPTABLE_HERE)
+            runCurrent()
+
+            assertEquals(CallState.Held(HoldParty.LOCAL), engine.activeCalls.value.single().state)
+            // Still held as far as Telecom is concerned: the one hold change is the
+            // original, and nothing said the call came back.
+            assertEquals(listOf(callId to true), platform.holdChanges)
+
+            // And the user can try again — a second resume must not be refused as an
+            // illegal transition from the state the failure left behind.
+            assertTrue(engine.setHold(callId, held = false) is Outcome.Success)
             engine.stop()
         }
 
@@ -631,7 +780,6 @@ class PjsipSipEngineMediaTest : PjsipSipEngineFixture() {
         assertEquals(CallState.Held(HoldParty.BOTH), engine.activeCalls.value.single().state)
 
         engine.setHold(callId, held = false)
-        gateway.emitCall(callId.value, StackCallState.RESUMING)
         runCurrent()
 
         assertEquals(CallState.Held(HoldParty.REMOTE), engine.activeCalls.value.single().state)

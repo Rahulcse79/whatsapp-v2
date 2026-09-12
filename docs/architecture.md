@@ -4,7 +4,7 @@
 diagram, sequence diagrams, threading model — are authored in **Task 67** and are
 deliberately absent here rather than stubbed with placeholder content.
 
-**Source of requirements:** [`../android-sip-app-prompt.md`](../android-sip-app-prompt.md)
+**Source of requirements:** [`android-sip-app-prompt.md`](android-sip-app-prompt.md)
 **Task plan:** kept outside the repository as working notes.
 
 ---
@@ -117,6 +117,30 @@ an implementation swap in `:data:sip`, not a domain rewrite.
 - Confirm whether the deployment publishes a **participant roster** the client can
   subscribe to. If it does not, Task 60's participant list shows what is actually known
   and says so — it does **not** render a fabricated list (§13).
+
+> **Superseded for audio by ADR-009** (2026-09-11): audio conferences up to 8 participants
+> are mixed on the device with `pjmedia_conf`. This ADR still governs **video**
+> conferencing, which the ADR-009 gate measured and refuted for this hardware.
+
+**Both answered on hardware, 2026-09-11, and the answer is settled rather than pending**
+(decided with the stakeholder, 2026-09-11): extension `3000` on the local FreeSWITCH joins
+`mod_conference`, and `conference list` showed this app's leg as
+`hear|speak|talking|floor` with DTMF `0` muting it over RFC 4733. No roster is subscribed
+to, so `SipCallGateway.conferenceEvents` **never emits** and
+`PjsipSipEngine.conferences` stays empty — which is the second bullet doing its job, not
+failing it: the client renders nothing rather than a fabricated list.
+
+Two consequences are deliberate and are written here so neither is rediscovered as a gap:
+
+- **There is no "Join conference" button, and none is wanted.** Joining is dialling the
+  bridge's extension in the ordinary dialler, because under this ADR a conference *is* an
+  ordinary call. A button beside it would be a second name for the same act.
+- **`JoinConferenceUseCase` therefore has no caller**, and it stays. It is the shape of
+  the seam, not dead weight: it is the one path that marks a leg as a conference so a
+  roster could attach to it, and it is what an SFU swap (the *Reversibility* paragraph
+  above) would be wired into. Before adding a roster, verify the bridge publishes one —
+  RFC 4575 conference-event `SUBSCRIBE` against `mod_conference` — because the domain is
+  ready for participants and the server is what currently has none to give.
 
 ---
 
@@ -401,9 +425,66 @@ clones it. §4.1 of `docs/native-dependencies.md`.
 
 ---
 
-### ADR-008 — Lyra: **gate open, criterion 1 only**
+### ADR-008 — Lyra: **Exit A — compiled from vendored source, app-to-app only**
 
-**Status:** ⚠️ **OPEN — running** · **Raised:** 2026-09-09 · **Decider:** stakeholder
+**Status:** ✅ **DECIDED — Exit A, 2026-09-10** · **Raised:** 2026-09-09 · **Decider:** stakeholder
+
+**Outcome.** Criterion 1 passed on the first attempt, and the codec is now part of the
+declared feature set (`PJMEDIA_HAS_LYRA_CODEC 1`). What was proved, in order: TensorFlow
+Lite v2.11.0 with the XNNPACK delegate configured and built for `arm64-v8a` under NDK
+r27c with **zero errors** — the 2022-vintage `cpuinfo`/XNNPACK sources the gate feared
+compiled unchanged; glog, `audio_dsp` (hand-written CMake for its 16 files) and Lyra's 17
+sources built against it; the closure linked into one `liblyra.a` that passes pjproject's
+own `--with-lyra` link test; and, run on a Zebra TC15 with the four model files, the codec
+**encoded 50 frames of a 16 kHz tone at exactly 8 bytes per frame (3200 bps) and decoded
+16,000 samples**. Nineteen trees are vendored at commit hashes (`docs/native-dependencies.md`
+§1.0), including the two Lyra floated; protobuf is replaced by a 100-line parser of its
+one-field message (patch `0001`). `pjsip/lyra/CMakeLists.txt` builds it offline from
+staged copies; `build-native.sh` runs it before pjproject.
+
+**Both of the things this owed are now done, 2026-09-11.** `libpjsua2.so` was built with
+Lyra linked in (locally, with SWIG's Java typemaps supplied user-side — `docs/HANDOFF.md`
+§4), the handset's codec audit reads `lyra/16000/1@254`, and a **22-minute call between two
+Zebra TC15s was carried by Lyra at 3.1 kbit/s with no loss**, media direct phone-to-phone.
+The peer problem below is unchanged and is why that call needed FreeSWITCH's
+`bypass_media`: no deployed server offers this codec, so it is app-to-app or nothing —
+which is what the title of this ADR says. Whether it is *intelligible* is a judgement only
+somebody who has listened to it can make.
+
+**Cost, measured.** ~420 MB more under `third_party/` (XNNPACK 158 MB, TensorFlow 41 MB
+after keeping 472 of its 28,000 files); ~25 minutes of TFLite compile per ABI, stamped
+locally, unpaid-for on CI until a cache is added (`docs/native-dependencies.md` §5.0);
+`liblyra.a` is 193 MB unstripped, of which the linker takes what `lyra.cpp` references.
+
+**And the cost that is paid per call, not per build — corrected 2026-09-11.** The figure
+first recorded here was "~120 % of one CPU core", and read as Lyra's own cost it is wrong
+by about three times. 120 % is the **total app CPU during a Lyra call**, and a *PCMU* call
+on the same handset costs 92-94 %. Measured properly (ADR-009's gate):
+
+| | CPU, % of one core |
+|---|---|
+| Fixed: Speex AEC @48 kHz/200 ms tail + sound device + 48 kHz bridge | **~70 %**, paid once |
+| Marginal, one PCMU stream | ~22 % |
+| **Marginal, one Lyra stream** | **~40 %** |
+
+So Lyra costs roughly **18 % of a core more than PCMU per stream**, not 120 %. The original
+number was never wrong as an observation — it was the right measurement of the wrong thing,
+and it is the reason an early estimate said multi-party Lyra was infeasible when the
+arithmetic says eight-way Lyra fits in 350 % (ADR-009). Battery (§1.5) is still a real cost
+of a Lyra call; most of it is simply not Lyra. Two consequences follow and are stated so
+nobody has to discover them:
+
+- Lyra is **not** a default. `CodecPreferences.DEFAULT` is `OPUS, G722, PCMU, PCMA`
+  (`domain/…/model/Codecs.kt:83`) and carries no Lyra; it is chosen per account,
+  deliberately, by somebody who wants the bandwidth and accepts the drain.
+- The comparison that matters is not Lyra against PCMU but **Lyra against Opus**, which is
+  already compiled and costs a small fraction of a core. This app pins Opus at **32 kbit/s**
+  (`RealPjsipCoreGateway.OPUS_BITRATE`), so Lyra's measured 3.1 kbit/s is 32,000 / 3,100 ≈
+  **10× less bandwidth for roughly an order of magnitude more CPU**. Lyra earns its place
+  only on a link that cannot carry 32 kbit/s. The two have not been measured side by side
+  on one handset; when somebody does it, the numbers belong here.
+
+The record of the gate as it was run follows, unchanged.
 
 **An ADR is owed in both directions.** A decision *not* to ship something is still a
 decision, and it is the one a later engineer is most likely to re-litigate without a record.
@@ -456,6 +537,118 @@ FreeSWITCH's `modules.conf.xml` and its `.so` is simply not installed. Installin
 the bandwidth of every call — 160 kbps to 80 kbps — with **no client change at all**,
 because the APK already compiles and registers Opus. The arithmetic is in
 `docs/system-design.md` §2.1. **Do that before spending a week on Lyra.**
+
+---
+
+### ADR-009 — Local audio conferencing: **mix on the device with `pjmedia_conf`, up to 8, audio only**
+
+**Status:** Accepted · **Decided:** 2026-09-11 · **Decider:** stakeholder ·
+**Supersedes ADR-003 for audio. ADR-003 still governs video.**
+
+**Context.** ADR-003 chose a server-side dial-in MCU and it works — verified on hardware
+2026-09-11, members mixing in `mod_conference` 3000 with DTMF mute. What it costs is a
+dependency: a conference needs a FreeSWITCH that is reachable, configured, and (for Lyra)
+told to `bypass_media`, because the server cannot decode the codec this app ships. The
+motivation to reverse it for audio is removing that dependency, not fixing a defect.
+
+**The gate, measured before any code.** Total app CPU on a Zebra TC15 (8 cores @ 1.8 GHz),
+as a percentage of **one** core, sampled from `/proc/<pid>/stat` deltas over 15-25 s:
+
+| State | CPU | PSS |
+|---|---|---|
+| Idle, registered, no call | 3–5 % | 199 MB |
+| Call **held** — sound device and AEC up, stream down | **70 %** | — |
+| One **PCMU** stream | 92–94 % | 207 MB |
+| One **Lyra** stream | 106–122 % | 222 MB |
+| One **VP8 video** stream (camera, encode, decode, render) | **227 %** | 314 MB |
+
+Two things fall out, and the second is the decision:
+
+- **The fixed cost is ~70 % and it is paid once.** Speex AEC at 48 kHz with a 200 ms tail,
+  the sound device, and the 48 kHz bridge — none of which scale with participant count.
+- **The marginal cost of a stream is ~22 % (PCMU) and ~40 % (Lyra).** Not 120 %. See the
+  correction to ADR-008 below.
+
+**SHOW YOUR WORKING.** A conference of N is N-1 streams on the mixing device, against a
+budget of **400 % — half the handset**, chosen so a conference never starves the rest of
+the phone:
+
+| N | PCMU `70 + 22(N-1)` | Lyra `70 + 40(N-1)` | Audio + video `70 + 157(N-1)` |
+|---|---|---|---|
+| 4 | 136 % ✅ | 190 % ✅ | ~540 % ❌ |
+| 6 | 180 % ✅ | 270 % ✅ | ❌ |
+| 8 | **224 % ✅** | **350 % ✅** | ~1170 % ❌ |
+
+**Decision.** Mix **audio** on the device with `pjmedia_conf`, for up to **8 participants**.
+`PJSUA_MAX_CALLS` is raised from upstream's 4 to 8 in `config_site.h` (7 peers plus
+headroom), which is a change to the declared feature set (N-8) and annotated there.
+
+**Topology: a device-hosted MCU, not a mesh.** The host holds N-1 calls and cross-connects
+them; every other participant places one ordinary call and pays for one stream (~110 %).
+A mesh would make all eight phones pay the host's 350 % and turn 7 calls into 28. The star
+is also what `pjmedia_conf` is built for: connecting every member port to every other
+gives **mix-minus for free**, because a conference port never transmits to itself — there
+is no loop to prevent, which is the usual source of conferencing bugs.
+
+**Video stays on ADR-003.** One video stream costs ~135 % CPU and ~107 MB on top of audio.
+Seven of them is ~11 cores of the 8 this handset has and ~750 MB, before any mixing, and a
+mesh would need ~7 Mbit/s uplink. The measurement refutes client-side video conferencing on
+this hardware; it is not a matter of implementation quality. A video conference remains a
+call to the FreeSWITCH bridge.
+
+**What we give up.** The host is a participant with a job: if it leaves, the conference
+ends, because the mixing lives on it. A server-side bridge has no such single point. This
+is the trade the star topology makes and it is why ADR-003 is superseded *for audio only*
+rather than deleted — the MCU path stays, works, and is the right answer for video and for
+conferences that must outlive any one handset.
+
+**The lever not pulled, recorded so it is a decision and not an oversight.** The ~22-40 %
+per stream is dominated by resampling between the codec's rate and the 48 kHz bridge at
+`RESAMPLE_QUALITY = 10`, plus the Speex AEC's 200 ms tail at 48 kHz
+(`RealPjsipCoreGateway`). Lowering the bridge clock rate for a conference, or the resampler
+quality, would cut the marginal cost materially — and would cut battery on every 1-to-1
+call as well. Not done here: it changes audio quality on every call, which is its own ADR
+with its own measurements, and this decision does not need it to fit the budget.
+
+**Measured after building it, 2026-09-11 — the estimate above was pessimistic.** The gate
+predicted `70 + 22(N-1)`, so 224 % at eight. What a real eight-party conference costs on the
+TC15, PCMU, each step a fresh participant merged in:
+
+| N | members / links | CPU | PSS |
+|---|---|---|---|
+| 2 | 2 / 2 | 102 % | 194 MB |
+| 3 | 3 / 6 | 102 % | 201 MB |
+| 4 | 4 / 12 | 106 % | 202 MB |
+| 5 | 5 / 20 | 105 % | 202 MB |
+| 6 | 6 / 30 | 92 % | 202 MB |
+| 7 | 7 / 42 | 90 % | 203 MB |
+| **8** | **8 / 56** | **101 %** | **203 MB** |
+
+The curve is **flat**, not linear: 102 % at two participants and 101 % at eight, with memory
+moving 9 MB across the whole range. So the per-stream marginal cost of a PCMU leg is a few
+percent, not 22 — the 22 % in the gate was one stream's *setup* (its resampler and jitter
+buffer) measured against a held call, and the conference bridge mixes the extra ports far
+more cheaply than adding the first one costs. The 400 % budget is not close to being spent,
+and the ceiling of 8 is `PJSUA_MAX_CALLS`, not CPU.
+
+Link counts are `n(n-1)` exactly at every step, which is the arithmetic `ConferenceMixTest`
+asserts, confirmed on hardware.
+
+**The platform fights the mix, and is told not to (2026-09-12).** Android Telecom allows
+one active call per connection service and holds every other the moment a call becomes
+active. A merge resumes up to seven members at once; Telecom answered each resume by
+holding the previous one, and the two it won last stayed `sendonly` — the "two of eight
+legs RX 0pkt" the first measurement could not explain. The engine publishes
+`SipConferenceController.mixedCalls` before the first resume and the Telecom bridge
+declines a platform hold for a member. The Android-native answer is a Telecom
+`Conference`; it is not built because a self-managed connection service's right to add
+one was not verified, and the guard holds the mix. Revisit if Telecom's own view of the
+members — a car display, the system call UI — ever has to show a conference.
+
+**Re-evaluation trigger.** A handset with materially more CPU, or the resampling work
+above, would move the video line. Re-measure before assuming it has. The flat audio curve
+also means a ceiling above 8 is a `PJSUA_MAX_CALLS` decision rather than a CPU one — worth
+re-measuring for Lyra, whose per-stream cost is higher, before raising it.
 
 ---
 
@@ -886,13 +1079,13 @@ compiler invocation in the arm64-v8a job log, which is the only source that cann
 |---|---|---|---|
 | `PJMEDIA_HAS_VIDEO` | **1** | Video calling at all. Off by default upstream | `:feature:calls`, `SipVideoGateway` |
 | `PJSIP_HAS_TLS_TRANSPORT` | **1** | TLS accounts. DoD 13 and `docs/security.md` §Transport | `RealPjsipCoreGateway` transport setup |
-| `PJMEDIA_HAS_OPUS_CODEC` | **1** | The only wideband audio codec in the build. **Registered, and no peer accepts it** — `docs/reconciliation.md` A-1b | `CodecPreferences.DEFAULT` |
+| `PJMEDIA_HAS_OPUS_CODEC` | **1** | The only wideband audio codec in the build. **Registered and offered on the wire** — corrected 2026-09-10, see below | `CodecPreferences.DEFAULT` |
 | `PJMEDIA_HAS_VPX_CODEC` | **1** | **VP8** — the only video codec both ends can negotiate | `CodecPreferences.DEFAULT` video |
 | `PJMEDIA_HAS_OPENH264_CODEC` | **0** | — **and `CodecPreferences.DEFAULT` names H264 anyway.** The mismatch is silent: `applyPriorities` iterates registered codecs, so an absent H264 is skipped. `docs/reconciliation.md` A-1 | Nothing. This is the defect |
 | `PJMEDIA_HAS_LYRA_CODEC` | **0** | — Gate-dependent, ADR-008 | Nothing |
 | `PJMEDIA_HAS_WEBRTC_AEC` | **1** | **Acoustic echo cancellation** — the difference between a usable speakerphone and feedback | Every call on the loudspeaker route |
 | `PJMEDIA_HAS_WEBRTC_AEC3` | **0** | — The older AEC is the one in use | — |
-| `PJMEDIA_HAS_ANDROID_MEDIACODEC` | **1** | Hardware video encode/decode | Video calls |
+| `PJMEDIA_HAS_ANDROID_MEDIACODEC` | **1** | Hardware video encode/decode — **and this is what registers `H264/99`**, which `PJMEDIA_HAS_OPENH264_CODEC 0` would otherwise say is absent | Video calls; `H264` in `CodecPreferences.DEFAULT` |
 | `PJMEDIA_VIDEO_DEV_HAS_ANDROID` | **1** | Camera capture | `PjCameraInfo2`, the local preview |
 | `PJMEDIA_VIDEO_DEV_HAS_ANDROID_OPENGL` | **1** | Rendering into the `SurfaceView` (ADR-006) | `CallVideo.kt` |
 | `PJMEDIA_HAS_LIBYUV` | **1** | Colour-space conversion between the camera and the encoder | Video calls |
@@ -901,11 +1094,170 @@ compiler invocation in the arm64-v8a job log, which is the only source that cann
 | `PJMEDIA_RESAMPLE_IMP` | `LIBRESAMPLE` | Sample-rate conversion between codec and device rates | Every call |
 | `PJMEDIA_AUDIO_DEV_HAS_WMME` | **0** | Windows audio. Correctly off | — |
 
-**Two rows are decisions rather than settings, and both are open:**
+#### Corrections of 2026-09-10, from a device trace and a direct probe of the server
 
-- **`PJMEDIA_HAS_OPENH264_CODEC 0` against a `DEFAULT` that names H264.** Either OpenH264
-  enters the feature set — a fourth native dependency plus Cisco's licensing terms, which is
-  a product decision — or H264 leaves `CodecPreferences.DEFAULT`. **DECIDE, unanswered.**
+Three claims in the table above were wrong, and each was wrong in the same way: read out of
+a log line or a config flag rather than off the wire.
+
+**1. Opus and G.722 register, and are offered.** The row above said Opus was "registered and
+no peer accepts it", sourced from the codec audit's own log line. That line was **filtered**
+— `CodecAuditor` removed every codec named in `DeclaredFeatureSet.unnegotiableOnThisDeployment`
+before printing — so it under-reported the registry while claiming to be it. A real INVITE
+off the handset carries `a=rtpmap:96 opus/48000/2` and `a=rtpmap:9 G722/8000`. The audit now
+prints the registry verbatim, with each codec's priority beside it, and reports strandedness
+separately through `AbsenceReason.ExpectedUnsupportedByServer` — renamed from `NoPeerAccepts`
+because nothing in this app has ever measured what peers accept.
+
+**2. H264 is registered, by `MediaCodec`.** `PJMEDIA_HAS_OPENH264_CODEC 0` is about OpenHH264
+only. `PJMEDIA_HAS_ANDROID_MEDIACODEC 1` registers `H264/99` through the platform encoder, and
+the device's video registry reads `VP8/102, H264/99, VP8/103, VP9/106`. **So the DECIDE below
+is answered: H264 stays in `CodecPreferences.DEFAULT`, and OpenH264 stays out of the feature
+set.** The rejected alternative was removing H264 from the defaults, which would have given up
+a working hardware codec to satisfy a flag that does not govern it.
+
+**3. Codec priorities are endpoint-wide, and an unmatchable preference list disabled the
+endpoint.** `applyPriorities` assigned priority `0` to every registered codec no preference
+named. An account saved with `audio=[lyra]` — not in this build — therefore matched nothing
+and disabled **all** audio, for every account, persistently. `pjmedia_endpt_create_audio_sdp`
+stops at the first disabled codec, so offers went out as `m=audio 0 RTP/AVP 0` and answering
+an inbound call produced `PJMEDIA_SDPNEG_ENOMEDIA` and a `488` this app sent itself — which is
+the reported "the call disconnects when I answer it". The decision now lives in
+`domain/…/codec/CodecPriorities.kt`: a preference set that matches nothing changes no
+priority at all, and one account cannot disable a codec another account requires.
+
+#### 4.11.1 The SDP size budget — a decision the network forced
+
+**Measured 2026-09-10.** The reference server answers SIP `OPTIONS` up to **1472 bytes** and
+does not answer at 1475. 1472 + 8 (UDP) + 20 (IPv4) = **1500**, the Ethernet MTU: the path
+drops IP-fragmented datagrams silently. TCP 5060 refuses connections and TLS 5061 is closed,
+so RFC 3261 §18.1.1's escalation has nowhere to go — the trace shows PJSIP attempting TCP for
+a 1748-byte INVITE and falling back to a 1742-byte UDP datagram that was retransmitted seven
+times across 32 seconds and never answered.
+
+**Decision, part one: narrow the SRTP offer to the two AES_CM_128 suites.** RFC 4568 §6.2
+makes `AES_CM_128_HMAC_SHA1_80` mandatory to implement and the `_32` variant its low-bandwidth
+companion; PJSIP additionally offers two AES_256_CM suites. Those two lines were **estimated**
+at 116 bytes each and then **counted off the real INVITE at 108**, which is the difference
+between a fix and a near miss:
+
+| | SDP | + headers | over the 1472 hard limit | over the 1272 safe bound |
+|---|---|---|---|---|
+| as measured | 1092 | **1742** | **270** | 470 |
+| SRTP trim only | 876 | **1526** | **54** | 254 |
+| SRTP trim **and ICE off** | 678 | **1328** | **0** | **56** |
+
+**Decision, part two: ICE off by default** (`NatPolicy.DEFAULT.iceEnabled = false`, and an
+account-store migration that turns it off on rows saved before this). The middle row is why:
+the crypto trim on its own leaves the request 54 bytes over what the path carries, so it is
+still fragmented, still dropped, still 32 seconds of retransmission. `a=ice-ufrag`, `a=ice-pwd`
+and two host `a=candidate` lines are 198 measured bytes, and taking them out is what closes
+the gap.
+
+They are worth nothing here in any case. ICE needs a reflexive or relayed candidate to earn
+its bytes, and this client gathers none: **`SipAccount.stunServer` is collected, validated and
+persisted, and nothing below `:domain` reads it** — no STUN server ever reaches the stack's
+`UaConfig`, so `PJSUA_STUN_USE_DEFAULT` has nowhere to ask. What ICE offers is host
+candidates: redundant on a flat LAN, unusable by the far end through NAT, and it is the
+server's symmetric-RTP latching that makes media flow either way. ICE remains a per-account
+switch for a deployment that has the infrastructure — and the STUN plumbing, which is a
+separate change with its own measurement.
+
+**So the datagram is no longer fragmented and is no longer dropped, which is the whole of the
+reported defect — and it is still 56 bytes short of §18.1.1's 200-byte headroom.** Both
+numbers are stated because only the first one is a fix. Closing the remaining 56 bytes means
+one `telephone-event` clock rate instead of two (`PJMEDIA_TELEPHONE_EVENT_ALL_CLOCKRATES`,
+worth about 52 bytes), which is a native rebuild and has not been done.
+`domain/…/sdp/SdpBudget.kt` holds the arithmetic; `SdpBudgetTest` pins every row of the table,
+`NatPolicyTest` pins the default, and `SipAccountMigrationTest` pins the rows that predate it.
+
+**Rejected alternative: leave the offer as it was and treat the failures as a server problem.**
+The server is half the problem and the offer is the half this repository controls.
+
+**Rejected alternative: find the 54 bytes somewhere other than ICE.** The candidates were a
+shorter `Contact`, fewer codecs, and one `telephone-event` clock rate. The first two trade
+something a peer may need for bytes; the third is a native rebuild. ICE was the only line item
+that cost nothing to give up, and it is the only one that had to be given up twice — once in
+the default, once in the rows already written.
+
+**Rejected alternative: make the migration conditional on "the user did not choose this".**
+Nothing records that. The column has held the draft's opening value on every row ever written,
+because until `ed189b7` the gateway hardcoded `iceEnabled = true` and never read the account —
+so there is no deliberate `true` to protect, and inventing a way to guess at one would be
+inventing intent. An account that wants ICE turns it back on, and that choice survives.
+
+**What this does not fix, and it is worth being plain about it:** `SdpBudget` is arithmetic,
+not enforcement. Nothing in Kotlin ever sees the datagram PJSIP builds, so no code refuses an
+oversized one. Three settings hold the offer down and each is pinned by a test; a change that
+adds bytes some *other* way — a codec, an `fmtp` line, a second `m=` line — fails no test, and
+only a call placed on hardware catches it.
+
+**Open, and it blocks video.** The same arithmetic says a full audio+video offer is roughly
+2700 bytes and does not fit even after every trim, because a second `m=` line brings its own
+crypto block, ICE candidates and `rtcp-fb` attributes. **Video calling therefore requires a
+TCP listener on the server.** That is not a change in this repository and must be raised with
+whoever operates it. Until then, video INVITEs are dropped by the network and the app cannot
+make them arrive. **DECIDE — owner: whoever operates `192.168.80.145`.**
+
+#### 4.11.2 Placing a call on an unregistered account (item 7)
+
+**Decision: register, then dial, with a bounded wait of 5 seconds** (`PlaceCallUseCase.
+REGISTRATION_WAIT_MILLIS`). Against the reference server a REGISTER completes in 57 ms
+including the 401 digest round trip, so the bound is sized for a lost packet rather than a
+slow server: SIP Timer A retransmits at 500 ms, 1 s and 2 s, and 5 s covers three attempts.
+
+**Rejected alternative: refuse immediately with a new error.** Honest and instant, but it
+makes the user do by hand what the app can do in well under a second — and the reported
+defect is precisely that nothing tried.
+
+**Also rejected: dial anyway.** That is the defect. The INVITE dies at Timer B 32 seconds
+later with nothing to explain it.
+
+#### 4.11.3 The name on a call history row
+
+**Reported 2026-09-10.** A history row for extension `7001` read `sip:7001@192.168.80.145`.
+Two separate causes, and they needed separate answers.
+
+**Decision: resolve the name as the page loads, and keep the snapshot as the fallback.**
+`CallLogEntry.contactName` is written once, when the call ends, and never revisited — which
+is deliberate and is kept, because it is what the log meant at the time and it survives a
+contact being deleted. What it cannot do is learn: a contact added *after* a call left that
+row reading as a number for the life of the database, and no amount of editing the address
+book fixed it. So `CallLogTitles` asks the address book for the current name, and the
+precedence is: **current name → stored snapshot → the peer's own display name → the
+address**. The first two are the user's own word for the person and both outrank the third,
+which is whatever the far end chose to call itself.
+
+**Decision: the last resort is `SipUri.label()`, not `SipUri.render()`.** The useful label
+for `sip:7001@192.168.80.145` is `7001`. On this deployment every row shares the host, so
+two thirds of that string is the two thirds pushing the name off the screen. A URI with no
+user part falls back to the host, because `sip:conference.example.com` is a real thing to
+have called.
+
+**Where it runs, and the cost.** In `CallLogPagingSource.load`, once per row loaded, on
+Paging's fetch dispatcher — not in the row composable, where it would be a content-provider
+read per recomposition. `ContactsContractRepository` caches by address, so a log of a
+thousand calls to six extensions is six provider reads. That cache now also empties itself
+on a `ContentObserver` for `ContactsContract`, without which an address looked up before its
+contact existed stayed "nobody" until the process restarted — which would have left the
+reported case half-fixed on the very screen that reported it.
+
+**Rejected alternative: replace the snapshot with a join.** Always current, and it loses the
+record: a call to somebody since deleted from the address book would go back to being a
+number, and the log would stop saying what it meant when it was written.
+
+**Rejected alternative: backfill rows whose `contactName` is null when contacts change.**
+Keeps both properties, and costs a trigger, a bounded update and a write path that has to
+decide what to do about rows changed since. Page-time resolution gets the same answer with
+no writes at all.
+
+**Rejected alternative: fix only the fallback label.** Cheapest, and it leaves "I added the
+contact and it still shows a number" exactly where it was.
+
+**Rejected alternative: a third name field on `CallLogEntry`.** It has two already and the
+reason they are kept apart is documented on the type; a third would be one more thing for
+them to disagree about.
+
+**One row remains a decision rather than a setting, and it is open:**
 - **`PJMEDIA_HAS_LYRA_CODEC 0`.** ADR-008.
 
 **And one row is a finding about the server, not the build:** the deployed FreeSWITCH offers

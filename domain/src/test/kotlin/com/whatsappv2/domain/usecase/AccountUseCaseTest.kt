@@ -37,6 +37,7 @@ class SaveAccountUseCaseTest {
         password: String = "hunter22",
         transport: Transport = Transport.UDP,
         label: String = "Work",
+        srtpPolicy: SrtpPolicy = SrtpPolicy.OPTIONAL,
     ) = SipAccountDraft(
         id = AccountId(id),
         label = label,
@@ -44,6 +45,7 @@ class SaveAccountUseCaseTest {
         password = Secret(password),
         domain = domain,
         transport = transport,
+        srtpPolicy = srtpPolicy,
     )
 
     private fun storedAccount(
@@ -228,6 +230,25 @@ class SaveAccountUseCaseTest {
     }
 
     @Test
+    fun `changing the media encryption policy re-registers, because nothing else reaches the stack`() =
+        runTest {
+            // The stack reads the account's policies once, when the account is added. An
+            // edit that only saved them was ignored until the next process start —
+            // measured on a handset on 2026-09-10, where the row said DISABLED and the
+            // next INVITE still offered a=crypto.
+            val existing = storedAccount()
+            repository.given(existing)
+            engine.givenRegistered(existing)
+            engine.clearInvocations()
+
+            val result = save(draft(srtpPolicy = SrtpPolicy.DISABLED)).getOrNull() ?: fail("save failed")
+
+            assertTrue(result.unregisteredFirst, "a policy change must push a fresh configuration")
+            assertEquals(RegistrationAttempt.Succeeded, result.registration)
+            assertEquals(SrtpPolicy.DISABLED, engine.registeredAccounts.single().srtpPolicy)
+        }
+
+    @Test
     fun `a genuinely changed password re-authenticates`() = runTest {
         // The other half of the same rule. Comparing against the stored value has to keep
         // saying yes when the value really did change, or a corrected password would sit
@@ -255,6 +276,26 @@ class SaveAccountUseCaseTest {
         assertTrue(!result.unregisteredFirst)
         assertEquals(RegistrationAttempt.NotAttempted, result.registration)
         assertTrue(engine.invocations.isEmpty(), "a logged-out account must be left logged out")
+    }
+
+    @Test
+    fun `saving an edit to a FAILED account registers it, because that is the repair`() = runTest {
+        // The defect: correcting a mistyped password and pressing Save did nothing at
+        // all, because a failed registration and a deliberate logout were both simply
+        // "not registered". People were sent to "Register now" as a second step that the
+        // save should never have needed.
+        val stored = storedAccount()
+        repository.given(stored)
+        engine.givenRegistrationFailed(stored)
+        engine.clearInvocations()
+
+        val result = save(draft(password = "corrected")).getOrNull() ?: fail("save failed")
+
+        assertEquals(RegistrationAttempt.Succeeded, result.registration)
+        assertTrue(
+            engine.invocations.any { it.operation == FakeSipEngine.Operation.REGISTER },
+            "a failed account must be registered by the save that repairs it",
+        )
     }
 
     // ---------------------------------------------------------------- failures

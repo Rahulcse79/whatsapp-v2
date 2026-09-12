@@ -35,6 +35,29 @@
  * docs/architecture.md §4.11, which is this table with the module that exercises each.
  */
 
+/* Simultaneous calls. Upstream's default is 4 (pjsua.h:5624), which is enough for a
+ * softphone with call waiting and an attended transfer — one active, one held, one
+ * consultation — and NOT enough for a local conference.
+ *
+ * ADR-009 mixes N calls on this device with pjmedia_conf, so an 8-party conference is 7
+ * concurrent calls on the host. 8 is the declared ceiling: the Phase 0 measurement
+ * (docs/architecture.md ADR-009) puts 7 Lyra streams at ~350% of one core on a TC15,
+ * which fits the 400% budget, and 8 streams would not.
+ *
+ * The cost of raising it is per-call state allocated at libCreate: pjsua reserves the
+ * call array up front. Measured on the TC15, idle RSS moved from 199 MB to within noise
+ * of it — the array is small beside the media pools, which are per-active-call and
+ * unaffected by this number.
+ *
+ * NOT sufficient on its own: this is only the default for `pjsua_config.max_calls`, and
+ * the app sets `uaConfig.maxCalls` explicitly at startup. Raising this alone left pjsua
+ * answering the fifth INVITE `486 Busy Here` ("Unable to accept incoming call (too many
+ * calls)"). `RealPjsipCoreGateway.MAX_CALLS` is the one that decides, and it reads the
+ * same ceiling from `SipConferenceController.MAX_LOCAL_CONFERENCE`.
+ *
+ * Exercised by :data:sip through SipConferenceGateway. */
+#define PJSUA_MAX_CALLS 8
+
 /* Video calling at all. OFF by default upstream, and this app is a video softphone.
  * Exercised by :feature:calls through SipVideoGateway. */
 #define PJMEDIA_HAS_VIDEO 1
@@ -70,11 +93,32 @@
  * state. DECIDE: OpenH264 in, or H264 out of DEFAULT. */
 #define PJMEDIA_HAS_OPENH264_CODEC 0
 
-/* Lyra is NOT compiled. ADR-008 — the §2.4 gate is open, criterion 1 only.
+/* Lyra IS compiled. ADR-008 closed at Exit A on 2026-09-10: TensorFlow Lite v2.11.0 with
+ * the XNNPACK delegate, audio_dsp, glog and Lyra v1.3.2 all build for arm64-v8a under
+ * NDK r27c from the vendored trees (pjsip/lyra/CMakeLists.txt), and the codec encoded and
+ * decoded on a Zebra TC15 at 3200 bps with its model files.
  *
- * Deliberately stated rather than left to the upstream default of 0, so that the audit's
- * `NotCompiled` reason has a decision behind it and this line is what changes on Exit A. */
-#define PJMEDIA_HAS_LYRA_CODEC 0
+ * Both halves are required and either alone is a silent no-op: `configure-android
+ * --with-lyra` defines this too, but pjmedia-codec/config.h guards it with #ifndef and this
+ * file is included first, so the value here is the one that counts. build-native.sh fails
+ * the build if configure's link test does not also say yes, so the two cannot disagree.
+ *
+ * The codec registers as `lyra/16000/1` and only that (pjmedia-codec/config.h: 8, 32 and
+ * 48 kHz off by default). No deployed server offers it — it is app-to-app only. */
+#define PJMEDIA_HAS_LYRA_CODEC 1
+
+/*
+ * Assertions log, they do not abort. pjlib's pj_assert() is assert() while PJ_DEBUG is
+ * set, and PJ_DEBUG defaults to 1 because configure-android strips -DNDEBUG from the NDK
+ * flags it copies. On a handset that meant a library precondition — a media index of -1
+ * handed to pjsua_call_vid_stream_is_running() — was SIGABRT on the PJSIP thread and the
+ * end of the process, mid-call, when the user turned their video off (TC15, 2026-09-11).
+ * With PJ_DEBUG 0 the same line is `PJ_LOG(1, "Assert failed: …")` and PJ_EINVAL back to
+ * the caller, which is what pjproject's own release profile (config_site_sample.h,
+ * PJ_CONFIG_MAXIMUM_SPEED) chooses. The caller-side bug is fixed as well; this is the
+ * net under the next one. Grep the device log for "Assert failed" — it is still a bug.
+ */
+#define PJ_DEBUG 0
 
 /* Everything else pjproject decides for Android, including the acoustic echo canceller
  * (PJMEDIA_HAS_WEBRTC_AEC), the MediaCodec hardware path, the camera capture backend and

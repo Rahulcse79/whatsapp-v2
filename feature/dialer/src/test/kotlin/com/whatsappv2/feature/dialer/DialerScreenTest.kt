@@ -9,6 +9,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.lifecycle.SavedStateHandle
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
 import com.whatsappv2.domain.engine.NoCameraAvailable
@@ -127,11 +128,12 @@ class DialerScreenTest {
 
     private fun setContent() {
         val viewModel = DialerViewModel(
-            placeCall = PlaceCallUseCase(repository, engine, NoCameraAvailable),
+            placeCall = PlaceCallUseCase(repository, engine, NoCameraAvailable, engine),
             recentDials = RecentDials(),
             contacts = contacts,
             camera = NoCameraAvailable,
             repository = repository,
+            savedState = SavedStateHandle(),
             registrar = engine,
         )
 

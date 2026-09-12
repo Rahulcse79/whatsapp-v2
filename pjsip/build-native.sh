@@ -173,6 +173,61 @@ if ! up_to_date libvpx; then
   mark_done libvpx
 fi
 
+# ---------------------------------------------------------------- Lyra (ADR-008, Exit A)
+#
+# Nineteen vendored trees become one archive, `$prefix/lib/liblyra.a`, in the layout
+# pjproject's `--with-lyra=DIR` reads. pjsip/lyra/CMakeLists.txt is the build; this stage
+# stages the trees, drives it with the NDK toolchain file, and installs the prefix.
+#
+# Every tree is COPIED first, like the autotools ones above and for the same reason: two
+# of them write into their own source directory at configure time (TFLite's eigen.cmake
+# `file(WRITE ...)`s into Eigen), and third_party/ is hashed by rule 12.
+#
+# The stamp covers all nineteen trees plus the CMake file itself: a re-run with nothing
+# changed skips the twenty-five minutes TensorFlow Lite costs; a bumped tree or an edited
+# CMakeLists.txt rebuilds. CI has no persistent stage, so CI pays it every run — see
+# docs/native-dependencies.md §3.4 for the cache that would remove that.
+lyra_trees=(lyra tensorflow abseil-cpp cpuinfo eigen farmhash fft2d flatbuffers FP16 FXdiv
+            gemmlowp neon2sse psimd pthreadpool ruy xnnpack audio_dsp glog gulrak-filesystem)
+lyra_cmake_dir="${LYRA_CMAKE_DIR:-$CONFIG_SITE_DIR/../lyra}"
+lyra_hash() {
+  { for t in "${lyra_trees[@]}"; do current_hash "$t"; done
+    shasum -a 256 "$lyra_cmake_dir/CMakeLists.txt"; } | shasum -a 256 | cut -d' ' -f1
+}
+lyra_stamp="$work/.lyra.stamp"
+if [ -f "$lyra_stamp" ] && [ "$(cat "$lyra_stamp")" = "$(lyra_hash)" ] && [ -f "$prefix/lib/liblyra.a" ]; then
+  echo "==> Lyra ($ABI): up to date"
+else
+  echo "==> Lyra ($ABI): ${#lyra_trees[@]} trees"
+  for t in "${lyra_trees[@]}"; do
+    [ -d "$VENDOR_ROOT/$t" ] || { echo "::error::third_party/$t is not vendored — run tools/vendor/vendor.sh" >&2; exit 1; }
+    sync_tree "$t"
+  done
+  lyra_build="$work/lyra-build"
+  rm -rf "$lyra_build"
+  mkdir -p "$lyra_build"
+  # Ninja when the host has it, Make otherwise: 1,100 compile steps are the same either
+  # way, and CI runners are not promised Ninja.
+  lyra_gen="Unix Makefiles"
+  command -v ninja >/dev/null 2>&1 && lyra_gen="Ninja"
+  "${CMAKE:-cmake}" -S "$lyra_cmake_dir" -B "$lyra_build" -G "$lyra_gen" \
+    -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
+    -DANDROID_ABI="$ABI" -DANDROID_PLATFORM="android-$ANDROID_API" -DANDROID_STL=c++_shared \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLYRA_VENDOR="$work" \
+    -DCMAKE_INSTALL_PREFIX="$prefix"
+  "${CMAKE:-cmake}" --build "$lyra_build" --parallel "$jobs"
+  "${CMAKE:-cmake}" --install "$lyra_build"
+  # Fail here, with the file named, rather than in configure-android's "lyra usability
+  # ... no" — which does not stop the build, it builds a stack without the codec.
+  for f in lib/liblyra.a lyra_encoder.h lyra_decoder.h lyra/lyra_config.pb.h \
+           include/com_google_absl/absl/types/span.h include/gulrak_filesystem/include/ghc/filesystem.hpp \
+           model_coeffs/lyragan.tflite; do
+    [ -f "$prefix/$f" ] || { echo "::error::the Lyra build produced no $prefix/$f" >&2; exit 1; }
+  done
+  lyra_hash > "$lyra_stamp"
+fi
+
 # ---------------------------------------------------------------- pjproject
 echo "==> pjproject ($ABI)"
 sync_tree pjproject
@@ -198,8 +253,17 @@ export ANDROID_NDK_ROOT
 # script, because a step's env does not look like part of the command.
 export TARGET_ABI="$ABI"
 
+# THE API LEVEL. Left unset, `configure-android` derives APP_PLATFORM from the NDK's own
+# minimum (r27c: 21, which its script then raises to 23) — not from this app. OpenSSL, Opus
+# and libvpx above are built with `$ANDROID_API` (26, the app's minSdk) and never used a
+# symbol newer than 23, so a pjproject compiled for 23 linked against them by luck. The
+# Lyra closure is the first library that does not: `strtod_l` and the `_FORTIFY_SOURCE`
+# `__*_chk` functions arrive in bionic at 24-26, and configure's Lyra link test failed on
+# exactly those. One stack, one API level.
+export APP_PLATFORM="$ANDROID_API"
+
 ./configure-android --use-ndk-cflags \
-  --with-ssl="$prefix" --with-opus="$prefix" --with-vpx="$prefix"
+  --with-ssl="$prefix" --with-opus="$prefix" --with-vpx="$prefix" --with-lyra="$prefix"
 
 # configure-android does NOT fail when it cannot find OpenSSL, Opus or libvpx — it quietly
 # builds a stack without them. A build that silently drops TLS or wideband audio is worse
@@ -214,6 +278,21 @@ grep -qi 'opus.*disabled\.\.\. *no\|Checking opus usability\.\.\. yes' config.lo
 if grep -qi 'Checking if VPX is disabled\.\.\. yes' config.log; then
   echo "::error::VPX is NOT enabled — configure did not find libvpx. See --with-vpx." >&2
   echo "::error::config_site.h sets PJMEDIA_HAS_VPX_CODEC 1, so make dep will corrupt .depend." >&2
+  fail=1
+fi
+# The same silence for Lyra: a failed link test is "checking lyra usability... no" and a
+# build that goes on without the codec, while config_site.h says it is there (N-8). The
+# link test is the whole closure in one archive; if it fails, the archive is the place to
+# look, and config.log has the linker's actual complaint.
+# Read off what configure WROTE, not what it printed: os-auto.mak carries
+# `AC_NO_LYRA_CODEC=1` when the link test failed and an empty value when it passed, and
+# that variable is the one the codec Makefile branches on. (config.log splits "checking"
+# and "result:" across lines, and the first version of this check grepped for the
+# one-line form and failed on a build that had actually succeeded.)
+if ! grep -qE '^AC_NO_LYRA_CODEC=$' pjmedia/build/os-auto.mak; then
+  echo "::error::Lyra is NOT enabled — configure's link test against $prefix/lib/liblyra.a failed." >&2
+  echo "::error::config_site.h sets PJMEDIA_HAS_LYRA_CODEC 1; the codec would be declared and absent." >&2
+  grep -n -A14 'checking lyra usability' config.log | tail -30 >&2 || true
   fail=1
 fi
 [ "$fail" -eq 0 ] || exit 1
@@ -260,7 +339,9 @@ echo "::endgroup::"
 # `-L` alone was not enough: the prefix was on the search path and the archives were still
 # not pulled in, so the libraries are NAMED here as well. LDFLAGS is last in MY_LDFLAGS,
 # which is the correct position for static archives — after the objects that reference them.
-( export LDFLAGS="-L$prefix/lib -lopus -lvpx"; cd pjsip-apps/src/swig && make java )
+# `-llyra` joins them for the same reason, and `-llog` after it: glog inside the archive
+# logs through __android_log_write, which nothing else on this link line pulls in.
+( export LDFLAGS="-L$prefix/lib -lopus -lvpx -llyra -llog"; cd pjsip-apps/src/swig && make java )
 
 jni_so="$work/pjproject/pjsip-apps/src/swig/java/android/pjsua2/src/main/jniLibs/$ABI/libpjsua2.so"
 [ -f "$jni_so" ] || { echo "::error::the SWIG Java build produced no $jni_so" >&2
@@ -281,6 +362,20 @@ cxx_so="$(find "$ANDROID_NDK_ROOT" -path "*/sysroot/usr/lib/$SYSROOT_TRIPLE/libc
 [ -n "$cxx_so" ] || { echo "::error::no libc++_shared.so for $SYSROOT_TRIPLE — the APK would not load" >&2; exit 1; }
 
 cp -f "$jni_so" "$cxx_so" "$OUT_DIR/"
+
+# DWARF off, symbol table kept. The NDK toolchain compiles everything with -g, and with the
+# Lyra closure linked in that is ~80 MB of debug sections in a library whose loadable code
+# is 21 MB — the APK went from 45 MB to 146 MB. AGP would strip at packaging, but only
+# with an NDK configured on the app module, which this project keeps on :pjsip alone.
+# `--strip-debug` rather than `--strip-all`: .symtab stays, so a native tombstone still
+# names the frames, which is what turned the FinalizerDaemon abort into a fix.
+strip_bin="$(command -v llvm-strip || true)"
+if [ -n "$strip_bin" ]; then
+  "$strip_bin" --strip-debug "$OUT_DIR/libpjsua2.so"
+  echo "stripped debug sections: $(du -h "$OUT_DIR/libpjsua2.so" | cut -f1) libpjsua2.so"
+else
+  echo "warning: llvm-strip not on PATH — libpjsua2.so ships its debug sections" >&2
+fi
 
 # 16 KB alignment, asserted rather than printed. This used to be a step that dumped the LOAD
 # headers and could not fail.

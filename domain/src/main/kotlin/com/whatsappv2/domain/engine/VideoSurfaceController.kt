@@ -33,10 +33,23 @@ interface VideoSurfaceController {
 
     /** Gives both surfaces back. Safe to call when nothing was ever attached. */
     fun detach()
+
+    /**
+     * Which way up the screen is, as the display's rotation in degrees clockwise from the
+     * device's natural orientation: 0, 90, 180 or 270.
+     *
+     * The camera delivers frames in its own fixed orientation — landscape on every phone —
+     * and the stack sends and previews exactly what it is given. A portrait call therefore
+     * showed both pictures lying on their side (TC15, 2026-09-11). The stack can rotate
+     * captured frames before encoding, and this is the one input it needs to know by how
+     * much; it belongs here with the surfaces because it comes from the same screen.
+     */
+    fun setDisplayRotation(degrees: Int)
 }
 
 /** The controller for a context with no stack. Draws nothing and holds nothing. */
 object NoVideoSurfaces : VideoSurfaceController {
     override fun attach(remoteView: Any?, localPreview: Any?) = Unit
     override fun detach() = Unit
+    override fun setDisplayRotation(degrees: Int) = Unit
 }

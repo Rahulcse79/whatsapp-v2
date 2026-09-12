@@ -40,6 +40,16 @@ internal interface RecordingStore {
     fun allocate(callId: CallId): Outcome<AllocatedRecording, RecordingError>
 
     /**
+     * Gives back a path [allocate] handed out, for a recording that never started.
+     *
+     * Not [seal] with a shrug: the stack may have created the file and written a WAV
+     * header before it refused, and a header sealed is an artefact of nothing that then
+     * has to be listed, shown and deleted like a real recording. This destroys it
+     * instead. Quiet when the file was never created, which is the usual case.
+     */
+    fun discard(allocated: AllocatedRecording)
+
+    /**
      * Encrypts the finished file in place and returns what was kept.
      *
      * Called once the stack has closed the file. The plaintext is destroyed as part of

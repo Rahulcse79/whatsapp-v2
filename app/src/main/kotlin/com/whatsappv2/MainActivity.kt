@@ -10,12 +10,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import com.whatsappv2.core.common.logging.Logger
-import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
+import com.whatsappv2.domain.repository.AppSettingsRepository
 import com.whatsappv2.permission.LocalPermissionCoordinator
 import com.whatsappv2.permission.PermissionCoordinator
 import com.whatsappv2.permission.PermissionOnboarding
 import com.whatsappv2.permission.rememberCameraGate
 import com.whatsappv2.ui.AppRoot
+import com.whatsappv2.ui.theme.AppThemed
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -47,13 +48,17 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var permissionCoordinator: PermissionCoordinator
 
+    /** Read for the theme only. Every other setting is a screen's business, not the host's. */
+    @Inject
+    lateinit var settings: AppSettingsRepository
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         logger.debug(TAG, "MainActivity created")
 
         setContent {
-            WhatsAppV2Theme {
+            AppThemed(settings, statusBarOverHeader = true) {
                 // Provided here rather than passed down: a permission request happens
                 // deep inside a screen, and threading the coordinator through every
                 // composable in between would couple them all to it.

@@ -30,7 +30,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,6 +42,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.whatsappv2.core.designsystem.component.AppTopBar
 import com.whatsappv2.core.designsystem.component.ConfirmDialog
 import com.whatsappv2.core.designsystem.component.EmptyState
 import com.whatsappv2.core.designsystem.component.LoadingState
@@ -109,8 +109,8 @@ fun AccountsScreen(
         modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            TopAppBar(
-                title = { Text("SIP accounts") },
+            AppTopBar(
+                title = "SIP accounts",
                 navigationIcon = {
                     // Absent in a preview, where there is nowhere to go back to.
                     onBack?.let { back ->

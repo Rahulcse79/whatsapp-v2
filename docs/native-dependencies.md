@@ -30,6 +30,61 @@ from*, not *which source*.
 
 **A dependency with no answer in the "why" column is removed.** All four have one.
 
+### 1.0 The Lyra closure — nineteen trees for one codec (ADR-008, Exit A, 2026-09-10)
+
+Every pin is a commit hash. Where upstream pinned a tag, the hash the tag pointed at on
+2026-09-10 is what is recorded; where upstream floated a branch (glog, psimd), this is the
+first pin. "TFLite's pin" means `tensorflow/lite/tools/cmake/modules/*.cmake` at v2.11.0;
+"XNNPACK's pin" means its `cmake/Download*.cmake` at the commit below.
+
+| Name | Upstream | Version | Commit | Licence | Why it is here |
+|---|---|---|---|---|---|
+| **lyra** | https://github.com/google/lyra | `v1.3.2` | `47698dadf0010abff6a848e02642f55f806d4842` | Apache-2.0 | The codec: 17 sources, 34 headers, and the four weight files in `lyra/model_coeffs` (3.5 MB of data, the one place N-1 does not reach). Registers as `lyra/16000/1` |
+| **tensorflow** | https://github.com/tensorflow/tensorflow | `v2.11.0` | `d5b57ca93e506df258271ea00fc29cf98383a374` | Apache-2.0 | TensorFlow Lite: the interpreter and built-in kernels `lyra/tflite_model_wrapper.cc` runs the three `.tflite` models on. **Kept, not pruned**: 472 of 28,000 files — see §1.2 |
+| **xnnpack** | https://github.com/google/XNNPACK | — | `e8f74a9763aa36559980a0c2f37f587794995622` | BSD-3-Clause | The CPU delegate. Not optional: the wrapper includes `xnnpack_delegate.h` directly. 158 MB, of which `src/` is 97 MB of microkernels for every ISA and `test/` is 55 MB kept because one `ADD_LIBRARY` at CMakeLists.txt:7215 names it unconditionally |
+| **abseil-cpp** | https://github.com/abseil/abseil-cpp | `lts_2022_06_23`+ | `273292d1cfc0a94a65082ee350509af1d113344d` | Apache-2.0 | `absl::Status`, `Span`, `StrFormat`, `random` — used by Lyra, audio_dsp and TFLite alike. TFLite's pin wins over Lyra's older `20211102.0`; one absl per archive |
+| **eigen** | https://gitlab.com/libeigen/eigen | — | `3bb6a48d8c171cf20b5f8e48bfb4e424fbd4f79e` | **MPL-2.0** (built `EIGEN_MPL2_ONLY`, which excludes its few LGPL files) | Matrix maths under TFLite's kernels and audio_dsp's spectrogram. TFLite's `eigen.cmake` **writes into this tree at configure time**, which is why every closure tree is built from a staged copy |
+| **cpuinfo** | https://github.com/pytorch/cpuinfo | — | `5e63739504f0f8e18e941bd63b2d6d42536c7d90` | BSD-2-Clause | CPU feature detection for XNNPACK and ruy; `deps/clog` inside it serves both (byte-identical to the cpuinfo commit XNNPACK would fetch for clog). `test/` pruned, guarded |
+| **ruy** | https://github.com/google/ruy | — | `841ea4172ba904fe3536789497f9565f2ef64129` | Apache-2.0 | TFLite's matrix-multiply backend on ARM |
+| **flatbuffers** | https://github.com/google/flatbuffers | `v2.0.6` | `615616cb5549a34bdf288c04bc1b94bd7a65c396` | Apache-2.0 | The `.tflite` file format. `flatc` is built for the host from this tree during the build |
+| **gemmlowp** | https://github.com/google/gemmlowp | — | `fda83bdc38b118cc6b56753bd540caa49e570745` | Apache-2.0 | Quantised matrix multiply TFLite's kernels reference |
+| **farmhash** | https://github.com/google/farmhash | — | `0d859a811870d10f53a594927d0d0b97573ad06d` | MIT | Hashing in TFLite's string kernels |
+| **fft2d** | https://github.com/petewarden/OouraFFT | `v1.0` | `c6fd2dd6d21397baa6653139d31d84540d5449a2` | Ooura's own permissive terms (`readme2d.txt`: "You may use, copy, modify this code for any purpose and without fee") | The split-radix FFT both TFLite's RFFT kernel and audio_dsp's spectrogram call. Same bytes as the `mirror.tensorflow.org` tarball TFLite pins |
+| **FP16** | https://github.com/Maratyszcza/FP16 | — | `0a92994d729ff76a58f692d3028ca1b64b145d91` | MIT | Half-precision conversion headers, XNNPACK |
+| **FXdiv** | https://github.com/Maratyszcza/FXdiv | — | `b408327ac2a15ec3e43352421954f5b1967701d1` | MIT | Division-by-constant headers, XNNPACK |
+| **psimd** | https://github.com/Maratyszcza/psimd | — | `072586a71b55b7f8c584153d223e95687148a900` | MIT | Portable SIMD headers FP16 requires unconditionally. **Upstream FP16 fetches `master`**; this is its last commit (2020-05-17) and the first time it has been pinned |
+| **pthreadpool** | https://github.com/Maratyszcza/pthreadpool | — | `545ebe9f225aec6dca49109516fac02e973a3de2` | BSD-2-Clause | XNNPACK's thread pool |
+| **neon2sse** | https://github.com/intel/ARM_NEON_2_x86_SSE | — | `a15b489e1222b2087007546b4912e21293ea86ff` | BSD-2-Clause | NEON intrinsics on x86_64, for the one ABI that is not ARM |
+| **audio_dsp** | https://github.com/google/multichannel-audio-tools | — | `14a45c5a7c965e5ef01fe537bd816ce10a247813` | Apache-2.0 | Mel filterbank, spectrogram, resampler and WAV I/O. **No CMake upstream** — `pjsip/lyra/CMakeLists.txt` lists its 16 files, the closure of the six Bazel targets Lyra names |
+| **glog** | https://github.com/google/glog | `v0.6.0` | `b33e3bad4c46c8a6345525fd822af355e5ef9446` | BSD-3-Clause | `LOG`/`CHECK` in Lyra and audio_dsp. **Upstream Lyra floats `branch = "master"`**; pinned here, built `WITH_GFLAGS=OFF` so gflags is not in the closure |
+| **gulrak-filesystem** | https://github.com/gulrak/filesystem | `v1.3.6` | `7e37433f318488ae4bc80f80e12df12a01579874` | MIT | `ghc::filesystem`, header-only; Lyra's model-path handling |
+
+**Two of Lyra's WORKSPACE dependencies are deliberately absent.** `com_google_protobuf`
+(v3.15.4): `lyra_config.proto` has one `int32` field and the file it parses is two bytes;
+patch `0001` (§2) replaces the generated class with a parser of that message. A host
+`protoc` and an Android `libprotobuf-lite` would be a larger dependency than the codec.
+`com_github_gflags_gflags`: reached only through glog, and glog is built without it.
+
+**The closure's cost.** 420 MB on disk for `third_party/` against 148 MB before, of which
+XNNPACK is 158 MB and TensorFlow 41 MB after its keep-list. `git` compresses it to roughly
+a third. Nothing here is fetched at build time: `pjsip/lyra/CMakeLists.txt` points every
+`FetchContent` the sub-builds would perform at a vendored tree and sets
+`FETCHCONTENT_FULLY_DISCONNECTED`, so an override it forgot is a configure error, not a
+download.
+
+**What vendoring nineteen trees taught, in the order it bit.** (1) `vendor.sh` died on
+macOS's bash 3.2 at the first empty prune array (`"${OPUS_PRUNE[@]}"` under `set -u`); it
+had only ever run on Linux. (2) `PJPROJECT_PRUNE` still listed `tests`, restored in §1.2
+but never removed from the script — the re-run deleted 431 files the committed tree had.
+(3) The closure trees carry 30-odd `.gitignore` files of their own, and git honours the
+deepest: eigen's `core` rule would have dropped `Eigen/src/Core/` on a case-insensitive
+disk, 202 files in all. (4) flatbuffers' `.gitattributes` says `*.bat text eol=crlf` and
+would override the root's `third_party/** -text` for its subtree, so a fresh checkout would
+rewrite files and rule 12's hash would differ between machines. (5) Five symlinks that no
+build reads but that `find -type f` cannot see. `vendor.sh` now strips nested `.gitignore`
+and `.gitattributes` files and symlinks from the closure trees; the four original trees are
+left as committed.
+
 ### 1.1 Sizes — measured, and the estimate they replace
 
 **Method:** each tag downloaded as a source tarball, extracted, `du -sh` on the extracted
@@ -217,8 +272,11 @@ not yet proven itself"*.
 
 ## 2. Local patches
 
-`pjsip/patches/` holds **no `.patch` files** — no local change to any vendored tree exists
-yet. It holds `vendored-tree.sha256`, which is rule 12's manifest.
+`pjsip/patches/` holds one patch and `vendored-tree.sha256`, rule 12's manifest.
+
+| # | Subject | Tree | Reason | Upstream |
+|---|---|---|---|---|
+| `0001` | `lyra-config-without-protobuf` | lyra | **Adds** `lyra/lyra_config.pb.h`, the file `protoc` would generate for `lyra_config.proto`, as a hand-written proto2 parser of that one-field message (`optional int32 identifier = 1`). The only file ever parsed with it is two bytes. Removes protobuf — a host `protoc` build plus `libprotobuf-lite` — from the closure. Skips unknown fields and groups, so a `.binarypb` that grows still parses. No upstream file is modified | Not sent: upstream builds with Bazel and has no reason to want this |
 
 **The rule (N-7).** Every local change is a **numbered patch file**, applied by the build in
 order, never an edit to the vendored tree. Each carries: what it changes, why, and whether
@@ -308,11 +366,37 @@ substitutes for it.
 
 ## 5. Lyra — the §2.4 gate
 
-**Status: criterion 1 only, by decision.** The gate is not being run in full; the NDK
-conflict is being tested first because it is the fast signal and everything else is wasted
-if it fails.
+**Status: closed at Exit A, 2026-09-10.** Criterion 1 passed on the first attempt:
+TensorFlow Lite v2.11.0 with the XNNPACK delegate configured and built for `arm64-v8a`
+under NDK r27c with zero errors (1,070 compile steps), and the whole closure — glog,
+audio_dsp, Lyra — linked into one `liblyra.a` against which pjproject's own
+`--with-lyra` link test passes. Run on a Zebra TC15 with the model files, the codec
+encoded 50 frames of a 16 kHz tone at exactly 8 bytes/frame (3200 bps) and decoded 16,000
+samples. The 2022-vintage `cpuinfo`/XNNPACK sources the gate feared compiled unchanged.
 
-**`third_party/lyra` does not exist and is not planned unless criterion 1 passes.**
+`third_party/lyra` and its eighteen dependencies exist (§1.0); `pjsip/lyra/CMakeLists.txt`
+builds them; `pjsip/build-native.sh` runs it before pjproject and passes
+`--with-lyra=$prefix`; `config_site.h` says `PJMEDIA_HAS_LYRA_CODEC 1`; the app ships the
+weights as assets and copies them to `filesDir/lyra` on first run
+(`LyraModels.kt`); the codec audit reports `lyra` registered and stranded by peer, or
+`ModelFilesUnusable` with the reason.
+
+**What is not yet verified, and by what:** `libpjsua2.so` with Lyra in it has not been
+built — the Mac that did the above has SWIG without its Java typemaps, so stage 2 cannot
+run there; CI can. The registration of `lyra/16000/1` on a handset, and a call carried by
+it, are owed behind that build. §5.4 still stands: no deployed server offers Lyra.
+
+### 5.0 What the closure costs at build time
+
+TensorFlow Lite is ~1,100 compile steps: 25 minutes at `-j6` on a 4-core Mac, per ABI.
+`build-native.sh` stamps the Lyra stage by the hash of all nineteen trees plus the CMake
+file, so a local re-run skips it. **CI has no persistent stage and pays it on every run,
+three ABIs each.** The fix is an `actions/cache` keyed on that same hash around
+`$STAGE/<abi>/lyra-build` and `$PREFIX/<abi>/lib/liblyra.a`; not done in this pass, and the
+first CI run will show the cost before the cache is justified.
+
+The sections below are the investigation as it stood before the build; they are kept
+because they say what was expected and are the record of what did and did not bite.
 
 ### 5.1 Verified upstream state — 2026-09-09, from the GitHub API
 

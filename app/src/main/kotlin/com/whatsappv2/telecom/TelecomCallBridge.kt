@@ -4,6 +4,7 @@ import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.di.ApplicationScope
 import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.engine.SipCallController
+import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.engine.SipMediaController
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.HangupReason
@@ -40,6 +41,7 @@ import javax.inject.Singleton
 internal class TelecomCallBridge @Inject constructor(
     private val calls: SipCallController,
     private val media: SipMediaController,
+    private val conferences: SipConferenceController,
     private val logger: Logger,
     @ApplicationScope private val scope: CoroutineScope,
 ) : SipConnection.Listener {
@@ -63,7 +65,25 @@ internal class TelecomCallBridge @Inject constructor(
         scope.launch { calls.hangup(callId, reason) }
     }
 
+    /**
+     * A hold or resume the **platform** asked for.
+     *
+     * Declined for a member of a local conference (ADR-009). Telecom allows one active
+     * call per connection service and holds every other the instant a call goes active;
+     * `mixCalls` resumes up to seven at once, so Telecom answered each resume by holding
+     * the call before it — `SipConnectionService: hold TC@… (cw/cast)` seven times in
+     * 200 ms — and the bridge carried every one of those to the stack. The last two it
+     * won stayed held: their RTP went `sendonly`, the far end stopped sending, and the
+     * conference ended with two legs at `RX 0pkt` while all eight showed TX. That was
+     * ADR-009's open item. A mixed member is live by definition, so the platform's hold
+     * is not carried; Telecom's own view of the call is left as it is, which costs
+     * nothing this app reads. A resume is always honoured.
+     */
     override fun onHoldChanged(callId: CallId, held: Boolean) {
+        if (held && callId in conferences.mixedCalls.value) {
+            logger.info(TAG, "Telecom asked to hold $callId, a mixed call; keeping it live")
+            return
+        }
         logger.info(TAG, "Hold changed for $callId: $held")
         scope.launch { calls.setHold(callId, held) }
     }

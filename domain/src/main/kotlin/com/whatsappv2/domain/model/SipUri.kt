@@ -35,6 +35,20 @@ class SipUri private constructor(
      */
     val effectivePort: Int get() = port ?: transport?.defaultPort ?: scheme.defaultPort
 
+    /**
+     * The shortest thing that still identifies this address to a person.
+     *
+     * The user part — an extension, a number, a name — or the host when there is no user
+     * part, because `sip:conference.example.com` is still a real thing to have called.
+     *
+     * Distinct from [render], which rebuilds the whole URI for the wire and for anything
+     * that has to parse it back. A call list wants `7001`, not
+     * `sip:7001@192.168.80.145`: on one deployment every row shares the host, so the two
+     * thirds of that string nobody reads are the two thirds that push the name off the
+     * screen. Never a substitute for [render] when the value is going to be dialled.
+     */
+    fun label(): String = user ?: host.rendered
+
     /** The URI as it goes on the wire. */
     fun render(): String = buildString {
         append(scheme.token).append(':')

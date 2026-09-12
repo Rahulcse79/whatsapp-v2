@@ -1,10 +1,16 @@
 package com.whatsappv2.feature.calls
 
 import com.whatsappv2.core.common.result.getOrNull
+import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallControls
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.HoldParty
+import com.whatsappv2.domain.engine.CallDirection
+import com.whatsappv2.domain.engine.CallSnapshot
+import com.whatsappv2.domain.model.AccountId
+import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.HangupReason
+import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.model.TransferType
 import kotlin.test.Test
@@ -57,13 +63,23 @@ class CallUiStateTest {
     }
 
     @Test
-    fun `mute and routing need media, which a ringing call does not have`() {
+    fun `mute needs media, which a ringing call does not have`() {
         // Muting a call that is still ringing mutes nothing, and reporting success for it
         // would hide the moment the real microphone was never muted.
         assertFalse(CallControlAvailability.of(CallPhase.RINGING).canMute)
-        assertFalse(CallControlAvailability.of(CallPhase.INCOMING).canChangeRoute)
+        assertFalse(CallControlAvailability.of(CallPhase.INCOMING).canMute)
         assertTrue(CallControlAvailability.of(CallPhase.CONNECTED).canMute)
         assertTrue(CallControlAvailability.of(CallPhase.ON_HOLD).canMute)
+    }
+
+    @Test
+    fun `the route can be chosen from the first ring, because the ringback is already routed`() {
+        // Measured on a TC15, 2026-09-10: with this disabled, a Speaker press while the far
+        // end rang went nowhere, and the answered call came up on the earpiece.
+        for (phase in listOf(CallPhase.CALLING, CallPhase.RINGING, CallPhase.EARLY_MEDIA, CallPhase.INCOMING)) {
+            assertTrue(CallControlAvailability.of(phase).canChangeRoute, "$phase")
+        }
+        assertFalse(CallControlAvailability.of(CallPhase.ENDED).canChangeRoute)
     }
 
     @Test
@@ -115,6 +131,32 @@ class CallUiStateTest {
         assertEquals(true, connected.controlsOrNull?.isMuted)
         assertEquals(null, CallState.Outgoing.Ringing.controlsOrNull)
     }
+
+    @Test
+    fun `a route chosen while ringing shows on the button before the call connects`() {
+        // The platform is already honouring it, so a button that still read "turn on
+        // speakerphone" would be offering to do what was just done.
+        val ringing = snapshot(CallState.Outgoing.Ringing, requestedAudioRoute = AudioRoute.SPEAKER)
+
+        assertEquals(AudioRoute.SPEAKER, ringing.toDisplay(nowEpochMillis = 0L).controls.audioRoute)
+        assertEquals(
+            CallControls.DEFAULT.audioRoute,
+            snapshot(CallState.Outgoing.Ringing).toDisplay(nowEpochMillis = 0L).controls.audioRoute,
+        )
+    }
+
+    private fun snapshot(state: CallState, requestedAudioRoute: AudioRoute? = null) = CallSnapshot(
+        callId = CallId("call-1"),
+        accountId = AccountId("acct-1"),
+        remote = REMOTE,
+        remoteDisplayName = null,
+        direction = CallDirection.OUTGOING,
+        state = state,
+        media = MediaProfile.AUDIO,
+        startedAtEpochMillis = 0L,
+        connectedAtEpochMillis = null,
+        requestedAudioRoute = requestedAudioRoute,
+    )
 
     private companion object {
         val REMOTE: SipUri = SipUri.parse("sip:bob@sip.example.com").getOrNull()!!

@@ -8,6 +8,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PhoneForwarded
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.runtime.Composable
@@ -33,6 +34,10 @@ internal fun CallSecondaryControls(
     recording: RecordingUiState,
     actions: CallActions,
     modifier: Modifier = Modifier,
+    /** True when this device is holding two or more established calls (ADR-009). */
+    canMerge: Boolean = false,
+    /** How many calls are already mixed, so the control can say so rather than repeat. */
+    mixedCallCount: Int = 0,
     /** Actions the engine has not answered yet, shown busy rather than toggled (Task 76). */
     pending: Set<CallAction> = emptySet(),
 ) {
@@ -75,6 +80,7 @@ internal fun CallSecondaryControls(
             label = "Transfer",
             modifier = Modifier.testTag(TAG_TRANSFER),
         )
+        MergeButton(canMerge, mixedCallCount, actions.onMerge, CallAction.MERGE in pending)
         CallActionButton(
             icon = Icons.Filled.FiberManualRecord,
             contentDescription = if (recording.isRecording) "Stop recording" else "Record this call",
@@ -93,4 +99,35 @@ internal fun CallSecondaryControls(
 internal const val TAG_VIDEO_TOGGLE = "call-video-toggle"
 internal const val TAG_SWITCH_CAMERA = "call-switch-camera"
 internal const val TAG_TRANSFER = "call-transfer"
+
+/**
+ * Mixes the calls on this device into one conference (ADR-009).
+ *
+ * Shown only when there is something to merge. A control that sits present-but-disabled
+ * through every ordinary call teaches people to ignore it, and merging is meaningless
+ * with one call — the bridge needs two established legs before it has anything to mix.
+ */
+@Composable
+private fun MergeButton(canMerge: Boolean, mixedCallCount: Int, onMerge: () -> Unit, pending: Boolean) {
+    if (!canMerge && mixedCallCount == 0) return
+
+    val merged = mixedCallCount >= MIN_MIXED
+    CallActionButton(
+        icon = Icons.Filled.Groups,
+        contentDescription = if (merged) "$mixedCallCount calls merged" else "Merge these calls",
+        activeStateDescription = if (merged) "Merged" else "Not merged",
+        onClick = onMerge,
+        enabled = canMerge,
+        active = merged,
+        label = if (merged) "Merged" else "Merge",
+        pending = pending,
+        pendingStateDescription = "Merging the calls",
+        modifier = Modifier.testTag(TAG_MERGE),
+    )
+}
+
 internal const val TAG_RECORD = "call-record"
+internal const val TAG_MERGE = "call-merge"
+
+/** Two mixed calls is the least that reads as a conference rather than a call (ADR-009). */
+private const val MIN_MIXED = 2

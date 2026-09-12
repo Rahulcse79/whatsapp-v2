@@ -36,6 +36,7 @@ data class CallActions(
     /** Hands the stack the views to draw into, and takes them back (Task 52). */
     val onVideoSurfaces: (remote: Any?, preview: Any?) -> Unit = { _, _ -> },
     val onReleaseVideoSurfaces: () -> Unit = {},
+    val onDisplayRotation: (degrees: Int) -> Unit = {},
 
     // ------------------------------------------------------------------ transfer
     val onStartTransfer: () -> Unit = {},
@@ -52,6 +53,14 @@ data class CallActions(
 
     /** Makes another call the live one, holding this (Task 56). */
     val onSwapTo: (CallId) -> Unit = {},
+
+    /**
+     * Mixes every established call on this device into one conference (ADR-009).
+     *
+     * Takes no argument, and cannot: the phone has one audio bridge and one microphone,
+     * so merging can only ever mean all of them.
+     */
+    val onMerge: () -> Unit = {},
 
     // ------------------------------------------------------------------ recording
     /** Opens the consent dialog. There is no way to start recording that skips it (§2.6). */

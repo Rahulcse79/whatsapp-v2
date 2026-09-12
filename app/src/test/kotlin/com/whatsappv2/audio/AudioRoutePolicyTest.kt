@@ -1,6 +1,7 @@
 package com.whatsappv2.audio
 
 import com.whatsappv2.domain.call.AudioRoute
+import com.whatsappv2.domain.model.PreferredAudioRoute
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -33,6 +34,51 @@ class AudioRoutePolicyTest {
         assertEquals(
             AudioRoute.SPEAKER,
             AudioRoutePolicy.preferredRoute(AudioDevices(hasEarpiece = false)),
+        )
+    }
+
+    @Test
+    fun `the Settings preference decides where a call starts`() {
+        // "Where calls start" — the control that, until this, changed nothing anywhere.
+        val headset = AudioDevices(hasWiredHeadset = true)
+
+        assertEquals(AudioRoute.SPEAKER, AudioRoutePolicy.preferredRoute(headset, PreferredAudioRoute.SPEAKER))
+        assertEquals(AudioRoute.EARPIECE, AudioRoutePolicy.preferredRoute(headset, PreferredAudioRoute.EARPIECE))
+        assertEquals(AudioRoute.WIRED_HEADSET, AudioRoutePolicy.preferredRoute(headset, PreferredAudioRoute.AUTOMATIC))
+        // A device with no earpiece cannot start on one.
+        assertEquals(
+            AudioRoute.SPEAKER,
+            AudioRoutePolicy.preferredRoute(AudioDevices(hasEarpiece = false), PreferredAudioRoute.EARPIECE),
+        )
+    }
+
+    @Test
+    fun `a headset that arrives still wins over the preference, and a choice still beats it`() {
+        // The preference is where calls *start*. A headset plugged in mid-call is a
+        // physical act that says more, and a route the user chose on this call is
+        // more recent than one they chose in Settings last month.
+        val devices = AudioDevices(hasWiredHeadset = true)
+
+        assertEquals(
+            AudioRoute.WIRED_HEADSET,
+            AudioRoutePolicy.routeAfterDeviceChange(
+                devices,
+                chosen = null,
+                arrived = AudioRoute.WIRED_HEADSET,
+                preference = PreferredAudioRoute.SPEAKER,
+            ),
+        )
+        assertEquals(
+            AudioRoute.EARPIECE,
+            AudioRoutePolicy.routeAfterDeviceChange(
+                devices,
+                chosen = AudioRoute.EARPIECE,
+                preference = PreferredAudioRoute.SPEAKER,
+            ),
+        )
+        assertEquals(
+            AudioRoute.SPEAKER,
+            AudioRoutePolicy.routeAfterDeviceChange(devices, chosen = null, preference = PreferredAudioRoute.SPEAKER),
         )
     }
 

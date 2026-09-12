@@ -50,8 +50,28 @@ data class Sizing(
     /** Minimum touch target. Below this, people miss (Material accessibility). */
     val minimumTouchTarget: Dp = 48.dp,
 
+    /**
+     * The bottom navigation bar, above the system inset.
+     *
+     * Material's short navigation bar: 64dp, against the classic bar's 80. The taller
+     * one spent its extra height as empty space above the icons.
+     */
+    val bottomBar: Dp = 64.dp,
+
     /** Avatar in a list row. */
     val avatarSmall: Dp = 40.dp,
+
+    /** A status dot beside a label. Big enough to read as a colour, small enough not to be a button. */
+    val statusDot: Dp = 10.dp,
+
+    /** A glyph at the end of a list row that says what the row is, not what it does. */
+    val listTrailingIcon: Dp = 20.dp,
+
+    /** An icon inside a chip — Material's 18dp, which the chip's own defaults assume. */
+    val chipIcon: Dp = 18.dp,
+
+    /** The selected tab's underline in the header. Shorter than the tab, so it points rather than underlines. */
+    val tabIndicatorWidth: Dp = 40.dp,
 
     /** Avatar on the in-call screen. */
     val avatarLarge: Dp = 96.dp,

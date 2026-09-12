@@ -365,4 +365,67 @@ interface SipConferenceController {
         conferenceUri: SipUri,
         media: MediaProfile,
     ): Outcome<CallId, SipError>
+
+    /**
+     * Mixes [callIds] together **on this device** (ADR-009).
+     *
+     * The other way to hold a conference, and the one that needs no server: the stack's
+     * own audio bridge mixes the calls this handset already has, so each participant
+     * hears every other and none hears themselves. Everyone else placed an ordinary call
+     * to this phone and pays for one stream; the mixing is this device's job alone.
+     *
+     * ## A membership, not a merge
+     *
+     * The whole set is stated every time, which is why there is no `add` and no `remove`.
+     * Passing a set with one more id adds a participant; passing one with an id missing
+     * drops them; passing fewer than two ends the conference. A caller may re-state the
+     * same set as often as it likes — doing so is a no-op, so this can be driven from a
+     * call list without tracking what has already been done.
+     *
+     * ## Held calls are resumed, because a conference means everybody is live
+     *
+     * A held call is established and contributes nothing — its RTP is `sendonly` and its
+     * media port is stopped — so mixing one would report a conference in which a member
+     * sits silent and hears nobody. Implementations take the hold off first. A member
+     * whose resume the far end refuses is left out of the result rather than counted in
+     * it.
+     *
+     * ## What it does not do
+     *
+     * It does not place calls: every id must already be an established call on this
+     * device. And it is **audio only** — ADR-009's gate measured video at ~135 % of a
+     * core per stream, which does not fit, so a video conference remains a call to the
+     * bridge (ADR-003).
+     *
+     * @param callIds the calls to mix. At most [MAX_LOCAL_CONFERENCE], which is ADR-009's
+     *   measured ceiling rather than a round number.
+     * @return the calls actually mixed, which excludes any whose media is not up yet.
+     */
+    suspend fun mixCalls(callIds: Set<CallId>): Outcome<Set<CallId>, SipError>
+
+    /**
+     * The calls currently mixed on this device by [mixCalls], or empty when there is no
+     * local conference.
+     *
+     * Published because the platform has to be kept from breaking the mix. Android
+     * Telecom allows one active call per connection service and holds every other the
+     * moment a call becomes active; a local conference is N calls that must all be
+     * active at once. Whoever carries Telecom's hold requests to the engine reads this
+     * and declines to hold a member. A `StateFlow` so a late reader sees the current set.
+     */
+    val mixedCalls: StateFlow<Set<CallId>>
+
+    companion object {
+        /**
+         * The most participants this device will mix, from ADR-009's measurement.
+         *
+         * 8 is the host plus 7 concurrent calls, at ~350 % of one core with Lyra against
+         * a 400 % budget. It is also `PJSUA_MAX_CALLS` in `config_site.h`; the two are
+         * the same number for the same reason and must move together.
+         */
+        const val MAX_LOCAL_CONFERENCE = 8
+
+        /** Fewer than two mixed calls is a call, not a conference; [mixedCalls] is empty below it. */
+        const val MINIMUM_MIXED = 2
+    }
 }

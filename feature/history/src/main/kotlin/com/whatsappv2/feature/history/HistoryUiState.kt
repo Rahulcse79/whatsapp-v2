@@ -2,7 +2,7 @@ package com.whatsappv2.feature.history
 
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.CallLogEntry
-import com.whatsappv2.domain.repository.CallLogFilter
+import com.whatsappv2.domain.repository.CallLogQuery
 
 /**
  * One line in the history list.
@@ -16,7 +16,14 @@ sealed interface HistoryRow {
     /** The day every following [Call] happened on, until the next one of these. */
     data class DayHeader(val epochDay: Long) : HistoryRow
 
-    data class Call(val entry: CallLogEntry) : HistoryRow
+    /**
+     * One call, together with what to call the person on it.
+     *
+     * The title is carried rather than computed by the row that draws it, because working
+     * it out means asking the address book (`CallLogTitles`) and a composable that did
+     * that would do it again on every recomposition. Resolved once, as the page loads.
+     */
+    data class Call(val entry: CallLogEntry, val title: String) : HistoryRow
 }
 
 /**
@@ -27,10 +34,26 @@ sealed interface HistoryRow {
  * rebuilding the pager every time the filter or a dialog changed.
  */
 data class HistoryUiState(
-    val filter: CallLogFilter = CallLogFilter.ALL,
+    /**
+     * Everything narrowing the list: the tab, the search text and the advanced filters.
+     *
+     * One value rather than a tab field beside a query field. The All/Missed tabs ARE a
+     * direction filter, and holding the same axis in two places is how a screen ends up
+     * showing "All" over a list of missed calls.
+     */
+    val query: CallLogQuery = CallLogQuery.MATCH_ALL,
 
-    /** The entry whose detail is open, or null for the list. */
-    val openEntry: CallLogEntry? = null,
+    /** True while the search field is open, which is a view concern and not a criterion. */
+    val searching: Boolean = false,
+
+    /**
+     * The row whose detail is open, or null for the list.
+     *
+     * The row and not the bare entry, so the sheet's heading is the name the list showed.
+     * Re-deriving it here would be a second address-book read for a title already resolved,
+     * and the two could disagree.
+     */
+    val openEntry: HistoryRow.Call? = null,
 
     /** True while the "clear all history" confirmation is up. */
     val confirmingClearAll: Boolean = false,

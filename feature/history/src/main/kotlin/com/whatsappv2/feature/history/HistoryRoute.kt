@@ -17,17 +17,15 @@ import com.whatsappv2.domain.model.CallLogEntry
 /**
  * Call history, wired to its ViewModel (Task 48) — the app's home screen since Task 70.
  *
- * The four navigation callbacks are how this module reaches the rest of the app without
+ * The two navigation callbacks are how this module reaches the rest of the app without
  * depending on it. [onCallPlaced] opens the call screen, which is an activity `:app` owns;
- * the other three open the dialler, the group-call page and settings, none of which
- * `:feature:history` may import. The screen itself takes literal state, so a test renders
- * it with no ViewModel at all.
+ * [onOpenDialer] opens the dialler, which `:feature:history` may not import. The screen
+ * itself takes literal state, so a test renders it with no ViewModel at all.
  */
 @Composable
 fun HistoryRoute(
     onCallPlaced: (CallId) -> Unit,
     onOpenDialer: () -> Unit,
-    onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: HistoryViewModel = hiltViewModel(),
     /**
@@ -63,9 +61,14 @@ fun HistoryRoute(
         }
     }
 
-    val actions = remember(viewModel, onOpenDialer, onOpenSettings, videoGate) {
+    val actions = remember(viewModel, onOpenDialer, videoGate) {
         HistoryActions(
             onFilterChanged = viewModel::onFilterChanged,
+            onSearchToggled = viewModel::onSearchToggled,
+            onSearchTextChanged = viewModel::onSearchTextChanged,
+            onDirectionChanged = viewModel::onDirectionChanged,
+            onDateRangeChanged = viewModel::onDateRangeChanged,
+            onFiltersCleared = viewModel::onFiltersCleared,
             onEntryOpened = viewModel::onEntryOpened,
             onDetailDismissed = viewModel::onDetailDismissed,
             onDelete = { entry: CallLogEntry -> viewModel.onDelete(entry.id) },
@@ -75,7 +78,6 @@ fun HistoryRoute(
             onCallBack = viewModel::onCallBack,
             onVideoCallBack = { entry -> videoGate { viewModel.onVideoCallBack(entry) } },
             onOpenDialer = onOpenDialer,
-            onOpenSettings = onOpenSettings,
         )
     }
 

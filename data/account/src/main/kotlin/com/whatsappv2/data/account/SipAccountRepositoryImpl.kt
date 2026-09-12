@@ -120,6 +120,11 @@ class SipAccountRepositoryImpl @Inject constructor(
         return runCatchingStorage { dao.setDefault(id.value) }
     }
 
+    override suspend fun setRegistrationWanted(id: AccountId, wanted: Boolean): Outcome<Unit, AccountRepositoryError> {
+        dao.findById(id.value) ?: return failure(AccountRepositoryError.NotFound)
+        return runCatchingStorage { dao.setRegistrationWanted(id.value, wanted) }
+    }
+
     override suspend fun credentialsFor(id: AccountId): Outcome<SipCredentials, AccountRepositoryError> {
         val row = dao.findById(id.value) ?: return failure(AccountRepositoryError.NotFound)
 

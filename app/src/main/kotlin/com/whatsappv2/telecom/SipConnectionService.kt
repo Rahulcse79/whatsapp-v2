@@ -75,6 +75,14 @@ internal class SipConnectionService : ConnectionService() {
             logger.error(TAG, "Outgoing connection requested with no call id")
             return Connection.createFailedConnection(DisconnectCause(DisconnectCause.ERROR))
         }
+        // Telecom answering after we stopped waiting. Cancelling is what keeps the
+        // platform's call list honest; left alone this becomes a permanent DIALING call
+        // that makes every future call "on another call".
+        if (wasAbandoned(CallId(callId))) {
+            logger.warn(TAG, "Telecom created $callId after the wait timed out; cancelling it")
+            return Connection.createCanceledConnection()
+        }
+
         return newConnection(CallId(callId)).also {
             // Without this the platform's record of the call has `handle=null`: the system
             // call UI, the lock screen and a car display all show a call from nobody, and
@@ -208,10 +216,37 @@ internal class SipConnectionService : ConnectionService() {
         fun expect(callId: CallId): CompletableDeferred<Boolean> =
             CompletableDeferred<Boolean>().also { pending[callId] = it }
 
-        /** Abandons a wait that timed out, so the map does not grow a dead entry per call. */
+        /**
+         * Calls this app stopped waiting for, so a late connection can be cancelled.
+         *
+         * Bounded by the fact that an entry only survives until Telecom answers for that
+         * id, and every id is used once. A call Telecom never answers for at all leaves
+         * one dead entry, which is a string — the alternative was leaving a live call in
+         * the platform, which is what this whole mechanism exists to stop.
+         */
+        private val abandoned = ConcurrentHashMap.newKeySet<CallId>()
+
+        /**
+         * Abandons a wait that timed out or was never handed over.
+         *
+         * Removing the waiter is not enough, and that was the bug. Telecom can still call
+         * [onCreateOutgoingConnection] *after* the timeout: it creates a real connection,
+         * sets it DIALING, and nobody ever ends it, because the app gave up on the call
+         * and never placed it. The result is a phantom call in the platform for the life
+         * of the process — `dumpsys telecom` showed two of them against zero real legs —
+         * and Telecom then refuses every later call, which reaches the user as the one
+         * sentence that names a cause that is not true: "Your phone is on another call".
+         *
+         * So the id is remembered, and a connection that arrives for it is cancelled on
+         * the spot.
+         */
         fun forget(callId: CallId) {
             pending.remove(callId)
+            abandoned += callId
         }
+
+        /** True when this call was given up on; clears the mark, since ids are used once. */
+        private fun wasAbandoned(callId: CallId): Boolean = abandoned.remove(callId)
 
         private fun settle(callId: CallId, created: Boolean) {
             pending.remove(callId)?.complete(created)

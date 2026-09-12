@@ -1,5 +1,9 @@
 package com.whatsappv2.ui.navigation
 
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -19,9 +23,11 @@ import com.whatsappv2.feature.accounts.AccountDetailRoute
 import com.whatsappv2.feature.accounts.AccountEditorRoute
 import com.whatsappv2.feature.accounts.AccountSavedMessage
 import com.whatsappv2.feature.accounts.AccountsRoute
+import com.whatsappv2.feature.accounts.status.RegistrationIndicatorRoute
 import com.whatsappv2.feature.dialer.DialerScreen
 import com.whatsappv2.feature.history.HistoryRoute
 import com.whatsappv2.feature.settings.SettingsScreen
+import com.whatsappv2.ui.chats.ChatsPlaceholderScreen
 
 /**
  * The navigation graph.
@@ -31,13 +37,12 @@ import com.whatsappv2.feature.settings.SettingsScreen
  * layering rule that keeps them independently testable — which is why every screen below
  * takes callbacks rather than a `NavController`.
  *
- * ## The shape changed with Tasks 69 and 70
+ * ## The shape changed with Tasks 69 and 70, and again when Chats arrived
  *
- * Four of these used to be tabs. They are all still routes, reached from the Calls screen
- * instead: a floating button for the dialler, the top-right icon for
- * settings, and the account list from inside settings. Nothing was removed from the graph
- * — a tab going away is not a destination going away, and `account-detail/{accountId}`
- * still resolves exactly as it did.
+ * Four of these used to be tabs. They are all still routes: the dialler behind a floating
+ * button on Calls, settings behind the gear on Chats, and the account list from inside
+ * settings. Nothing was removed from the graph — a tab going away is not a destination
+ * going away, and `account-detail/{accountId}` still resolves exactly as it did.
  */
 @Composable
 fun AppNavHost(
@@ -62,17 +67,61 @@ fun AppNavHost(
         context.startActivity(CallActivity.intentFor(context, callId))
     }
 
+    // Two kinds of move, two kinds of motion (item 5.6). Switching tabs is a change of
+    // place, so the screens cross-fade where they stand; going *into* a screen — the
+    // dialler, settings, an account — is a push, so it slides in from the end and slides
+    // back out on Back. The default was a scale-and-fade that read as a jump.
     NavHost(
         navController = navController,
         startDestination = AppDestination.START.route,
         modifier = modifier,
+        enterTransition = {
+            if (switchingTabs()) {
+                fadeIn(tween(TAB_FADE_MILLIS))
+            } else {
+                slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(PUSH_MILLIS)) +
+                    fadeIn(tween(PUSH_MILLIS))
+            }
+        },
+        exitTransition = {
+            if (switchingTabs()) {
+                fadeOut(tween(TAB_FADE_MILLIS))
+            } else {
+                // The screen underneath moves a quarter of the way, the way a stack does.
+                slideOutOfContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Start,
+                    tween(PUSH_MILLIS),
+                    targetOffset = { it / PARALLAX_DIVISOR },
+                ) + fadeOut(tween(PUSH_MILLIS))
+            }
+        },
+        popEnterTransition = {
+            slideIntoContainer(
+                AnimatedContentTransitionScope.SlideDirection.End,
+                tween(PUSH_MILLIS),
+                initialOffset = { it / PARALLAX_DIVISOR },
+            ) + fadeIn(tween(PUSH_MILLIS))
+        },
+        popExitTransition = {
+            slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.End, tween(PUSH_MILLIS)) +
+                fadeOut(tween(PUSH_MILLIS))
+        },
     ) {
         callRoutes(navController, openCall, videoGate)
         accountRoutes(navController)
     }
 }
 
-/** Calls, and the two screens reached from it (Tasks 69, 70). */
+/** True when both ends of the move are tabs — a change of place rather than a push. */
+private fun AnimatedContentTransitionScope<NavBackStackEntry>.switchingTabs(): Boolean =
+    AppDestination.fromRoute(initialState.destination.route)?.isTopLevel == true &&
+        AppDestination.fromRoute(targetState.destination.route)?.isTopLevel == true
+
+private const val TAB_FADE_MILLIS = 180
+private const val PUSH_MILLIS = 260
+private const val PARALLAX_DIVISOR = 4
+
+/** The two tabs, and the two screens reached from them (Tasks 69, 70). */
 private fun NavGraphBuilder.callRoutes(
     navController: NavHostController,
     openCall: (CallId) -> Unit,
@@ -80,11 +129,26 @@ private fun NavGraphBuilder.callRoutes(
 ) {
     // All three routes that can start a video call share one gate. One launcher is
     // enough: only one destination is on screen to press it.
+    composable(AppDestination.CHATS.route) {
+        // A real destination behind a placeholder, so the module another team is building
+        // replaces a composable rather than negotiating an app shell (Task: item 8). The
+        // gear is the one way into settings; it travels with the route, not the placeholder.
+        ChatsPlaceholderScreen(
+            onOpenSettings = { navController.navigate(AppDestination.SETTINGS.route) },
+            registrationIndicator = {
+                // Straight to the account list, not to Settings and then the list: the
+                // person pressing this has a registration to fix or an account to add.
+                RegistrationIndicatorRoute(
+                    onManageAccounts = { navController.navigate(AppDestination.ACCOUNTS.route) },
+                )
+            },
+        )
+    }
+
     composable(AppDestination.HISTORY.route) {
         HistoryRoute(
             onCallPlaced = openCall,
             onOpenDialer = { navController.navigate(AppDestination.DIALER.route) },
-            onOpenSettings = { navController.navigate(AppDestination.SETTINGS.route) },
             videoGate = videoGate,
         )
     }

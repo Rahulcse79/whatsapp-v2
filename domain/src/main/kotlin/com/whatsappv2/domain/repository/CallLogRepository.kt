@@ -54,6 +54,20 @@ interface CallLogRepository {
     suspend fun page(filter: CallLogFilter, offset: Int, limit: Int): List<CallLogEntry>
 
     /**
+     * One page of the calls matching [query], newest first.
+     *
+     * The searching half of [page], and separate from it because the plain filter is what
+     * the tabs use and this is what the search bar uses — collapsing them would make every
+     * tab switch build a query object to say "no criteria".
+     *
+     * Every criterion is applied **in the store**, not after the page is read. Filtering a
+     * loaded page would search the twenty rows on screen and call it a search, which is
+     * the failure mode worth naming: it looks like it works until the match is on row
+     * four hundred.
+     */
+    suspend fun search(query: CallLogQuery, offset: Int, limit: Int): List<CallLogEntry>
+
+    /**
      * Emits whenever the log changes.
      *
      * The value carries nothing; it is the fact of the change that matters. A paged

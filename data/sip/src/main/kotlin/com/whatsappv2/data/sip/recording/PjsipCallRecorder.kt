@@ -1,5 +1,6 @@
 package com.whatsappv2.data.sip.recording
 
+import com.whatsappv2.core.common.dispatcher.DispatcherProvider
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.failure
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -39,8 +41,20 @@ import javax.inject.Singleton
  *   *parameter*, so there is no lookup this class could be persuaded to skip.
  * - [active] is a `StateFlow`, so the in-call indicator is a function of what is being
  *   written rather than of an event somebody has to remember to send. A recording that is
- *   running and an indicator that is showing cannot disagree.
+ *   running and an indicator that is showing cannot disagree — which is only true because
+ *   [start] waits for the stack's answer before it adds anything to that set.
  * - [stop] seals through [RecordingStore], which encrypts and destroys the plaintext.
+ *
+ * ## Every store call goes to [DispatcherProvider.io], and that is load-bearing
+ *
+ * [RecordingStore] is blocking file I/O, and [RecordingStore.seal] is the heavy one: it
+ * encrypts the whole recording with an Android Keystore key, which means a Keymaster round
+ * trip per block. `CallRecorder` is a `suspend` interface precisely so an implementation
+ * can take that time without owning the caller's thread — and the callers are
+ * `CallRecordingController` on `viewModelScope`, which is the **main thread**. Running the
+ * seal there blocked it for ~5 s on a 5 MB recording and ANR'd the call screen
+ * (`docs/HANDOFF.md` §0d). A `suspend` function that blocks its caller is not a seam, it is
+ * a trap; there is no store call below that is not wrapped.
  *
  * ## Recording stops when the call does, and nothing has to ask
  *
@@ -59,6 +73,7 @@ internal class PjsipCallRecorder @Inject constructor(
     private val clock: Clock,
     private val logger: Logger,
     @SipStackScope private val scope: CoroutineScope,
+    private val dispatchers: DispatcherProvider,
 ) : CallRecorder {
 
     private val running = MutableStateFlow<Map<CallId, InFlight>>(emptyMap())
@@ -96,17 +111,31 @@ internal class PjsipCallRecorder @Inject constructor(
             platformSupported = true,
         )?.let { return failure(RecordingError.Refused(it)) }
 
-        val allocated = when (val slot = store.allocate(callId)) {
+        val allocated = when (val slot = withContext(dispatchers.io) { store.allocate(callId) }) {
             is Outcome.Failure -> return slot
             is Outcome.Success -> slot.value
         }
 
-        gateway.startRecording(callId.value, allocated.plaintextPath)
-        setRunning(running.value + (callId to InFlight(allocated, clock.nowEpochMillis())))
-        // The call id, never the path: a log line naming a recording's file is a map to it
-        // for anything that can read logcat (§7, DoD 12).
-        logger.info(TAG, "Recording started on $callId")
-        return success(allocated.id)
+        // Waited for, not fired off. The indicator is a function of [running], so marking
+        // the call before the stack has agreed is exactly how "Recording this call" came
+        // to sit over a file nothing was writing.
+        return when (val started = gateway.startRecording(callId.value, allocated.plaintextPath)) {
+            is Outcome.Failure -> {
+                // The slot goes back, or a refusal leaves a stub the store would later
+                // seal into a recording of nothing.
+                withContext(dispatchers.io) { store.discard(allocated) }
+                logger.warn(TAG, "The stack would not record $callId: ${started.error}")
+                failure(RecordingError.EngineRefused(started.error))
+            }
+
+            is Outcome.Success -> {
+                setRunning(running.value + (callId to InFlight(allocated, clock.nowEpochMillis())))
+                // The call id, never the path: a log line naming a recording's file is a
+                // map to it for anything that can read logcat (§7, DoD 12).
+                logger.info(TAG, "Recording started on $callId")
+                success(allocated.id)
+            }
+        }
     }
 
     override suspend fun stop(callId: CallId): Outcome<Recording?, RecordingError> {
@@ -117,19 +146,24 @@ internal class PjsipCallRecorder @Inject constructor(
         gateway.stopRecording(callId.value)
         setRunning(running.value - callId)
 
-        return store.seal(
-            allocated = inFlight.allocated,
-            startedAtEpochMillis = inFlight.startedAtEpochMillis,
-            endedAtEpochMillis = clock.nowEpochMillis(),
-        )
+        val endedAt = clock.nowEpochMillis()
+        return withContext(dispatchers.io) {
+            store.seal(
+                allocated = inFlight.allocated,
+                startedAtEpochMillis = inFlight.startedAtEpochMillis,
+                endedAtEpochMillis = endedAt,
+            )
+        }
     }
 
-    override suspend fun recordings(): List<Recording> = store.list()
+    override suspend fun recordings(): List<Recording> =
+        withContext(dispatchers.io) { store.list() }
 
-    override suspend fun delete(id: RecordingId): Outcome<Unit, RecordingError> = store.delete(id)
+    override suspend fun delete(id: RecordingId): Outcome<Unit, RecordingError> =
+        withContext(dispatchers.io) { store.delete(id) }
 
     override suspend fun purgeOlderThan(cutoffEpochMillis: Long): Outcome<Int, RecordingError> =
-        store.purgeOlderThan(cutoffEpochMillis)
+        withContext(dispatchers.io) { store.purgeOlderThan(cutoffEpochMillis) }
 
     /**
      * Begins watching the call list, so no recording outlives its call.

@@ -19,6 +19,7 @@ import com.whatsappv2.domain.engine.ParticipantId
 import com.whatsappv2.domain.engine.PushToken
 import com.whatsappv2.domain.engine.SipEngine
 import com.whatsappv2.domain.engine.SipError
+import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.engine.TransferEvent
 import com.whatsappv2.domain.engine.VideoRequest
 import com.whatsappv2.domain.engine.toHangupReason
@@ -94,6 +95,7 @@ class FakeSipEngine(
         RESPOND_TO_VIDEO_REQUEST,
         SEND_DTMF,
         TRANSFER,
+        MIX_CALLS,
         JOIN_CONFERENCE,
     }
 
@@ -408,6 +410,33 @@ class FakeSipEngine(
         }
     }
 
+    /** Every membership this device was asked to mix, in order (ADR-009). */
+    /** Every membership [mixCalls] was asked for, in order — what a test asserts on. */
+    val mixRequests: MutableList<Set<CallId>> = mutableListOf()
+
+    private val mixed = MutableStateFlow<Set<CallId>>(emptySet())
+    override val mixedCalls: StateFlow<Set<CallId>> = mixed.asStateFlow()
+
+    override suspend fun mixCalls(callIds: Set<CallId>): Outcome<Set<CallId>, SipError> {
+        record(Operation.MIX_CALLS, callIds.joinToString(",") { it.value })
+        if (callIds.size > SipConferenceController.MAX_LOCAL_CONFERENCE) {
+            return failure(SipError.InvalidState("this device mixes at most 8 calls"))
+        }
+        // Held calls are resumed first and only then mixed — the same rule the real
+        // engine applies, because a held member contributes no audio at all.
+        activeCalls.value
+            .filter { it.callId in callIds && it.state is CallState.Held }
+            .forEach { setHold(it.callId, held = false) }
+
+        val live = activeCalls.value
+            .filter { it.callId in callIds && it.state !is CallState.Held && it.state.isEstablished }
+            .map { it.callId }
+            .toSet()
+        mixRequests += live
+        mixed.value = if (live.size >= SipConferenceController.MINIMUM_MIXED) live else emptySet()
+        return guard(Operation.MIX_CALLS) { success(live) }
+    }
+
     override suspend fun shutdown() {
         isShutDown = true
         ended.clear()
@@ -428,6 +457,22 @@ class FakeSipEngine(
         knownAccounts[account.id] = account
         registrations.update {
             it + (account.id to RegistrationState.Registered(account.registrationExpirySeconds))
+        }
+    }
+
+    /**
+     * An account whose registration FAILED, which is not the same as one logged out of.
+     *
+     * The difference decides whether saving an edit registers it: a failure is something
+     * to repair, a logout is a decision to respect.
+     */
+    fun givenRegistrationFailed(
+        account: SipAccount,
+        reason: RegistrationFailure = RegistrationFailure.AUTHENTICATION_FAILED,
+    ): FakeSipEngine = apply {
+        knownAccounts[account.id] = account
+        registrations.update {
+            it + (account.id to RegistrationState.Failed(reason, retryScheduled = false))
         }
     }
 

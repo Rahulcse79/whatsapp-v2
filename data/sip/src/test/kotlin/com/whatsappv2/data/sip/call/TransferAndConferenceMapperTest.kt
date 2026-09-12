@@ -32,6 +32,34 @@ class TransferAndConferenceMapperTest {
     // ================================================================ transfer
 
     @Test
+    fun `pjsua's own report sequence for a blind transfer reads accept, progress, success`() {
+        // What pjsua_call.c actually delivers, in order, for a REFER FreeSWITCH completes:
+        // "100 Accepted" for the REFER response (not final), then each NOTIFY's sipfrag.
+        // The gateway used to read everything but 200 as a failure, so the accept undid
+        // the transfer before it had been tried (TC15, 2026-09-11).
+        assertEquals(StackCallState.OUTGOING_INIT, TransferEventMapper.stateOf(100, isFinal = false))
+        assertEquals(StackCallState.OUTGOING_RINGING, TransferEventMapper.stateOf(180, isFinal = false))
+        assertEquals(StackCallState.OUTGOING_RINGING, TransferEventMapper.stateOf(183, isFinal = false))
+        assertEquals(StackCallState.CONNECTED, TransferEventMapper.stateOf(200, isFinal = true))
+        assertEquals(StackCallState.CONNECTED, TransferEventMapper.stateOf(200, isFinal = false))
+    }
+
+    @Test
+    fun `a refused or abandoned transfer is a failure the user hears about`() {
+        assertEquals(StackCallState.ERROR, TransferEventMapper.stateOf(486, isFinal = true))
+        assertEquals(StackCallState.ERROR, TransferEventMapper.stateOf(404, isFinal = false))
+        // The subscription ended while the transferee was still only being tried.
+        assertEquals(StackCallState.ENDED, TransferEventMapper.stateOf(180, isFinal = true))
+        assertEquals(StackCallState.ENDED, TransferEventMapper.stateOf(100, isFinal = true))
+        assertIs<TransferEvent.Failed>(
+            TransferEventMapper.toDomain(
+                transfer(TransferEventMapper.stateOf(180, isFinal = true), statusCode = 180),
+                TransferType.BLIND,
+            ),
+        )
+    }
+
+    @Test
     fun `the REFER being accepted is reported as accepted, never as success`() {
         // The classic transfer bug: "transferred" on screen, transferor hangs up, caller
         // is dropped into a dead call.

@@ -1,6 +1,10 @@
 package com.whatsappv2.data.sip.registration
 
+import com.whatsappv2.core.common.result.Outcome
+import com.whatsappv2.core.common.result.failure
+import com.whatsappv2.core.common.result.success
 import com.whatsappv2.data.sip.call.SipCallGateway
+import com.whatsappv2.data.sip.call.SipConferenceGateway
 import com.whatsappv2.data.sip.call.SipRecordingGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
@@ -38,7 +42,8 @@ internal class FakeSipCoreGateway :
     SipCoreGateway,
     SipCallGateway,
     SipVideoGateway,
-    SipRecordingGateway {
+    SipRecordingGateway,
+    SipConferenceGateway {
 
     private val events = MutableSharedFlow<StackRegistrationEvent>(
         replay = 0,
@@ -105,6 +110,14 @@ internal class FakeSipCoreGateway :
     /** Every recording started, as call key to path, and every one stopped (Task 58). */
     val startedRecordings: MutableList<Pair<String, String>> = mutableListOf()
     val stoppedRecordings: MutableList<String> = mutableListOf()
+
+    /**
+     * Set to make the next start refuse, the way a call with no audio stream does.
+     *
+     * A string rather than a flag, because the string is what the failure carries up to
+     * `RecordingError.EngineRefused` and out to the screen.
+     */
+    var recordingRefusal: String? = null
 
     /** Every INVITE the engine asked for, in order. */
     val placedCalls: MutableList<PlacedCall> = mutableListOf()
@@ -246,6 +259,12 @@ internal class FakeSipCoreGateway :
 
     override fun resumeCall(callKey: String) {
         holdRequests += callKey to false
+        // The contract: RESUMING as the re-INVITE goes out. The fake honours it because
+        // the real gateway did not, for as long as the state existed, and every engine
+        // test emitted RESUMING by hand — so the engine passed against a stack that
+        // did not exist. What follows (media running, or a refusal) is the test's to
+        // emit, exactly as the answer to a hold is.
+        emitCall(callKey, StackCallState.RESUMING)
     }
 
     override fun sendDtmf(callKey: String, digit: Char, useInfo: Boolean) {
@@ -276,6 +295,12 @@ internal class FakeSipCoreGateway :
         videoWindows = remoteView to localPreview
     }
 
+    val captureRotations: MutableList<Int> = mutableListOf()
+
+    override fun setCaptureRotation(degrees: Int) {
+        captureRotations += degrees
+    }
+
     override fun transferCall(callKey: String, destination: String) {
         blindTransfers += callKey to destination
     }
@@ -284,8 +309,18 @@ internal class FakeSipCoreGateway :
         attendedTransfers += callKey to consultationCallKey
     }
 
-    override fun startRecording(callKey: String, filePath: String) {
+    /** Every membership the stack was asked to mix, in order (ADR-009). */
+    val conferenceMemberships: MutableList<Set<String>> = mutableListOf()
+
+    override suspend fun setConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String> {
+        conferenceMemberships += callKeys
+        return success(callKeys)
+    }
+
+    override suspend fun startRecording(callKey: String, filePath: String): Outcome<Unit, String> {
+        recordingRefusal?.let { return failure(it) }
         startedRecordings += callKey to filePath
+        return success(Unit)
     }
 
     override fun stopRecording(callKey: String) {

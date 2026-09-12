@@ -12,6 +12,7 @@ import com.whatsappv2.domain.model.AppSettings
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
+import com.whatsappv2.domain.model.ThemeMode
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Test
@@ -92,6 +93,7 @@ class DataStoreAppSettingsRepositoryTest {
             setDtmfMode(DtmfMode.SIP_INFO)
             setDefaultSrtpPolicy(SrtpPolicy.MANDATORY)
             setPreferredAudioRoute(PreferredAudioRoute.SPEAKER)
+            setThemeMode(ThemeMode.DARK)
             setSipTraceEnabled(true)
         }
 
@@ -100,6 +102,9 @@ class DataStoreAppSettingsRepositoryTest {
         assertEquals(DtmfMode.SIP_INFO, reloaded.dtmfMode)
         assertEquals(SrtpPolicy.MANDATORY, reloaded.defaultSrtpPolicy)
         assertEquals(PreferredAudioRoute.SPEAKER, reloaded.preferredAudioRoute)
+        // The theme is the one a user notices first after a restart, so it is the one
+        // that must not quietly go back to following the phone.
+        assertEquals(ThemeMode.DARK, reloaded.themeMode)
         assertTrue(reloaded.sipTraceEnabled)
     }
 
@@ -184,6 +189,10 @@ class DataStoreAppSettingsRepositoryTest {
         for (route in PreferredAudioRoute.entries) {
             repository.setPreferredAudioRoute(route)
             assertEquals(route, repository.currentSettings().preferredAudioRoute)
+        }
+        for (mode in ThemeMode.entries) {
+            repository.setThemeMode(mode)
+            assertEquals(mode, repository.currentSettings().themeMode)
         }
     }
 }

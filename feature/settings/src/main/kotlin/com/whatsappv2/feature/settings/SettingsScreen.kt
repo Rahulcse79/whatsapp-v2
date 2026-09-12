@@ -3,6 +3,7 @@ package com.whatsappv2.feature.settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -15,16 +16,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -32,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.whatsappv2.core.designsystem.component.AppTopBar
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
 import com.whatsappv2.core.designsystem.theme.AppTheme
@@ -39,14 +41,15 @@ import com.whatsappv2.domain.model.AppSettings
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
+import com.whatsappv2.domain.model.ThemeMode
 
 /**
  * App preferences, wired to the ViewModel — and the way into the account list (Task 69).
  *
- * Settings stopped being a tab and became the screen behind the top-right icon on Calls.
- * The accounts list moved with it, because both are "set the app up" rather than "make a
- * call", and neither earns a permanent tab on a phone whose primary job is the latter.
- * Nothing here was removed: every control this screen had, it still has.
+ * Settings stopped being a tab and became the screen behind the gear at the top right of
+ * Chats. The accounts list moved with it, because both are "set the app up" rather than
+ * "make a call", and neither earns a permanent tab on a phone whose primary job is the
+ * latter. Nothing here was removed: every control this screen had, it still has.
  */
 @Composable
 fun SettingsScreen(
@@ -62,6 +65,7 @@ fun SettingsScreen(
         onDtmfModeChange = viewModel::setDtmfMode,
         onSrtpPolicyChange = viewModel::setDefaultSrtpPolicy,
         onAudioRouteChange = viewModel::setPreferredAudioRoute,
+        onThemeModeChange = viewModel::setThemeMode,
         onSipTraceChange = viewModel::setSipTraceEnabled,
         onOpenAccounts = onOpenAccounts,
         onBack = onBack,
@@ -77,6 +81,7 @@ fun SettingsScreen(
     onDtmfModeChange: (DtmfMode) -> Unit,
     onSrtpPolicyChange: (SrtpPolicy) -> Unit,
     onAudioRouteChange: (PreferredAudioRoute) -> Unit,
+    onThemeModeChange: (ThemeMode) -> Unit,
     onSipTraceChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
     /** Opens the account list. Null in a preview, where there is nowhere to go. */
@@ -86,14 +91,14 @@ fun SettingsScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
-            TopAppBar(
-                title = { Text("Settings") },
+            AppTopBar(
+                title = "Settings",
                 navigationIcon = {
                     onBack?.let { back ->
                         IconButton(onClick = back, modifier = Modifier.testTag(TAG_BACK)) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back to calls",
+                                contentDescription = "Back",
                             )
                         }
                     }
@@ -106,6 +111,7 @@ fun SettingsScreen(
             onDtmfModeChange = onDtmfModeChange,
             onSrtpPolicyChange = onSrtpPolicyChange,
             onAudioRouteChange = onAudioRouteChange,
+            onThemeModeChange = onThemeModeChange,
             onSipTraceChange = onSipTraceChange,
             onOpenAccounts = onOpenAccounts,
             modifier = Modifier.padding(innerPadding),
@@ -120,6 +126,7 @@ private fun SettingsContent(
     onDtmfModeChange: (DtmfMode) -> Unit,
     onSrtpPolicyChange: (SrtpPolicy) -> Unit,
     onAudioRouteChange: (PreferredAudioRoute) -> Unit,
+    onThemeModeChange: (ThemeMode) -> Unit,
     onSipTraceChange: (Boolean) -> Unit,
     onOpenAccounts: (() -> Unit)?,
     modifier: Modifier = Modifier,
@@ -132,44 +139,86 @@ private fun SettingsContent(
         verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.large),
     ) {
         // First, because it is the one thing here without which the app cannot do
-        // anything at all — and because it is what the Calls screen's settings icon
-        // is most often pressed to reach (Task 69).
+        // anything at all.
         onOpenAccounts?.let { open ->
-            AccountsRow(onClick = open)
-            HorizontalDivider()
+            SettingsCard { AccountsRow(onClick = open) }
         }
 
         Text("App settings", style = MaterialTheme.typography.titleLarge)
 
-        ChoiceGroup(
-            title = "DTMF",
-            description = "RFC 4733 sends digits in the media stream and survives " +
-                "transcoding. SIP INFO is a fallback for gateways that cannot.",
-            options = DtmfMode.entries,
-            selected = state.settings.dtmfMode,
-            labelOf = { if (it == DtmfMode.RFC_4733) "RFC 4733" else "SIP INFO" },
-            onSelect = onDtmfModeChange,
-        )
+        // First among the app settings, because it is the one everybody understands and
+        // the one whose effect is visible the instant a chip is pressed.
+        SettingsCard {
+            ChoiceGroup(
+                title = "Appearance",
+                description = "System follows the phone's own light and dark schedule.",
+                options = ThemeMode.entries,
+                selected = state.settings.themeMode,
+                labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
+                onSelect = onThemeModeChange,
+                chipTag = ::themeChipTag,
+            )
+        }
 
-        EncryptionGroup(selected = state.settings.defaultSrtpPolicy, onSelect = onSrtpPolicyChange)
+        SettingsCard {
+            ChoiceGroup(
+                title = "DTMF",
+                description = "RFC 4733 sends digits in the media stream and survives " +
+                    "transcoding. SIP INFO is a fallback for gateways that cannot.",
+                options = DtmfMode.entries,
+                selected = state.settings.dtmfMode,
+                labelOf = { if (it == DtmfMode.RFC_4733) "RFC 4733" else "SIP INFO" },
+                onSelect = onDtmfModeChange,
+            )
+        }
 
-        ChoiceGroup(
-            title = "Audio route",
-            description = "Where calls start. Automatic follows a connected headset.",
-            options = PreferredAudioRoute.entries,
-            selected = state.settings.preferredAudioRoute,
-            labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
-            onSelect = onAudioRouteChange,
-        )
+        SettingsCard {
+            EncryptionGroup(selected = state.settings.defaultSrtpPolicy, onSelect = onSrtpPolicyChange)
+        }
+
+        SettingsCard {
+            ChoiceGroup(
+                title = "Audio route",
+                description = "Where calls start. Automatic follows a connected headset.",
+                options = PreferredAudioRoute.entries,
+                selected = state.settings.preferredAudioRoute,
+                labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
+                onSelect = onAudioRouteChange,
+            )
+        }
 
         // Absent in release builds rather than disabled: a disabled control invites
         // someone to make it enableable.
         if (state.traceToggleAvailable) {
-            SipTraceToggle(
-                enabled = state.settings.sipTraceEnabled,
-                onChange = onSipTraceChange,
-            )
+            SettingsCard {
+                SipTraceToggle(
+                    enabled = state.settings.sipTraceEnabled,
+                    onChange = onSipTraceChange,
+                )
+            }
         }
+    }
+}
+
+/**
+ * One group of settings, on its own surface.
+ *
+ * The screen used to be a flat column separated by rules. Rules say "these are different";
+ * a card says "these belong together", which is what a settings group actually is — and it
+ * gives the eye somewhere to stop on a screen that is otherwise a wall of radio buttons.
+ */
+@Composable
+private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+        shape = MaterialTheme.shapes.large,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(AppTheme.spacing.large),
+            verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
+            content = content,
+        )
     }
 }
 
@@ -178,7 +227,8 @@ private fun SettingsContent(
 private fun EncryptionGroup(selected: SrtpPolicy, onSelect: (SrtpPolicy) -> Unit) {
     ChoiceGroup(
         title = "Default media encryption",
-        description = "Applies to new accounts. Existing accounts keep their own.",
+        description = "Applies to new accounts. Existing accounts keep their own. " +
+            "Optional is refused by FreeSWITCH; use Mandatory where the server has SRTP.",
         options = SrtpPolicy.entries,
         selected = selected,
         labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
@@ -237,6 +287,9 @@ private fun AccountsRow(onClick: () -> Unit) {
 internal const val TAG_ACCOUNTS = "settings-accounts"
 internal const val TAG_BACK = "settings-back"
 
+/** Identifies one appearance chip, so a test presses the mode it means. */
+internal fun themeChipTag(mode: ThemeMode) = "settings-theme-${mode.name.lowercase()}"
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun <T> ChoiceGroup(
@@ -246,6 +299,8 @@ private fun <T> ChoiceGroup(
     selected: T,
     labelOf: (T) -> String,
     onSelect: (T) -> Unit,
+    /** A tag per chip, for the groups a test presses; null leaves the chips untagged. */
+    chipTag: ((T) -> String)? = null,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.small)) {
         Text(title, style = MaterialTheme.typography.titleMedium)
@@ -260,6 +315,7 @@ private fun <T> ChoiceGroup(
                     selected = option == selected,
                     onClick = { onSelect(option) },
                     label = { Text(labelOf(option)) },
+                    modifier = chipTag?.let { Modifier.testTag(it(option)) } ?: Modifier,
                 )
             }
         }
@@ -296,6 +352,7 @@ private fun SettingsScreenPreview() = PreviewSurface {
         onDtmfModeChange = {},
         onSrtpPolicyChange = {},
         onAudioRouteChange = {},
+        onThemeModeChange = {},
         onSipTraceChange = {},
     )
 }

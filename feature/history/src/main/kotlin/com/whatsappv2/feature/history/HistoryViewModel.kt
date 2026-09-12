@@ -7,24 +7,28 @@ import androidx.paging.PagingConfig
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import androidx.paging.insertSeparators
-import androidx.paging.map
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.domain.call.userMessage
 import com.whatsappv2.domain.engine.CameraAvailability
 import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.model.CallLogId
 import com.whatsappv2.domain.model.MediaProfile
+import com.whatsappv2.domain.repository.CallDirectionFilter
 import com.whatsappv2.domain.repository.CallLogFilter
+import com.whatsappv2.domain.repository.CallLogQuery
 import com.whatsappv2.domain.repository.CallLogRepository
+import com.whatsappv2.domain.usecase.CallLogTitles
 import com.whatsappv2.domain.usecase.PlaceCallError
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
@@ -70,6 +74,15 @@ class HistoryViewModel @Inject constructor(
      * purely so the snackbar can say the call went out as audio.
      */
     private val camera: CameraAvailability,
+    /**
+     * What each row is called, asked once per entry as its page loads (Task 49).
+     *
+     * Here rather than in the row composable: the address book is a content provider, and
+     * a title resolved during recomposition is a provider read per frame. Applied inside
+     * [pagerFor], above `cachedIn`, so a scroll back over rows already seen re-reads
+     * nothing.
+     */
+    private val titles: CallLogTitles,
 ) : ViewModel() {
 
     private val state = MutableStateFlow(HistoryUiState())
@@ -95,11 +108,15 @@ class HistoryViewModel @Inject constructor(
         watchStoreChanges()
     }
 
-    @OptIn(ExperimentalCoroutinesApi::class)
+    @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
     val rows: Flow<PagingData<HistoryRow>> = state
-        .map { it.filter }
+        .map { it.query }
         .distinctUntilChanged()
-        .flatMapLatest { filter -> pagerFor(filter) }
+        // Debounced, so typing a name is one reload at the end rather than one per letter.
+        // distinctUntilChanged first: a tab press and a filter chip are not typing and
+        // should not wait.
+        .debounce { query -> if (query.text.isEmpty()) 0L else SEARCH_DEBOUNCE_MILLIS }
+        .flatMapLatest { query -> pagerFor(query) }
         // Re-reads the cache rather than the database after a configuration change, which
         // is what keeps the position instead of snapping back to the top.
         .cachedIn(viewModelScope)
@@ -129,9 +146,35 @@ class HistoryViewModel @Inject constructor(
         liveSource?.invalidate()
     }
 
-    fun onFilterChanged(filter: CallLogFilter) = state.update { it.copy(filter = filter) }
+    fun onFilterChanged(filter: CallLogFilter) = state.update {
+        val direction = when (filter) {
+            CallLogFilter.ALL -> CallDirectionFilter.ANY
+            CallLogFilter.MISSED -> CallDirectionFilter.MISSED
+        }
+        it.copy(query = it.query.copy(direction = direction))
+    }
 
-    fun onEntryOpened(entry: CallLogEntry) = state.update { it.copy(openEntry = entry) }
+    /** Opens or closes the search field; closing clears the text, which is what Back means. */
+    fun onSearchToggled(open: Boolean) = state.update {
+        if (open) it.copy(searching = true) else it.copy(searching = false, query = it.query.copy(text = ""))
+    }
+
+    fun onSearchTextChanged(text: String) = state.update { it.copy(query = it.query.copy(text = text)) }
+
+    fun onDirectionChanged(direction: CallDirectionFilter) = state.update {
+        it.copy(query = it.query.copy(direction = direction))
+    }
+
+    fun onDateRangeChanged(from: Long?, to: Long?) = state.update {
+        it.copy(query = it.query.copy(fromEpochMillis = from, toEpochMillis = to))
+    }
+
+    /** Back to everything, without closing the search field the user is still typing in. */
+    fun onFiltersCleared() = state.update {
+        it.copy(query = CallLogQuery(text = it.query.text))
+    }
+
+    fun onEntryOpened(row: HistoryRow.Call) = state.update { it.copy(openEntry = row) }
 
     fun onDetailDismissed() = state.update { it.copy(openEntry = null) }
 
@@ -145,7 +188,7 @@ class HistoryViewModel @Inject constructor(
             // The open detail is closed only if it was the entry deleted: deleting from
             // the list behind an open sheet must not shut the sheet on a different call.
             state.update { current ->
-                current.copy(openEntry = current.openEntry?.takeIf { it.id != id })
+                current.copy(openEntry = current.openEntry?.takeIf { it.entry.id != id })
             }
         }
     }
@@ -202,20 +245,36 @@ class HistoryViewModel @Inject constructor(
         is PlaceCallError.NoAccountAvailable -> "That account is no longer set up"
         is PlaceCallError.UnknownAccount -> "That account is no longer set up"
         is PlaceCallError.InvalidTarget -> "That address could not be dialled"
+        // Attempted and not finished, which is a different sentence from "not registered":
+        // the app has already tried to fix it and the server has not answered yet.
+        is PlaceCallError.NotRegistered -> "Could not reach the server for that account"
     }
 
-    private fun pagerFor(filter: CallLogFilter): Flow<PagingData<HistoryRow>> =
+    private fun pagerFor(query: CallLogQuery): Flow<PagingData<HistoryRow>> =
         Pager(
             config = PagingConfig(pageSize = PAGE_SIZE, enablePlaceholders = false),
-            pagingSourceFactory = { CallLogPagingSource(repository, filter).also { liveSource = it } },
+            pagingSourceFactory = {
+                CallLogPagingSource(repository, query, titles, PAGE_SIZE).also { liveSource = it }
+            },
         ).flow.map { page ->
-            page.map<CallLogEntry, HistoryRow> { HistoryRow.Call(it) }
-                .insertSeparators { before, after ->
-                    dayHeaderBetween(before as? HistoryRow.Call, after as? HistoryRow.Call, zone)
-                }
+            // The source already emits rows with their names resolved, so all that is left
+            // is to slot the day headings between them. The type argument is what widens
+            // `HistoryRow.Call` to `HistoryRow`; before Task 49 this was a `map` followed
+            // by two casts that could not fail.
+            page.insertSeparators<HistoryRow.Call, HistoryRow> { before, after ->
+                dayHeaderBetween(before, after, zone)
+            }
         }
 
     private companion object {
+        /**
+         * How long typing settles before the list reloads.
+         *
+         * A search is a database read per keystroke without it. Long enough that "rahul"
+         * is one query rather than five, short enough that the list does not feel stuck.
+         */
+        const val SEARCH_DEBOUNCE_MILLIS = 250L
+
         /**
          * Rows per page.
          *

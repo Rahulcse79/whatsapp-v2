@@ -7,6 +7,7 @@ import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.SipRegistrar
 import com.whatsappv2.domain.model.AccountId
+import com.whatsappv2.domain.model.RegistrationState
 import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.repository.AccountRepositoryError
 import com.whatsappv2.domain.repository.SipAccountRepository
@@ -96,6 +97,17 @@ data class SaveAccountResult(
  * Only fields that actually affect the binding trigger the cycle. Renaming an account's
  * label should not drop its registration.
  *
+ * ## Why a media or NAT policy edit is in that set
+ *
+ * Not because it changes the binding — because it changes what the binding *offers*, and
+ * the stack only reads those settings when the account is added. An edit that saved
+ * `srtpPolicy`, `codecs` or `natPolicy` and did nothing else was stored and then ignored
+ * until the next process start. Measured on a handset on 2026-09-10: the row said
+ * `DISABLED`, the next INVITE still carried `a=crypto`, and the server refused it.
+ * The unregister-then-register cycle is what actually pushes a fresh configuration
+ * into the stack, so those fields ride on it. The cost is one binding dropped and
+ * re-made, which is exactly what a user who changed the encryption policy expects.
+ *
  * ## What is deliberately left alone
  *
  * Editing an account that was **not** registered saves and stops. Registering it would
@@ -115,8 +127,13 @@ class SaveAccountUseCase @Inject constructor(
         }
 
         val existing = repository.findById(validated.account.id)
-        val wasRegistered = existing != null &&
-            registrar.registrationState.first()[existing.id]?.isUsable == true
+        val stateNow = existing?.let { registrar.registrationState.first()[it.id] }
+        val wasRegistered = stateNow?.isUsable == true
+        // A registration that FAILED and one the user logged out of are both "not
+        // registered" and are opposite intentions. Saving an edit to a failed account is
+        // an attempt to repair it — the commonest case being a mistyped password — so it
+        // registers. A logged-out account stays logged out; see below.
+        val wasFailed = stateNow is RegistrationState.Failed
         val mustUnregister = existing != null &&
             wasRegistered &&
             existing.affectsRegistration(validated.account, storedPasswordOf(existing.id))
@@ -135,8 +152,12 @@ class SaveAccountUseCase @Inject constructor(
                     warnings = validated.warnings,
                     unregisteredFirst = mustUnregister,
                     // A new account is a login. An edit that dropped a live binding must
-                    // put it back. Anything else is left as the user had it.
-                    registration = if (existing == null || mustUnregister) {
+                    // put it back. An edit to a FAILED account is a repair, and the whole
+                    // point of making it — correcting a password and pressing Save did
+                    // nothing at all before, which is what sent people to "Register now"
+                    // as a second step nobody should need. Anything else is left as the
+                    // user had it, which is what keeps a deliberate logout deliberate.
+                    registration = if (existing == null || mustUnregister || wasFailed) {
                         register(validated.account)
                     } else {
                         RegistrationAttempt.NotAttempted
@@ -167,10 +188,12 @@ class SaveAccountUseCase @Inject constructor(
         }
 
     /**
-     * True when the change would invalidate the current registration.
+     * True when the change would invalidate the current registration, or change what
+     * the stack offers on it.
      *
      * Deliberately narrow. Re-registering on every edit would drop a working binding
-     * because someone corrected a display name.
+     * because someone corrected a display name. The last three lines are the policies
+     * the stack reads once, when the account is added — see the class KDoc.
      */
     private fun SipAccount.affectsRegistration(
         updated: SipAccount,
@@ -183,7 +206,10 @@ class SaveAccountUseCase @Inject constructor(
             effectivePort != updated.effectivePort ||
             effectiveRegistrar != updated.effectiveRegistrar ||
             registrationExpirySeconds != updated.registrationExpirySeconds ||
-            passwordChanged(updated.password, storedPassword)
+            passwordChanged(updated.password, storedPassword) ||
+            srtpPolicy != updated.srtpPolicy ||
+            codecs != updated.codecs ||
+            natPolicy != updated.natPolicy
 
     /**
      * Whether the password on the update is a different one.

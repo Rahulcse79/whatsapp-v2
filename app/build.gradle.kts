@@ -4,13 +4,54 @@ plugins {
     id("whatsappv2.hilt")
 }
 
+// The four Lyra weight files, staged under build/ so they land in the APK as assets/lyra/*
+// (ADR-008, Exit A). Sourced from the vendored tree rather than copied into app/src: the
+// weights have one home, the pin in tools/vendor/pins.sh, and `LyraModels.VERSION` names
+// the same commit. A task of its own rather than a raw asset srcDir on model_coeffs: a
+// srcDir contributes its contents at the asset root, and the codec is handed a directory,
+// not four files — and AGP's variant API wants a task it can wire, not a path.
+abstract class StageLyraAssets : DefaultTask() {
+    @get:InputDirectory
+    abstract val modelDir: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val output: DirectoryProperty
+
+    @TaskAction
+    fun stage() {
+        val target = output.get().asFile.resolve("lyra").apply { mkdirs() }
+        listOf("lyra_config.binarypb", "lyragan.tflite", "quantizer.tflite", "soundstream_encoder.tflite")
+            .forEach { name -> modelDir.get().asFile.resolve(name).copyTo(target.resolve(name), overwrite = true) }
+    }
+}
+
+val lyraAssets = tasks.register<StageLyraAssets>("stageLyraAssets") {
+    modelDir.set(rootProject.layout.projectDirectory.dir("third_party/lyra/lyra/model_coeffs"))
+    output.set(layout.buildDirectory.dir("generated/lyra-assets"))
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(lyraAssets, StageLyraAssets::output)
+    }
+}
+
 android {
     namespace = "com.whatsappv2"
 
     defaultConfig {
         applicationId = "com.whatsappv2"
-        versionCode = 1
-        versionName = "0.1.0"
+
+        // The release tag is made from versionName — `.github/workflows/release.yml`
+        // reads these two lines and tags `v$versionName` when a merge lands on `main`.
+        // Bumping them IS how a release is cut; a merge that leaves them alone cuts none.
+        //
+        // They were left at 1 / "0.1.0" while v1.0.1 and v1.0.2 were released by hand, so
+        // every installed build reported a version nobody would recognise and the package
+        // manager saw no upgrade between them. versionCode must increase for Android to
+        // accept an update, so it tracks the version rather than staying at 1.
+        versionCode = 3
+        versionName = "1.0.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {

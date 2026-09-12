@@ -26,4 +26,8 @@ internal class StackVideoSurfaceController @Inject constructor(
     override fun detach() {
         gateway.setVideoWindows(remoteView = null, localPreview = null)
     }
+
+    override fun setDisplayRotation(degrees: Int) {
+        gateway.setCaptureRotation(degrees)
+    }
 }

@@ -19,18 +19,37 @@ import com.whatsappv2.domain.model.VideoCodec
  *
  * ## The state this was written for is not hypothetical
  *
- * Measured against the deployed FreeSWITCH on 2026-09-09 (`fs_cli -x "show codec"`): it
- * offers PCMU, PCMA, G.729, G.723.1, AMR, Speex, VP8 and VP9 — **no Opus, no G.722, no
- * H.264**. This build compiles and registers Opus and lists it first in
- * [com.whatsappv2.domain.model.CodecPreferences.DEFAULT], so every call negotiates
- * narrowband G.711 and nothing says so. That is [AbsenceReason.NoPeerAccepts], and it
- * applies to the app's headline audio codec today — not only to Lyra.
+ * Recorded against the deployed server on 2026-09-09 (`fs_cli -x "show codec"`): it offers
+ * PCMU, PCMA, G.729, G.723.1, AMR, Speex, VP8 and VP9 — no Opus, no G.722, no H.264. This
+ * build compiles and registers Opus and lists it first in
+ * [com.whatsappv2.domain.model.CodecPreferences.DEFAULT], so a call there negotiates
+ * narrowband G.711 and nothing said so. That is
+ * [AbsenceReason.ExpectedUnsupportedByServer], and it applies to the app's headline audio
+ * codec — not only to Lyra.
+ *
+ * ## What this type must never do again
+ *
+ * Report a codec as absent **and hide it from the registry**. Doing both is what turned one
+ * stale server record into a confident, wrong claim that this build does not contain Opus at
+ * all (see [registeredAudio]).
  */
 data class CodecAudit(
-    /** Audio codecs the library reported through `codecEnum2()`, in registry order. */
+    /**
+     * Audio codecs the library reported through `codecEnum2()`, in registry order, **verbatim**.
+     *
+     * Nothing is removed from this list. It used to have stranded codecs filtered out of it
+     * before anything could read it, and the log line built from it therefore claimed to
+     * print the registry while printing a subset. That cost a whole diagnosis: on 2026-09-10
+     * the filtered line was read as evidence that this build does not register Opus or
+     * G.722, and a real INVITE off the same handset carries `a=rtpmap:96 opus/48000/2` and
+     * `a=rtpmap:9 G722/8000`. Both register. The audit was wrong, not the build.
+     *
+     * Strandedness is reported through [absent] — a codec can be in both, and that
+     * combination is the whole point of [AbsenceReason.ExpectedUnsupportedByServer].
+     */
     val registeredAudio: List<RegisteredCodec>,
 
-    /** Video codecs the library reported through `videoCodecEnum2()`. */
+    /** Video codecs the library reported through `videoCodecEnum2()`, verbatim. See above. */
     val registeredVideo: List<RegisteredCodec>,
 
     /**
@@ -41,12 +60,17 @@ data class CodecAudit(
 ) {
     init {
         val registeredIds = (registeredAudio + registeredVideo).map { it.name }.toSet()
-        val absentNames = absent.keys.map { it.name }.toSet()
-        // The invariant, asserted rather than assumed: a codec cannot be both registered and
-        // absent. A codec in neither set is a bug in the audit, not in the build, and this is
-        // where that shows up — at construction, not three screens later.
-        require((registeredIds intersect absentNames).isEmpty()) {
-            "a codec is both registered and absent: ${registeredIds intersect absentNames}"
+        // A codec may be registered AND reported with a reason — that is exactly what
+        // ExpectedUnsupportedByServer means, and the old invariant forbade it. Enforcing
+        // "registered or absent, never both" is what forced the registry lists to be
+        // filtered before anyone could see them, and the filtering is what made the log
+        // line lie. What must still hold is narrower: a codec whose absence is a *build*
+        // fact cannot also be in the registry, because those two cannot both be true.
+        val contradictions = absent
+            .filterValues { it == AbsenceReason.NotCompiled || it == AbsenceReason.RegistrationFailed }
+            .keys.map { it.name }.toSet() intersect registeredIds
+        require(contradictions.isEmpty()) {
+            "a codec is registered and reported as not built: $contradictions"
         }
     }
 
@@ -64,14 +88,14 @@ data class CodecAudit(
         get() = absent.filterValues { it == AbsenceReason.RegistrationFailed }
 
     /**
-     * The codecs that work and have nobody to talk to.
+     * The codecs that work here and are not expected to negotiate against this server.
      *
      * Not a defect and not nothing: it is the difference between a preference that does
-     * something and one that cannot, and it is the only reason a user-facing screen can
-     * honestly explain.
+     * something and one that probably cannot, and it is what a user-facing screen can say
+     * without overstating what has been measured.
      */
     val strandedByPeer: Set<DeclaredCodec>
-        get() = absent.filterValues { it == AbsenceReason.NoPeerAccepts }.keys
+        get() = absent.filterValues { it is AbsenceReason.ExpectedUnsupportedByServer }.keys
 }
 
 /** One codec the library reported, as `codecEnum2()` describes it. */
@@ -145,8 +169,8 @@ sealed interface AbsenceReason {
     /**
      * The build was configured without it. A **decision**, not a defect.
      *
-     * True today of `H264` (`PJMEDIA_HAS_OPENH264_CODEC 0`) and `LYRA`
-     * (`PJMEDIA_HAS_LYRA_CODEC 0`, ADR-008). Reported at INFO. Owner: whoever decides the
+     * True today of `H264` (`PJMEDIA_HAS_OPENH264_CODEC 0`); no longer of `LYRA`, which
+     * ADR-008 compiled in at Exit A on 2026-09-10. Reported at INFO. Owner: whoever decides the
      * feature set.
      */
     data object NotCompiled : AbsenceReason
@@ -170,12 +194,25 @@ sealed interface AbsenceReason {
     data class ModelFilesUnusable(val detail: String) : AbsenceReason
 
     /**
-     * Registered, selectable, and no peer has ever accepted it.
+     * Registered and selectable here, and **recorded** as unsupported by the server this
+     * deployment talks to.
      *
-     * **The honest state of Opus and G.722 against the deployed server today.** Not a defect
-     * in this app at all — the fix is one missing module on the server — but it is the reason
-     * a wideband preference does nothing, and without this case nothing can say so.
+     * ## Why it is named for its evidence rather than for its effect
+     *
+     * It used to be `NoPeerAccepts`, which states a fact about every peer. Nothing measures
+     * that. What actually exists is a hand-maintained list —
+     * `DeclaredFeatureSet.unnegotiableOnThisDeployment` — compiled from one `fs_cli -x "show
+     * codec"` against one server on one day. Reporting a recorded expectation as though it
+     * were an observation is how the audit came to state, confidently and wrongly, that
+     * codecs this build offers on the wire were unusable.
+     *
+     * The rename is the fix that costs nothing and buys the only thing that matters: whoever
+     * reads it can tell what is known from what is assumed. Deriving it from real evidence —
+     * a negotiated codec observed per server — is the better answer and needs a per-server
+     * record this app does not keep yet (`docs/system-design.md` §5.1).
+     *
+     * [source] says where the expectation came from, so the claim travels with its warrant.
      * Owner: whoever operates the registrar.
      */
-    data object NoPeerAccepts : AbsenceReason
+    data class ExpectedUnsupportedByServer(val source: String) : AbsenceReason
 }

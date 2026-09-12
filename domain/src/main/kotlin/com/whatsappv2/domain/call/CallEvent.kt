@@ -50,6 +50,16 @@ sealed interface CallEvent {
     /** The resume re-INVITE was answered. */
     data object ResumeConfirmed : CallEvent
 
+    /**
+     * The resume re-INVITE was refused, so the call is still held by us.
+     *
+     * Its own event rather than a repeat of [LocalHold], which the FSM rejects from a
+     * side that already holds. Without it a refused resume leaves the call in
+     * `Resuming` for the rest of its life — the same "stuck" shape the missing
+     * `LocalResume` produced, arriving one state later.
+     */
+    data object ResumeFailed : CallEvent
+
     /** The far end resumed. */
     data object RemoteResume : CallEvent
 

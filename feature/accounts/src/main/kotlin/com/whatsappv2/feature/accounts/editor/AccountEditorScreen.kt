@@ -25,7 +25,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -33,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import com.whatsappv2.core.common.secret.Secret
+import com.whatsappv2.core.designsystem.component.AppTopBar
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
 import com.whatsappv2.core.designsystem.theme.AppTheme
@@ -83,8 +83,8 @@ fun AccountEditorScreen(
         modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            TopAppBar(
-                title = { Text(if (state.isNewAccount) "Add account" else "Edit account") },
+            AppTopBar(
+                title = if (state.isNewAccount) "Add account" else "Edit account",
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -373,6 +373,19 @@ private fun AudioCodecChips(
 ) {
     Column {
         Text("Audio codecs", style = MaterialTheme.typography.bodyMedium)
+        // The order is the offer order, and the order is the order of tapping — which
+        // nothing on screen said. The line below shows the list as it will be sent, so
+        // "how do I put Lyra first" answers itself: tap them off, tap them on in order.
+        Text(
+            text = if (draft.audioCodecs.isEmpty()) {
+                "Tap in the order you want them offered. The first is preferred."
+            } else {
+                "Offered in this order: " + draft.audioCodecs.joinToString(", ") { it.payloadName } +
+                    ". Tap off and on again to reorder."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         FlowRow(horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small)) {
             ALL_AUDIO_CODECS.forEach { codec ->
                 val selected = codec in draft.audioCodecs

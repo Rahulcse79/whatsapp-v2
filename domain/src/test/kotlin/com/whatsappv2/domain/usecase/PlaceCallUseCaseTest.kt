@@ -39,7 +39,7 @@ class PlaceCallUseCaseTest {
     }
 
     private fun useCase(camera: CameraAvailability = CameraPresent) =
-        PlaceCallUseCase(repository, engine, camera)
+        PlaceCallUseCase(repository, engine, camera, engine)
 
     private fun account(
         id: String = "acct-1",
@@ -236,5 +236,98 @@ class PlaceCallUseCaseTest {
         useCase()("1001", media = MediaProfile.AUDIO_VIDEO)
 
         assertEquals(MediaProfile.AUDIO_VIDEO, engine.activeCalls.value.single().media)
+    }
+
+    // ------------------------------------------------------- registration (Task 76)
+
+    @Test
+    fun `an unregistered account is registered before the call goes out`() = runTest {
+        // The reported defect: the use case resolved an account and a target and never
+        // consulted registration state, so a call on a lapsed account went to the engine,
+        // which refused it — with nothing done about the cause the user could not fix.
+        val work = account()
+        repository.save(work)
+        engine.givenRegistered(work)
+        engine.simulateRegistrationExpiry(work.id)
+
+        val outcome = useCase()("1001")
+
+        assertTrue(outcome.getOrNull() != null, "the call is placed, not refused")
+        assertTrue(
+            engine.invocations.any { it.operation == FakeSipEngine.Operation.REGISTER },
+            "the account was registered first",
+        )
+        assertEquals("sip:1001@sip.example.com", targetOf(outcome.getOrNull()?.value))
+    }
+
+    @Test
+    fun `registering happens before the INVITE, not after it fails`() = runTest {
+        // Order is the whole point. A REGISTER sent after a refused INVITE fixes the next
+        // call and not this one, which is what the user experienced.
+        val work = account()
+        repository.save(work)
+        engine.givenRegistered(work)
+        engine.simulateRegistrationExpiry(work.id)
+
+        useCase()("1001")
+
+        val ops = engine.invocations.map { it.operation }
+        assertTrue(
+            ops.indexOf(FakeSipEngine.Operation.REGISTER) <
+                ops.indexOf(FakeSipEngine.Operation.PLACE_CALL),
+        )
+    }
+
+    @Test
+    fun `an account that will not register is refused by name, not left to time out`() = runTest {
+        // The bound exists so the user is told something within five seconds instead of
+        // waiting out SIP Timer B's thirty-two. The error names the account so the dialler
+        // can say which one, rather than collapsing into "the call could not be placed".
+        val work = account()
+        repository.save(work)
+        engine.givenRegistered(work)
+        engine.simulateRegistrationExpiry(work.id)
+        engine.alwaysFail(FakeSipEngine.Operation.REGISTER, SipError.Timeout)
+
+        val error = useCase()("1001").errorOrNull()
+
+        assertEquals(PlaceCallError.NotRegistered(work.id), error)
+        assertTrue(
+            engine.invocations.none { it.operation == FakeSipEngine.Operation.PLACE_CALL },
+            "no INVITE is sent for an account with no binding behind it",
+        )
+    }
+
+    @Test
+    fun `an already registered account is not re-registered`() = runTest {
+        // The recovery must not add a REGISTER round trip to every ordinary call. Against
+        // the reference server that would be 57 ms on the happy path for nothing.
+        val work = account()
+        repository.save(work)
+        engine.givenRegistered(work)
+
+        useCase()("1001")
+
+        assertTrue(engine.invocations.none { it.operation == FakeSipEngine.Operation.REGISTER })
+    }
+
+    @Test
+    fun `the override's account is the one that gets registered`() = runTest {
+        // The registration has to follow the account the call will actually go out on, not
+        // the default — otherwise an override on a cold account registers the wrong one.
+        val work = account()
+        val home = account(id = "home", domain = "home.example.com", isDefault = false)
+        repository.save(work)
+        repository.save(home)
+        engine.givenRegistered(work)
+        engine.givenRegistered(home)
+        engine.simulateRegistrationExpiry(home.id)
+
+        useCase()("1001", accountOverride = home.id)
+
+        val registered = engine.invocations
+            .filter { it.operation == FakeSipEngine.Operation.REGISTER }
+            .map { it.detail }
+        assertEquals(listOf(home.id.value), registered)
     }
 }

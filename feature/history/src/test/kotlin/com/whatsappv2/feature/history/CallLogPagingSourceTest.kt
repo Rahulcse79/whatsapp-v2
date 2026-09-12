@@ -1,6 +1,8 @@
 package com.whatsappv2.feature.history
 
+import androidx.paging.PagingConfig
 import androidx.paging.PagingSource
+import androidx.paging.PagingState
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.model.AccountId
@@ -10,7 +12,10 @@ import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.repository.CallLogFilter
+import com.whatsappv2.domain.repository.CallLogQuery
 import com.whatsappv2.domain.testing.FakeCallLogRepository
+import com.whatsappv2.domain.testing.FakeContactRepository
+import com.whatsappv2.domain.usecase.CallLogTitles
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -27,6 +32,7 @@ import kotlin.test.assertNull
 class CallLogPagingSourceTest {
 
     private val repository = FakeCallLogRepository()
+    private val contacts = FakeContactRepository()
 
     @Test
     fun `the first page starts at the top and has no previous key`() = runTest {
@@ -62,6 +68,43 @@ class CallLogPagingSourceTest {
     }
 
     @Test
+    fun `the first load is three pages long and still keys one page back`() = runTest {
+        // Paging's initial load asks for `pageSize * 3`. A page loaded that way sits at
+        // offset 0 and has no previous page; a page that size loaded anywhere else must
+        // still point one *page* back, not three, or scrolling up skips two pages.
+        given(entries = PAGE * 5)
+
+        val page = load(offset = PAGE * 3, size = PAGE * 3)
+
+        assertEquals(PAGE * 2, page.prevKey)
+    }
+
+    @Test
+    fun `a refresh with the user at the top restarts at the top`() = runTest {
+        // The defect: 147 rows, the initial window of 120 gave nextKey 120, and the old
+        // refresh key was `nextKey - pageSize` = 80. The screen reopened on row 80 —
+        // yesterday's calls, no day heading — with the newest call eighty rows above it.
+        given(entries = PAGE * 3 + 7)
+        val window = load(offset = null, size = PAGE * 3)
+
+        val key = source().getRefreshKey(stateOf(window, anchor = 3))
+
+        assertEquals(0, key)
+    }
+
+    @Test
+    fun `a refresh mid-list starts one page above the row being looked at`() = runTest {
+        // Window at rows 30..59 (prevKey 20), anchor on its third row = row 32. One page
+        // above, aligned: 20. The row is inside the new window with room to scroll up.
+        given(entries = PAGE * 10)
+        val window = load(offset = PAGE * 3, size = PAGE * 3)
+
+        val key = source().getRefreshKey(stateOf(window, anchor = 2))
+
+        assertEquals(PAGE * 2, key)
+    }
+
+    @Test
     fun `an empty log is one empty page and nothing further`() = runTest {
         val page = load(offset = null, size = PAGE)
 
@@ -84,23 +127,96 @@ class CallLogPagingSourceTest {
         assertNull(page.nextKey)
     }
 
+    // ------------------------------------------------------------------ names
+
+    @Test
+    fun `a row whose address is in the address book shows the contact's name`() = runTest {
+        // The reported defect: the row was written before this contact existed, so its
+        // stored `contactName` is null and re-reading the log will never change that.
+        // Asking the address book as the page loads is what fixes it.
+        contacts.given(REMOTE, name = "Bob Smith")
+        repository.record(entry(0))
+
+        val page = load(offset = null, size = PAGE)
+
+        assertEquals("Bob Smith", page.data.single().title)
+    }
+
+    @Test
+    fun `the missed tab names its rows too`() = runTest {
+        // Both tabs, and this is the one people open: a missed call has no duration to
+        // pad the row out, so a bare address is all there is to read.
+        contacts.given(REMOTE, name = "Bob Smith")
+        repository.record(entry(0, direction = CallDirection.INCOMING, answered = false))
+
+        val page = load(offset = null, size = PAGE, filter = CallLogFilter.MISSED)
+
+        assertEquals("Bob Smith", page.data.single().title)
+    }
+
+    @Test
+    fun `a row with no contact shows the extension, not a sip URI`() = runTest {
+        repository.record(entry(0))
+
+        val page = load(offset = null, size = PAGE)
+
+        assertEquals("bob", page.data.single().title)
+    }
+
+    @Test
+    fun `names are resolved as the page loads, and only for the rows in it`() = runTest {
+        // The cost this design accepts, stated as a number: one ask per row *loaded*, and
+        // no ask at all for the rows below the window. Scrolling back over rows already
+        // loaded adds none, because Paging keeps the page it built.
+        //
+        // The asks are not the provider reads. Every row here is the same address, and
+        // `ContactsContractRepository` answers a repeat from its own cache — this fake has
+        // none, which is what makes the per-row count visible to assert on.
+        contacts.given(REMOTE, name = "Bob Smith")
+        given(entries = PAGE * 2)
+
+        val page = load(offset = null, size = PAGE)
+
+        assertEquals(PAGE, page.data.size)
+        assertEquals(PAGE, contacts.lookups.size, "one ask per row loaded, not per row stored")
+        assertEquals(setOf(REMOTE), contacts.lookups.toSet())
+    }
+
     // ---------------------------------------------------------------- fixture
 
     private suspend fun given(entries: Int) {
         repeat(entries) { repository.record(entry(it)) }
     }
 
+    private fun source(filter: CallLogFilter = CallLogFilter.ALL): CallLogPagingSource {
+        val query = when (filter) {
+            CallLogFilter.ALL -> CallLogQuery.MATCH_ALL
+            CallLogFilter.MISSED -> CallLogQuery.MISSED
+        }
+        return CallLogPagingSource(repository, query, CallLogTitles(contacts), PAGE)
+    }
+
     private suspend fun load(
         offset: Int?,
         size: Int,
         filter: CallLogFilter = CallLogFilter.ALL,
-    ): PagingSource.LoadResult.Page<Int, CallLogEntry> {
-        val source = CallLogPagingSource(repository, filter)
-        val result = source.load(
+    ): PagingSource.LoadResult.Page<Int, HistoryRow.Call> {
+        val result = source(filter).load(
             PagingSource.LoadParams.Refresh(key = offset, loadSize = size, placeholdersEnabled = false),
         )
         return assertIs(result)
     }
+
+    /** What Paging hands `getRefreshKey`: the loaded window, and where in it the user is. */
+    private fun stateOf(
+        window: PagingSource.LoadResult.Page<Int, HistoryRow.Call>,
+        anchor: Int,
+    ) = PagingState(
+        pages = listOf(window),
+        anchorPosition = anchor,
+        config = PagingConfig(pageSize = PAGE, enablePlaceholders = false),
+        leadingPlaceholderCount = 0,
+    )
 
     private fun entry(
         index: Int,

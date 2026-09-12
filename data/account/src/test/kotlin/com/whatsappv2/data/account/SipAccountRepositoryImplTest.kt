@@ -257,6 +257,27 @@ class SipAccountRepositoryImplTest {
     }
 
     @Test
+    fun `the login intent is stored per account and survives a save`() = runTest {
+        // The point of the column: it is read at the next process start, so it has to be
+        // in the row, not in memory — and an edit through save() must not clear it.
+        repository.save(account())
+        assertEquals(false, assertNotNull(repository.findById(AccountId("acct-1"))).registrationWanted)
+
+        assertIs<Outcome.Success<Unit>>(repository.setRegistrationWanted(AccountId("acct-1"), wanted = true))
+        assertEquals(true, assertNotNull(repository.findById(AccountId("acct-1"))).registrationWanted)
+
+        repository.save(assertNotNull(repository.findById(AccountId("acct-1"))).copy(label = "Home"))
+        assertEquals(true, assertNotNull(repository.findById(AccountId("acct-1"))).registrationWanted)
+
+        assertIs<Outcome.Success<Unit>>(repository.setRegistrationWanted(AccountId("acct-1"), wanted = false))
+        assertEquals(false, assertNotNull(repository.findById(AccountId("acct-1"))).registrationWanted)
+        assertEquals(
+            AccountRepositoryError.NotFound,
+            repository.setRegistrationWanted(AccountId("nope"), wanted = true).errorOrNull(),
+        )
+    }
+
+    @Test
     fun `setDefault moves the default and leaves only one`() = runTest {
         repository.save(account(id = "acct-1", username = "alice"))
         repository.save(account(id = "acct-2", username = "bob"))

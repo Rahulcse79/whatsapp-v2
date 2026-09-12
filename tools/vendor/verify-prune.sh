@@ -95,10 +95,37 @@ check_tree() {
   done
 }
 
-check_tree pjproject "${PJPROJECT_PRUNE[@]}"
-check_tree openssl   "${OPENSSL_PRUNE[@]}"
-check_tree opus      "${OPUS_PRUNE[@]}"
-check_tree libvpx    "${LIBVPX_PRUNE[@]}"
+# `${ARR[@]+"${ARR[@]}"}`: macOS bash 3.2 treats an empty array as unbound under set -u,
+# and OPUS_PRUNE is empty by design.
+check_tree pjproject ${PJPROJECT_PRUNE[@]+"${PJPROJECT_PRUNE[@]}"}
+check_tree openssl   ${OPENSSL_PRUNE[@]+"${OPENSSL_PRUNE[@]}"}
+check_tree opus      ${OPUS_PRUNE[@]+"${OPUS_PRUNE[@]}"}
+check_tree libvpx    ${LIBVPX_PRUNE[@]+"${LIBVPX_PRUNE[@]}"}
+
+# The Lyra closure. A guarded prune (GUARDED_PRUNES in pins.sh) is excused here the way
+# openssl/test is, and proven by tools/vendor/verify-guarded-prunes.sh instead.
+is_guarded() {
+  local g
+  for g in "${GUARDED_PRUNES[@]}"; do
+    [ "${g%%:*}" = "$1" ] && return 0
+  done
+  return 1
+}
+for entry in "${LYRA_TREES[@]}"; do
+  name="${entry%%:*}"; var="${entry##*:}"
+  prune_var="${var}_PRUNE[@]"
+  prune=("${!prune_var:-}"); [ -n "${prune[0]:-}" ] || prune=()
+  [ ${#prune[@]} -gt 0 ] || continue
+  unguarded=()
+  for p in "${prune[@]}"; do
+    if is_guarded "$name/$p"; then
+      echo "  ($name/$p: referenced but GUARDED — see tools/vendor/verify-guarded-prunes.sh)"
+    else
+      unguarded+=("$p")
+    fi
+  done
+  [ ${#unguarded[@]} -gt 0 ] && check_tree "$name" "${unguarded[@]}"
+done
 
 # OpenSSL's test/ is the deliberate exception and it is checked properly elsewhere: its
 # SUBDIRS entry is GUARDED and every Configure passes no-tests.

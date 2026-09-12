@@ -44,8 +44,8 @@ import javax.inject.Singleton
  * into it, and there is no hook to encrypt on the way through. So the window exists and is
  * closed rather than denied: the plaintext lives in the app's private `filesDir` for the
  * length of the call, and [seal] rewrites it as AES-GCM ciphertext and **deletes the
- * plaintext before reporting success**. A crash in that window leaves a `.tmp` file, which
- * [sweepAbandoned] removes on the next start rather than leaving to be found later.
+ * plaintext before reporting success**. A crash in that window leaves a `.unsealed.wav`
+ * file, which [sweepAbandoned] removes on the next start rather than leaving to be found later.
  *
  * The key never leaves the Keystore, so a copy of the file taken off the device — by an
  * `adb` pull on a debug build, by anything that gets at the app's data — is unreadable.
@@ -82,6 +82,13 @@ internal class EncryptedRecordingStore @Inject constructor(
             success(AllocatedRecording(id = id, callId = callId, plaintextPath = plaintext.absolutePath))
         } catch (e: SecurityException) {
             failure(RecordingError.StorageUnavailable(e.message.orEmpty()))
+        }
+    }
+
+    override fun discard(allocated: AllocatedRecording) {
+        // The id is safe to log; the path is not (§7, DoD 12).
+        if (File(allocated.plaintextPath).delete()) {
+            logger.info(TAG, "Discarded the slot for ${allocated.id}; the recording never started")
         }
     }
 
@@ -157,8 +164,8 @@ internal class EncryptedRecordingStore @Inject constructor(
     /**
      * Removes plaintext files left behind by a crash mid-recording.
      *
-     * On construction, so it happens before anything can add to them. A `.tmp` is an
-     * unencrypted recording, and one that survives a restart is one nothing is going to
+     * On construction, so it happens before anything can add to them. An `.unsealed.wav` is
+     * an unencrypted recording, and one that survives a restart is one nothing is going to
      * seal — there is no call left to attach it to.
      */
     private fun sweepAbandoned() {
@@ -311,7 +318,7 @@ internal class EncryptedRecordingStore @Inject constructor(
         /** Named in `data_extraction_rules.xml` so backup cannot pick it up (§7). */
         const val DIRECTORY = "recordings"
 
-        const val PLAINTEXT_SUFFIX = ".tmp"
+        const val PLAINTEXT_SUFFIX = RecordingFileNames.PLAINTEXT_SUFFIX
         const val SEALED_SUFFIX = ".rec"
         const val FIELD_SEPARATOR = "__"
         const val FIELD_COUNT = 4

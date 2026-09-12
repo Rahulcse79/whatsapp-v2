@@ -75,9 +75,17 @@ internal object CallStateMapper {
 
         // The same stack state, two FSM events. An inbound call reaches Connected because
         // *we* accepted it, and CallState.Incoming only accepts LocalAnswered.
-        StackCallState.CONNECTED -> when (direction) {
-            CallDirection.OUTGOING -> CallEvent.RemoteAnswered
-            CallDirection.INCOMING -> CallEvent.LocalAnswered()
+        //
+        // And once only. The gateway reports CONNECTED twice on every answered call —
+        // once for the invite session's CONNECTING (the 200 received, ACK not yet sent),
+        // once for CONFIRMED — and the FSM rejected the second with a warning on every
+        // call in every device log of 2026-09-10. A call that already has controls has
+        // already been answered; the repeat carries no transition, exactly as a repeated
+        // PAUSED does below.
+        StackCallState.CONNECTED -> when {
+            state.controlsOrNull != null -> null
+            direction == CallDirection.OUTGOING -> CallEvent.RemoteAnswered
+            else -> CallEvent.LocalAnswered()
         }
 
         // Media running again means different things depending on what the call was
@@ -93,6 +101,12 @@ internal object CallStateMapper {
         // The re-INVITE is on the wire. Reported so the screen can say "resuming" rather
         // than showing a held call that appears to have ignored the button.
         StackCallState.RESUMING -> resumeStartedEventFor(state)
+
+        // And the answer to it, when the answer is no. Only from Resuming: the stack
+        // reports a failed transaction for whatever it was doing, and a call that is
+        // not resuming has no resume to fail.
+        StackCallState.RESUME_FAILED ->
+            if (state is CallState.Resuming) CallEvent.ResumeFailed else null
 
         // An escalation the far end is asking for (Task 54). No transition: the call is
         // exactly where it was, and stays there until somebody answers the prompt. The
@@ -157,14 +171,25 @@ internal object CallStateMapper {
     /**
      * Why the call ended.
      *
-     * A clean BYE carries no status code and is a normal remote hangup. Anything with a
-     * code goes through the single [SipError] taxonomy so 486, 404 and 408 stay distinct
+     * [StackCallState.ENDED] is a normal hangup, whatever code it carries. That is not a
+     * simplification: the gateway splits a disconnect on the code itself — anything from
+     * 300 up becomes [StackCallState.ERROR] — so an `ENDED` event can only ever carry a
+     * 1xx or 2xx, or nothing at all. Anything with a real failure code arrives as `ERROR`
+     * and goes through the single [SipError] taxonomy, so 486, 404 and 408 stay distinct
      * all the way to the screen — Task 35's third done-when.
+     *
+     * **The `code == null` this used to require is the case that never happens.** A BYE
+     * is answered `200`, and `CallInfo.lastStatusCode` carries that 200 into the event,
+     * so every clean hangup fell through to `fromResponseCode(200)` — which has no arm
+     * for a success code and returns `Unexpected`, which is `SERVER_ERROR`. Measured on
+     * a handset on 2026-09-10: *"Call e0c3fbcd… ended: SERVER_ERROR (status 200)"* after
+     * a 75-second call the far end hung up normally. Every call in the log was recorded
+     * as a server error.
      */
     fun toHangupReason(event: StackCallEvent): HangupReason {
         val code = event.statusCode
         return when {
-            event.state == StackCallState.ENDED && code == null -> HangupReason.REMOTE_HANGUP
+            event.state == StackCallState.ENDED -> HangupReason.REMOTE_HANGUP
             code != null && code > 0 -> SipError.fromResponseCode(code).toHangupReason()
             else -> HangupReason.NETWORK_FAILURE
         }

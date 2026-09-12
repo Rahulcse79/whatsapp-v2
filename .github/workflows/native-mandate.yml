@@ -4,12 +4,23 @@
 # anything, and every one of them caught a real defect during phase 2a. Putting them behind
 # the Gradle gate would mean a 141 MB vendoring mistake is only discovered after AGP has
 # resolved its dependencies.
+#
+# Two jobs with very different costs, and only the cheap one is on the push path:
+# `provenance` reads files and takes about a minute; `offline` downloads an NDK and
+# cross-compiles, so it runs weekly and on demand. See the note on that job.
 name: Native mandate
 
 on:
   push:
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Saturday 04:00 UTC. The egress-blocked cross-compile below is the only expensive
+    # job here and it answers a question about the VENDORED TREES, which change when
+    # somebody vendors something — not when somebody edits a Composable. Weekly is
+    # often enough to catch a regression while it is still one commit old, and it costs
+    # ~20 minutes of runner time a week instead of ~20 minutes per push.
+    - cron: "0 4 * * 6"
 
 # One run per branch. Without this, every push spawns a full set and they all survive: four
 # `Native mandate` runs were live at once, each doing the same ~15-minute egress-blocked
@@ -56,6 +67,16 @@ jobs:
       - name: No pruned directory is one its own build files name
         run: ./tools/vendor/verify-prune.sh
 
+      # The Lyra closure's two prunes that ARE named by their trees' CMake, each inside an
+      # IF(<option>) block: the option must still exist upstream and still be OFF here.
+      - name: The guarded prunes in the Lyra closure are still safe
+        run: ./tools/vendor/verify-guarded-prunes.sh
+
+      # TensorFlow is kept, not pruned — 472 of 28,000 files. Every path lite's CMake names
+      # must be among them.
+      - name: The TensorFlow keep-list covers what TFLite's build names
+        run: ./tools/vendor/verify-tensorflow-keep.sh
+
       # A vendored tree that wgets at build time defeats N-2, and every runner has
       # wget, so it would download silently for ever. Opus did exactly this.
       - name: No vendored tree fetches at build time (N-2)
@@ -89,6 +110,15 @@ jobs:
   offline:
     name: The native stage runs with egress blocked (N-2, §2.1.2)
     runs-on: ubuntu-latest
+
+    # Not on the push path. This job downloads a 1 GB NDK and cross-compiles the whole
+    # native stack, and it was doing that on every push to every branch — proving, over
+    # and over, something about `third_party/` that a Kotlin commit cannot change.
+    #
+    # Run it by hand before cutting a release (it is the same build `./build.sh` does,
+    # with the network cut), and it runs itself weekly so a vendoring regression is
+    # caught while it is still recent.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
 
     # The whole job is ~10 minutes: NDK download, a SWIG run, one cross-compile. A cap well
     # above that turns a hang into a fast, obvious failure instead of a slow, ambiguous one.

@@ -75,6 +75,20 @@ data class SipAccount(
 
     /** Whether outgoing calls use this account by default. Exactly one account is. */
     val isDefault: Boolean,
+
+    /**
+     * Whether the user has logged this account in and not logged it out — the intent,
+     * as distinct from the live registration state the engine holds in memory.
+     *
+     * Registration state does not survive the process, and the process does not survive
+     * the day: the OS kills it, a crash takes it, an install replaces it. Before this
+     * field every one of those left the account *Offline* until somebody opened the app
+     * and pressed *Log in* again — and no call could arrive in between. Set by
+     * [com.whatsappv2.domain.usecase.LoginUseCase], cleared by
+     * [com.whatsappv2.domain.usecase.LogoutUseCase], read once at start by
+     * [com.whatsappv2.domain.usecase.RestoreRegistrationsUseCase].
+     */
+    val registrationWanted: Boolean = false,
 ) {
     init {
         require(label.isNotBlank()) { "label must not be blank" }

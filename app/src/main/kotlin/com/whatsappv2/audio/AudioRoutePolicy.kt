@@ -1,6 +1,7 @@
 package com.whatsappv2.audio
 
 import com.whatsappv2.domain.call.AudioRoute
+import com.whatsappv2.domain.model.PreferredAudioRoute
 
 /** Which output devices are attached right now. */
 data class AudioDevices(
@@ -47,19 +48,35 @@ enum class FocusAction {
 object AudioRoutePolicy {
 
     /**
-     * The route to use when the user has not chosen one.
+     * The route to use when the user has not chosen one on this call.
      *
-     * Bluetooth beats a wired headset beats the earpiece. That order is what people
-     * expect from every phone they have used: a connected headset is where they are
-     * listening, and the earpiece is the fallback that always exists. The speaker is never
-     * automatic — it is a deliberate choice, and choosing it for someone puts their call on
-     * the desk in front of a room.
+     * [PreferredAudioRoute.AUTOMATIC]: Bluetooth beats a wired headset beats the earpiece.
+     * That order is what people expect from every phone they have used: a connected
+     * headset is where they are listening, and the earpiece is the fallback that always
+     * exists. The speaker is never automatic — it is a deliberate choice, and choosing it
+     * for someone puts their call on the desk in front of a room.
+     *
+     * The other two values are that deliberate choice, made once in Settings rather than
+     * on every call: a desk phone in a workshop starts on the speaker, a phone that is
+     * always at an ear starts on the earpiece with the headset left for music. The
+     * setting is "where calls start" — it seeds the route, and a headset arriving
+     * mid-call still wins in [routeAfterDeviceChange], because plugging one in is a
+     * physical act that says more than a preference set last month.
+     *
+     * Until this parameter existed, the Settings control wrote a value nothing read.
      */
-    fun preferredRoute(devices: AudioDevices): AudioRoute = when {
-        devices.hasBluetooth -> AudioRoute.BLUETOOTH
-        devices.hasWiredHeadset -> AudioRoute.WIRED_HEADSET
-        devices.hasEarpiece -> AudioRoute.EARPIECE
-        else -> AudioRoute.SPEAKER
+    fun preferredRoute(
+        devices: AudioDevices,
+        preference: PreferredAudioRoute = PreferredAudioRoute.AUTOMATIC,
+    ): AudioRoute = when (preference) {
+        PreferredAudioRoute.SPEAKER -> AudioRoute.SPEAKER
+        PreferredAudioRoute.EARPIECE -> if (devices.hasEarpiece) AudioRoute.EARPIECE else AudioRoute.SPEAKER
+        PreferredAudioRoute.AUTOMATIC -> when {
+            devices.hasBluetooth -> AudioRoute.BLUETOOTH
+            devices.hasWiredHeadset -> AudioRoute.WIRED_HEADSET
+            devices.hasEarpiece -> AudioRoute.EARPIECE
+            else -> AudioRoute.SPEAKER
+        }
     }
 
     /**
@@ -75,16 +92,19 @@ object AudioRoutePolicy {
      *   preferred route rather than to silence.
      *
      * @param chosen the route the user last selected, or null if they never did.
+     * @param preference the Settings choice for where calls start, used only when there
+     *   is no [chosen] route still possible.
      */
     fun routeAfterDeviceChange(
         devices: AudioDevices,
         chosen: AudioRoute?,
         arrived: AudioRoute? = null,
+        preference: PreferredAudioRoute = PreferredAudioRoute.AUTOMATIC,
     ): AudioRoute = when {
         // A headset appearing is a physical act, and it wins.
         arrived == AudioRoute.BLUETOOTH || arrived == AudioRoute.WIRED_HEADSET -> arrived
         chosen != null && chosen in devices.available -> chosen
-        else -> preferredRoute(devices)
+        else -> preferredRoute(devices, preference)
     }
 
     /**

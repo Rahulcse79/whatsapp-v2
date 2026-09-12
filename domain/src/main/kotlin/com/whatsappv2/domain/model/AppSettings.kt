@@ -28,6 +28,38 @@ enum class PreferredAudioRoute {
 }
 
 /**
+ * Light or dark, or whatever the phone is doing.
+ *
+ * Three values and not a boolean, because "follow the system" is the state most people
+ * never leave and a boolean has no room for it — it would have to be read as "dark" or
+ * "light" the moment it was persisted, and the app would stop tracking the phone's
+ * schedule without anyone having asked it to.
+ */
+enum class ThemeMode {
+    /** The default. Dark when the phone is dark, light when it is light. */
+    SYSTEM,
+
+    /** Light, whatever the phone is doing. */
+    LIGHT,
+
+    /** Dark, whatever the phone is doing. */
+    DARK,
+    ;
+
+    /**
+     * Whether the app draws dark, given whether the phone currently is.
+     *
+     * The one place the three-way choice becomes a yes or no. Every theme call site
+     * asks this rather than switching on the enum, so a fourth mode is one branch here.
+     */
+    fun resolvesToDark(systemIsDark: Boolean): Boolean = when (this) {
+        SYSTEM -> systemIsDark
+        LIGHT -> false
+        DARK -> true
+    }
+}
+
+/**
  * App-wide preferences (§5.1).
  *
  * **The default account is deliberately not here.** It lives in the accounts table, where
@@ -39,10 +71,26 @@ data class AppSettings(
     /** DTMF transport, unless an account overrides it. */
     val dtmfMode: DtmfMode = DtmfMode.RFC_4733,
 
-    /** The SRTP policy new accounts start with. Existing accounts keep their own. */
-    val defaultSrtpPolicy: SrtpPolicy = SrtpPolicy.OPTIONAL,
+    /**
+     * The SRTP policy new accounts start with. Existing accounts keep their own.
+     *
+     * [SrtpPolicy.DISABLED] since 2026-09-10: the previous default, `OPTIONAL`, failed
+     * every outgoing call on every FreeSWITCH tested — see the enum for what it sends
+     * and why the server refuses it. A default that cannot place a call is not a default.
+     * [SrtpPolicy.MANDATORY] is the choice for a server that has SRTP; it sends
+     * `RTP/SAVP` and fails closed.
+     */
+    val defaultSrtpPolicy: SrtpPolicy = SrtpPolicy.DISABLED,
 
     val preferredAudioRoute: PreferredAudioRoute = PreferredAudioRoute.AUTOMATIC,
+
+    /**
+     * Light, dark, or follow the phone.
+     *
+     * Follows the phone on a fresh install, which is what the app did before there was a
+     * choice, so nobody's phone changes appearance because it updated.
+     */
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
 
     /**
      * Whether SIP signalling is written to the log.

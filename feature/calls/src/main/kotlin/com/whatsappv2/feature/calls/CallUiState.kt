@@ -108,10 +108,14 @@ data class CallControlAvailability(
             // Everything except an inbound call that has not been answered - that one is
             // rejected rather than hung up, and the two send different responses.
             canHangUp = phase != CallPhase.ENDED && phase != CallPhase.INCOMING,
-            // Mute and routing need media, which exists from the moment the call is
-            // answered and not before. Muting a ringing call mutes nothing.
+            // Mute needs media, which exists from the moment the call is answered and not
+            // before. Muting a ringing call mutes nothing.
             canMute = phase.hasMedia,
-            canChangeRoute = phase.hasMedia,
+            // Routing does not: the platform routes the ringback and any early media from
+            // the moment it has the call, and a Speaker press while the far end rings is
+            // the most natural time to make one. Measured disabled here on a TC15,
+            // 2026-09-10 — the press went nowhere and the call came up on the earpiece.
+            canChangeRoute = phase != CallPhase.ENDED,
             // Hold is a re-INVITE on an established dialog. Before Connected there is no
             // dialog to re-INVITE, which is why this is a state question and not a flag.
             canHold = phase == CallPhase.CONNECTED,
@@ -262,6 +266,19 @@ sealed interface CallUiState {
         val conference: ConferenceUiState? = null,
 
         /**
+         * True when this device could mix the calls it is holding into one (ADR-009).
+         *
+         * A property of the calls rather than a button's enabled flag: merging needs two
+         * or more calls that are *established*, because a ringing one has no audio to
+         * contribute. Deriving it here means the control cannot offer a merge the engine
+         * would then refuse.
+         */
+        val canMerge: Boolean = false,
+
+        /** How many calls this device is mixing right now; 0 when it is not (ADR-009). */
+        val mixedCallCount: Int = 0,
+
+        /**
          * Actions asked of the engine that it has not answered yet (Task 76).
          *
          * The screen shows these as busy and refuses a second press. It deliberately does
@@ -270,7 +287,22 @@ sealed interface CallUiState {
          * class of lie as a call drawn as held whose re-INVITE the far end rejected.
          */
         val pendingActions: Set<CallAction> = emptySet(),
-    ) : CallUiState
+    ) : CallUiState {
+
+        /**
+         * True when something on this screen is waiting on the user.
+         *
+         * Used to keep the in-call controls on screen during a video call, where they
+         * otherwise get out of the way of the picture. A prompt nobody can see is worse
+         * than no prompt at all, so a ringing second call, an escalation the far end is
+         * waiting on, or a transfer in flight all pin the controls open.
+         */
+        val needsAttention: Boolean
+            get() = secondCall != null ||
+                pendingVideoRequest != null ||
+                transfer !is TransferUiState.Idle ||
+                recording.askingConsent
+    }
 
     /**
      * The call is over and the screen should close.
@@ -302,6 +334,7 @@ enum class CallAction {
     TRANSFER,
     SWAP,
     RECORD,
+    MERGE,
     ;
 
     /**
@@ -339,7 +372,10 @@ internal fun CallSnapshot.toDisplay(nowEpochMillis: Long, contact: Contact? = nu
         photoUri = contact?.photoUri,
         direction = direction,
         phase = CallPhase.of(state),
-        controls = state.controlsOrNull ?: CallControls.DEFAULT,
+        // Before media the controls are defaults — except the route, which the user may
+        // already have chosen and which the platform is already honouring.
+        controls = state.controlsOrNull
+            ?: CallControls.DEFAULT.copy(audioRoute = requestedAudioRoute ?: CallControls.DEFAULT.audioRoute),
         durationSeconds = durationMillis(nowEpochMillis)?.let { it / MILLIS_PER_SECOND },
         videoOffered = media.hasVideo,
         videoActive = media.hasVideo,

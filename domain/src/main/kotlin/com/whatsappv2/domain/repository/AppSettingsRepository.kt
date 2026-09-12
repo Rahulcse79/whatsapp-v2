@@ -4,6 +4,7 @@ import com.whatsappv2.domain.model.AppSettings
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
+import com.whatsappv2.domain.model.ThemeMode
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -28,6 +29,15 @@ interface AppSettingsRepository {
     suspend fun setDefaultSrtpPolicy(policy: SrtpPolicy)
 
     suspend fun setPreferredAudioRoute(route: PreferredAudioRoute)
+
+    /**
+     * Light, dark or follow the phone.
+     *
+     * Observed by every activity's theme, so a change here recolours the screen that
+     * changed it and the call screen behind it in the same frame — no restart, no
+     * "takes effect next time".
+     */
+    suspend fun setThemeMode(mode: ThemeMode)
 
     /**
      * Turns SIP tracing on or off.

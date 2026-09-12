@@ -57,6 +57,18 @@ internal enum class StackCallState {
     RESUMING,
 
     /**
+     * Our resume re-INVITE came back a failure; the call is still held by us.
+     *
+     * Reported because nothing else says so. PJSIP does not raise a media-state change
+     * for a re-INVITE whose SDP negotiation failed — `pjsua_call_on_media_update`
+     * returns before `on_call_media_state`
+     * (`third_party/pjproject/pjsip/src/pjsua-lib/pjsua_call.c:5472-5500`) — so a
+     * refused resume is silent, and a state machine that moved on [RESUMING] would
+     * never come back.
+     */
+    RESUME_FAILED,
+
+    /**
      * The far end sent a re-INVITE and the stack is holding it for an answer (Task 54).
      *
      * Its own state because it is the one moment an escalation can be declined. Treated

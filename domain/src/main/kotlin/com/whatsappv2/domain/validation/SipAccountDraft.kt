@@ -39,10 +39,19 @@ data class SipAccountDraft(
     val turnServer: String = "",
     val turnUsername: String = "",
     val turnPassword: Secret = Secret.EMPTY,
-    val iceEnabled: Boolean = true,
-    val stunEnabled: Boolean = true,
+    /**
+     * ICE and STUN as [NatPolicy.DEFAULT] has them, rather than repeated literals.
+     *
+     * The form's opening position is the app's default policy, so the reason ICE is off —
+     * 198 bytes of an offer that already does not fit, gathering candidates no peer can
+     * use (see [NatPolicy.DEFAULT]) — is stated once and cannot drift out of step with a
+     * new account created anywhere else.
+     */
+    val iceEnabled: Boolean = NatPolicy.DEFAULT.iceEnabled,
+    val stunEnabled: Boolean = NatPolicy.DEFAULT.stunEnabled,
     val keepaliveIntervalSeconds: String = NatPolicy.DEFAULT_KEEPALIVE_SECONDS.toString(),
-    val srtpPolicy: SrtpPolicy = SrtpPolicy.OPTIONAL,
+    // DISABLED, matching AppSettings.defaultSrtpPolicy and for the same measured reason.
+    val srtpPolicy: SrtpPolicy = SrtpPolicy.DISABLED,
     val audioCodecs: List<AudioCodec> = CodecPreferences.DEFAULT.audio,
     val videoCodecs: List<VideoCodec> = CodecPreferences.DEFAULT.video,
     val isDefault: Boolean = false,
