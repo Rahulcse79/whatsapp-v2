@@ -887,10 +887,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
     /**
      * Publishes RFC 8599 parameters on every account's `Contact` (ADR-004, Task 38).
      *
-     * PJSIP carries them as `regConfig.contactParams`, a raw parameter string appended to
-     * the `Contact` header — so this assembles the `;pn-provider=…;pn-param=…;pn-prid=…`
-     * string itself. Every account is re-registered, because a
-     * `Contact` the server has not seen is a wake-up path it cannot use.
+     * PJSIP carries them as `regConfig.contactUriParams`, a raw parameter string inserted
+     * into the `Contact` URI — `toContactUriParams` assembles and escapes the
+     * `;pn-provider=…;pn-param=…;pn-prid=…` string. Every account is re-registered, because
+     * a `Contact` the server has not seen is a wake-up path it cannot use.
      */
     override fun setPushParameters(parameters: StackPushParameters?) {
         onPjsip("setPushParameters") {
