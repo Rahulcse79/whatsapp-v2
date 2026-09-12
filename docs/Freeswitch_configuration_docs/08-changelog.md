@@ -6,6 +6,7 @@ kept next to it; restoring it is the rollback. Newest first.
 
 | Date | File(s) | Change | Why | Backup |
 |---|---|---|---|---|
+| 2026-09-13 01:40 | `dialplan/default/01_coralx_push_wake.xml` (new), `dialplan/default/01_local_users_100x.xml` (removed), `dialplan/coralx.xml` | the push-wake hook and both contexts now match `${user_exists(id ${destination_number} $${domain})}` instead of `^(10[01][0-9])$` | one set of files for every deployment — no extension range to edit ([09](09-push-sender-how-it-works.md)) | `…/01_local_users_100x.xml.bak.20260913-014003`, `dialplan/coralx.xml.bak.20260913-014003` |
 | 2026-09-12 22:11 | `directory/default.xml` | `dial-string` wrapped in two `regex()` passes that strip `pn-*` from the contact | the INVITE to a push-registered phone was 1675 bytes (fragmented); 1306 after — [05](05-push-wake.md) | `directory/default.xml.bak.20260912-221132` |
 | 2026-09-12 21:53 | `dialplan/default/01_local_users_100x.xml` | single `bridge` → announce, 3 s direct attempt, `ring_ready`, `sched_transfer`, `park` | push wake (ADR-004) | `…/01_local_users_100x.xml.bak.20260912-215353` |
 | 2026-09-12 21:53 | `dialplan/coralx.xml` | **new** — contexts `coralx-resume` and `coralx-timeout` | push wake | delete the file |

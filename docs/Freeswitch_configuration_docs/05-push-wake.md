@@ -58,11 +58,12 @@ Three properties fall out of this shape:
 Canonical copies live in the sender repo under `deploy/freeswitch/`; the installed files
 are the ones below. Originals are kept next to them as `.bak.<timestamp>`.
 
-### 1. `dialplan/default/01_local_users_100x.xml` — the hook
+### 1. `dialplan/default/01_coralx_push_wake.xml` — the hook
 
 ```xml
-<extension name="local-users-100x">
-  <condition field="destination_number" expression="^(10[01][0-9])$">
+<extension name="coralx-push-wake">
+  <!-- any number that is a user in the directory: no extension range, no IP -->
+  <condition field="${user_exists(id ${destination_number} $${domain})}" expression="^true$">
     <action application="set" data="hangup_after_bridge=true"/>
     <action application="set" data="call_timeout=30"/>
 
@@ -85,6 +86,7 @@ are the ones below. Originals are kept next to them as `.bak.<timestamp>`.
 
 | Line | Why |
 |---|---|
+| `condition field="${user_exists(…)}"` | the rule applies to every directory user, so a new deployment with a different numbering plan changes nothing here. `$${domain}` is the server's own domain from `vars.xml`; per-user special routes (call forwarding, IVRs) must sit in a file that sorts before `01_coralx_push_wake.xml` or in the body of `default.xml`. |
 | `event … Event-Name=CUSTOM` | `mod_dptools`' `event` app creates a `CHANNEL_APPLICATION` event unless told otherwise; an ESL subscription to `CUSTOM coralx::push_wake` never sees that. Found the hard way. |
 | `progress_timeout=3` | A PJSIP client sends `100 Trying` the instant the INVITE arrives, so 3 s only fails for a dead socket. Measured: the attempt is abandoned at 3.2–4.0 s (the originate loop's granularity), cause `PROGRESS_TIMEOUT`. |
 | `continue_on_fail=<list>` | `true` would also "continue" past a live callee's `486`, sending the caller to ringback and park. The list names only unreachable causes. `USER_NOT_REGISTERED` is in it: a phone whose hour-long registration expired while asleep still has its token in the sender's registry. |
@@ -96,8 +98,8 @@ are the ones below. Originals are kept next to them as `.bak.<timestamp>`.
 
 ```xml
 <context name="coralx-resume">          <!-- the device registered: bridge -->
-  <extension name="coralx-resume-100x">
-    <condition field="destination_number" expression="^(10[01][0-9])$">
+  <extension name="coralx-resume">
+    <condition field="${user_exists(id ${destination_number} $${domain})}" expression="^true$">
       <action application="set" data="hangup_after_bridge=true"/>
       <action application="set" data="call_timeout=30"/>
       <action application="unset" data="progress_timeout"/>       <!-- full ring time now -->
@@ -109,8 +111,8 @@ are the ones below. Originals are kept next to them as `.bak.<timestamp>`.
 </context>
 
 <context name="coralx-timeout">         <!-- it did not: busy, not dead air -->
-  <extension name="coralx-timeout-100x">
-    <condition field="destination_number" expression="^(10[01][0-9])$">
+  <extension name="coralx-timeout">
+    <condition field="${user_exists(id ${destination_number} $${domain})}" expression="^true$">
       <action application="log" data="WARNING push_wake: ${destination_number} did not wake in time; busy to the caller"/>
       <action application="hangup" data="USER_BUSY"/>             <!-- 486 Busy Here -->
     </condition>
@@ -180,6 +182,7 @@ with the dial-string strip it is 1306.
 
 ```bash
 cd /usr/local/freeswitch/etc/freeswitch
+rm dialplan/default/01_coralx_push_wake.xml
 cp dialplan/default/01_local_users_100x.xml.bak.20260912-215353 dialplan/default/01_local_users_100x.xml
 rm dialplan/coralx.xml
 cp directory/default.xml.bak.20260912-221132 directory/default.xml

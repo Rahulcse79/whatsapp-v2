@@ -117,8 +117,9 @@ fs_cli -x 'user_exists id 1001 '"$(fs_cli -x 'eval $${domain}')"                
 1. Copy `directory/default/1019.xml` to `10NN.xml`, replace every `1019` (four places).
 2. `fs_cli -x reloadxml` — the directory is read on demand, no profile restart.
 3. `fs_cli -x "user_exists id 10NN <domain>"` → `true`.
-4. Routing already covers `^(10[01][0-9])$` (1000–1019) in `dialplan/default/01_local_users_100x.xml`;
-   a number outside that range needs a dialplan entry too ([04](04-dialplan.md)).
+4. Routing is automatic: `dialplan/default/01_coralx_push_wake.xml` matches any number for
+   which `user_exists` is true, so a new user is reachable the moment the directory knows it
+   ([04](04-dialplan.md)).
 
 The password can be set per user (`<param name="password" value="…"/>`) instead of the
 shared global; `inbound-reg-force-matching-username=true` on the profile means the auth

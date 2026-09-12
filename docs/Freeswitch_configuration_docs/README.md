@@ -57,7 +57,7 @@ flowchart LR
 | Codecs that actually work | **PCMU, PCMA** for audio, **VP8** for video (Opus, G.722, H.264 are configured but their modules are missing) | [06-modules-and-codecs.md](06-modules-and-codecs.md) |
 | SRTP | an `a=crypto` line on an `RTP/AVP` m-line is answered **488** — the app's media encryption must be *off* or *SAVP* against this server | [02-sip-profile-internal.md](02-sip-profile-internal.md) |
 | Event socket | `[::]:8021`, password `ClueCon` (the stock one) | `autoload_configs/event_socket.conf.xml` |
-| Push wake | dialplan announces → 3 s direct attempt → park → the sender un-parks on the device's fresh REGISTER, 486 after 12 s | [05-push-wake.md](05-push-wake.md) |
+| Push wake | dialplan announces → 3 s direct attempt → park → the sender un-parks on the device's fresh REGISTER, 486 after 12 s; applies to every directory user, nothing per-deployment in it | [05-push-wake.md](05-push-wake.md), [09](09-push-sender-how-it-works.md) |
 | Capacity | `max-sessions=1000`, `sessions-per-second=30` | `autoload_configs/switch.conf.xml` |
 | Log | `/usr/local/freeswitch/var/log/freeswitch/freeswitch.log`, debug level, rotates at 1 GB | `autoload_configs/logfile.conf.xml` |
 
@@ -73,6 +73,7 @@ flowchart LR
 | [06-modules-and-codecs.md](06-modules-and-codecs.md) | a codec is "not negotiated", hold music is silent, or a dialplan app "does not exist" |
 | [07-operations-cheatsheet.md](07-operations-cheatsheet.md) | day-to-day: `fs_cli` commands, verifying a registration, tracing SIP, the failures seen so far and their fixes |
 | [08-changelog.md](08-changelog.md) | you need to know what differs from a vanilla install, when it changed, and where the backup is |
+| [09-push-sender-how-it-works.md](09-push-sender-how-it-works.md) | you deploy the push sender on a new server: how it works in plain words, where every piece lives, why nothing is hard-coded, the four things you set per deployment |
 
 ## Conventions in these pages
 
@@ -93,4 +94,4 @@ flowchart LR
 * [`../testing.md`](../testing.md) — the instrumented suite, the Gradle properties it takes,
   the reserved extensions.
 * [`../calling.md`](../calling.md) — the call path inside the app, including the wake path.
-* `~/Desktop/coralx-push-sender/README.md` — the push gateway's own runbook (separate repo).
+* [`../../coralx-push-sender/README.md`](../../coralx-push-sender/README.md) — the push gateway's own runbook (its own git repository, checked out inside this one).
