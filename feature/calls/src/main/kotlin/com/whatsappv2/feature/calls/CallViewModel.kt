@@ -248,7 +248,7 @@ class CallViewModel @Inject constructor(
             when {
                 call != null -> CallUiState.Active(
                     call = call.toDisplay(now, contact),
-                    otherCalls = state.calls.filterNot { it.callId == callId }.map { it.toDisplay(now) },
+                    otherCalls = heldOthers(state.calls, callId, state.mixed, now),
                     pendingVideoRequest = state.pendingVideo,
                     secondCall = state.secondCallPrompt(callId, call),
                     transfer = state.transfer,
@@ -472,12 +472,6 @@ class CallViewModel @Inject constructor(
     }
 
     /**
-     * Makes [callId] the live call and holds the rest (Task 56).
-     *
-     * Also re-points the screen, because after a swap the call the user is looking at
-     * should be the one they are talking to.
-     */
-    /**
      * Mixes every established call this device is holding into one conference (ADR-009).
      *
      * Everything on the device, not a chosen pair: the phone has one audio bridge and one
@@ -502,6 +496,12 @@ class CallViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Makes [callId] the live call and holds the rest (Task 56).
+     *
+     * Also re-points the screen, because after a swap the call the user is looking at
+     * should be the one they are talking to.
+     */
     fun swapTo(callId: CallId) {
         viewModelScope.launch {
             when (val result = callWaiting.swapTo(callId)) {
@@ -561,3 +561,37 @@ class CallViewModel @Inject constructor(
         const val UNKNOWN_PARTICIPANT = "Unknown participant"
     }
 }
+
+/**
+ * The other calls the screen may offer a swap to: the ones actually on hold.
+ *
+ * ## Why this is a filter and not `everything except the watched call`
+ *
+ * It used to be exactly that — `calls.filterNot { it.callId == watchedId }` — while the
+ * field it feeds is documented as "every other call this app is **holding**" and the only
+ * thing that renders it says "… is on hold — tap to swap". So every second call was
+ * announced as held whatever it was doing. On a merged conference that is a plain lie: the
+ * bridge had `Port 1 (sip:9196) ↔ Port 2 (sip:9198)` open both ways and the button read
+ * "2 calls merged", above a banner saying 9198 was on hold (TC15, 2026-09-12 12:01). The
+ * banner is tappable, so the remedy it offered — swap, which holds everyone else — would
+ * have torn down the conference the user had just built.
+ *
+ * ## Mixed calls are excluded explicitly, not only by state
+ *
+ * A conference member is `Connected`, so the state test alone would already drop it. The
+ * membership test is here anyway because a merge resumes held legs one re-INVITE at a
+ * time (ADR-009), and for those few hundred milliseconds a member really is `Held` — long
+ * enough to flash a banner naming somebody the user is about to be talking to.
+ *
+ * File level, and taking the four values it needs rather than `EngineState`: it is a
+ * decision about a list, it has no business reaching into the ViewModel, and
+ * `CallViewModel` is at detekt's `LargeClass` bound.
+ */
+private fun heldOthers(
+    calls: List<CallSnapshot>,
+    watchedId: CallId,
+    mixed: Set<CallId>,
+    nowEpochMillis: Long,
+): List<CallDisplay> = calls
+    .filter { it.callId != watchedId && it.callId !in mixed && it.state is CallState.Held }
+    .map { it.toDisplay(nowEpochMillis) }

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -68,9 +69,27 @@ fun AppRoot(
      * only place that provides the coordinator it needs.
      */
     videoGate: (proceed: () -> Unit) -> Unit = { it() },
+    /**
+     * A destination something outside this graph has asked for, or null.
+     *
+     * The call screen's "Add call" is the first of these: it lives in another activity, in
+     * another task, and the only thing it can do is start this one with a request. A
+     * nullable value plus [onDestinationOpened] rather than a start-destination argument,
+     * because the request can arrive while the app is already running and already
+     * somewhere else.
+     */
+    openDestination: AppDestination? = null,
+    /** Clears [openDestination] once it has been navigated to, so Back is not a loop. */
+    onDestinationOpened: () -> Unit = {},
 ) {
     val entry by navController.currentBackStackEntryAsState()
     val current = AppDestination.fromRoute(entry?.destination?.route)
+
+    LaunchedEffect(openDestination) {
+        val target = openDestination ?: return@LaunchedEffect
+        if (current != target) navController.navigate(target.route)
+        onDestinationOpened()
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),

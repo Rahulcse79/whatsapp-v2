@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PhoneForwarded
+import androidx.compose.material.icons.filled.AddIcCall
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Groups
@@ -18,11 +19,16 @@ import com.whatsappv2.core.designsystem.component.CallActionButton
 import com.whatsappv2.core.designsystem.theme.AppTheme
 
 /**
- * The second row of in-call controls: video, camera, transfer, record (Tasks 53-58).
+ * The second row of in-call controls: video, camera, add, transfer, merge, record.
  *
- * A row of its own rather than eight buttons in one. Four is what fits across a phone
- * without shrinking the targets below the minimum, and the split is not arbitrary — the
- * first row is what every call has, and this row is what only some calls do.
+ * A row of its own rather than every button in one. The split is not arbitrary — the first
+ * row is what every call has, and this row is what only some calls do.
+ *
+ * **Add** is the entry to a conference and was missing entirely (ADR-009). Merge only
+ * appears once two calls exist, and the only way to reach a second outgoing call was to
+ * leave the call screen, reopen the app and find the dialler; so the feature existed and
+ * nobody could start it. It stays offered while mixing, because that is how a conference
+ * grows past its first two members.
  *
  * Every `enabled` comes from [CallControlAvailability], exactly as the first row's does.
  * A control offered for something the state machine would refuse is the class of bug that
@@ -73,6 +79,14 @@ internal fun CallSecondaryControls(
             modifier = Modifier.testTag(TAG_SWITCH_CAMERA),
         )
         CallActionButton(
+            icon = Icons.Filled.AddIcCall,
+            contentDescription = "Add a call",
+            onClick = actions.onAddCall,
+            enabled = availability.canAddCall,
+            label = "Add",
+            modifier = Modifier.testTag(TAG_ADD_CALL),
+        )
+        CallActionButton(
             icon = Icons.AutoMirrored.Filled.PhoneForwarded,
             contentDescription = "Transfer this call",
             onClick = actions.onStartTransfer,
@@ -96,6 +110,7 @@ internal fun CallSecondaryControls(
     }
 }
 
+internal const val TAG_ADD_CALL = "call-add-call"
 internal const val TAG_VIDEO_TOGGLE = "call-video-toggle"
 internal const val TAG_SWITCH_CAMERA = "call-switch-camera"
 internal const val TAG_TRANSFER = "call-transfer"

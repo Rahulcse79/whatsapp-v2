@@ -26,6 +26,8 @@ fun CallRoute(
     callId: CallId,
     onCallFinished: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Opens the dialler for a second leg (ADR-009). Supplied by the host, like [onCallFinished]. */
+    onAddCall: () -> Unit = {},
     viewModel: CallViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -79,6 +81,7 @@ fun CallRoute(
             onCancelConsultation = viewModel.transfer::cancelConsultation,
             onSecondCall = viewModel::respondToSecondCall,
             onSwapTo = viewModel::swapTo,
+            onAddCall = onAddCall,
             onMerge = viewModel::merge,
             onRequestRecording = viewModel.recording::request,
             onConfirmRecording = viewModel.recording::confirm,

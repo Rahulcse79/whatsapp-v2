@@ -297,6 +297,80 @@ class CallViewModelTest {
     }
 
     @Test
+    fun `the held banner names a call that is actually held, and nothing else`() = runTest {
+        // `otherCalls` used to be "every call except the one on screen", while the only
+        // thing that renders it says "… is on hold — tap to swap". So a second call was
+        // announced as held whatever it was doing.
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val second = placeCall()
+        engine.simulateRemoteAnswer(second)
+        val viewModel = viewModel().also { it.watch(first) }
+
+        viewModel.uiState.test {
+            // Both connected: there is nothing on hold, so there is nothing to announce.
+            val connected = awaitActive { it.call.callId == first && it.call.phase == CallPhase.CONNECTED }
+            assertTrue(
+                connected.otherCalls.isEmpty(),
+                "a connected call was offered as held: ${connected.otherCalls.map { it.title }}",
+            )
+
+            engine.setHold(second, held = true)
+            runCurrent()
+
+            val held = awaitActive { it.otherCalls.isNotEmpty() }
+            assertEquals(listOf(second), held.otherCalls.map { it.callId })
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `a merged conference offers no held banner at all`() = runTest {
+        // On the TC15 the bridge had both links open and the button read "2 calls merged",
+        // over a banner saying the other member was on hold. The banner is tappable, and
+        // the swap it offers holds everyone else — it would have torn down the conference
+        // the user had just built (2026-09-12 12:01).
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val second = placeCall()
+        engine.simulateRemoteAnswer(second)
+        engine.setHold(second, held = true)
+        val viewModel = viewModel().also { it.watch(first) }
+        runCurrent()
+
+        viewModel.uiState.test {
+            awaitActive { it.otherCalls.isNotEmpty() }
+
+            viewModel.merge()
+            runCurrent()
+
+            val merged = awaitActive { it.mixedCallCount >= MIN_MIXED_IN_TEST }
+            assertEquals(
+                emptyList(),
+                merged.otherCalls.map { it.title },
+                "a conference member was drawn as on hold",
+            )
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `a connected call offers Add call, so a conference can be started at all`() = runTest {
+        // Merge only appears once two calls exist. Without this control the only route to
+        // a second outgoing leg was to leave the call screen, reopen the app and find the
+        // dialler, so local mixing (ADR-009) was reachable in principle and not in fact.
+        val only = placeCall()
+        engine.simulateRemoteAnswer(only)
+        val viewModel = viewModel().also { it.watch(only) }
+
+        viewModel.uiState.test {
+            val connected = awaitDisplay { it.phase == CallPhase.CONNECTED }
+            assertTrue(connected.availability.canAddCall, "a connected call could not add a second")
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun `merging mixes every established call on this device`() = runTest {
         // ADR-009: the phone has one audio bridge and one microphone, so "merge" can only
         // mean all of them — there is no pair to choose.
@@ -599,6 +673,16 @@ class CallViewModelTest {
         }
     }
 
+    /** [awaitDisplay]'s sibling, for assertions about the screen rather than the call on it. */
+    private suspend fun ReceiveTurbine<CallUiState>.awaitActive(
+        predicate: (CallUiState.Active) -> Boolean,
+    ): CallUiState.Active {
+        while (true) {
+            val item = awaitItem()
+            if (item is CallUiState.Active && predicate(item)) return item
+        }
+    }
+
     private suspend fun ReceiveTurbine<CallUiState>.awaitFinished(): CallUiState.Finished {
         var item = awaitItem()
         while (item !is CallUiState.Finished) item = awaitItem()
@@ -607,6 +691,9 @@ class CallViewModelTest {
 
     private companion object {
         val REMOTE: SipUri = SipUri.parse("sip:bob@sip.example.com").getOrNull()!!
+
+        /** Two mixed calls is a conference (ADR-009). */
+        const val MIN_MIXED_IN_TEST = 2
 
         const val MILLIS_PER_SECOND = 1_000L
         const val TICK = 1_100L

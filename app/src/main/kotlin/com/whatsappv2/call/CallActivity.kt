@@ -8,10 +8,16 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.annotation.VisibleForTesting
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.whatsappv2.MainActivity
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.repository.AppSettingsRepository
 import com.whatsappv2.feature.calls.CallRoute
+import com.whatsappv2.ui.navigation.AppDestination
 import com.whatsappv2.ui.theme.AppThemed
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -59,6 +65,25 @@ class CallActivity : ComponentActivity() {
     @Inject
     lateinit var settings: AppSettingsRepository
 
+    /**
+     * The call on screen, as state because it can change without this activity restarting.
+     *
+     * `launchMode="singleTask"` (the manifest) means a second call does not get a second
+     * activity: the platform hands the new id to [onNewIntent] and `onCreate` never runs
+     * again. Reading the intent once into a local therefore pinned the screen to the first
+     * call for the life of the task. Place a first call, then dial a second from the
+     * dialler, and the screen stayed on the first — now held, showing "Resume call" —
+     * under a banner naming the *new* call as the held one, which was the opposite of the
+     * truth (TC15 24143524701316, 2026-09-12 12:01).
+     *
+     * [CallRoute] was already built for this: it re-points on every change of its `callId`
+     * argument. Nothing below it needed fixing — only the argument had to be allowed to
+     * move.
+     */
+    @VisibleForTesting
+    internal var watchedCall by mutableStateOf<CallId?>(null)
+        private set
+
     override fun onCreate(savedInstanceState: Bundle?) {
         showOverLockScreen()
         enableEdgeToEdge()
@@ -71,8 +96,7 @@ class CallActivity : ComponentActivity() {
         //
         // Deliberately not savedInstanceState: that is the app's memory of what was true,
         // and what was true is exactly what a restart cannot rely on.
-        val requested = intent?.getStringExtra(EXTRA_CALL_ID)?.let(::CallId)
-        val callId = ongoingCall.current(requested)
+        val callId = ongoingCall.current(intent?.callId())
         if (callId == null) {
             // Nothing to show. Finishing is the honest response: an empty call screen
             // that cannot be dismissed is worse than no screen at all.
@@ -80,18 +104,41 @@ class CallActivity : ComponentActivity() {
             finish()
             return
         }
+        watchedCall = callId
 
         setContent {
             AppThemed(settings) {
-                CallRoute(
-                    callId = callId,
-                    // The activity's whole lifetime is this call. When the FSM says the
-                    // call is over, the screen goes with it rather than lingering on a
-                    // terminated call the user has to dismiss.
-                    onCallFinished = { finish() },
-                )
+                watchedCall?.let { current ->
+                    CallRoute(
+                        callId = current,
+                        // The activity's whole lifetime is this call. When the FSM says the
+                        // call is over, the screen goes with it rather than lingering on a
+                        // terminated call the user has to dismiss.
+                        onCallFinished = { finish() },
+                        // Not finish(): the call carries on while the user dials the second
+                        // leg, and this screen is what they come back to when it connects.
+                        onAddCall = { startActivity(MainActivity.intentFor(this, AppDestination.DIALER)) },
+                    )
+                }
             }
         }
+    }
+
+    /**
+     * Re-points the screen at the call a fresh intent names.
+     *
+     * `OngoingCall.next` rather than `current` — it carries the reason, which is that a
+     * just-built intent is better evidence than the engine's list, whose newest member has
+     * not landed yet.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+
+        val requested = ongoingCall.next(intent.callId()) ?: return
+        if (requested == watchedCall) return
+        logger.info(TAG, "Call screen re-pointed at $requested")
+        watchedCall = requested
     }
 
     private fun showOverLockScreen() {
@@ -106,6 +153,9 @@ class CallActivity : ComponentActivity() {
             )
         }
     }
+
+    /** The call this intent names, if any. */
+    private fun Intent.callId(): CallId? = getStringExtra(EXTRA_CALL_ID)?.let(::CallId)
 
     companion object {
         private const val TAG = "CallActivity"

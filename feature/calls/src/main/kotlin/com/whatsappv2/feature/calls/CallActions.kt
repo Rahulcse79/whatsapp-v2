@@ -55,6 +55,15 @@ data class CallActions(
     val onSwapTo: (CallId) -> Unit = {},
 
     /**
+     * Opens the dialler for a second leg, holding this call (ADR-009).
+     *
+     * The host supplies it, like `onCallFinished`: the dialler is a screen in the main
+     * activity's graph and this module has no business knowing that, or that the call
+     * screen is an activity in a task of its own.
+     */
+    val onAddCall: () -> Unit = {},
+
+    /**
      * Mixes every established call on this device into one conference (ADR-009).
      *
      * Takes no argument, and cannot: the phone has one audio bridge and one microphone,
