@@ -7,6 +7,7 @@ import com.whatsappv2.domain.recording.CallRecorder
 import com.whatsappv2.domain.recording.PlaybackState
 import com.whatsappv2.domain.recording.Recording
 import com.whatsappv2.domain.recording.RecordingError
+import com.whatsappv2.domain.recording.RecordingId
 import com.whatsappv2.domain.recording.RecordingPlayer
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.channels.Channel
@@ -27,9 +28,25 @@ data class RecordingsUiState(
     /** False until the first listing has come back, so an empty list is not shown as "none". */
     val loaded: Boolean = false,
     val playback: PlaybackState = PlaybackState.Idle,
-    /** The recording a delete has been asked for and not yet confirmed. */
-    val pendingDelete: Recording? = null,
-)
+    /** The recordings picked in selection mode. Empty means selection mode is off. */
+    val selected: Set<RecordingId> = emptySet(),
+    /** A delete asked for and not yet confirmed — one recording, or the whole selection. */
+    val pendingDelete: PendingDelete? = null,
+) {
+    /** Selection mode is simply "something is selected". */
+    val inSelection: Boolean get() = selected.isNotEmpty()
+}
+
+/** What a pending delete will remove once confirmed. */
+sealed interface PendingDelete {
+    /** One recording, from a row's own delete when nothing is selected. */
+    data class Single(val recording: Recording) : PendingDelete
+
+    /** Everything selected. [count] is what the dialog says. */
+    data class Selection(val ids: Set<RecordingId>) : PendingDelete {
+        val count: Int get() = ids.size
+    }
+}
 
 /** One-off things the screen shows and does not keep. */
 sealed interface RecordingsEvent {
@@ -46,6 +63,12 @@ sealed interface RecordingsEvent {
  * not open during one. So the list is read on start and again after every delete, and
  * [refresh] is there for the route to call when the screen resumes.
  *
+ * ## Selection mode is derived, not a flag
+ *
+ * There is no separate "am I selecting" boolean to keep in step with the set: selection
+ * mode *is* a non-empty [RecordingsUiState.selected]. Clearing the set leaves it, deleting
+ * the last one leaves it, and nothing can show the selection bar over an empty selection.
+ *
  * ## Playback stops with the screen
  *
  * `onCleared` stops the player. The decrypted copy exists for exactly as long as playback
@@ -59,7 +82,8 @@ class RecordingsViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val recordings = MutableStateFlow<List<Recording>?>(null)
-    private val pendingDelete = MutableStateFlow<Recording?>(null)
+    private val selected = MutableStateFlow<Set<RecordingId>>(emptySet())
+    private val pendingDelete = MutableStateFlow<PendingDelete?>(null)
 
     private val eventChannel = Channel<RecordingsEvent>(Channel.BUFFERED)
     val events: Flow<RecordingsEvent> = eventChannel.receiveAsFlow()
@@ -67,12 +91,15 @@ class RecordingsViewModel @Inject constructor(
     val uiState: StateFlow<RecordingsUiState> = combine(
         recordings,
         player.state,
+        selected,
         pendingDelete,
-    ) { list, playback, pending ->
+    ) { list, playback, picked, pending ->
         RecordingsUiState(
             recordings = list.orEmpty(),
             loaded = list != null,
             playback = playback,
+            // A recording deleted elsewhere must not linger in the selection.
+            selected = if (list == null) picked else picked.intersect(list.mapTo(mutableSetOf()) { it.id }),
             pendingDelete = pending,
         )
     }.stateIn(
@@ -115,8 +142,36 @@ class RecordingsViewModel @Inject constructor(
 
     fun onSeek(positionMillis: Long) = player.seekTo(positionMillis)
 
+    // ------------------------------------------------------------------ selection
+
+    /** Enters selection mode with [recording] picked. A long-press is how it begins. */
+    fun onLongPress(recording: Recording) {
+        selected.value = selected.value + recording.id
+    }
+
+    /** Adds or removes [recording] from the selection; removing the last one ends the mode. */
+    fun onToggleSelected(recording: Recording) {
+        selected.value = selected.value.let {
+            if (recording.id in it) it - recording.id else it + recording.id
+        }
+    }
+
+    /** Leaves selection mode, keeping every recording. The X in the selection bar. */
+    fun onSelectionCleared() {
+        selected.value = emptySet()
+    }
+
+    // ------------------------------------------------------------------ delete
+
+    /** A single recording's own delete, offered only when not selecting. */
     fun onDeleteRequested(recording: Recording) {
-        pendingDelete.value = recording
+        pendingDelete.value = PendingDelete.Single(recording)
+    }
+
+    /** The selection bar's delete. Asks about everything currently picked. */
+    fun onDeleteSelectedRequested() {
+        val picked = selected.value
+        if (picked.isNotEmpty()) pendingDelete.value = PendingDelete.Selection(picked)
     }
 
     fun onDeleteDismissed() {
@@ -124,15 +179,27 @@ class RecordingsViewModel @Inject constructor(
     }
 
     fun onDeleteConfirmed() {
-        val recording = pendingDelete.value ?: return
+        val request = pendingDelete.value ?: return
         pendingDelete.value = null
-        // Stopped first if it is the one playing: the player holds a decrypted copy, and
-        // deleting the sealed file underneath it would leave that copy the only one.
-        if (player.state.value.recordingId == recording.id) player.stop()
+        val ids = when (request) {
+            is PendingDelete.Single -> setOf(request.recording.id)
+            is PendingDelete.Selection -> request.ids
+        }
+        // Stopped first if the one playing is among them: the player holds a decrypted
+        // copy, and deleting the sealed file underneath it would leave that copy the only
+        // one there is.
+        if (player.state.value.recordingId in ids) player.stop()
+        // Cleared here rather than after the deletes: the selection is done with either
+        // way, and leaving it set would flash the bar over rows about to vanish.
+        selected.value = selected.value - ids
+
         viewModelScope.launch {
-            when (val deleted = recorder.delete(recording.id)) {
-                is Outcome.Success -> Unit
-                is Outcome.Failure -> eventChannel.send(RecordingsEvent.Notice(deleted.error.describe()))
+            var failed = 0
+            for (id in ids) {
+                if (recorder.delete(id) is Outcome.Failure) failed++
+            }
+            if (failed > 0) {
+                eventChannel.send(RecordingsEvent.Notice(deleteFailureMessage(failed, ids.size)))
             }
             recordings.value = recorder.recordings()
         }
@@ -142,6 +209,12 @@ class RecordingsViewModel @Inject constructor(
     // screen leaves the back stack; nothing else has a reason to call it.
     public override fun onCleared() {
         player.stop()
+    }
+
+    private fun deleteFailureMessage(failed: Int, total: Int): String = when {
+        total == 1 -> "This recording could not be deleted"
+        failed == total -> "Those recordings could not be deleted"
+        else -> "$failed of $total recordings could not be deleted"
     }
 
     private companion object {

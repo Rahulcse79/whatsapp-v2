@@ -139,7 +139,7 @@ class RecordingsViewModelTest {
 
             model.onDeleteRequested(recording)
             advanceUntilIdle()
-            assertEquals(recording, expectMostRecentItem().pendingDelete)
+            assertEquals(PendingDelete.Single(recording), expectMostRecentItem().pendingDelete)
 
             model.onDeleteConfirmed()
             advanceUntilIdle()
@@ -229,6 +229,93 @@ class RecordingsViewModelTest {
         model.onSeek(SEEK_TO_MILLIS)
 
         assertEquals(SEEK_TO_MILLIS, (player.state.value as PlaybackState.Loaded).positionMillis)
+    }
+
+    @Test
+    fun `a long-press enters selection mode with that recording picked`() = runTest(dispatcher) {
+        val (a, b) = seed("a", "b")
+        val model = viewModel()
+        model.uiState.test {
+            advanceUntilIdle()
+
+            model.onLongPress(a)
+            advanceUntilIdle()
+            var state = expectMostRecentItem()
+            assertTrue(state.inSelection)
+            assertEquals(setOf(a.id), state.selected)
+
+            // Tapping another adds it; tapping a selected one removes it.
+            model.onToggleSelected(b)
+            model.onToggleSelected(a)
+            advanceUntilIdle()
+            state = expectMostRecentItem()
+            assertEquals(setOf(b.id), state.selected)
+            assertTrue(state.inSelection)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `clearing the selection leaves selection mode and keeps every recording`() = runTest(dispatcher) {
+        val (a) = seed("a", "b")
+        val model = viewModel()
+        model.uiState.test {
+            advanceUntilIdle()
+            model.onLongPress(a)
+            advanceUntilIdle()
+            assertTrue(expectMostRecentItem().inSelection)
+
+            model.onSelectionCleared()
+            advanceUntilIdle()
+            val state = expectMostRecentItem()
+            assertFalse(state.inSelection)
+            assertEquals(2, state.recordings.size)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `deleting the selection removes all of them and ends selection`() = runTest(dispatcher) {
+        val (a, b, c) = seed("a", "b", "c")
+        val model = viewModel()
+        model.uiState.test {
+            advanceUntilIdle()
+            model.onLongPress(a)
+            model.onToggleSelected(c)
+            advanceUntilIdle()
+
+            model.onDeleteSelectedRequested()
+            advanceUntilIdle()
+            assertEquals(PendingDelete.Selection(setOf(a.id, c.id)), expectMostRecentItem().pendingDelete)
+
+            model.onDeleteConfirmed()
+            advanceUntilIdle()
+            val state = expectMostRecentItem()
+            assertFalse(state.inSelection)
+            assertEquals(listOf(b.id), state.recordings.map { it.id })
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `deleting a selection that includes the playing one stops it`() = runTest(dispatcher) {
+        val (a, b) = seed("a", "b")
+        val model = viewModel()
+        model.uiState.test {
+            advanceUntilIdle()
+            model.onPlayPressed(a)
+            advanceUntilIdle()
+
+            model.onLongPress(a)
+            model.onToggleSelected(b)
+            model.onDeleteSelectedRequested()
+            model.onDeleteConfirmed()
+            advanceUntilIdle()
+
+            assertEquals(1, player.stops)
+            assertIs<PlaybackState.Idle>(expectMostRecentItem().playback)
+            cancelAndIgnoreRemainingEvents()
+        }
     }
 
     private companion object {

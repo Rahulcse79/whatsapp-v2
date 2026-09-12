@@ -1,5 +1,7 @@
 package com.whatsappv2.feature.recordings
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -12,12 +14,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -81,7 +85,11 @@ fun RecordingsRoute(
         RecordingsActions(
             onPlayPressed = viewModel::onPlayPressed,
             onSeek = viewModel::onSeek,
+            onLongPress = viewModel::onLongPress,
+            onToggleSelected = viewModel::onToggleSelected,
+            onSelectionCleared = viewModel::onSelectionCleared,
             onDeleteRequested = viewModel::onDeleteRequested,
+            onDeleteSelectedRequested = viewModel::onDeleteSelectedRequested,
             onDeleteDismissed = viewModel::onDeleteDismissed,
             onDeleteConfirmed = viewModel::onDeleteConfirmed,
         )
@@ -100,13 +108,17 @@ fun RecordingsRoute(
 data class RecordingsActions(
     val onPlayPressed: (Recording) -> Unit,
     val onSeek: (Long) -> Unit,
+    val onLongPress: (Recording) -> Unit,
+    val onToggleSelected: (Recording) -> Unit,
+    val onSelectionCleared: () -> Unit,
     val onDeleteRequested: (Recording) -> Unit,
+    val onDeleteSelectedRequested: () -> Unit,
     val onDeleteDismissed: () -> Unit,
     val onDeleteConfirmed: () -> Unit,
 ) {
     companion object {
         /** For previews and tests that are not about what the buttons do. */
-        val NONE = RecordingsActions({}, {}, {}, {}, {})
+        val NONE = RecordingsActions({}, {}, {}, {}, {}, {}, {}, {}, {})
     }
 }
 
@@ -118,6 +130,9 @@ data class RecordingsActions(
  * big, which is everything the filename knows. The call it belongs to is not shown,
  * because the call log does not keep the stack's call id and nothing can join the two;
  * the time is what a person uses to place it anyway.
+ *
+ * Long-pressing a row enters selection mode; the top bar then counts what is picked and
+ * carries the one delete that acts on all of it.
  */
 @Composable
 fun RecordingsScreen(
@@ -131,16 +146,20 @@ fun RecordingsScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
-            AppTopBar(
-                title = "Call recordings",
-                navigationIcon = {
-                    onBack?.let { back ->
-                        IconButton(onClick = back, modifier = Modifier.testTag(TAG_BACK)) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            if (state.inSelection) {
+                SelectionBar(count = state.selected.size, actions = actions)
+            } else {
+                AppTopBar(
+                    title = "Call recordings",
+                    navigationIcon = {
+                        onBack?.let { back ->
+                            IconButton(onClick = back, modifier = Modifier.testTag(TAG_BACK)) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                            }
                         }
-                    }
-                },
-            )
+                    },
+                )
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
@@ -162,6 +181,8 @@ fun RecordingsScreen(
                     RecordingRow(
                         recording = recording,
                         playback = state.playback.takeIf { it.recordingId == recording.id },
+                        inSelection = state.inSelection,
+                        selected = recording.id in state.selected,
                         actions = actions,
                         zone = zone,
                     )
@@ -170,37 +191,96 @@ fun RecordingsScreen(
         }
     }
 
-    state.pendingDelete?.let { recording ->
-        ConfirmDialog(
-            title = "Delete recording?",
-            message = "The recording from ${recording.startedLabel(zone)} is removed from this phone. " +
-                "This cannot be undone.",
-            confirmLabel = "Delete",
-            destructive = true,
-            onConfirm = actions.onDeleteConfirmed,
-            onDismiss = actions.onDeleteDismissed,
-            modifier = Modifier.testTag(TAG_CONFIRM_DELETE),
-        )
+    state.pendingDelete?.let { request ->
+        DeleteConfirmation(request = request, actions = actions, zone = zone)
     }
 }
 
 /**
- * One recording, and its transport when it is the one loaded.
+ * The top bar while selecting: how many, a way out, and the delete.
+ *
+ * Close on the left rather than Back, because the gesture here is "stop selecting", not
+ * "leave the screen" — a Back that left the screen would throw away a selection the user
+ * built on purpose.
+ */
+@Composable
+private fun SelectionBar(count: Int, actions: RecordingsActions) {
+    AppTopBar(
+        title = "$count selected",
+        navigationIcon = {
+            IconButton(onClick = actions.onSelectionCleared, modifier = Modifier.testTag(TAG_SELECTION_CLOSE)) {
+                Icon(Icons.Filled.Close, contentDescription = "Stop selecting")
+            }
+        },
+        actions = {
+            IconButton(
+                onClick = actions.onDeleteSelectedRequested,
+                modifier = Modifier.testTag(TAG_DELETE_SELECTED),
+            ) {
+                Icon(Icons.Filled.Delete, contentDescription = "Delete selected")
+            }
+        },
+    )
+}
+
+/** The confirmation for a single recording or for the whole selection. */
+@Composable
+private fun DeleteConfirmation(request: PendingDelete, actions: RecordingsActions, zone: ZoneId) {
+    val message = when (request) {
+        is PendingDelete.Single ->
+            "The recording from ${request.recording.startedLabel(zone)} is removed from this phone. " +
+                "This cannot be undone."
+        is PendingDelete.Selection -> {
+            val what = if (request.count == 1) "1 recording" else "${request.count} recordings"
+            "$what will be removed from this phone. This cannot be undone."
+        }
+    }
+    val plural = request is PendingDelete.Selection && request.count > 1
+    ConfirmDialog(
+        title = if (plural) "Delete recordings?" else "Delete recording?",
+        message = message,
+        confirmLabel = "Delete",
+        destructive = true,
+        onConfirm = actions.onDeleteConfirmed,
+        onDismiss = actions.onDeleteDismissed,
+        modifier = Modifier.testTag(TAG_CONFIRM_DELETE),
+    )
+}
+
+/**
+ * One recording: its transport when it is loaded, or a checkbox when selecting.
  *
  * [playback] is null for every row but the one the player is on, so a row does not have
- * to know about any other row to draw itself.
+ * to know about any other row to draw itself. In selection mode the play and delete
+ * controls give way to a checkbox, and the whole row toggles — a half-selectable row that
+ * still played would be two gestures fighting over one tap.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun RecordingRow(
     recording: Recording,
     playback: PlaybackState?,
+    inSelection: Boolean,
+    selected: Boolean,
     actions: RecordingsActions,
     zone: ZoneId,
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) {
+                MaterialTheme.colorScheme.secondaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerHigh
+            },
+        ),
         shape = MaterialTheme.shapes.large,
-        modifier = Modifier.fillMaxWidth().testTag(rowTag(recording.id)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = { if (inSelection) actions.onToggleSelected(recording) },
+                onLongClick = { actions.onLongPress(recording) },
+            )
+            .testTag(rowTag(recording.id)),
     ) {
         Column(
             modifier = Modifier.padding(AppTheme.spacing.large),
@@ -223,21 +303,43 @@ private fun RecordingRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                PlayButton(recording = recording, playback = playback, onPress = actions.onPlayPressed)
-                IconButton(
-                    onClick = { actions.onDeleteRequested(recording) },
-                    modifier = Modifier.testTag(deleteTag(recording.id)),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Delete,
-                        contentDescription = "Delete",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                RowTrailing(recording, playback, inSelection, selected, actions)
             }
-            if (playback is PlaybackState.Loaded) {
+            if (!inSelection && playback is PlaybackState.Loaded) {
                 Transport(playback = playback, onSeek = actions.onSeek)
             }
+        }
+    }
+}
+
+/**
+ * The right-hand controls of a row: a checkbox while selecting, otherwise play and delete.
+ */
+@Composable
+private fun RowTrailing(
+    recording: Recording,
+    playback: PlaybackState?,
+    inSelection: Boolean,
+    selected: Boolean,
+    actions: RecordingsActions,
+) {
+    if (inSelection) {
+        Checkbox(
+            checked = selected,
+            onCheckedChange = { actions.onToggleSelected(recording) },
+            modifier = Modifier.testTag(checkTag(recording.id)),
+        )
+    } else {
+        PlayButton(recording = recording, playback = playback, onPress = actions.onPlayPressed)
+        IconButton(
+            onClick = { actions.onDeleteRequested(recording) },
+            modifier = Modifier.testTag(deleteTag(recording.id)),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Delete,
+                contentDescription = "Delete",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -317,12 +419,7 @@ internal fun formatClock(millis: Long): String {
     }
 }
 
-/**
- * "820 kB" or "1.4 MB": the number a person compares against the space they have left.
- *
- * Integer arithmetic rather than `String.format`, so the separator is not the locale's
- * and the result reads the same in a test as on the phone.
- */
+/** "820 kB" or "1.4 MB": the number a person compares against the space they have left. */
 internal fun formatSize(bytes: Long): String = when {
     bytes >= BYTES_PER_MB -> {
         val tenths = bytes * TENTHS / BYTES_PER_MB
@@ -346,11 +443,14 @@ internal const val TAG_LIST = "recordings-list"
 internal const val TAG_EMPTY = "recordings-empty"
 internal const val TAG_SLIDER = "recordings-slider"
 internal const val TAG_CONFIRM_DELETE = "recordings-confirm-delete"
+internal const val TAG_SELECTION_CLOSE = "recordings-selection-close"
+internal const val TAG_DELETE_SELECTED = "recordings-delete-selected"
 
 internal fun rowTag(id: RecordingId) = "recordings-row-${id.value}"
 internal fun playTag(id: RecordingId) = "recordings-play-${id.value}"
 internal fun preparingTag(id: RecordingId) = "recordings-preparing-${id.value}"
 internal fun deleteTag(id: RecordingId) = "recordings-delete-${id.value}"
+internal fun checkTag(id: RecordingId) = "recordings-check-${id.value}"
 
 @ThemePreviews
 @Composable
