@@ -11,17 +11,19 @@ Every claim carries a `path:line` citation, a measurement with its method, or an
 
 ## 1. The hot path — native events into Kotlin
 
-The single most important design in the app. pjsua2 delivers callbacks on **its own worker
-threads**, and blocking one stops SIP processing entirely — not this call, the stack
+The single most important design in the app. pjsua2 delivers callbacks on **the one thread
+that polls it** — the gateway's `pjsip-main` executor, which stands in for the library's
+worker thread — and blocking it stops SIP processing entirely — not this call, the stack
 (`docs/architecture.md` §4.3).
 
 ### 1.1 The shape
 
 ```
-pjsua2 worker thread                 pjsip executor (1 thread)         collector coroutines
-─────────────────────                ─────────────────────────         ────────────────────
+pjsip executor (1 thread, also delivers the callbacks)                collector coroutines
+──────────────────────────────────────────────────────                ────────────────────
 onRegState / onCallState  ──►  tryEmit(StackEvent)  ──►  MutableSharedFlow  ──►  PjsipSipEngine
-   (SWIG director callback)      O(1), non-blocking        cap 64, DROP_OLDEST      maps to :domain
+   (SWIG director callback,      O(1), non-blocking        cap 64, DROP_OLDEST      maps to :domain
+    from libHandleEvents())
                                                                                         │
                                                                                         ▼
                                                                         MutableSharedFlow (cap 64)
@@ -40,8 +42,9 @@ Master prompt §6.1: *"DECIDE and document the policy per stream in a table."* T
 table. It records what the code does **today** and what it should do, because
 `docs/reconciliation.md` A-5 found the two differ on three streams.
 
-**Below the seam — `RealPjsipCoreGateway`.** The emitter is a pjsua2 worker thread, so
-suspending is not an available choice: it would stop the stack.
+**Below the seam — `RealPjsipCoreGateway`.** The emitter is the gateway's own PJSIP
+thread, inside the poll that delivers every callback (`PjsipEventPump`), so suspending is
+not an available choice: it would stop the stack.
 
 | Stream | Capacity | Policy today | Correct? | Consequence of a drop |
 |---|---|---|---|---|

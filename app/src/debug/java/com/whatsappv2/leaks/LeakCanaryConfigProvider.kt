@@ -1,10 +1,14 @@
 package com.whatsappv2.leaks
 
+import android.app.Application
 import android.content.ContentProvider
 import android.content.ContentValues
 import android.database.Cursor
 import android.net.Uri
+import com.whatsappv2.telecom.SipConnectionService
+import leakcanary.AppWatcher
 import leakcanary.LeakCanary
+import leakcanary.ReachabilityWatcher
 import shark.AndroidReferenceMatchers
 import shark.LibraryLeakReferenceMatcher
 import shark.ReferencePattern
@@ -47,6 +51,25 @@ import shark.ReferencePattern
  * knowledge stays where the next person to read a heap analysis will find it, instead of
  * being deleted from the output.
  *
+ * ## And the service is not watched at all, because classifying it was not enough
+ *
+ * The matcher decides what an analysis *says*. It does not decide whether an analysis
+ * *happens*: that is the object watcher's, which counts every destroyed service still
+ * reachable five seconds later and dumps the heap at one retained object once the app is
+ * in the background. This service is retained after every call, by design of the
+ * platform, so every call ended with a heap dump — eight in a day on one handset, each a
+ * multi-second freeze of the whole process, and one of them landed on a `SCREEN_OFF`
+ * broadcast and became an ANR (TC15, 2026-09-11 18:27, `LeakCanary-Heap-Dump` runnable
+ * in the trace). A leak detector that reports the same understood retention after every
+ * call, and freezes the app to do it, is the noise the real leak will hide in.
+ *
+ * So [SipConnectionService] is filtered out *before* the watcher sees it, by installing
+ * the watcher by hand with a [ReachabilityWatcher] that drops that one class and hands
+ * everything else through. Every other service, activity, fragment, view model and root
+ * view is watched exactly as before; the matchers above stay, for the day the filter is
+ * somehow bypassed and a report is written. LeakCanary's own installer is switched off
+ * in `res/values/leakcanary.xml` so this provider is the only thing that installs it.
+ *
  * ## Heap dumps are capped, and why the cap alone is not enough
  *
  * Every analysis keeps its `.hprof` — 40 MB each on this app — and LeakCanary writes them
@@ -65,11 +88,32 @@ import shark.ReferencePattern
 class LeakCanaryConfigProvider : ContentProvider() {
 
     override fun onCreate(): Boolean {
+        val application = context!!.applicationContext as Application
+        AppWatcher.manualInstall(
+            application = application,
+            watchersToInstall = AppWatcher.appDefaultWatchers(
+                application = application,
+                reachabilityWatcher = ExceptTelecomService(AppWatcher.objectWatcher),
+            ),
+        )
         LeakCanary.config = LeakCanary.config.copy(
             referenceMatchers = AndroidReferenceMatchers.appDefaults + connectionServiceStubMatchers(),
             maxStoredHeapDumps = MAX_STORED_HEAP_DUMPS,
         )
         return true
+    }
+
+    /**
+     * Watches everything except the one object the platform is known to hold.
+     *
+     * The class, not the instance: Telecom builds a fresh service per call, and it is the
+     * kind that is understood.
+     */
+    private class ExceptTelecomService(private val delegate: ReachabilityWatcher) : ReachabilityWatcher {
+        override fun expectWeaklyReachable(watchedObject: Any, description: String) {
+            if (watchedObject is SipConnectionService) return
+            delegate.expectWeaklyReachable(watchedObject, description)
+        }
     }
 
     /**
