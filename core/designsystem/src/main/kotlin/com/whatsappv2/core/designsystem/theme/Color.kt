@@ -204,6 +204,19 @@ data class StatusColors(
     val offline: Color,
 )
 
+/**
+ * A surface for a status that has to be noticed, and the two colours that go on it.
+ *
+ * Three values rather than a pair because the dot and the words want different weights on
+ * the same ground: the dot is the darker of the two, so it reads as a full stop rather
+ * than as more text.
+ */
+data class AlertColors(
+    val container: Color,
+    val onContainer: Color,
+    val dot: Color,
+)
+
 internal val LightStatusColors = StatusColors(
     online = Palette.Green40,
     connecting = Palette.Orange40,
@@ -251,6 +264,29 @@ data class BarColors(
     /** Status dot colours that read against the top bar. */
     val status: StatusColors,
 
+    /**
+     * The registration chip's own surface, for the states where it cannot take a call.
+     *
+     * ## Why the chip gets a surface instead of just a redder dot
+     *
+     * Because the bar is dark green, and red does not survive on it. Measured against
+     * `#006D3B`: the salmon this used to draw, `#FFB4AB`, reaches 3.8:1 — legible, but so
+     * pale it reads as pink rather than as a warning. Every *darker* red collapses —
+     * `#FF5449` is 2.0:1, `#DE3730` is 1.4:1, and `#BA1A1A` is **1.0:1**, exactly the
+     * luminance of the bar, which is to say invisible. "A darker red dot" and "on the
+     * green bar" cannot both be had.
+     *
+     * So the chip brings its own ground. On `#FFDAD6` — itself 5.0:1 against the bar, so
+     * the chip separates from it — a genuinely dark red works: the dot is `#93000A` at
+     * 7.2:1 and the words are `#BA1A1A` at 5.0:1. The dot's luminance falls from 0.568 to
+     * 0.062, which is the "darker, less bright" that was asked for, and it is legible
+     * rather than in spite of being legible.
+     *
+     * Registered keeps no surface at all — a bare chip and a soft mint dot at 5.0:1. The
+     * asymmetry is the point: the state worth noticing is the one that is drawn loudly.
+     */
+    val statusAlert: AlertColors,
+
     val navContainer: Color,
     /** The pill behind the selected tab. */
     val navIndicator: Color,
@@ -282,6 +318,11 @@ internal val LightBarColors = BarColors(
         failed = Palette.Red80,
         offline = Palette.Neutral90,
     ),
+    statusAlert = AlertColors(
+        container = Palette.RedContainer,
+        onContainer = Palette.Red40,
+        dot = Palette.RedContainerDark,
+    ),
     navContainer = Palette.White,
     navIndicator = Palette.GreenContainer,
     onNavIndicator = Palette.GreenOnContainer,
@@ -299,6 +340,13 @@ internal val DarkBarColors = BarColors(
     topBadge = Palette.Green80,
     onTopBadge = Palette.GreenOnContainer,
     status = DarkStatusColors,
+    // The same pairing: the dark bar is #111412, against which this container is 14.4:1,
+    // so it separates there too and the dark reds on it keep their contrast unchanged.
+    statusAlert = AlertColors(
+        container = Palette.RedContainer,
+        onContainer = Palette.Red40,
+        dot = Palette.RedContainerDark,
+    ),
     navContainer = Palette.Neutral6,
     navIndicator = Palette.GreenContainerDark,
     onNavIndicator = Palette.GreenContainer,
@@ -306,3 +354,17 @@ internal val DarkBarColors = BarColors(
     navUnselected = Palette.NeutralVariant60,
     navEdge = Palette.Neutral17,
 )
+
+/**
+ * The bar palettes, readable from a test.
+ *
+ * The values themselves stay internal — nothing outside this module should be *drawing*
+ * with a named palette, that is what `AppTheme.barColors` is for. What a test legitimately
+ * needs is to measure them, and `IndicatorContrastTest` does exactly that: it asserts the
+ * chip's colours clear their contrast thresholds, which is a property of these numbers and
+ * of nothing else.
+ */
+val LightBarColorsForTest: BarColors = LightBarColors
+
+/** @see LightBarColorsForTest */
+val DarkBarColorsForTest: BarColors = DarkBarColors

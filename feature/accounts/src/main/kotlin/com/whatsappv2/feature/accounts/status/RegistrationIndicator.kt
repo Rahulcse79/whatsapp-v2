@@ -1,5 +1,6 @@
 package com.whatsappv2.feature.accounts.status
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -220,10 +221,17 @@ private fun IndicatorChip(
     // colour the bar provides, its secondary tone, and a dot palette chosen against the
     // bar rather than against a white page — a green dot on a green bar is no dot.
     val bar = AppTheme.barColors
+    // The states that cannot take a call bring their own ground; see BarColors.statusAlert
+    // for why a darker red needs one. Registered stays a bare chip, which is what keeps
+    // the ordinary state quiet and this one loud.
+    val alerting = tone == StatusTone.FAILED
+    val shape = MaterialTheme.shapes.small
+
     Row(
         modifier = modifier
             .heightIn(min = AppTheme.sizing.minimumTouchTarget)
-            .clip(MaterialTheme.shapes.small)
+            .clip(shape)
+            .then(if (alerting) Modifier.background(bar.statusAlert.container, shape) else Modifier)
             .clickable(onClick = onClick)
             .semantics(mergeDescendants = true) {
                 role = Role.Button
@@ -233,18 +241,24 @@ private fun IndicatorChip(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
     ) {
-        StatusDot(tone, colors = bar.status)
+        if (alerting) {
+            StatusDot(tone, colors = bar.status.copy(failed = bar.statusAlert.dot))
+        } else {
+            StatusDot(tone, colors = bar.status)
+        }
         Column {
             Text(
                 text = headline,
                 style = MaterialTheme.typography.labelLarge,
-                color = LocalContentColor.current,
+                color = if (alerting) bar.statusAlert.onContainer else LocalContentColor.current,
                 maxLines = 1,
             )
             Text(
+                // "Offline", and in the same red as the extension above it — the sentence
+                // and the dot say one thing rather than the dot saying it alone.
                 text = detail,
                 style = MaterialTheme.typography.labelSmall,
-                color = bar.onTopVariant,
+                color = if (alerting) bar.statusAlert.onContainer else bar.onTopVariant,
                 maxLines = 1,
             )
         }

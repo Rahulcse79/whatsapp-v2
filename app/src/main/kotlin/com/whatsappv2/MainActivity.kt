@@ -9,10 +9,11 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.domain.repository.AppSettingsRepository
+import com.whatsappv2.onboarding.FirstRunGate
+import com.whatsappv2.onboarding.FirstRunStore
 import com.whatsappv2.permission.LocalPermissionCoordinator
 import com.whatsappv2.permission.PermissionCoordinator
 import com.whatsappv2.permission.PermissionOnboarding
@@ -55,6 +56,10 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var settings: AppSettingsRepository
 
+    /** What the user has already been through: the terms, and the tour. */
+    @Inject
+    lateinit var firstRun: FirstRunStore
+
     /**
      * A screen another activity asked this one to open, until it has been opened.
      *
@@ -80,19 +85,21 @@ class MainActivity : ComponentActivity() {
                 CompositionLocalProvider(
                     LocalPermissionCoordinator provides permissionCoordinator,
                 ) {
-                    var onboarding by rememberSaveable {
-                        mutableStateOf(permissionCoordinator.needsOnboarding())
-                    }
-
-                    if (onboarding) {
-                        PermissionOnboarding(
-                            coordinator = permissionCoordinator,
-                            onFinished = {
-                                permissionCoordinator.markOnboardingComplete()
-                                onboarding = false
-                            },
-                        )
-                    } else {
+                    // Terms, then the tour, then permissions, then the app. The order and
+                    // the reasons for it live in FirstRunGate; this is only where it is
+                    // mounted, which is above everything so no screen can be reached
+                    // around it.
+                    FirstRunGate(
+                        store = firstRun,
+                        permissionsNeeded = permissionCoordinator::needsOnboarding,
+                        onPermissionsFinished = permissionCoordinator::markOnboardingComplete,
+                        permissionScreen = { onFinished ->
+                            PermissionOnboarding(
+                                coordinator = permissionCoordinator,
+                                onFinished = onFinished,
+                            )
+                        },
+                    ) {
                         // The camera is asked for when a video call is pressed, not only on
                         // the first-run screen somebody may have skipped (Task 74).
                         AppRoot(
