@@ -1,0 +1,9 @@
+<!-- Replace the <param name="dial-string"> inside <domain><params> of directory/default.xml with this. -->
+      <!-- Coral X push wake (ADR-004): a push-registered handset's contact carries its
+           RFC 8599 pn-provider/pn-param/pn-prid URI parameters, and sofia copies them into
+           the Request-URI, the Route and the To of every INVITE it sends - 1675 bytes on the
+           wire, fragmented on any 1500-MTU path. The two regex passes strip them (raw, then the
+           percent-encoded copy inside fs_path) before dialling; a contact without them, and
+           error/user_not_registered, pass through unchanged. The token itself is read from the
+           registration by the push sender, not from here. -->
+      <param name="dial-string" value="{^^:sip_invite_domain=${dialed_domain}:presence_id=${dialed_user}@${dialed_domain}}${regex(${regex(${sofia_contact(*/${dialed_user}@${dialed_domain})}|^(.*);pn-provider=[^;]*;pn-param=[^;]*;pn-prid=[^;]*(.*)$|%1%2)}|^(.*)%3Bpn-provider%3D.*$|%1)},${verto_contact(${dialed_user}@${dialed_domain})}"/>

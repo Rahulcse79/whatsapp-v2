@@ -1,0 +1,56 @@
+<include>
+
+  <!--
+    Coral X push wake (RFC 8599 / ADR-004) - github.com/Rahulcse79/coralx-push-sender.
+
+    Matches ANY number that is a user in this server's directory, so it needs no editing
+    per deployment: no extension range, no IP address. $${domain} is the server's own SIP
+    domain from vars.xml, and user_exists is answered by the directory.
+
+    Why one bridge is not enough: a Coral X handset that is asleep, dozing or swiped
+    from Recents still has a registration row here, but nothing behind it - the INVITE
+    to that contact gets no 100 Trying and dies as ORIGINATOR_CANCEL after call_timeout.
+    "Registered" is not "reachable". So:
+
+      1. announce the call (the push sender hears this event and sends the FCM wake
+         immediately, in parallel with step 2);
+      2. try the contact we have, but give it only progress_timeout seconds to say
+         100/180 - an app that is awake answers well inside that, a dead socket never
+         will - and only the "unreachable" causes fall through (a 486 from a live
+         callee still reaches the caller as a 486);
+      3. ring the caller and park. The sender un-parks the call into coralx-resume the
+         moment the device's fresh REGISTER lands, or into coralx-timeout when it does
+         not (12 s). sched_transfer is the belt and braces for a sender that is down:
+         15 s later the call goes to coralx-resume on its own, which is exactly the
+         single direct bridge this rule replaces.
+
+    Put per-user special routing (call forwarding, IVRs) in a file that sorts BEFORE
+    this one, or in the body of default.xml; the first matching extension wins.
+  -->
+  <extension name="coralx-push-wake">
+    <condition field="${user_exists(id ${destination_number} $${domain})}" expression="^true$">
+      <action application="set" data="hangup_after_bridge=true"/>
+      <action application="set" data="call_timeout=30"/>
+
+      <!-- 1. Announce. Fired before the first attempt so the wake-up is already in
+              flight while the direct INVITE is finding out the socket is dead.
+              Event-Name=CUSTOM is required: without it the event app fires a
+              CHANNEL_APPLICATION event, which an ESL `event CUSTOM coralx::push_wake`
+              subscription never sees. -->
+      <action application="event" data="Event-Name=CUSTOM,Event-Subclass=coralx::push_wake,Push-Ext=${destination_number},Push-Caller=${caller_id_number}"/>
+
+      <!-- 2. The direct attempt: 3 s for a provisional response, and fall through only
+              on the causes that mean "nobody is there", never on a rejection. -->
+      <action application="set" data="progress_timeout=3"/>
+      <action application="set" data="continue_on_fail=PROGRESS_TIMEOUT,USER_NOT_REGISTERED,NO_ROUTE_DESTINATION,NETWORK_OUT_OF_ORDER,RECOVERY_ON_TIMER_EXPIRE,NORMAL_TEMPORARY_FAILURE,ORIGINATOR_CANCEL"/>
+      <action application="bridge" data="user/${destination_number}@$${domain}"/>
+
+      <!-- 3. Ringback for the caller, then park until the sender moves us on. -->
+      <action application="log" data="INFO push_wake: no progress from ${destination_number} (${originate_disposition}); parking for the push sender"/>
+      <action application="ring_ready"/>
+      <action application="sched_transfer" data="+15 ${destination_number} XML coralx-resume"/>
+      <action application="park"/>
+    </condition>
+  </extension>
+
+</include>

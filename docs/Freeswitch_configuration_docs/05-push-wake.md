@@ -1,7 +1,7 @@
 # 05 — Push wake: ringing a phone that is asleep
 
 The client-side decision is ADR-004 in [`../architecture.md`](../architecture.md); the
-gateway's own runbook is `~/Desktop/coralx-push-sender/README.md`. This page is the
+gateway's own runbook is [`../../coralx-push-sender/README.md`](../../coralx-push-sender/README.md). This page is the
 **server side**: what is configured, why each line is there, how it was measured, and how
 to take it out.
 

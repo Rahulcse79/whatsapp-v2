@@ -94,4 +94,4 @@ flowchart LR
 * [`../testing.md`](../testing.md) — the instrumented suite, the Gradle properties it takes,
   the reserved extensions.
 * [`../calling.md`](../calling.md) — the call path inside the app, including the wake path.
-* [`../../coralx-push-sender/README.md`](../../coralx-push-sender/README.md) — the push gateway's own runbook (its own git repository, checked out inside this one).
+* [`../../coralx-push-sender/README.md`](../../coralx-push-sender/README.md) — the push gateway's own runbook; its source lives in this repository under `coralx-push-sender/`.

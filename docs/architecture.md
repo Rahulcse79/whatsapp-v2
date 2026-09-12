@@ -202,8 +202,8 @@ and a `Registered` state in this app says nothing about reachability, so **every
 `incoming_call` push produces a REGISTER (a refresh when the account looks registered, a
 login otherwise) and the gateway holds the call until that REGISTER lands.
 
-**The gateway exists:** `coralx-push-sender` (Go, no dependencies; its README is the
-FreeSWITCH install and Firebase runbook). It names the account in the push by SIP user, so
+**The gateway exists:** `coralx-push-sender/` in this repository (Go, no dependencies; its
+README is the FreeSWITCH install and Firebase runbook). It names the account in the push by SIP user, so
 `account_id` is resolved here by username as well as by the internal id
 (`PushAccountResolver`).
 
@@ -806,7 +806,7 @@ platform without importing it:
 
 | Work | Where it runs | Why |
 |---|---|---|
-| PJSIP callbacks | pjsua2's own worker threads | published to a buffered `SharedFlow` immediately and handled elsewhere — a blocked callback stops SIP processing entirely |
+| PJSIP callbacks | the `pjsip-main` executor thread, from inside the `libHandleEvents()` poll (`uaConfig.threadCnt = 0`, `mainThreadOnly = true`; `PjsipEventPump`) | published to a buffered `SharedFlow` immediately and handled elsewhere — a blocked callback stops SIP processing entirely. One thread for calls *and* callbacks is what makes releasing a SWIG director from its own callback safe: a task posted from a callback runs after the poll that delivered it has returned. pjsua2's own worker thread raised callbacks concurrently with that post, and the director was freed under its native frame — `SIGSEGV` in `DetachCurrentThread`, 2026-09-12 |
 | Engine bookkeeping | `@SipStackScope` — `SupervisorJob` + `Dispatchers.IO` | everything on it is a socket or a stack callback waiting on one, never computation; `SupervisorJob` so one failed collector cannot take every account's recovery down with it |
 | Room and DataStore | their own dispatchers, inside `:data:*` | a repository that made its caller choose a dispatcher would leak its storage choice |
 | ViewModels | `viewModelScope` (main) | state assembly only; every suspending call below is main-safe by contract |

@@ -38,7 +38,7 @@ kept next to it; restoring it is the rollback. Newest first.
 
 | What | Where | Since |
 |---|---|---|
-| `coralx-push-sender` (ESL client + FCM sender) | `~/Desktop/coralx-push-sender` (own git repo); runs by hand or from `deploy/launchd/com.coralx.push-sender.plist`; log `~/Library/Logs/coralx-push-sender.log` | 2026-09-12 |
+| `coralx-push-sender` (ESL client + FCM sender) | `coralx-push-sender/` in this repository (`~/Desktop/whatsapp-v2/coralx-push-sender` on the Mac); runs by hand or from `deploy/launchd/com.coralx.push-sender.plist`; log `~/Library/Logs/coralx-push-sender.log` | 2026-09-12 |
 | Canonical copies of the push-wake FreeSWITCH files | `coralx-push-sender/deploy/freeswitch/` | 2026-09-12 |
 | `sngrep` | `~/.local/bin/sngrep` (built from source) | 2026-09 |
 | The FreeSWITCH source matching the build | `~/Documents/GitHub/freeswitch` (tag `v1.10.11`) | — |
