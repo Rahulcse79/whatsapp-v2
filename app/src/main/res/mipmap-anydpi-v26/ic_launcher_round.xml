@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The launcher icon (Task 66).
+  The round launcher icon, which is the same three layers.
 
-  Three layers, not a bitmap: the launcher masks background and foreground to its own
-  shape and parallaxes them, and <monochrome> is what lets Android 13+ tint the icon to
-  the user's wallpaper instead of dropping a coloured square into a themed home screen.
+  A separate file because `android:roundIcon` is a separate manifest attribute and some
+  launchers ask for it by name. The masking is the launcher's either way — see
+  ic_launcher.xml for why the foreground is a bitmap and the plate is not.
 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@drawable/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground" />
-    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_monochrome" />
 </adaptive-icon>

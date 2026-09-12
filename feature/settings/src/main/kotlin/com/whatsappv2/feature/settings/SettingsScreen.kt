@@ -197,6 +197,12 @@ private fun SettingsContent(
                 )
             }
         }
+
+        // Last, and not on a card. It is not a setting — nothing here can be changed — and
+        // putting it on one would invite a tap. Bottom of the scroll is where every app
+        // this one sits beside keeps it, which is where somebody writing a bug report
+        // already knows to look.
+        AppVersionFooter()
     }
 }
 

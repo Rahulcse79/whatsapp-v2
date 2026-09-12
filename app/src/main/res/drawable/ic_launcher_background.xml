@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The launcher icon's background: the brand green, lit from above.
+  The launcher icon's background: the plate the CoralX mark is drawn on.
 
-  #00874E to #00512C - either side of Green40 (#006D3B), the primary in
-  :core:designsystem - so the icon reads as the same product as the app it opens.
+  #02192B is not a colour somebody chose here - it is the median of every pixel the mark
+  was keyed off in the supplied artwork, so the icon's ground is literally the artwork's
+  ground and the mark sits on it without a seam. Lightened a little towards the top, the
+  way the original is lit.
+
+  Still a vector, because a flat plate is two paths and a gradient; only the mark itself
+  had to become a bitmap.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
@@ -18,9 +23,10 @@
                 android:startX="54"
                 android:startY="0"
                 android:endX="54"
-                android:endY="108"
-                android:startColor="#FF00874E"
-                android:endColor="#FF00512C" />
+                android:endY="108">
+                <item android:offset="0" android:color="#0A2A44" />
+                <item android:offset="1" android:color="#02192B" />
+            </gradient>
         </aapt:attr>
     </path>
 </vector>

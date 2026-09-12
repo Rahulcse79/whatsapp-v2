@@ -63,18 +63,25 @@ enum class AppDestination(
         /**
          * Where the app opens.
          *
-         * Calls, since Task 70. It was the dialler, on the reasoning that placing a call is
-         * the app's primary job — which is still true, and is why the dialler is one tap
-         * away behind a floating button. But the screen worth *landing* on is the one that
-         * answers "what happened while I was away", and the log is that screen.
+         * Chats — the first item in the bar, which is where a bar's first item should
+         * land you.
+         *
+         * It was the dialler, then Calls, on the reasoning that the screen worth landing
+         * on is the one answering "what happened while I was away". That argument was
+         * about a phone. This is a messaging app that also calls, its bar opens on Chats,
+         * and a bar whose first tab is not the one the app starts on makes the user's
+         * first action every launch a correction. The call log is one tap away and keeps
+         * its badge for anything missed.
+         *
+         * Chats is a placeholder until that module lands, and starting on it is still
+         * right: it is the shell's front door, and moving the front door once the
+         * furniture arrives is the change nobody wants to make twice.
          */
-        val START: AppDestination = HISTORY
+        val START: AppDestination = CHATS
 
         /**
-         * The bar, in order. Chats sits first because that is where a messaging app opens
-         * once it has messages; the app still *starts* on Calls until the module lands,
-         * which is what [START] says and what makes this list a layout rather than a
-         * promise. Settings is deliberately absent — see the class comment.
+         * The bar, in order, and [START] is its first item. Settings is deliberately
+         * absent — see the class comment.
          */
         val TOP_LEVEL: List<AppDestination> = listOf(CHATS, HISTORY)
 

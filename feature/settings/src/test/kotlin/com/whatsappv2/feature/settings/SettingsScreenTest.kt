@@ -127,4 +127,13 @@ class SettingsScreenTest {
         setContent()
         compose.onNodeWithText("App settings").assertIsDisplayed()
     }
+
+    @Test
+    fun `the installed version is shown at the foot of the screen`() {
+        // Robolectric reports the version of the package under test, so what is asserted
+        // is that the footer is there and reachable — the formatting is AppVersionTest's.
+        setContent()
+
+        compose.onNodeWithTag(TAG_APP_VERSION).performScrollTo().assertIsDisplayed()
+    }
 }

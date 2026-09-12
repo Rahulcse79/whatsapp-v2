@@ -56,12 +56,14 @@ class AppRootNavigationTest {
     fun setUp() = hilt.inject()
 
     @Test
-    fun `the app opens on Calls`() {
+    fun `the app opens on Chats, the bar's first tab`() {
+        // It opened on Calls, which meant the first tab of a two-tab bar was never the one
+        // you landed on. The assertion names the tab and its selected state rather than
+        // the word, because the label is on screen twice — as the title and as the tab.
         compose.setContent { WhatsAppV2Theme { AppRoot() } }
 
-        // "Calls" is on screen twice now — the screen's title and its tab — so the
-        // assertion names the tab and its selected state rather than the word.
-        compose.onNodeWithTag(tabTag(AppDestination.HISTORY)).assertIsSelected()
+        compose.onNodeWithTag(tabTag(AppDestination.CHATS)).assertIsSelected()
+        compose.onNodeWithText("Messages are coming").assertIsDisplayed()
     }
 
     @Test
@@ -93,6 +95,9 @@ class AppRootNavigationTest {
         // invites losing what you were doing — half a number, in this case.
         compose.setContent { WhatsAppV2Theme { AppRoot() } }
 
+        // Via Calls, which is where the dialler's button lives; the app opens on Chats.
+        compose.onNodeWithTag(tabTag(AppDestination.HISTORY)).performClick()
+        compose.waitForIdle()
         compose.onNodeWithContentDescription("Open the dialler").performClick()
         compose.waitForIdle()
 
@@ -103,6 +108,9 @@ class AppRootNavigationTest {
     fun `the floating button opens the dialler`() {
         compose.setContent { WhatsAppV2Theme { AppRoot() } }
 
+        // Via Calls, which is where the dialler's button lives; the app opens on Chats.
+        compose.onNodeWithTag(tabTag(AppDestination.HISTORY)).performClick()
+        compose.waitForIdle()
         compose.onNodeWithContentDescription("Open the dialler").performClick()
         compose.waitForIdle()
 
