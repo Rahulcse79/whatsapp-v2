@@ -146,7 +146,7 @@ Two consequences are deliberate and are written here so neither is rediscovered 
 
 ### ADR-004 — Push wake path: **RFC 8599 client parameters + an ESL-driven push gateway**
 
-**Status:** Accepted, with one item to verify · **Decided:** 2026-09-04 · **Decider:** delegated to engineering
+**Status:** Accepted; verified against the target 2026-09-12 · **Decided:** 2026-09-04 · **Decider:** delegated to engineering
 
 **Context.** Android will not let a backgrounded app hold a SIP registration
 indefinitely. A registration-only design misses incoming calls in Doze or after process
@@ -155,8 +155,9 @@ death; on Android 12+ push is the primary delivery path, not a fallback (§2.5).
 **Decision — a two-part design, so the client is correct regardless of what the server
 turns out to support:**
 
-**Client side (build unconditionally).** Always send RFC 8599 push parameters on the
-`Contact` header at `REGISTER`:
+**Client side (build unconditionally).** Always send RFC 8599 push parameters in the
+`Contact` **URI** at `REGISTER` (`AccountRegConfig.contactUriParams`, not `contactParams`
+— the latter is a header parameter after the `>`, which FreeSWITCH does not store):
 
 ```
 pn-provider = fcm
@@ -190,11 +191,21 @@ is required either way. Build a small service that:
 the INVITE over the secured signalling channel, not in the push (DoD 12). The push says
 only "wake up and re-register".
 
-**To verify (Task 38, before implementing):** whether the deployed FreeSWITCH version
-stores `pn-*` parameters in its sofia registrations — inspect a live registration
-(`sofia status profile <profile> reg`) rather than assuming from version numbers. If it
-does not retain them, the gateway reads tokens from its own store instead, and the client
-side is unchanged. This is why the client half is built unconditionally.
+**Verified (2026-09-12, FreeSWITCH 1.10.11):** sofia keeps `Contact` *URI* parameters in
+the registration it stores (`;ob` and the `pn-*` ones are visible in `sofia_contact` and
+`show registrations`) and drops `Contact` *header* parameters. The first client version
+sent the `pn-*` set as header parameters, so nothing reached the registrar; it now sends
+them as URI parameters. Two consequences the gateway design carries: sofia copies URI
+parameters into the Request-URI, Route and To of every INVITE it sends (1306 → 1675 bytes,
+fragmented on a 1500-MTU path), so the directory `dial-string` strips them before dialling;
+and a `Registered` state in this app says nothing about reachability, so **every**
+`incoming_call` push produces a REGISTER (a refresh when the account looks registered, a
+login otherwise) and the gateway holds the call until that REGISTER lands.
+
+**The gateway exists:** `coralx-push-sender` (Go, no dependencies; its README is the
+FreeSWITCH install and Firebase runbook). It names the account in the push by SIP user, so
+`account_id` is resolved here by username as well as by the internal id
+(`PushAccountResolver`).
 
 **Consequence.** A backend component must be built and operated. It is small, but it is
 real work outside this repo, and it is **out of scope for this app** (§11) — the app
@@ -674,8 +685,8 @@ Tracked, not guessed (§13). Each names an owner and a deadline.
 | Q2 | If closed-source: is the Belledonne commercial licence budgeted? | Business | Before release |
 | ~~Q3~~ | ~~FreeSWITCH hostname, SIP domain, transport, and TLS CA~~ — **answered, see §3.1** | Infra | ~~Task 32~~ |
 | ~~Q4~~ | ~~Test extensions to reserve for automation, and a conference room~~ — **answered, see §3.1** | Infra | ~~Task 32~~ |
-| Q5 | Does the deployed FreeSWITCH retain `pn-*` params in sofia registrations? | Infra | Task 38 |
-| Q6 | Who builds and operates the ESL push gateway? It is outside this repo. | Eng lead | Before Task 38 |
+| ~~Q5~~ | ~~Does the deployed FreeSWITCH retain `pn-*` params in sofia registrations?~~ — **answered: URI params yes, header params no; see ADR-004** | Infra | ~~Task 38~~ |
+| ~~Q6~~ | ~~Who builds and operates the ESL push gateway?~~ — **`coralx-push-sender`, next to FreeSWITCH; see ADR-004** | Eng lead | ~~Before Task 38~~ |
 | Q7 | Does the conference profile publish a participant roster? | Infra | Task 60 |
 | Q8 | Is call recording actually required, and in which jurisdictions? Drives the consent model in §2.6. | Legal / Product | Before Task 58 |
 | Q9 | Enable SIP TLS on the test target: run `gentls_cert`, set `internal_ssl_enable=true`. Until then Task 33 covers UDP and TCP only. | Infra | Task 33 |

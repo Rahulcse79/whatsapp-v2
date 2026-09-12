@@ -162,13 +162,17 @@ than as busy. The 486 path is implemented and used; it is simply used where it i
 - **Transfer** (Task 55) and **conferencing** (Task 60) still answer `EngineUnavailable`.
   They are delegated to `UnavailableSipEngine` rather than restubbed, so there is one set
   of "not built yet" answers instead of two that can drift.
-- **The push gateway** is a backend component and is out of scope for this app (ADR-004,
-  §11). The client half — RFC 8599 parameters on REGISTER, token rotation, the wake path —
-  is built and unit-tested; it does nothing until a gateway sends to it.
+- **The push gateway** is a backend component and lives outside this app (ADR-004, §11):
+  `coralx-push-sender`, next to FreeSWITCH. The client half — RFC 8599 parameters in the
+  REGISTER `Contact` URI, token rotation, the wake path — is built and unit-tested; it does
+  nothing until the gateway sends to it. The gateway holds a call until it sees the
+  REGISTER the push produced, so the wake path never skips that REGISTER, whatever this
+  process believes about its registration (`PushWakePolicy.registerStep`).
 - **`google-services.json`** is deliberately not in this repository. Without it the FCM SDK
   never delivers a message, `PushTokenPublisher` logs that push is unconfigured, and the
   app registers and takes calls exactly as before — it simply misses calls that arrive in
-  Doze.
+  Doze. Dropping the file into `app/` (gitignored) is the whole enablement: the build turns
+  it into the resources Firebase reads, without the google-services plugin.
 
 ## What still needs a device
 
