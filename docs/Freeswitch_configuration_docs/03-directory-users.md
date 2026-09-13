@@ -65,7 +65,7 @@ Twenty files. Sixteen are vanilla; `1001`–`1004` carry three extra call-forwar
 | Password | every user shares `$${default_password}` (`vars.xml` line 15). It is the value FreeSWITCH ships with; treat it as public and change it before the server is reachable from anywhere but this LAN |
 | `user_context=default` | what puts an authenticated call into `dialplan/default.xml` rather than the profile's `context=public` |
 | `effective_caller_id_*` | what the callee's app shows: `"Extension 1001" <1001>` |
-| `cfwd_*` | not vanilla; present on 1001–1004 only. The `cfwd_master`/`agent_1003`/`agent_1004` extensions in `dialplan/default.xml` actually read `mod_hash` (`hash(call_forward/1003)`), not these variables — see [04](04-dialplan.md) |
+| `cfwd_*` | not vanilla; present on 1001–1004 only, and nothing reads them: the `cfwd_master`/`agent_1003`/`agent_1004` extensions that used to sit in `dialplan/default.xml` read `mod_hash` (`hash(call_forward/1003)`) instead, and were retired on 2026-09-13 — see [04](04-dialplan.md) |
 | Reserved | **1018 and 1019 belong to the instrumented suite** (`docs/testing.md`, ADR-005). Do not sign a handset in on them |
 | In use (Sept 2026) | 1001 and 1003/1004 on the two Zebra TC15s; 1005/1006 used by scripted SIP tests; 1002 named in the media-bypass dialplan |
 | Other files | `brian.xml`, `default.xml`, `example.com.xml`, `skinny-example.xml` — stock examples, no password, unusable for registration |

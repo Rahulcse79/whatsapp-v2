@@ -56,9 +56,16 @@ Then `fs_cli -x reloadxml`. Requirements: `mod_event_socket`, `mod_dptools`, `mo
 * The `event` application must be given `Event-Name=CUSTOM`; without it FreeSWITCH fires
   a `CHANNEL_APPLICATION` event that a `CUSTOM` subscription never sees.
 * Nothing in the three files names an IP address or an extension range: `$${domain}` is
-  the server's own domain and `user_exists` asks the directory. Extensions with their own
-  rule earlier in `default.xml` (on this machine `agent_1003`, `agent_1004`) never reach
-  `01_coralx_push_wake.xml`; move them or add the same actions.
+  the server's own domain and `user_exists` asks the directory. An extension with its own
+  rule in the body of `default.xml` matches *before* anything in `default/` and never
+  reaches `01_coralx_push_wake.xml` — on this machine the April `agent_1003`/`agent_1004`
+  rules did exactly that (and bridged without media bypass, so a Lyra call to 1003 died as
+  488) until they were removed on 2026-09-13. Check `default.xml` for such rules first.
+* Media is bypassed (`bypass_media=true`) on every handset-to-handset call, in both the
+  first attempt and `coralx-resume`: the handsets negotiate the codec between themselves,
+  which is what carries Lyra — a codec FreeSWITCH does not know. Handsets on two different
+  NATs cannot reach each other that way; on such a deployment change it to
+  `proxy_media=true` (FreeSWITCH relays the RTP without decoding it).
 * Rollback: delete `01_coralx_push_wake.xml` (restore the previous rule from its
   `.bak.<timestamp>` if there was one), delete `coralx.xml`, restore the dial-string,
   `reloadxml`.

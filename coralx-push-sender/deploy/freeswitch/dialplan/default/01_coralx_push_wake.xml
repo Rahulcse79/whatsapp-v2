@@ -7,6 +7,16 @@
     per deployment: no extension range, no IP address. $${domain} is the server's own SIP
     domain from vars.xml, and user_exists is answered by the directory.
 
+    Media is BYPASSED for every handset-to-handset call (bypass_media=true): the SDP
+    crosses FreeSWITCH untouched and the two handsets negotiate the codec between
+    themselves, with RTP flowing phone-to-phone. This is what lets two Coral X handsets
+    talk Lyra (ADR-008) - a codec FreeSWITCH does not know and would otherwise strip from
+    the offer, which ends the call as 488 INCOMPATIBLE_DESTINATION. The price is that
+    FreeSWITCH is not in the media path, so handsets on two different NATs cannot reach
+    each other; on such a deployment use proxy_media=true instead (RTP relayed, still not
+    decoded, so Lyra still passes). Calls to the test applications (9196-9199, 3000) are
+    not affected - they are separate extensions and need FreeSWITCH's own media.
+
     Why one bridge is not enough: a Coral X handset that is asleep, dozing or swiped
     from Recents still has a registration row here, but nothing behind it - the INVITE
     to that contact gets no 100 Trying and dies as ORIGINATOR_CANCEL after call_timeout.
@@ -25,12 +35,19 @@
          single direct bridge this rule replaces.
 
     Put per-user special routing (call forwarding, IVRs) in a file that sorts BEFORE
-    this one, or in the body of default.xml; the first matching extension wins.
+    this one, or in the body of default.xml; the first matching extension wins. Note
+    that an extension in the body of default.xml matches BEFORE anything in this
+    directory, and that a nested <condition> on a variable that is only set at execute
+    time (e.g. ${cfwd_to}) is evaluated at parse time, where it is empty - the actions
+    are queued anyway and the extension does not stop the search, so the next matching
+    rules run too. That is how the April agent_1003/agent_1004 rules used to swallow
+    calls to 1003 and 1004 before this one; they were removed on 2026-09-13.
   -->
   <extension name="coralx-push-wake">
     <condition field="${user_exists(id ${destination_number} $${domain})}" expression="^true$">
       <action application="set" data="hangup_after_bridge=true"/>
       <action application="set" data="call_timeout=30"/>
+      <action application="set" data="bypass_media=true"/>
 
       <!-- 1. Announce. Fired before the first attempt so the wake-up is already in
               flight while the direct INVITE is finding out the socket is dead.

@@ -21,20 +21,27 @@ precedence trap below.
 The authoritative list of what is active is FreeSWITCH's own parsed copy,
 `var/log/freeswitch/freeswitch.xml.fsxml` (comments in the source files are misleading;
 several `<!-- -->` blocks close mid-file). The tables below were generated from it on
-2026-09-13.
+2026-09-13 and revised the same afternoon, after the April `cfwd_master` /
+`agent_1003` / `agent_1004` rules and the pair-specific bypass file were retired (see
+[08](08-changelog.md)).
+
+**One rule now carries every handset-to-handset call:** `01_coralx_push_wake.xml`, with
+`bypass_media=true`. The SDP crosses FreeSWITCH untouched, the handsets pick the codec
+between themselves and RTP flows phone-to-phone — which is what carries Lyra (ADR-008), a
+codec this server does not know. On a deployment where handsets sit behind different NATs
+change it to `proxy_media=true` (RTP relayed, still not decoded).
 
 ## A call from 1003 to 1001, end to end
 
 ```mermaid
 flowchart TD
     I["INVITE sip:1001@192.168.2.196<br/>from registered user 1003"] --> C{"context = default<br/>(user_context of 1003)"}
-    C --> D1["default.xml body:<br/>cfwd_master · ai_voice_agent · agent_1003 · agent_1004 · agent_5603"]
-    D1 -- "none match 1001" --> D2["00_cfwd · 00_ladspa · 00_pizza_demo"]
-    D2 -- "no match" --> D3["00_whatsapp_v2_bypass<br/>caller 1001|1002 AND callee 1001|1002?"]
-    D3 -- "caller is 1003: no" --> D4["01_Talking_Clock · 01_example.com"]
-    D4 -- "no match" --> D5["<b>01_coralx_push_wake</b><br/>user_exists(1001) = true"]
+    C --> D1["default.xml body:<br/>ai_voice_agent · agent_5603"]
+    D1 -- "none match 1001" --> D2["00_ladspa · 00_pizza_demo"]
+    D2 -- "no match" --> D4["01_Talking_Clock · 01_example.com"]
+    D4 -- "no match" --> D5["<b>01_coralx_push_wake</b><br/>user_exists(1001) = true<br/>bypass_media=true"]
     D5 --> E["event coralx::push_wake<br/>→ push sender sends FCM"]
-    E --> B1["bridge user/1001@domain<br/>progress_timeout=3"]
+    E --> B1["bridge user/1001@domain<br/>progress_timeout=3 · SDP passed through"]
     B1 -- "100/180 within 3 s" --> RING["phone rings · call proceeds"]
     B1 -- "PROGRESS_TIMEOUT /<br/>USER_NOT_REGISTERED" --> RR["ring_ready → 180 to caller<br/>sched_transfer +15 · park"]
     RR -- "sender: fresh REGISTER seen" --> RES["uuid_transfer → context coralx-resume<br/>bridge user/1001@domain"]
@@ -48,34 +55,38 @@ In evaluation order. *Status* says whether the entry can actually work on this s
 
 | # | Number(s) | Extension | File | What it does | Status |
 |---|---|---|---|---|---|
-| 1 | `1003` | `cfwd_master` | `default.xml` | reads `hash(select/call_forward/1003)`; if a number is stored, `transfer` to it | works only if something has written that hash (nothing in the config does); otherwise falls through |
-| 2 | `1234` | `ai_voice_agent` | `default.xml` | sets ~20 `AI_*` variables, plays a tone, `answer`, `audio_stream_ai` | **dead** — `mod_audio_stream` is on disk but not loaded, so the application does not exist. The block also holds a third-party API key in clear text; move it out of the dialplan |
-| 3 | `1003` | `agent_1003` | `default.xml` | call-forward lookup, then `bridge user/1003@$${domain}` | works — **this is what a call to 1003 hits, never #14** |
-| 4 | `1004` | `agent_1004` | `default.xml` | call-forward lookup, then `ring_ready` + `bridge user/1004@$${domain}` with `continue_on_fail=true` | works; on failure the walk continues to #14 |
-| 5, 6 | `5603` | `agent_5603` (twice, identical) | `default.xml` | `bridge sofia/external/5603@192.168.20.56:5060` | depends on that host; duplicate entry is harmless |
-| 7 | `1003` | `cfwd_master` (again) | `default/00_cfwd.xml` | same as #1 | unreachable — #3 always wins first |
-| 8 | `101` | `101` | `default/00_ladspa.xml` (vanilla) | LADSPA audio-effects demo | **dead** — no `mod_ladspa` |
-| 9 | `pizza`, `74992` | `pizza_demo` | `default/00_pizza_demo.xml` (vanilla) | JavaScript demo | **dead** — needs `mod_v8` |
-| 10 | `1001`/`1002` **from** `1001`/`1002` | `whatsapp_v2_bypass_between_handsets` | `default/00_whatsapp_v2_bypass.xml` | `bypass_media=true`, `bridge user/$1@${domain_name}`, `continue_on_fail=true` | project test (2026-09-11): SDP crosses untouched so the phones can negotiate a codec the server lacks (Lyra, ADR-008). On failure continues to #14 |
-| 11–13 | `9170`, `9171`, `9172` | `Talking Clock …` | `default/01_Talking_Clock.xml` (vanilla) | speaks time / date / both | works (`mod_say_en`) |
+| 1 | `1234` | `ai_voice_agent` | `default.xml` | sets ~20 `AI_*` variables, plays a tone, `answer`, `audio_stream_ai` | **dead** — `mod_audio_stream` is on disk but not loaded, so the application does not exist. The block also holds a third-party API key in clear text; move it out of the dialplan |
+| 2, 3 | `5603` | `agent_5603` (twice, identical) | `default.xml` | `bridge sofia/external/5603@192.168.20.56:5060` | depends on that host; duplicate entry is harmless |
+| 4 | `101` | `101` | `default/00_ladspa.xml` (vanilla) | LADSPA audio-effects demo | **dead** — no `mod_ladspa` |
+| 5 | `pizza`, `74992` | `pizza_demo` | `default/00_pizza_demo.xml` (vanilla) | JavaScript demo | **dead** — needs `mod_v8` |
+| 6–8 | `9170`, `9171`, `9172` | `Talking Clock …` | `default/01_Talking_Clock.xml` (vanilla) | speaks time / date / both | works (`mod_say_en`) |
 | — | 7 digits, 11 digits, `011…` | `*.example.com` | `default/01_example.com.xml` (vanilla) | `bridge sofia/gateway/${default_gateway}/…` | **dead** — no gateway is configured |
-| 14 | any directory user (`user_exists` = true) | **`coralx-push-wake`** | `default/01_coralx_push_wake.xml` | the push-wake route, see [05](05-push-wake.md) | **the route every Coral X test call takes** (except 1003/1004, see above). Numbering-agnostic since 2026-09-13; it replaced `01_local_users_100x.xml`, which matched `^(10[01][0-9])$` |
-| 15 | `*97` | `cisco_voicemail_star97` | `default/02_cisco_features.xml` | `voicemail check default 192.168.103.24 ${caller_id_number}` | **stale** — the domain is hardcoded to the address the server had before 2026-09-07, so no mailbox is found. Replace `192.168.103.24` with `$${domain}` |
-| 16 | `vm:NNNN` | `cisco_voicemail_deposit` | same | `voicemail default 192.168.103.24 $1` | **stale**, same fix |
-| 17 | `3000` | `cisco_conference_3000` | same | `conference 3000@default` | works — the conference room `docs/testing.md` names |
-| 18 | `9196` | `whatsapp_v2_echo` | `default/03_whatsapp_v2_test_apps.xml` | `answer`, `echo` (audio **and video** back to the caller) | project test |
-| 19 | `9197` | `whatsapp_v2_bridged_echo` | same | `bridge loopback/9196/default` — a real two-leg call so an in-dialog REFER has a B-leg | project test |
-| 20 | `9198` | `whatsapp_v2_tone` | same | `answer`, endless two-tone `tone_stream` | project test |
+| 9 | any directory user (`user_exists` = true) | **`coralx-push-wake`** | `default/01_coralx_push_wake.xml` | `bypass_media=true`, then the push-wake route, see [05](05-push-wake.md) | **the route every handset-to-handset call takes**, 1003 and 1004 included since the afternoon of 2026-09-13. Numbering-agnostic; it replaced `01_local_users_100x.xml` (`^(10[01][0-9])$`) and, for media bypass, `00_whatsapp_v2_bypass.xml` (1001↔1002 only) |
+| 10 | `*97` | `cisco_voicemail_star97` | `default/02_cisco_features.xml` | `voicemail check default 192.168.103.24 ${caller_id_number}` | **stale** — the domain is hardcoded to the address the server had before 2026-09-07, so no mailbox is found. Replace `192.168.103.24` with `$${domain}` |
+| 11 | `vm:NNNN` | `cisco_voicemail_deposit` | same | `voicemail default 192.168.103.24 $1` | **stale**, same fix |
+| 12 | `3000` | `cisco_conference_3000` | same | `conference 3000@default` | works — the conference room `docs/testing.md` names |
+| 13 | `9196` | `whatsapp_v2_echo` | `default/03_whatsapp_v2_test_apps.xml` | `answer`, `echo` (audio **and video** back to the caller) | project test |
+| 14 | `9197` | `whatsapp_v2_bridged_echo` | same | `bridge loopback/9196/default` — a real two-leg call so an in-dialog REFER has a B-leg | project test |
+| 15 | `9198` | `whatsapp_v2_tone` | same | `answer`, endless two-tone `tone_stream` | project test |
 | — | `9199` | *(none)* | — | deliberately unrouted: `NO_ROUTE_DESTINATION`, the transfer target that says no | project test |
 
-### The precedence trap
+### The precedence trap (and how it bit)
 
-`agent_1003` (#3) has no `continue_on_fail`, so a call to **1003** whose bridge fails is
-hung up right there — it never reaches the push-wake route (#14). **1004** does reach it,
-but only after its own 30 s attempt. The Coral X handset under test is **1001**, which has
-no earlier rule and goes straight to #14. If 1003/1004 need push wake, move their
-call-forward logic into a file that sorts before `01_coralx_push_wake.xml` and ends by
-falling through, or delete `agent_1003`/`agent_1004`.
+Anything in the body of `default.xml` matches before anything under `default/`. Until
+the afternoon of 2026-09-13 the body held April's `cfwd_master`, `agent_1003` and
+`agent_1004` (an AI-IVR experiment), and a second `cfwd_master` sat in
+`default/00_cfwd.xml`. They were broken in three ways at once: `hash select/…` is not a
+verb the `hash` *application* has, `${hash(call_forward/1003)}` is missing its `select/`
+verb (it always expanded to `-ERR Usage`), and their `bridge user/1003` had no media
+bypass and no `continue_on_fail`. A Lyra-only 1002→1003 therefore died as **488
+INCOMPATIBLE_DESTINATION**: FreeSWITCH rewrote the offer to PCMU/PCMA+VP8, the callee
+answered with the audio line refused (`m=audio 0`), and no codec matched the A-leg. There
+is a second trap inside: a nested `<condition>` on a variable that is only set at execute
+time (`${cfwd_to}`) is evaluated at *parse* time, where it is empty — the actions are
+queued anyway and the extension does not stop the walk, so `agent_1003`, the bypass rule
+and `coralx-push-wake` all queued their actions on one call and the first `bridge` decided
+the outcome. All five rules are retired (`.bak.20260913-153513` next to each file); the
+calls they matched now go through `coralx-push-wake` like every other handset.
 
 ### Anything else you dial
 
@@ -89,7 +100,7 @@ vanilla `Local_Extension` was replaced by `coralx-push-wake`; there is no operat
 |---|---|---|---|
 | `public` | `dialplan/public.xml` | `unloop`, `public_to_ai_ivrs` (1234 → default), `outside_call`, `call_debug`, `public_extensions` (**1000–1019 → `transfer` to `default`**), `public_conference_extensions` (35xx–38xx), `public_did` (5551212) | where unauthenticated calls land (external profile, or an ACL-allowed source). `public_extensions` means an inbound trunk call for 1001 still ends up in `local-users-100x` |
 | `features` | `dialplan/features.xml` | `dx`, `att_xfer`, `is_transfer`, `cf`, `please_hold`, `is_secure` | stock helpers used by `execute_extension`; nothing in the project references them |
-| `coralx-resume`, `coralx-timeout` | `dialplan/coralx.xml` | one extension each for `^(10[01][0-9])$` | the push sender transfers parked calls here — [05](05-push-wake.md) |
+| `coralx-resume`, `coralx-timeout` | `dialplan/coralx.xml` | one extension each, `user_exists` like the push-wake rule; `coralx-resume` sets `bypass_media=true` again before its bridge | the push sender transfers parked calls here — [05](05-push-wake.md) |
 | `skinny-patterns` | `dialplan/skinny-patterns.xml` | stock Cisco SCCP patterns | dead — `mod_skinny` is not loaded |
 
 ## Adding a route

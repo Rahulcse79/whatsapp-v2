@@ -73,7 +73,7 @@ are loaded but not preferred; a phone that offers only one of them will still co
 | Audio, phone ↔ server (echo `9196`, tone `9198`, conference `3000`) | PCMU or PCMA |
 | Audio, phone ↔ phone through the server (`1001` → `1003`) | PCMU/PCMA; the server transcodes nothing because both ends share the set |
 | Video | VP8 both ways; `9196` echoes the caller's own camera |
-| Opus / Lyra between two Coral X phones | only with the media-bypass test route (`00_whatsapp_v2_bypass.xml`, 1001 ↔ 1002), where the SDP is passed through untouched and the server never sees the media |
+| Opus / Lyra between two Coral X phones | yes — every handset-to-handset call is bridged with `bypass_media=true` (`01_coralx_push_wake.xml` and `coralx-resume`, since 2026-09-13 15:35): the SDP is passed through untouched and the server never sees the media. Any pair of directory users, not only 1001 ↔ 1002 |
 | SRTP | `a=crypto` on `RTP/AVP` → `488`; encryption must be off ([02](02-sip-profile-internal.md)) |
 
 How to check quickly:

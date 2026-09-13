@@ -16,6 +16,9 @@
       <condition field="${user_exists(id ${destination_number} $${domain})}" expression="^true$">
         <action application="set" data="hangup_after_bridge=true"/>
         <action application="set" data="call_timeout=30"/>
+        <!-- Same media bypass as the first attempt (see 01_coralx_push_wake.xml): the
+             handsets negotiate the codec themselves, which is what carries Lyra. -->
+        <action application="set" data="bypass_media=true"/>
         <!-- Both were set for the 3 s direct attempt and survive the transfer. Here the
              device has just registered, so it gets the full ring time, and a rejection
              (486, 603) must reach the caller as itself rather than be "continued" past. -->
