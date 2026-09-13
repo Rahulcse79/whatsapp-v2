@@ -124,7 +124,7 @@ func (c *Client) Err() error {
 // Close shuts the connection down.
 func (c *Client) Close() error {
 	c.fail(ErrClosed)
-	return c.conn.Close()
+	return nil
 }
 
 // Subscribe asks for the named events in JSON format. Names are as on the
@@ -204,10 +204,16 @@ func (c *Client) write(line string) error {
 	return err
 }
 
+// fail records the first error and closes the socket. Closing it here, and not
+// only where the reader notices, is what keeps a failure seen on the write side
+// from wedging the client: without it, readLoop stayed in ReadString for as
+// long as the peer was silent, Events() never closed, and the owner - who
+// reconnects when it does - waited forever on a connection already marked dead.
 func (c *Client) fail(err error) {
 	c.errOnce.Do(func() {
 		c.err = err
 		close(c.done)
+		c.conn.Close()
 	})
 }
 
@@ -229,7 +235,6 @@ func (c *Client) readLoop() {
 		m, err := c.readMessage()
 		if err != nil {
 			c.fail(fmt.Errorf("esl: read: %w", err))
-			c.conn.Close()
 			return
 		}
 		switch m.contentType() {
@@ -255,7 +260,6 @@ func (c *Client) readLoop() {
 			}
 		case "text/disconnect-notice":
 			c.fail(fmt.Errorf("esl: server disconnected: %s", strings.TrimSpace(m.body)))
-			c.conn.Close()
 			return
 		}
 	}

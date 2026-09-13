@@ -82,6 +82,12 @@ func mustDuration(s string) time.Duration {
 	return d
 }
 
+// apiTimeout bounds one event-socket round trip. The wake manager calls the
+// switch with its lock held, so an event socket that has stopped answering -
+// FreeSWITCH swapped out under memory pressure did exactly that on 2026-09-13,
+// and fs_cli hung with it - must not hold every other call's push behind it.
+const apiTimeout = 5 * time.Second
+
 // eslSwitch moves calls on through whichever ESL connection is current.
 type eslSwitch struct {
 	client         atomic.Pointer[esl.Client]
@@ -102,6 +108,8 @@ func (s *eslSwitch) transfer(ctx context.Context, uuid, ext, dialplanContext str
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
+	defer cancel()
 	// The dialplan scheduled its own fallback transfer under the channel's
 	// UUID as the task group; it must not fire on top of this one.
 	_, _ = c.API(ctx, "sched_del "+uuid)
@@ -226,7 +234,9 @@ func runConnection(ctx context.Context, cfg config, log *slog.Logger, reg *regis
 	// Registrations that predate this process, and their tokens. The file
 	// already has the ones seen before a restart; this catches a token that
 	// registered while the sender was down.
-	if csv, err := client.API(ctx, "show registrations"); err == nil {
+	seedCtx, cancelSeed := context.WithTimeout(ctx, apiTimeout)
+	defer cancelSeed()
+	if csv, err := client.API(seedCtx, "show registrations"); err == nil {
 		n := reg.ParseShowRegistrations(csv, time.Now())
 		log.Info("seeded tokens from live registrations", "tokens", n, "known", len(reg.Users()))
 	} else {

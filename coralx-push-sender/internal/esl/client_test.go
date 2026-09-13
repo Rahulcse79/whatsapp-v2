@@ -181,3 +181,30 @@ func TestServerGoingAwayEndsTheClient(t *testing.T) {
 		t.Fatal("a command after the connection ended must fail")
 	}
 }
+
+func TestAFailureSeenOnTheWriteSideUnblocksTheReader(t *testing.T) {
+	// The server stays connected and silent, so the reader is parked in
+	// ReadString. A failure recorded from anywhere else (a write error) must
+	// still end Events(), or the owner never reconnects.
+	s := newFakeServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c, err := Dial(ctx, s.listener.Addr().String(), "ClueCon")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	c.fail(fmt.Errorf("esl: write: %w", io.ErrClosedPipe))
+
+	select {
+	case _, ok := <-c.Events():
+		if ok {
+			t.Fatal("expected Events() to be closed")
+		}
+	case <-ctx.Done():
+		t.Fatal("Events() stayed open after the client failed")
+	}
+	if c.Err() == nil {
+		t.Fatal("Err() must report the failure")
+	}
+}

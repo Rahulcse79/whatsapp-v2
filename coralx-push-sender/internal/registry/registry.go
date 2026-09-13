@@ -44,9 +44,10 @@ func (t Token) Redacted() string {
 
 // Registry is the user → token map, safe for concurrent use.
 type Registry struct {
-	mu     sync.RWMutex
-	tokens map[string]Token
-	path   string // "" means in-memory only
+	mu        sync.RWMutex
+	persistMu sync.Mutex // one writer of the file at a time
+	tokens    map[string]Token
+	path      string // "" means in-memory only
 }
 
 // New returns a registry persisted at path (may be empty for no persistence).
@@ -116,11 +117,15 @@ func (r *Registry) Users() []string {
 }
 
 // persist writes the map atomically (temp file + rename) so a crash mid-write
-// leaves the previous file, not half of a new one.
+// leaves the previous file, not half of a new one. Writers are serialised: two
+// REGISTERs landing together both wrote the same temp file, and whichever
+// renamed second found it gone, so the file could miss the later token.
 func (r *Registry) persist() {
 	if r.path == "" {
 		return
 	}
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
 	r.mu.RLock()
 	data, err := json.MarshalIndent(r.tokens, "", "  ")
 	r.mu.RUnlock()
