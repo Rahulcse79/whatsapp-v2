@@ -1,0 +1,9 @@
+{
+  // Added 2026-09-13 while testing on this machine: the redhat.java extension was importing this
+  // Gradle build and spawning a Gradle daemon per attempt (20+ JVMs, 8 GB RAM, load average 340),
+  // which starved FreeSWITCH and adb. Kotlin/Android editing does not need the Java Gradle import.
+  // Delete this file to restore the default.
+  "java.import.gradle.enabled": false,
+  "java.autobuild.enabled": false,
+  "java.server.launchMode": "LightWeight"
+}
