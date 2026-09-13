@@ -171,9 +171,25 @@ class CallViewModel @Inject constructor(
                 .collect { (id, active) ->
                     if (id !in shown || active.any { it.callId == id }) return@collect
                     val remaining = active.firstOrNull { it.state.isEstablished } ?: active.firstOrNull()
-                    if (remaining != null) watched.value = remaining.callId
+                    if (remaining != null) pointAt(remaining.callId)
                 }
         }
+    }
+
+    /**
+     * Re-points the screen at a call the engine holds right now.
+     *
+     * Counted as shown at once, not when [stateFor] first sees it. The switch to the new
+     * call's flow is a separate dispatch, and the engine can drop the call in between: the
+     * far end of a completed attended transfer is hung up by the server within tens of
+     * milliseconds of the transfer report. A call that is gone by the time its flow starts
+     * would never be "seen", and the screen sat on "Connecting" for a call that had ended,
+     * with nothing to dismiss it (TC15, 2026-09-13, after "Complete transfer"). Shown and
+     * then absent is [CallUiState.Finished], which closes the screen.
+     */
+    private fun pointAt(callId: CallId) {
+        shown += callId
+        watched.value = callId
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -211,8 +227,10 @@ class CallViewModel @Inject constructor(
 
     private fun stateFor(callId: CallId): Flow<CallUiState> {
         // Local to this flow, so watching a second call starts from Loading again rather
-        // than inheriting the first call's history.
-        var seen = false
+        // than inheriting the first call's history - unless the screen was pointed at this
+        // call while it was live, which [pointAt] records; see there for why that has to
+        // count before the first emission.
+        var seen = callId in shown
 
         val engine = combine(
             calls.activeCalls,
@@ -466,7 +484,7 @@ class CallViewModel @Inject constructor(
     fun respondToSecondCall(callId: CallId, response: SecondCallResponse) {
         act(CallAction.ANSWER) {
             callWaiting.respond(callId, response).also { result ->
-                if (result is Outcome.Success && response != SecondCallResponse.REJECT) watched.value = callId
+                if (result is Outcome.Success && response != SecondCallResponse.REJECT) pointAt(callId)
             }
         }
     }
@@ -507,7 +525,7 @@ class CallViewModel @Inject constructor(
             when (val result = callWaiting.swapTo(callId)) {
                 is Outcome.Failure ->
                     eventChannel.send(CallEvent.ActionFailed(CallAction.SWAP, result.error.userMessage()))
-                is Outcome.Success -> watched.value = callId
+                is Outcome.Success -> pointAt(callId)
             }
         }
     }

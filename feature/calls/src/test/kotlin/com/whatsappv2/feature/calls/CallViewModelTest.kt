@@ -239,6 +239,38 @@ class CallViewModelTest {
     }
 
     @Test
+    fun `a call the screen is moved to, and that ends before it is drawn, finishes the screen`() = runTest {
+        // Completing an attended transfer: the first call goes with the transfer and the
+        // screen follows the consultation call - which the server hangs up within tens of
+        // milliseconds. Here the screen is not even subscribed while that happens (the
+        // user switched apps mid-consultation). It used to come back to "Connecting" for a
+        // call that had already ended, with nothing to dismiss it.
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val viewModel = viewModel().also { it.watch(first) }
+        viewModel.uiState.test {
+            skipItems(1)
+            awaitDisplay { it.phase == CallPhase.CONNECTED }
+            cancelAndIgnoreRemainingEvents()
+        }
+        // Past the view model's WhileSubscribed timeout, so the state flow really stops.
+        advanceTimeBy(SUBSCRIPTION_TIMEOUT + 1)
+        runCurrent()
+
+        val consultation = engine.placeCall(ACCOUNT.id, REMOTE, MediaProfile.AUDIO).getOrNull()!!
+        engine.simulateRemoteAnswer(consultation)
+        engine.simulateRemoteHangup(first)
+        runCurrent()
+        engine.simulateRemoteHangup(consultation)
+        runCurrent()
+
+        viewModel.uiState.test {
+            awaitFinished()
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun `a transfer after the screen re-points goes to the call on screen`() = runTest {
         // The defect this covers, seen on a TC15: two calls, end the first, the screen
         // correctly follows the second — and Transfer then reported "That call has
@@ -694,6 +726,9 @@ class CallViewModelTest {
 
         /** Two mixed calls is a conference (ADR-009). */
         const val MIN_MIXED_IN_TEST = 2
+
+        /** [CallViewModel]'s `SUBSCRIPTION_TIMEOUT_MILLIS`, which is private to it. */
+        const val SUBSCRIPTION_TIMEOUT = 5_000L
 
         const val MILLIS_PER_SECOND = 1_000L
         const val TICK = 1_100L
