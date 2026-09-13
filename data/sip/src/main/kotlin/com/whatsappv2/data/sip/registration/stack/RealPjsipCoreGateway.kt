@@ -1496,6 +1496,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             val callKey = UUID.randomUUID().toString()
             val call = PjCall(callKey, this, prm.callId)
             calls[callKey] = call
+            call.sendRinging(callKey, logger)
             call.publish(StackCallState.INCOMING_RECEIVED)
         }
     }
@@ -2195,6 +2196,32 @@ private fun Call.applyVideoEnabled(enabled: Boolean, info: CallInfo?) {
             },
         )
     }
+}
+
+/**
+ * 180 Ringing for an INVITE this phone is about to present.
+ *
+ * pjsua answers the INVITE with 100 Trying on its own; the 180 is the application's to
+ * send (RFC 3261 §13.3.1.1) and nothing sent it. The caller then heard nothing while this
+ * phone rang, and a server that waits for progress — FreeSWITCH's `progress_timeout`, 3 s
+ * in the push-wake dialplan — cancelled the leg as unreachable, parked the caller and rang
+ * this phone a second time 15 s later; every call between two awake handsets took 18 s to
+ * connect and left a missed call behind (TC15, 2026-09-13).
+ *
+ * Sent before the app has decided anything about the call, which is what every SIP phone
+ * does: a 486 or 603 that follows is still a valid answer. `CallOpParam()` rather than
+ * `CallOpParam(true)`: pjsua applies the first call setting a response carries and ignores
+ * every later one ("The call setting changes is ignored"), so a default setting here —
+ * which carries `videoCount = 1` — would decide the answer's media before the user has
+ * said whether they want video. The empty setting maps to a null `opt`, which leaves the
+ * decision to [RealPjsipCoreGateway.answerCall].
+ *
+ * A failure is logged and swallowed: this runs inside a pjsua2 callback, and an exception
+ * across the JNI boundary is not a stack trace but undefined behaviour.
+ */
+private fun Call.sendRinging(callKey: String, logger: Logger) {
+    runCatching { answer(CallOpParam().apply { statusCode = pjsip_status_code.PJSIP_SC_RINGING }) }
+        .onFailure { logger.warn(RealPjsipCoreGateway.TAG, "180 Ringing for $callKey failed: ${it.message}") }
 }
 
 /** The stream operation that starts or stops sending captured video. */
