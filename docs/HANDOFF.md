@@ -6,7 +6,9 @@
 > carries the measured baseline. This file says what is done, what is half-done, what is
 > wrong, and what to do next.
 >
-> **Read §0g, then §0f, §0e, §0d, §0c, §0b, §0a — newest first.** §0g is the
+> **Read §0h, then §0g, §0f, §0e, §0d, §0c, §0b, §0a — newest first.** §0h is the Lyra
+> 1002→1003 failure (a dialplan rule from April), the missing 180 Ringing, the push
+> sender's live run, and a full sweep; §0g is the
 > WhatsApp-shaped UI round and the sweep that followed it, which closed ADR-009's `RX 0pkt`
 > item and found that every inbound video call was dying at 88 s; §0f is client-side
 > conferencing (ADR-009); §0e is the full
@@ -227,6 +229,129 @@ drives one phone by adb and Rahul answers the other.
 2. A preview that follows a *rotation* mid-call is untested (the activity recreates and
    re-reports; `LaunchedEffect(configuration)` covers a manifest that does not).
 3. `sudo port install swig-java` so `./build.sh` runs without `SWIG_LIB`.
+
+---
+
+## 0h. 2026-09-13, afternoon — the Lyra 1002→1003 failure, the push sender, and a full sweep
+
+Asked for: why a Lyra-to-Lyra call from 1002 to 1003 fails; whether `coralx-push-sender`
+works; and everything on the TC15 (`24143524701316`, account `1002` on the Mac's
+FreeSWITCH) from A to Z. Nothing was heard by a person this pass; every claim is a SIP
+trace or a pjsua statistic. The scripted far end is `sipua.py` (a UDP UA that REGISTERs,
+offers a Lyra-only SDP, answers or plays dead, and can carry `pn-*` parameters) — it lived
+in the session scratchpad; rewrite it in twenty minutes if needed, do not hunt for it.
+
+### The Lyra call — three causes, server first
+
+1. **Server (root cause, fixed).** `dialplan/default.xml` still carried April's
+   `cfwd_master` / `agent_1003` / `agent_1004` in the context body, ahead of the
+   `default/*.xml` include, so a call to 1003 never reached the bypass rule or push wake.
+   Their `hash` calls were wrong in both forms (always `-ERR Usage`), and their
+   `bridge user/1003` had no media bypass — FreeSWITCH rewrote the Lyra-only offer to
+   PCMU/PCMA+VP8, 1003 answered `m=audio 0`, no codec matched the A-leg:
+   **488 INCOMPATIBLE_DESTINATION** (03:31–03:35 that morning, five times). The
+   pair-specific `00_whatsapp_v2_bypass.xml` (1001↔1002) was the other half of the trap:
+   it shadowed push wake for that pair. All of it is retired (`.bak.20260913-153513`);
+   `01_coralx_push_wake.xml` and `coralx-resume` now set **`bypass_media=true`**, so one
+   rule carries every handset-to-handset call. Verified with two scripted Lyra-only UAs:
+   direct path 200 with the offer untouched; dead-callee path PROGRESS_TIMEOUT 3.7 s →
+   park → `sched_transfer` +15 s → `coralx-resume` → 200 on Lyra, both legs
+   `CS_HIBERNATE`. Then with the app: 1002 → scripted 1005 opened Lyra
+   (`lyra.cpp Opening codec … enc_bit_rate=3200`, `stream #0: lyra (sendrecv)`,
+   `c=IN IP4 192.168.2.191` — media addressed phone-to-phone), and scripted 1006 → 1002
+   answered on Lyra. `docs/Freeswitch_configuration_docs/04`, `06`, `08` and the
+   sender's `deploy/freeswitch/` copies are updated.
+2. **Client (fixed, `RealPjsipCoreGateway.sendRinging`).** The app never sent **180
+   Ringing** as callee — pjsua's automatic 100 Trying was all the caller got. Harmless
+   against a plain bridge; fatal against the push-wake `progress_timeout=3`: FreeSWITCH
+   cancelled the leg as unreachable, parked the caller and rang the phone *again* 15 s
+   later — which is every "Missed call from 1003" in the history that morning. The 180
+   now goes out in `onIncomingCall` (44 ms after the INVITE on the TC15), with
+   `CallOpParam()` and not `(true)`: pjsua keeps the first call setting a response
+   carries and ignores later ones, so the default setting's `videoCount = 1` would have
+   decided the answer's media before the user did. The pjsua2 Android sample does the
+   same thing.
+3. **The 1003 handset itself.** It is registered (refreshes hourly) and answers ping, but
+   its SIP socket answers no INVITE — dozing, or the app is gone behind the registration.
+   Every direct attempt at it today ended NO_ANSWER (480 after 30 s) or, with the sender
+   up, 486 at 3.2 s. That is exactly what push wake is for, and push wake cannot fire
+   without Firebase (below). Nobody has yet heard Lyra between 1002 and 1003; the wire
+   is proven with the scripted far end only.
+
+### The push sender — works as built; FCM cannot be exercised
+
+`go vet`, `go test -race ./...` green. Run dry against the live FreeSWITCH
+(`bin/push-sender -data-dir data -log-level debug`, HTTP on `127.0.0.1:8085`, ESL
+connected, one stale fake token for 1005 from the 01:41 test): the three paths behave as
+designed — fresh REGISTER within the window → `call moved on resume=true waited=5.07s`,
+caller answered at +6.3 s (the dialplan's own fallback takes ~20 s), and
+`Deleting task … switch_ivr_schedule_transfer` proves `sched_del` cancels the fallback;
+no REGISTER → **486 at 12.3 s**; no token at all → **486 at 3.8 s** (fail-fast on park,
+by design — note that *every* real handset is in that class today, because there is no
+`app/google-services.json` and no service-account key, so no handset registers `pn-*`
+and no push is ever sent). Three robustness fixes: a write-side failure now closes the
+ESL socket (the reader was left blocked, `Events()` never closed, no reconnect — tested);
+ESL round trips made under the manager's lock are bounded to 5 s (a swapped-out
+FreeSWITCH hung `fs_cli` for two minutes this afternoon); `tokens.json` writers are
+serialised. `README.md` updated. **Still on Rahul:** the Firebase project, the two files,
+and then the TC15 matrix with a real push. The sender was left running.
+
+### The sweep — PASS / FAIL (TC15, account 1002, codecs `lyra, PCMU, PCMA, opus, G722` unless said)
+
+| Feature | Result |
+|---|---|
+| Audio call to 9196 | PASS — PCMU, 0 % RX loss. The 1521-byte authenticated INVITE goes over TCP (PJSIP's 1300-byte rule); FreeSWITCH is fine with it |
+| Video call to 9196 | PASS — VP8 1088×612 @ 30 fps both ways, 0 % RX loss, both pictures upright |
+| Hold / resume / mute / speaker / DTMF | PASS — `sendonly`→`recvonly`, `sendrecv` back; RFC 4733 digits 1-2-3 logged by FreeSWITCH (`RECV DTMF`) |
+| Blind transfer 9197 → 9198 | PASS — REFER → 202 → NOTIFY 200 → BYE |
+| Attended transfer 9197 → 9198 | signalling PASS (REFER with `Replaces`, both legs BYE'd); **UI FAIL, fixed** — see below |
+| Client-side merge (ADR-009) | PASS — `Conference: 2 member(s), 2 link(s)`, held leg resumed with `sendrecv`; "End" ends the shown leg and the screen follows the other (documented) |
+| Server conference 3000 | PASS — member `hear\|speak\|floor`, clean leave |
+| Incoming: decline / caller cancels / call waiting | PASS — 603 in 158 ms after the tap; CANCEL → 487; second call answered puts the first on hold and swap works |
+| Codec preference | PASS — PCMA-first → PCMA; G722+opus-first (server has neither) → falls back to PCMA; Lyra-first → PCMU to the server, Lyra handset-to-handset |
+| Leaks | PASS — no `leaks.db` and no `.hprof` since the 16:06 install (LeakCanary saw nothing retained across ~30 calls); six extra cycles: native heap +0.3 MB, PSS flat, threads 51→52, fds 171→172 |
+| Stability | 0 crashes, 0 ANRs; idle CPU 1.6 % of a core in the background (0.7 % on `pjsip-main`), 1.4 % on the Calls tab |
+
+**Attended transfer left the screen on "Connecting" (fixed, `CallViewModel.pointAt`).**
+`followRemainingCall` re-pointed the screen from the transferred call to the consultation
+call, but `stateFor` only counts a call as "seen" from its first combined emission, and
+that switch is a separate dispatch — FreeSWITCH BYEs the consultation leg within ~40 ms
+of the transfer report, so it was gone before the flow ever saw it, `seen` stayed false,
+and the screen sat on `Loading` with nothing to dismiss it. A re-point now records the
+call as shown at decision time (when it is verifiably live), so gone-before-drawn reads
+as `Finished` and closes the screen. Regression test: the same sequence with the screen
+unsubscribed during the transfer (Turbine timed out before the fix). Verified on the
+TC15 after the rebuild.
+
+### Found and not fixed
+
+1. **No local ringback tone.** The caller hears silence while the far end rings: there is
+   no tone generator on `OUTGOING_RINGING`, and a bypassed call has no early media to
+   lean on. pjsua2's `ToneGenerator` on the playback device is the usual answer; it
+   interacts with Telecom's audio focus, so it is a measured change, not a one-liner.
+2. **The TC15 sometimes sees an INVITE only on its 4th retransmission** (7 s: FreeSWITCH
+   sent at 16:36:54.10, the phone's stack logged it at 16:37:01.09, one copy). Not
+   reproduced in two later tries after 60 s idle. The Mac was under memory pressure at
+   the time (my Gradle daemons); recheck with a quiet Mac before blaming the phone's
+   Wi-Fi power save. It is the same shape as the 1003→1002 attempts at 14:35/14:59.
+3. **TX loss 3.4 % on the hold/resume call** vs 0.1 % on plain calls, with RX at 0 % —
+   almost certainly the far end counting the RTP sequence jump across re-INVITEs, not
+   loss. Worth one look at FreeSWITCH's per-call stats.
+4. The dialler's blinking cursor costs ~6 % of a core while the dialler is open (20
+   frames/10 s, 7.5 % vs 1.4 % on the Calls tab). Compose text-field cost on this device.
+5. `default.xml` on the Mac's FreeSWITCH carries live OpenAI/ElevenLabs keys in the
+   `ai_voice_agent` block, and a stray `default.xml\` file. Rahul's, untouched.
+6. The VS Code Java extension imported this Gradle build and spawned 20+ JVMs (load
+   average 340, 16 MB free, FreeSWITCH swapped out and unresponsive). An untracked
+   `.vscode/settings.json` now turns the Gradle import off for this workspace; delete it
+   to restore the default.
+
+### Gate
+
+`:data:sip` 260 tests + detekt, `:feature:calls` 75 tests + detekt, `go test -race`;
+`./gradlew check -Ppjsip.native=false` was started at the end of the pass — read its
+result before trusting this line. Built and installed twice with
+`./build.sh --reuse-native`.
 
 ---
 
