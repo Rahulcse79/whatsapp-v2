@@ -120,4 +120,15 @@ interface CallLogDao {
 
     @Query("DELETE FROM call_log")
     suspend fun deleteAll()
+
+    /**
+     * Removes every call that started before [cutoffEpochMillis], and says how many.
+     *
+     * By start time and by nothing else, which is what makes one retention setting cover
+     * audio and video alike — `has_video` is not in this statement and must not be. The
+     * count comes back so the caller can log a prune that did something without having to
+     * count the table before and after.
+     */
+    @Query("DELETE FROM call_log WHERE started_at_epoch_millis < :cutoffEpochMillis")
+    suspend fun deleteStartedBefore(cutoffEpochMillis: Long): Int
 }

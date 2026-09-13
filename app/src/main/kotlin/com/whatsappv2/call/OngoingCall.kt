@@ -45,6 +45,25 @@ class OngoingCall @Inject constructor(
     }
 
     /**
+     * The call a *fresh* intent means, for a screen that is already open.
+     *
+     * Deliberately not [current], and the difference is where the intent came from.
+     * [current] answers `onCreate`, whose intent may be one the system stored before the
+     * process died — so a named call is checked against what is actually up, and a stale
+     * one falls back to whatever is live. This answers `onNewIntent`, whose intent was
+     * built moments ago by a route that had just placed or answered a call. Checking that
+     * one would reintroduce the defect it exists to fix: the engine publishes a new call
+     * asynchronously, so for a beat the named call is not in [liveCallIds] yet, the
+     * fallback picks "the first live call" — and that is precisely the *old* one the
+     * screen is already wrongly showing.
+     *
+     * Null when the intent names nothing and nothing is up, which is a caller's cue to
+     * leave the screen where it is rather than to finish it: the screen it is on is still
+     * a call.
+     */
+    fun next(requested: CallId?): CallId? = requested ?: current()
+
+    /**
      * Everything either source calls live.
      *
      * The union rather than one or the other: during startup the engine has not caught up

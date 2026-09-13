@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Contexts the Coral X push sender transfers a parked caller into (ADR-004).
+  Installed at dialplan/coralx.xml; freeswitch.xml includes dialplan/*.xml, so
+  this needs nothing else. The sender's -resume-context and -timeout-context
+  flags name these two. Like the hook in default/01_coralx_push_wake.xml, both
+  match any directory user, so nothing here is edited per deployment.
+-->
+<include>
+
+  <!-- The device sent a fresh REGISTER: bridge to it. This is the single bridge
+       default/01_local_users_100x.xml used to be, so a call that lands here from the
+       sched_transfer fallback (sender down) behaves exactly as before the change. -->
+  <context name="coralx-resume">
+    <extension name="coralx-resume">
+      <condition field="${user_exists(id ${destination_number} $${domain})}" expression="^true$">
+        <action application="set" data="hangup_after_bridge=true"/>
+        <action application="set" data="call_timeout=30"/>
+        <!-- Both were set for the 3 s direct attempt and survive the transfer. Here the
+             device has just registered, so it gets the full ring time, and a rejection
+             (486, 603) must reach the caller as itself rather than be "continued" past. -->
+        <action application="unset" data="progress_timeout"/>
+        <action application="set" data="continue_on_fail=false"/>
+        <action application="log" data="INFO push_wake: resuming ${destination_number} after ${sip_call_id}"/>
+        <action application="bridge" data="user/${destination_number}@$${domain}"/>
+      </condition>
+    </extension>
+  </context>
+
+  <!-- The device did not register within the wake timeout: the caller gets a busy
+       (486 Busy Here) rather than dead air. To send them to voicemail instead, replace
+       the hangup with:
+         <action application="answer"/>
+         <action application="voicemail" data="default $${domain} ${destination_number}"/>
+  -->
+  <context name="coralx-timeout">
+    <extension name="coralx-timeout">
+      <condition field="${user_exists(id ${destination_number} $${domain})}" expression="^true$">
+        <action application="log" data="WARNING push_wake: ${destination_number} did not wake in time; busy to the caller"/>
+        <action application="hangup" data="USER_BUSY"/>
+      </condition>
+    </extension>
+  </context>
+
+</include>

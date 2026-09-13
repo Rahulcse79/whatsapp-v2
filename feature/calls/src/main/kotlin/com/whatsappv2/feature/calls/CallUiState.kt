@@ -100,6 +100,16 @@ data class CallControlAvailability(
 
     /** Recording needs media to record. Consent is a separate gate and is asked for later. */
     val canRecord: Boolean,
+
+    /**
+     * Whether a second leg can be dialled from here (ADR-009).
+     *
+     * Without this there was no way to *start* a conference. Merge only appears once two
+     * calls exist, and the only route to a second outgoing call was to leave the call
+     * screen, reopen the app and find the dialler — which nobody does, so local mixing was
+     * reachable in principle and not in practice.
+     */
+    val canAddCall: Boolean,
 ) {
     companion object {
         fun of(phase: CallPhase): CallControlAvailability = CallControlAvailability(
@@ -135,6 +145,11 @@ data class CallControlAvailability(
             // say whether there is a camera running to switch (Task 53).
             canSwitchCamera = false,
             canRecord = phase.hasMedia,
+            // Connected only, for the reason hold and transfer are: placing a second call
+            // holds this one, and holding is a re-INVITE that needs an established dialog.
+            // A conference member is Connected too, so this stays offered while mixing —
+            // which is how a conference grows past two.
+            canAddCall = phase == CallPhase.CONNECTED,
         )
 
         /**

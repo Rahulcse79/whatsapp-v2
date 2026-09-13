@@ -3,6 +3,10 @@
 # Finishes the release that merging to `main` opened: builds the APK here, checks it,
 # attaches it to the draft, and publishes.
 #
+# `./release.sh` at the repository root runs this as its second half, after bumping the
+# version, pushing and opening the draft. Run this one directly to finish a draft the
+# Release workflow already opened for a commit you have checked out.
+#
 #   ./tools/release.sh                  build all three ABIs, upload, publish
 #   ./tools/release.sh --reuse-native   skip the cross-compile, reuse the libraries built
 #   ./tools/release.sh --abi arm64-v8a  one ABI — a build that installs on ARM64 only
@@ -47,6 +51,25 @@ confirm() {
 }
 note() { printf '\033[36m%s\033[0m\n' "$1"; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$1" >&2; }
+
+# Gradle needs JVM 17+ (CI runs 21). build.sh selects a JDK for the debug APK in its own
+# process; the R8 step below is this script's own Gradle call, so it must select one too —
+# otherwise a shell whose JAVA_HOME points at an older JDK fails R8 with "requires JVM 17".
+select_jdk() {
+  if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+    local major
+    major="$(sed -n 's/^JAVA_VERSION="\{0,1\}\([0-9][0-9]*\).*/\1/p' "$JAVA_HOME/release" 2>/dev/null | head -1)"
+    [ -n "$major" ] && [ "$major" -ge 17 ] && return
+  fi
+  local home
+  if [ -x /usr/libexec/java_home ]; then
+    for v in 21 17; do
+      home="$(/usr/libexec/java_home -v "$v" 2>/dev/null || true)"
+      [ -n "$home" ] && [ -x "$home/bin/java" ] && { export JAVA_HOME="$home"; return; }
+    done
+  fi
+  die "no JDK 17 or newer found for the R8 build. Install one (e.g. Temurin 21) or set JAVA_HOME."
+}
 
 abi=""          # empty means all three
 extra_args=()
@@ -214,8 +237,17 @@ mapping=""
 if [ "$run_r8" -eq 1 ]; then
   # Task 64, DoD 1. The native libraries are already built by now, so this is R8 and
   # packaging rather than a second cross-compile.
-  note "building the minified release variant (R8)"
-  ./gradlew :app:assembleRelease --stacktrace
+  #
+  # Same ABI set as the debug APK, and the native tasks excluded: without the override
+  # this variant asks :pjsip for all three ABIs and an NDK path it was never given, and a
+  # one-ABI release stops here with "property 'ndkRoot' doesn't have a configured value".
+  # The libraries it packages are the ones the debug build just produced or reused, and
+  # the N-6 check above has already examined every one of them.
+  select_jdk
+  note "building the minified release variant (R8) with JDK $JAVA_HOME"
+  ./gradlew :app:assembleRelease "-Ppjsip.abis=$(printf '%s\n' $abis | paste -sd, -)" \
+    "-Dorg.gradle.java.home=$JAVA_HOME" \
+    -x :pjsip:api:generatePjsua2Bindings -x :pjsip:buildPjsua2Native --stacktrace
   mapping=app/build/outputs/mapping/release/mapping.txt
   [ -s "$mapping" ] || die "R8 produced no mapping at $mapping. Was minification switched off?"
   echo "  ok  R8 ran; mapping is $(wc -l < "$mapping" | tr -d ' ') lines"

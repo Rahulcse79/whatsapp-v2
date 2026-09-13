@@ -25,10 +25,17 @@ class AppDestinationTest {
     }
 
     @Test
-    fun `the start destination is Calls`() {
-        // Task 70. The dialler is still one tap away, behind a floating button — but the
-        // screen worth landing on is the one that says what happened while you were away.
-        assertEquals(AppDestination.HISTORY, AppDestination.START)
+    fun `the app opens on Chats, which is the bar's first tab`() {
+        // It opened on Calls, so the first tab of a two-tab bar was never the tab you
+        // landed on — which makes the user's first action every launch a correction.
+        assertEquals(AppDestination.CHATS, AppDestination.START)
+    }
+
+    @Test
+    fun `the start destination is the first item in the bar`() {
+        // The rule rather than the value, so reordering the bar cannot quietly leave the
+        // app opening on its second tab again.
+        assertEquals(AppDestination.TOP_LEVEL.first(), AppDestination.START)
     }
 
     @Test

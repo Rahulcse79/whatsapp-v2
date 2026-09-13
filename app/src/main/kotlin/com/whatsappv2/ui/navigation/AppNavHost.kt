@@ -26,6 +26,7 @@ import com.whatsappv2.feature.accounts.AccountsRoute
 import com.whatsappv2.feature.accounts.status.RegistrationIndicatorRoute
 import com.whatsappv2.feature.dialer.DialerScreen
 import com.whatsappv2.feature.history.HistoryRoute
+import com.whatsappv2.feature.recordings.RecordingsRoute
 import com.whatsappv2.feature.settings.SettingsScreen
 import com.whatsappv2.ui.chats.ChatsPlaceholderScreen
 
@@ -149,6 +150,7 @@ private fun NavGraphBuilder.callRoutes(
         HistoryRoute(
             onCallPlaced = openCall,
             onOpenDialer = { navController.navigate(AppDestination.DIALER.route) },
+            onOpenRecordings = { navController.navigate(AppDestination.RECORDINGS.route) },
             videoGate = videoGate,
         )
     }
@@ -166,6 +168,12 @@ private fun NavGraphBuilder.callRoutes(
             onOpenAccounts = { navController.navigate(AppDestination.ACCOUNTS.route) },
             onBack = { navController.popBackStack() },
         )
+    }
+
+    // Behind Settings, like the accounts: the recordings are a thing the app holds, and
+    // the screen that lists them owns their playback for as long as it is open.
+    composable(AppDestination.RECORDINGS.route) {
+        RecordingsRoute(onBack = { navController.popBackStack() })
     }
 }
 

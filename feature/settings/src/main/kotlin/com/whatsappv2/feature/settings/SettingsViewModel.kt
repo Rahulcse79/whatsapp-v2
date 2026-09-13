@@ -3,6 +3,7 @@ package com.whatsappv2.feature.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.whatsappv2.domain.model.AppSettings
+import com.whatsappv2.domain.model.CallHistoryRetention
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
@@ -55,6 +56,9 @@ class SettingsViewModel @Inject constructor(
 
     fun setSipTraceEnabled(enabled: Boolean) =
         viewModelScope.launch { repository.setSipTraceEnabled(enabled) }
+
+    fun setCallHistoryRetention(retention: CallHistoryRetention) =
+        viewModelScope.launch { repository.setCallHistoryRetention(retention) }
 
     private companion object {
         const val SUBSCRIPTION_TIMEOUT_MILLIS = 5_000L

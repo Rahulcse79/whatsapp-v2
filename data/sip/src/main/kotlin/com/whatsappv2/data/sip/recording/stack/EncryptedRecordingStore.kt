@@ -9,7 +9,9 @@ import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.failure
 import com.whatsappv2.core.common.result.success
 import com.whatsappv2.data.sip.recording.AllocatedRecording
+import com.whatsappv2.data.sip.recording.PlaybackCopy
 import com.whatsappv2.data.sip.recording.RecordingStore
+import com.whatsappv2.data.sip.recording.WavHeader
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.recording.Recording
 import com.whatsappv2.domain.recording.RecordingError
@@ -18,6 +20,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.io.RandomAccessFile
 import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.util.UUID
@@ -45,7 +48,8 @@ import javax.inject.Singleton
  * closed rather than denied: the plaintext lives in the app's private `filesDir` for the
  * length of the call, and [seal] rewrites it as AES-GCM ciphertext and **deletes the
  * plaintext before reporting success**. A crash in that window leaves a `.unsealed.wav`
- * file, which [sweepAbandoned] removes on the next start rather than leaving to be found later.
+ * file, which [sweepAbandoned] removes when the stack next starts rather than leaving to be
+ * found later.
  *
  * The key never leaves the Keystore, so a copy of the file taken off the device — by an
  * `adb` pull on a debug build, by anything that gets at the app's data — is unreadable.
@@ -71,11 +75,49 @@ internal class EncryptedRecordingStore @Inject constructor(
     private val directory: File
         get() = File(context.filesDir, DIRECTORY).apply { mkdirs() }
 
-    init {
-        sweepAbandoned()
+    /**
+     * Where a recording is decrypted to for playback.
+     *
+     * The cache directory, not `filesDir`: the platform excludes it from backup without
+     * being asked, may clear it under storage pressure (which for a copy that exists only
+     * while a screen is listening is the right call), and an uninstall takes it too.
+     */
+    private val playbackDirectory: File
+        get() = File(context.cacheDir, PLAYBACK_DIRECTORY).apply { mkdirs() }
+
+    /** Guards [sweepAbandoned] so it runs once, on whichever thread gets there first. */
+    private val sweepLock = Any()
+    private var swept = false
+
+    /**
+     * Removes plaintext files left behind by a crash mid-recording.
+     *
+     * Not from the constructor any more: Hilt built this singleton on the first thread to
+     * inject it, which was the main thread, and `listFiles` plus a delete per file is
+     * I/O the call screen paid for. The recorder calls this on the I/O dispatcher when the
+     * stack starts, and [allocate] calls it again before handing out a path -- the guard
+     * makes the second a no-op, and the second is what turns "before anything can add to
+     * them" from a hope into a rule.
+     */
+    override fun sweepAbandoned() {
+        synchronized(sweepLock) {
+            if (swept) return
+            swept = true
+            // Two kinds of plaintext, one rule: a recording the stack was writing when the
+            // process died, and a playback copy the player never got to close.
+            val abandoned = directory.listFiles().orEmpty().filter { it.name.endsWith(PLAINTEXT_SUFFIX) } +
+                playbackDirectory.listFiles().orEmpty()
+            if (abandoned.isEmpty()) return
+
+            abandoned.forEach { it.delete() }
+            logger.warn(TAG, "Removed ${abandoned.size} unencrypted recording(s) left by an unclean stop")
+        }
     }
 
     override fun allocate(callId: CallId): Outcome<AllocatedRecording, RecordingError> {
+        // An `.unsealed.wav` is what this is about to create, and the sweep deletes every
+        // one it finds. Sweeping here, first, is what keeps it from ever finding this one.
+        sweepAbandoned()
         val id = RecordingId(UUID.randomUUID().toString())
         return try {
             val plaintext = File(directory, "${id.value}$PLAINTEXT_SUFFIX")
@@ -161,21 +203,6 @@ internal class EncryptedRecordingStore @Inject constructor(
         return success(removed)
     }
 
-    /**
-     * Removes plaintext files left behind by a crash mid-recording.
-     *
-     * On construction, so it happens before anything can add to them. An `.unsealed.wav` is
-     * an unencrypted recording, and one that survives a restart is one nothing is going to
-     * seal — there is no call left to attach it to.
-     */
-    private fun sweepAbandoned() {
-        val abandoned = directory.listFiles().orEmpty().filter { it.name.endsWith(PLAINTEXT_SUFFIX) }
-        if (abandoned.isEmpty()) return
-
-        abandoned.forEach { it.delete() }
-        logger.warn(TAG, "Removed ${abandoned.size} unencrypted recording(s) left by an unclean stop")
-    }
-
     private fun encrypt(source: File, destination: File, key: SecretKey) {
         val cipher = Cipher.getInstance(TRANSFORMATION).apply { init(Cipher.ENCRYPT_MODE, key) }
         destination.outputStream().use { raw ->
@@ -188,13 +215,14 @@ internal class EncryptedRecordingStore @Inject constructor(
     }
 
     /**
-     * Decrypts a sealed recording into [destination].
+     * Decrypts a sealed recording into the playback directory.
      *
-     * Unused by the app itself today — there is no playback screen yet — and present
-     * because a store that can only write is a store nobody can prove encrypts anything.
-     * Its round trip is what an instrumented test asserts.
+     * The copy is named by id alone -- the player needs nothing else -- and any earlier
+     * copy of the same id is overwritten rather than left beside it. A failure part-way
+     * deletes what was written: half a phone call in the clear is still a phone call in
+     * the clear.
      */
-    fun decrypt(id: RecordingId, destination: File): Outcome<Unit, RecordingError> {
+    override fun openForPlayback(id: RecordingId): Outcome<PlaybackCopy, RecordingError> {
         val sealed = directory.listFiles()
             .orEmpty()
             .firstOrNull { it.name.startsWith("${id.value}$FIELD_SEPARATOR") }
@@ -202,22 +230,56 @@ internal class EncryptedRecordingStore @Inject constructor(
         val key = keyOrNull()
             ?: return failure(RecordingError.StorageUnavailable("the recording key is unavailable"))
 
+        val destination = File(playbackDirectory, "${id.value}$PLAYBACK_SUFFIX")
         return try {
             sealed.inputStream().use { raw -> raw.decryptInto(destination, key) }
-            success(Unit)
+            // PJSIP leaves the WAV size fields at zero unless it closed the writer cleanly,
+            // and MediaPlayer reads a zero data size as "no samples" and plays nothing. The
+            // real sizes are the file's own length; write them in before handing it over.
+            repairWavSizes(destination)
+            success(PlaybackCopy(id = id, plaintextPath = destination.absolutePath))
         } catch (e: IOException) {
+            destination.delete()
             failure(RecordingError.StorageUnavailable(e.message.orEmpty()))
         } catch (e: GeneralSecurityException) {
+            destination.delete()
             failure(RecordingError.StorageUnavailable(e.message.orEmpty()))
+        }
+    }
+
+    override fun closePlayback(copy: PlaybackCopy) {
+        File(copy.plaintextPath).delete()
+    }
+
+    /**
+     * Rewrites the RIFF and `data` sizes of [file] from its real length, best-effort.
+     *
+     * Only the first bytes are read and, if wrong, rewritten in place; the PCM samples are
+     * untouched. A file that is not a canonical WAV, or already correct, is left alone, and
+     * an I/O failure here is not fatal — playback then behaves as it did before, no worse.
+     */
+    private fun repairWavSizes(file: File) {
+        try {
+            val length = file.length()
+            val headLength = minOf(length, HEADER_SCAN_BYTES.toLong()).toInt()
+            RandomAccessFile(file, "rw").use { raf ->
+                val head = ByteArray(headLength)
+                raf.readFully(head)
+                val fixed = WavHeader.corrected(head, length) ?: return
+                raf.seek(0)
+                raf.write(fixed)
+            }
+        } catch (e: IOException) {
+            logger.warn(TAG, "Could not repair the WAV header for playback: ${e.javaClass.simpleName}")
         }
     }
 
     /**
      * Reads the IV off the front and copies the rest out, decrypted.
      *
-     * Its own function because the streams nest three deep and the reader of [decrypt]
-     * should see what it does — find the file, find the key, copy it out — rather than
-     * how a GCM stream is assembled.
+     * Its own function because the streams nest three deep and the reader of
+     * [openForPlayback] should see what it does — find the file, find the key, copy it
+     * out — rather than how a GCM stream is assembled.
      */
     private fun InputStream.decryptInto(destination: File, key: SecretKey) {
         // Written by `seal` as the first GCM_IV_BYTES of the file, before the ciphertext.
@@ -318,6 +380,12 @@ internal class EncryptedRecordingStore @Inject constructor(
         /** Named in `data_extraction_rules.xml` so backup cannot pick it up (§7). */
         const val DIRECTORY = "recordings"
 
+        /** Under `cacheDir`, which the platform never backs up. */
+        const val PLAYBACK_DIRECTORY = "recordings-playback"
+
+        /** What the platform's player is handed: the stack writes WAV, so this is WAV. */
+        const val PLAYBACK_SUFFIX = ".wav"
+
         const val PLAINTEXT_SUFFIX = RecordingFileNames.PLAINTEXT_SUFFIX
         const val SEALED_SUFFIX = ".rec"
         const val FIELD_SEPARATOR = "__"
@@ -332,5 +400,8 @@ internal class EncryptedRecordingStore @Inject constructor(
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val GCM_IV_BYTES = 12
         const val GCM_TAG_BITS = 128
+
+        /** Enough to reach the data chunk past fmt and any extension chunks. */
+        const val HEADER_SCAN_BYTES = 128
     }
 }

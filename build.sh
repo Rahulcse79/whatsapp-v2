@@ -81,6 +81,66 @@ done
 
 # ----------------------------------------------------------------------- NDK
 #
+# ----------------------------------------------------------------------- JDK
+#
+# Gradle needs JVM 17+ (CI runs 21), but a shell whose JAVA_HOME points at an older JDK
+# fails deep in Gradle with "requires JVM 17 or later ... currently configured to use JVM
+# 11" — a message about the daemon, not about this being one export away. So the build
+# chooses a JDK itself and hands it to Gradle, rather than inheriting whatever the shell
+# happens to have.
+JDK_MINIMUM=17
+
+# The major version of a JDK home, or nothing if it cannot be read.
+jdk_major() {
+  local home="$1"
+  [ -x "$home/bin/java" ] || return 1
+  # `release` carries JAVA_VERSION="21.0.10"; reading it avoids launching a JVM. The
+  # leading component is the major for 9+, and for a stray 1.8 it is "1" — below the
+  # minimum, which is the correct verdict anyway.
+  local version
+  version="$(sed -n 's/^JAVA_VERSION="\{0,1\}\([0-9][0-9]*\).*/\1/p' "$home/release" 2>/dev/null | head -1)"
+  [ -n "$version" ] || version="$("$home/bin/java" -version 2>&1 | sed -n '1s/.*version "\([0-9][0-9]*\).*/\1/p')"
+  [ -n "$version" ] && echo "$version"
+}
+
+# Prints a JDK home of at least JDK_MINIMUM, preferring the newest, or nothing.
+find_jdk() {
+  local home major
+  # The shell's own, when it is already new enough — nothing to change.
+  if [ -n "${JAVA_HOME:-}" ]; then
+    major="$(jdk_major "$JAVA_HOME" || true)"
+    [ -n "$major" ] && [ "$major" -ge "$JDK_MINIMUM" ] && { echo "$JAVA_HOME"; return; }
+  fi
+  # macOS keeps the canonical answer here; ask for the newest, then the minimum.
+  if [ -x /usr/libexec/java_home ]; then
+    for v in 21 "$JDK_MINIMUM"; do
+      home="$(/usr/libexec/java_home -v "$v" 2>/dev/null || true)"
+      [ -n "$home" ] && [ -x "$home/bin/java" ] && { echo "$home"; return; }
+    done
+  fi
+  # Failing that, the usual install locations, newest first.
+  local candidate
+  for candidate in \
+    "$HOME/jdks"/*/Contents/Home "$HOME/jdks"/* \
+    "$HOME/Library/Java/JavaVirtualMachines"/*/Contents/Home \
+    /Library/Java/JavaVirtualMachines/*/Contents/Home \
+    "/Applications/Android Studio.app/Contents/jbr/Contents/Home"; do
+    [ -x "$candidate/bin/java" ] || continue
+    major="$(jdk_major "$candidate" || true)"
+    [ -n "$major" ] && [ "$major" -ge "$JDK_MINIMUM" ] && echo "$candidate"
+  done | sort -V | tail -1
+}
+
+jdk="$(find_jdk)"
+[ -n "$jdk" ] && [ -x "$jdk/bin/java" ] || die "no JDK $JDK_MINIMUM or newer found, and Gradle needs one.
+  Looked at: \$JAVA_HOME, /usr/libexec/java_home, ~/jdks, the system JavaVirtualMachines, Android Studio's JBR.
+  Install one (e.g. Temurin 21) or set JAVA_HOME to a JDK $JDK_MINIMUM+.
+  \$JAVA_HOME is currently: ${JAVA_HOME:-unset}"
+# Exported so the Gradle wrapper and the daemon it starts both use it, regardless of the
+# shell's own JAVA_HOME. Also passed explicitly below, so a stale daemon on the wrong JVM
+# is replaced rather than reused.
+export JAVA_HOME="$jdk"
+
 # The native task reads ANDROID_NDK_ROOT, then ANDROID_NDK_HOME, then -Pandroid.ndkPath.
 # Nothing reads local.properties' ndk.dir, which is the trap: the SDK is configured there
 # and the NDK is not, so the failure looks like a broken checkout.
@@ -113,6 +173,7 @@ gradle_args=(
   ":app:assembleDebug"
   "-Ppjsip.abis=$abis"
   "-Pandroid.ndkPath=$ndk"
+  "-Dorg.gradle.java.home=$JAVA_HOME"
 )
 
 if [ "$reuse_native" = 1 ]; then
@@ -176,6 +237,7 @@ fi
 
 note "ABI(s):  $abis"
 note "NDK:     $ndk"
+note "JDK:     $JAVA_HOME"
 note "building ..."
 echo
 

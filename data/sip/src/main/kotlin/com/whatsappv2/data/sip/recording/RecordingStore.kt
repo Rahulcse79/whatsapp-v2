@@ -31,6 +31,18 @@ import com.whatsappv2.domain.recording.RecordingId
 internal interface RecordingStore {
 
     /**
+     * Removes plaintext left behind by a crash mid-recording.
+     *
+     * File I/O, so it must not run on the main thread -- which is where it ran when the
+     * store did it from its constructor, because Hilt builds a singleton on whichever
+     * thread first asks for it. The recorder calls this when the stack starts, on the I/O
+     * dispatcher. Implementations run the sweep at most once per process, and run it
+     * themselves before the first [allocate] if nothing has called this yet: a sweep that
+     * came *after* a fresh allocation would delete the recording that had just started.
+     */
+    fun sweepAbandoned()
+
+    /**
      * A path for a new recording of [callId], plus the id it will be known by.
      *
      * The file does not exist yet; the stack creates it. Failing here means storage is
@@ -63,6 +75,21 @@ internal interface RecordingStore {
     fun seal(allocated: AllocatedRecording, startedAtEpochMillis: Long, endedAtEpochMillis: Long):
         Outcome<Recording?, RecordingError>
 
+    /**
+     * A decrypted copy of [id], in a location the store chose, for the platform's player.
+     *
+     * The same rule as [allocate], from the other direction: the only plaintext of a
+     * recording that ever exists is one this store placed and this store will destroy.
+     * The copy lives in the cache directory -- excluded from backup by the platform, and
+     * cleared by [sweepAbandoned] if [closePlayback] never came -- and is the whole
+     * recording, because AES-GCM under the Keystore releases nothing until the tag checks,
+     * which also means a recording is held in memory once on the way through.
+     */
+    fun openForPlayback(id: RecordingId): Outcome<PlaybackCopy, RecordingError>
+
+    /** Destroys the copy [openForPlayback] made. Quiet if it is already gone. */
+    fun closePlayback(copy: PlaybackCopy)
+
     /** Every recording still held, newest first. */
     fun list(): List<Recording>
 
@@ -82,5 +109,16 @@ internal interface RecordingStore {
 internal data class AllocatedRecording(
     val id: RecordingId,
     val callId: CallId,
+    val plaintextPath: String,
+)
+
+/**
+ * A decrypted recording the player may read, for as long as playback lasts.
+ *
+ * `internal` for the same reason as [AllocatedRecording]: a path to a phone call in the
+ * clear is a value `:data:sip` may hold for a moment and nothing else may hold at all.
+ */
+internal data class PlaybackCopy(
+    val id: RecordingId,
     val plaintextPath: String,
 )

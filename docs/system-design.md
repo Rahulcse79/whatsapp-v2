@@ -37,7 +37,7 @@ graph LR
 
 | Component | What this app sends | What it must send back | If unavailable |
 |---|---|---|---|
-| **Registrar** (FreeSWITCH sofia) | `REGISTER` with RFC 8599 `pn-provider=fcm`, `pn-param`, `pn-prid` on the `Contact` header (`docs/architecture.md:137-143`) | 200 with an expiry; 401/407 to challenge; 503 **with `Retry-After`** | Backoff per §3.3 of `docs/data-structures.md`; the user sees "could not reach the server" |
+| **Registrar** (FreeSWITCH sofia) | `REGISTER` with RFC 8599 `pn-provider=fcm`, `pn-param`, `pn-prid` in the `Contact` URI (`docs/architecture.md:137-143`) | 200 with an expiry; 401/407 to challenge; 503 **with `Retry-After`** | Backoff per §3.3 of `docs/data-structures.md`; the user sees "could not reach the server" |
 | **Proxy / dialplan** | `INVITE` with an SDP offer over the negotiated transport | 100/180/200 or a final failure code | `SipError.TransportFailure`; no call is placed |
 | **MCU** (`mod_conference`, ADR-003) | An `INVITE` to the dial-in URI | Mixed audio, and roster events | Conference join fails as an ordinary call failure |
 | **Push gateway** (ADR-004) | Nothing directly — it reads the ESL | An FCM data message carrying `call_id`, `account_id`, `sent_at`, `type` and **nothing else** (`docs/architecture.md:160-163`) | **Silent.** See §4.3 — this is the failure with no natural detector |

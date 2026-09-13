@@ -53,10 +53,9 @@ internal fun StackAccount.toAccountConfig(
         regConfig.registrarUri = registrarUri + transportParam
         regConfig.timeoutSec = expirySeconds.toLong()
         regConfig.registerOnAdd = registerEnabled
-        pushParameters?.let { push ->
-            regConfig.contactParams =
-                ";pn-provider=${push.provider};pn-param=${push.param};pn-prid=${push.prid}"
-        }
+        // Inside the Contact URI, per RFC 8599 §4.1 - not `contactParams`, which is a
+        // header parameter the registrar does not store. See PushContactUriParams.kt.
+        pushParameters?.let { push -> regConfig.contactUriParams = push.toContactUriParams() }
 
         sipConfig.authCreds.add(
             // Realm `*` because the registrar names its own realm in the challenge, and

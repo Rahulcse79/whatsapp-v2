@@ -4,11 +4,13 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
 import com.whatsappv2.core.common.logging.NoOpLogger
 import com.whatsappv2.domain.model.AppSettings
+import com.whatsappv2.domain.model.CallHistoryRetention
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
@@ -95,6 +97,7 @@ class DataStoreAppSettingsRepositoryTest {
             setPreferredAudioRoute(PreferredAudioRoute.SPEAKER)
             setThemeMode(ThemeMode.DARK)
             setSipTraceEnabled(true)
+            setCallHistoryRetention(CallHistoryRetention.ofDays(NINETY))
         }
 
         val reloaded = reopenedFromDisk().currentSettings()
@@ -106,6 +109,7 @@ class DataStoreAppSettingsRepositoryTest {
         // that must not quietly go back to following the phone.
         assertEquals(ThemeMode.DARK, reloaded.themeMode)
         assertTrue(reloaded.sipTraceEnabled)
+        assertEquals(NINETY, reloaded.callHistoryRetention.days)
     }
 
     @Test
@@ -175,6 +179,28 @@ class DataStoreAppSettingsRepositoryTest {
     }
 
     @Test
+    fun `a stored retention this build cannot honour is clamped, not used`() = runTest {
+        // The cutoff is days multiplied into milliseconds. A value large enough to
+        // overflow that would compute a cutoff in the far future and delete the whole
+        // log; a negative one would mean nothing. Both read back as something honest.
+        store.edit { it[intPreferencesKey("call_history_retention_days")] = Int.MAX_VALUE }
+        assertEquals(CallHistoryRetention.MAXIMUM_DAYS, repository().currentSettings().callHistoryRetention.days)
+
+        store.edit { it[intPreferencesKey("call_history_retention_days")] = -1 }
+        assertTrue(repository().currentSettings().callHistoryRetention.keepsEverything)
+    }
+
+    @Test
+    fun `every preset retention round-trips, forever included`() = runTest {
+        val repository = repository()
+
+        for (retention in CallHistoryRetention.PRESETS) {
+            repository.setCallHistoryRetention(retention)
+            assertEquals(retention, repository.currentSettings().callHistoryRetention)
+        }
+    }
+
+    @Test
     fun `every enum value round-trips`() = runTest {
         val repository = repository()
 
@@ -194,5 +220,9 @@ class DataStoreAppSettingsRepositoryTest {
             repository.setThemeMode(mode)
             assertEquals(mode, repository.currentSettings().themeMode)
         }
+    }
+
+    private companion object {
+        const val NINETY = 90
     }
 }

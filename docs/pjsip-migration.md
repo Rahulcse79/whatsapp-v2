@@ -159,8 +159,9 @@ this build must be read back with `codecEnum2()` at runtime rather than assumed.
 
 - `idUri` — `"Display <sip:user@domain>"`
 - `regConfig.registrarUri`, `regConfig.timeoutSec`, `regConfig.registerOnAdd`
-- `regConfig.contactParams` / `contactUriParams` — **this is where RFC 8599 `pn-provider`,
-  `pn-param`, `pn-prid` go** (ADR-004, Task 38)
+- `regConfig.contactUriParams` — **this is where RFC 8599 `pn-provider`, `pn-param`,
+  `pn-prid` go** (ADR-004, Task 38). Not `contactParams`: that one lands after the `>` as
+  a header parameter, and FreeSWITCH stores only the URI
 - `sipConfig.authCreds.add(AuthCredInfo("Digest", "*", user, 0, password))`
 - `sipConfig.proxies.add(uri)` — the outbound proxy
 - `sipConfig.transportId` — binds the account to a transport, which is how per-account

@@ -23,7 +23,7 @@ import org.pjsip.pjsua2.LogWriter
  *
  * `LogWriter` has a native peer that keeps a pointer back to this object. If Kotlin
  * collects it while PJSIP still holds that pointer, the next log line dereferences freed
- * memory and takes the process down — and since the writer is called from PJSIP's own
+ * memory and takes the process down — and since a log line can come from any of PJSIP's
  * threads, that crash lands nowhere near the cause. The official sample keeps its writer
  * in a field with the comment *"Maintain reference to avoid auto garbage collecting"*;
  * [RealPjsipCoreGateway] does the same, for the same reason it holds every `PjCall`.
@@ -59,9 +59,11 @@ internal class PjsipLogWriter(
         // and are worth skipping when nobody asked for a trace.
         if (!enabled()) return
 
-        // Defensive: this runs on a PJSIP thread, and an exception thrown back across the
-        // JNI boundary into C++ is undefined behaviour rather than a stack trace. A
-        // logging call is never worth taking the process down for.
+        // Defensive: this is a director upcall from C++ (delivered on the gateway's
+        // PJSIP thread — pjsua2 queues lines its media threads log and hands them over
+        // from `libHandleEvents`), and an exception thrown back across the JNI boundary
+        // is undefined behaviour rather than a stack trace. A logging call is never
+        // worth taking the process down for.
         runCatching {
             val message = SipTraceRedaction.redact(entry.msg.orEmpty()).trimEnd()
             if (message.isEmpty()) return

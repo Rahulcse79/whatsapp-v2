@@ -89,4 +89,12 @@ interface CallLogRepository {
 
     /** Removes every entry. */
     suspend fun clear()
+
+    /**
+     * Removes every call that started before [cutoffEpochMillis], and returns how many.
+     *
+     * Time alone, so one retention setting covers audio and video without either being
+     * named — see `AppSettings.callHistoryRetention`.
+     */
+    suspend fun deleteStartedBefore(cutoffEpochMillis: Long): Int
 }

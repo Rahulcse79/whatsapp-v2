@@ -81,7 +81,7 @@ import org.pjsip.pjsua2.pjsua_vid_req_keyframe_method
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -112,9 +112,30 @@ import javax.inject.Singleton
  * when one was made anyway. A single thread also makes ordering free: `start` then
  * `addAccount` cannot race, because the executor runs them in submission order.
  *
- * Callbacks arrive on **pjsua2's own worker threads**, which the library registers itself.
- * Those may call back into the library — [PjCall.onCallMediaState] does — but they must
- * never block, so they publish to buffered flows rather than doing work inline.
+ * Callbacks arrive on **that same thread**, and that is a decision, not an accident.
+ * pjsua2 is configured with `threadCnt = 0` and `mainThreadOnly = true`
+ * ([endpointConfig]), so the library starts no worker thread of its own and delivers
+ * every callback — call, account, log writer, media event — from inside
+ * `libHandleEvents()`, which [pump] calls in a loop on the executor. Callbacks may
+ * call back into the library — [PjCall.onCallMediaState] does — but they must never
+ * block, because nothing else runs on this thread while one does: they publish to
+ * buffered flows rather than doing work inline.
+ *
+ * It used to be the other way: pjsua2 ran its own worker thread and raised callbacks
+ * from it. Two things were wrong with that, and one of them crashed. SWIG's director
+ * glue attaches a native thread to the JVM on every callback and detaches it afterwards,
+ * and the detach reads the director's own memory (`~JNIEnvWrapper`,
+ * `director_->swig_jvm_`) — so a director freed *during* its callback was a
+ * use-after-free on the way out. A `PjCall` released by a task posted to this executor
+ * from its own `DISCONNECTED` callback was exactly that: the post ran on this thread
+ * while the worker thread was still unwinding the callback, and the two were never
+ * ordered. `SIGSEGV` in `_JavaVM::DetachCurrentThread` under
+ * `SwigDirector_Call::onCallState`, TC15, 2026-09-12 13:37, one outgoing call rejected.
+ * The attach/detach also minted a fresh `java.lang.Thread` peer per callback and per
+ * PJSIP log line (`Thread-4486` after five idle hours). With every callback on a thread
+ * the JVM already owns, neither happens: the glue finds the thread attached and touches
+ * nothing on the way out, and a task posted from a callback runs after the poll that
+ * delivered it has returned — which is after the native frame is gone.
  *
  * ## Director objects must outlive their native peers
  *
@@ -173,9 +194,17 @@ internal class RealPjsipCoreGateway @Inject constructor(
      *
      * A daemon thread, so it cannot hold the process up if [stop] is never reached.
      */
-    private val pjsip = Executors.newSingleThreadScheduledExecutor { runnable ->
+    private val pjsip = ScheduledThreadPoolExecutor(1) { runnable ->
         Thread(runnable, PJSIP_THREAD).apply { isDaemon = true }
     }
+
+    /**
+     * The poll that stands in for pjsua2's worker thread, and delivers every callback on
+     * [pjsip]. Started by [startEndpoint]; it ends itself once [endpoint] is something
+     * else. Lazy for the same reason [logWriter] is built late: nothing that names a
+     * pjsua2 type may be built while the Hilt graph is resolving.
+     */
+    private val pump by lazy { PjsipEventPump(pjsip, logger) { endpoint } }
 
     /**
      * Enforces the thread-confinement invariant instead of documenting it (DoD 4).
@@ -282,7 +311,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
     /**
      * Whether the trace reaches the log, from the switch in Settings.
      *
-     * Read on PJSIP's own threads and written from the engine's, hence `@Volatile`.
+     * Read on the PJSIP thread and written from the engine's, hence `@Volatile`.
      * Default off, matching `AppSettings.DEFAULT.sipTraceEnabled`, so a build does not
      * start writing signalling to logcat before anyone has asked it to.
      */
@@ -457,6 +486,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
         created.libStart()
         logger.info(TAG, "start: libStart ok")
         endpoint = created
+        // With `threadCnt = 0` nothing polls until this does: no REGISTER goes out, no
+        // INVITE comes in, no timer fires. It is the worker thread, moved here.
+        pump.start(created)
     }
 
     /**
@@ -491,6 +523,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
     private fun endpointConfig(): EpConfig = EpConfig().apply {
         uaConfig.userAgent = USER_AGENT
         uaConfig.maxCalls = MAX_CALLS
+        // No worker thread, and every callback on the thread that polls. See the class
+        // documentation for the crash this closes; `mainThreadOnly` is pjsua2's own name
+        // for the arrangement, and [pump] is the poll it then needs.
+        uaConfig.threadCnt = 0
+        uaConfig.mainThreadOnly = true
 
         // Without this, everything PJSIP has to say goes to a sink Android drops, and an
         // entire failed call leaves zero app-side log lines - which is exactly what it
@@ -887,10 +924,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
     /**
      * Publishes RFC 8599 parameters on every account's `Contact` (ADR-004, Task 38).
      *
-     * PJSIP carries them as `regConfig.contactParams`, a raw parameter string appended to
-     * the `Contact` header — so this assembles the `;pn-provider=…;pn-param=…;pn-prid=…`
-     * string itself. Every account is re-registered, because a
-     * `Contact` the server has not seen is a wake-up path it cannot use.
+     * PJSIP carries them as `regConfig.contactUriParams`, a raw parameter string inserted
+     * into the `Contact` URI — `toContactUriParams` assembles and escapes the
+     * `;pn-provider=…;pn-param=…;pn-prid=…` string. Every account is re-registered, because
+     * a `Contact` the server has not seen is a wake-up path it cannot use.
      */
     override fun setPushParameters(parameters: StackPushParameters?) {
         onPjsip("setPushParameters") {
@@ -1105,12 +1142,12 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // went out, the far end answered, the audio came back, and the app stayed
             // held for the rest of the call. Hold worked; resume was unreachable.
             //
-            // Published *before* the send, on this thread. The answer is published from
-            // PJSIP's worker thread, and publishing RESUMING after `reinvite` returned
-            // would race it: a 200 OK processed in the gap would put STREAMS_RUNNING
-            // ahead of RESUMING in the flow, and the FSM would read that as nothing and
-            // then as a resume that never lands. Before the send there is no gap. What
-            // it costs is a Resuming that lasts the length of a synchronous call that
+            // Published *before* the send. The answer arrives as STREAMS_RUNNING from
+            // the callback a later poll delivers, and the FSM needs RESUMING ahead of it
+            // in the flow: the other order reads as nothing and then as a resume that
+            // never lands. Publishing first makes the order a property of this function
+            // rather than of how the send and the poll happen to interleave. What it
+            // costs is a Resuming that lasts the length of a synchronous call that
             // either sends or throws — and a throw is answered below.
             //
             // A hold has no equivalent because it needs none: PJSIP reports
@@ -1432,8 +1469,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
             )
             // Posted, not done here: this callback runs in the account's own native
             // frame, and deleting the object under it is the same crash as deleting a
-            // call inside its callback. Whatever the answer was — a 2xx or a failure —
-            // the registrar has spoken, and the account is done.
+            // call inside its callback. The post is ordered after that frame because the
+            // callback and the executor share one thread ([pump]); it was not, and
+            // it crashed, while pjsua2 raised callbacks from a thread of its own. Whatever
+            // the answer was — a 2xx or a failure — the registrar has spoken, and the
+            // account is done.
             if (leaving) onPjsip("finishRemoval") { finishRemoval("unregistration answered $code") }
         }
 
@@ -1551,6 +1591,12 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 // from inside it, where the native frame is still this object's, and not
                 // by the garbage collector, whose thread pjlib has never seen and whose
                 // timing lets pjsua reuse this call's slot first. See [PjAccount.release].
+                //
+                // "After this callback has returned" is only true because the callback
+                // is delivered by [pump] on the same executor this posts to. When
+                // pjsua2 raised it from its own worker thread the post ran concurrently
+                // with the native frame, and a rejected outgoing call freed this object
+                // under `SwigDirector_Call::onCallState` — SIGSEGV, TC15, 2026-09-12.
                 onPjsip("releaseCall") { runCatching { delete() } }
             }
         }
@@ -1898,9 +1944,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * Runs [block] on the caller's thread, having first asserted it is the PJSIP one.
      *
      * For the paths that are ALREADY on the executor — a SWIG director callback, which
-     * pjsua2 raises on its own registered thread — where re-posting through [onPjsip] would
-     * deadlock or reorder. Visible to tests so DoD 4's "proven by a test that trips it
-     * deliberately" has something to trip.
+     * [pump] delivers there — where re-posting through [onPjsip] would reorder.
+     * Visible to tests so DoD 4's "proven by a test that trips it deliberately" has
+     * something to trip.
      */
     internal fun <T> requirePjsipThread(what: String, block: () -> T): T {
         assertOnPjsipThread(what)

@@ -173,8 +173,14 @@
             </intent-filter>
         </service>
 
+        <!--
+          singleTop, so the call screen's "Add call" brings this activity back and hands
+          it a destination through onNewIntent rather than stacking a second copy of the
+          whole app on top of the first.
+        -->
         <activity
             android:name=".MainActivity"
+            android:launchMode="singleTop"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

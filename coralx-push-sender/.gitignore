@@ -1,0 +1,10 @@
+# Only build output, runtime state and secrets are ignored here. Every source file,
+# deploy file and document in this directory is committed.
+
+# The compiled binary: go build -o bin/push-sender ./cmd/push-sender
+/bin/
+
+# Runtime state (tokens.json = device push tokens) and the Firebase service-account key
+/data/
+tokens.json
+*service-account*.json

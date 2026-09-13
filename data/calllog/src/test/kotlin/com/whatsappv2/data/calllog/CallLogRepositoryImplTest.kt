@@ -117,6 +117,48 @@ class CallLogRepositoryImplTest {
     }
 
     @Test
+    fun `pruning removes what started before the cutoff and nothing else`() = runTest {
+        // Against SQLite, because the comparison is in the SQL: strictly before, so a
+        // call that started exactly at the cutoff is inside the retention and stays.
+        repository.record(entry(startedAt = STARTED_AT - ONE_MINUTE))
+        val atCutoff = repository.record(entry(startedAt = STARTED_AT))
+        val after = repository.record(entry(startedAt = STARTED_AT + ONE_MINUTE))
+
+        val removed = repository.deleteStartedBefore(STARTED_AT)
+
+        assertEquals(1, removed)
+        assertEquals(setOf(atCutoff.id, after.id), repository.observe().first().map { it.id }.toSet())
+    }
+
+    @Test
+    fun `pruning cannot tell audio from video`() = runTest {
+        // One retention for both kinds of call is a property of the statement, and the
+        // statement is what this exercises: `has_video` is a column here and must not
+        // be a condition.
+        repository.record(entry(startedAt = STARTED_AT - ONE_MINUTE, media = MediaProfile.AUDIO))
+        repository.record(entry(startedAt = STARTED_AT - ONE_MINUTE, media = MediaProfile.AUDIO_VIDEO))
+        val keptAudio = repository.record(entry(startedAt = STARTED_AT, media = MediaProfile.AUDIO))
+        val keptVideo = repository.record(entry(startedAt = STARTED_AT, media = MediaProfile.AUDIO_VIDEO))
+
+        assertEquals(2, repository.deleteStartedBefore(STARTED_AT))
+        assertEquals(setOf(keptAudio.id, keptVideo.id), repository.observe().first().map { it.id }.toSet())
+    }
+
+    @Test
+    fun `a prune that matches nothing is not a change`() = runTest {
+        // The pruner re-runs on every change, including the one its own prune causes.
+        // That loop ends only because an empty delete does not count as one.
+        repository.record(entry(startedAt = STARTED_AT))
+
+        repository.changes().test {
+            awaitItem()
+            assertEquals(0, repository.deleteStartedBefore(STARTED_AT - ONE_MINUTE))
+            expectNoEvents()
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun `an entry that is deleted stops being observed`() = runTest {
         val saved = repository.record(entry())
 

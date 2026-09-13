@@ -26,6 +26,7 @@ import com.whatsappv2.domain.recording.RecordingError
 import com.whatsappv2.domain.recording.RecordingId
 import com.whatsappv2.domain.recording.RecordingRefusal
 import com.whatsappv2.domain.testing.FakeSipEngine
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -298,6 +299,22 @@ class PjsipCallRecorderTest {
     }
 
     @Test
+    fun `starting the recorder sweeps abandoned plaintext, and not on the caller's thread`() = runTest {
+        // The sweep used to run from the store's constructor, on whichever thread first
+        // injected the store -- the main one -- and `listFiles` plus a delete per file is
+        // I/O the call screen paid for. It belongs to the stack's start, on the I/O
+        // dispatcher, and this asserts both the moment and the thread.
+        val caller = Thread.currentThread().name
+        val recorder = recorder(this, OnIo)
+        assertEquals(0, store.sweeps, "nothing is swept until the stack starts")
+
+        recorder.start()
+
+        assertNotEquals(caller, store.swept.await())
+        assertEquals(1, store.sweeps)
+    }
+
+    @Test
     fun `the retention hook is passed straight through to the store`() = runTest {
         val recorder = recorder(this)
 
@@ -340,12 +357,21 @@ private class FakeRecordingStore : RecordingStore {
     var allocatedOnThread: String? = null
     var sealedOnThread: String? = null
 
+    /** Completed with the thread the sweep ran on; a real dispatcher finishes it later. */
+    val swept = CompletableDeferred<String>()
+    var sweeps = 0
+
     val allocated = mutableListOf<AllocatedRecording>()
     val sealed = mutableListOf<Recording>()
     val discarded = mutableListOf<AllocatedRecording>()
     val purgedBefore = mutableListOf<Long>()
     var failAllocation = false
     private var next = 0
+
+    override fun sweepAbandoned() {
+        sweeps++
+        swept.complete(Thread.currentThread().name)
+    }
 
     override fun allocate(callId: CallId): Outcome<AllocatedRecording, RecordingError> {
         allocatedOnThread = Thread.currentThread().name
@@ -379,6 +405,11 @@ private class FakeRecordingStore : RecordingStore {
         sealed += recording
         return success(recording)
     }
+
+    override fun openForPlayback(id: RecordingId): Outcome<PlaybackCopy, RecordingError> =
+        success(PlaybackCopy(id = id, plaintextPath = "/tmp/$id.wav"))
+
+    override fun closePlayback(copy: PlaybackCopy) = Unit
 
     override fun list(): List<Recording> = sealed.toList()
 

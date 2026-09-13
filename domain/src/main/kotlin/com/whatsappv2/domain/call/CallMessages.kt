@@ -75,6 +75,9 @@ fun SipError.userMessage(): String = when (this) {
     is SipError.InvalidState -> "Not possible right now"
     is SipError.EngineUnavailable -> "Calling is not available right now"
     is SipError.CallNotPermitted -> "Your phone is on another call"
+    // Not the sentence above: the platform said nothing, and "on another call" would send
+    // the user looking for one that does not exist.
+    is SipError.PlatformUnavailable -> "The phone's calling service did not respond"
 
     // The only generic sentence, and the only case that has earned one: Unexpected is
     // what is left when the stack reported something with no domain meaning. Every case

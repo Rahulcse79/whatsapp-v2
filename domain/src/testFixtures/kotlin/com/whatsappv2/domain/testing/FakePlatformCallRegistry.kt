@@ -4,6 +4,7 @@ import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.engine.CallSnapshot
 import com.whatsappv2.domain.engine.IncomingCall
 import com.whatsappv2.domain.engine.PlatformCallRegistry
+import com.whatsappv2.domain.engine.PlatformDecision
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.HangupReason
 
@@ -23,8 +24,8 @@ import com.whatsappv2.domain.model.HangupReason
  * ordering bugs rather than expose them.
  */
 class FakePlatformCallRegistry(
-    /** What the platform answers for an outgoing call. False stands for a cellular call. */
-    var permitOutgoing: Boolean = true,
+    /** What the platform answers for an outgoing call. Refused stands for a cellular call. */
+    var outgoingDecision: PlatformDecision = PlatformDecision.Permitted,
 
     /** What the platform answers for an inbound INVITE. */
     var permitIncoming: Boolean = true,
@@ -48,10 +49,10 @@ class FakePlatformCallRegistry(
     /** Runs while the platform is being asked, before the answer is given. */
     var onRegisterOutgoing: (CallSnapshot) -> Unit = {}
 
-    override suspend fun registerOutgoing(call: CallSnapshot): Boolean {
+    override suspend fun registerOutgoing(call: CallSnapshot): PlatformDecision {
         onRegisterOutgoing(call)
         registeredOutgoing += call
-        return permitOutgoing
+        return outgoingDecision
     }
 
     override suspend fun registerIncoming(call: IncomingCall): Boolean {

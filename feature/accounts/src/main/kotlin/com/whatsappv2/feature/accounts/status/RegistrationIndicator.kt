@@ -1,5 +1,6 @@
 package com.whatsappv2.feature.accounts.status
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -80,10 +81,11 @@ fun RegistrationIndicatorRoute(
  *
  * ## Colour is never the only channel
  *
- * The dot is green, orange, red or grey, and beside it the state is written down —
+ * The dot is green, orange or red, and beside it the state is written down —
  * "Registered", "Reconnecting…", "Check your details", "Offline" — in the same words the
  * account list uses, from the same function, so the bar and the list cannot describe one
- * state two ways. The dot itself is decorative in the accessibility tree; the chip reads
+ * state two ways. Two states share red and the words tell them apart, which is why the
+ * words are not optional. The dot itself is decorative in the accessibility tree; the chip reads
  * as one sentence.
  */
 @Composable
@@ -219,10 +221,17 @@ private fun IndicatorChip(
     // colour the bar provides, its secondary tone, and a dot palette chosen against the
     // bar rather than against a white page — a green dot on a green bar is no dot.
     val bar = AppTheme.barColors
+    // The states that cannot take a call bring their own ground; see BarColors.statusAlert
+    // for why a darker red needs one. Registered stays a bare chip, which is what keeps
+    // the ordinary state quiet and this one loud.
+    val alerting = tone == StatusTone.FAILED
+    val shape = MaterialTheme.shapes.small
+
     Row(
         modifier = modifier
             .heightIn(min = AppTheme.sizing.minimumTouchTarget)
-            .clip(MaterialTheme.shapes.small)
+            .clip(shape)
+            .then(if (alerting) Modifier.background(bar.statusAlert.container, shape) else Modifier)
             .clickable(onClick = onClick)
             .semantics(mergeDescendants = true) {
                 role = Role.Button
@@ -232,18 +241,24 @@ private fun IndicatorChip(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
     ) {
-        StatusDot(tone, colors = bar.status)
+        if (alerting) {
+            StatusDot(tone, colors = bar.status.copy(failed = bar.statusAlert.dot))
+        } else {
+            StatusDot(tone, colors = bar.status)
+        }
         Column {
             Text(
                 text = headline,
                 style = MaterialTheme.typography.labelLarge,
-                color = LocalContentColor.current,
+                color = if (alerting) bar.statusAlert.onContainer else LocalContentColor.current,
                 maxLines = 1,
             )
             Text(
+                // "Offline", and in the same red as the extension above it — the sentence
+                // and the dot say one thing rather than the dot saying it alone.
                 text = detail,
                 style = MaterialTheme.typography.labelSmall,
-                color = bar.onTopVariant,
+                color = if (alerting) bar.statusAlert.onContainer else bar.onTopVariant,
                 maxLines = 1,
             )
         }
@@ -251,16 +266,33 @@ private fun IndicatorChip(
 }
 
 /**
- * Which colour a status is (item 5.5): green registered, orange trying, red failed, grey off.
+ * Which colour a status is (item 5.5): green registered, orange trying, red not reachable.
  *
  * "Reconnecting…" is orange rather than red on purpose: the app is doing something about
- * it and nobody has to. Red is reserved for the state where somebody does.
+ * it and nobody has to. Red is for the states where somebody does.
+ *
+ * ## Offline is red, not grey
+ *
+ * It was grey, on the reasoning that being unregistered is a state rather than a fault.
+ * That reads the indicator as a description of the *account* — but it sits in the Chats
+ * bar to answer one question, "can I be called right now", and the answer while offline is
+ * no. Grey says "nothing to see"; the truth is that every call to that extension is being
+ * missed, and the user is the only one who can do anything about it. The words beside the
+ * dot still say "Offline" rather than "Check your details", so the two red states stay
+ * distinguishable to anyone who reads them — which is the point of never letting colour be
+ * the only channel.
+ *
+ * It costs a red dot for the second or so between process start and the first REGISTER, a
+ * window in which the app genuinely cannot take a call. That is honest, and it is shorter
+ * than the time it takes to look at it.
+ *
+ * `StatusTone.OFFLINE` keeps its grey and its use: the "No account" chip, where there is
+ * no extension to be unreachable and the next step is setup rather than repair.
  */
 internal fun AccountStatus.tone(): StatusTone = when (this) {
     AccountStatus.REGISTERED -> StatusTone.ONLINE
     AccountStatus.REGISTERING, AccountStatus.FAILED_RETRYING -> StatusTone.CONNECTING
-    AccountStatus.FAILED_NEEDS_ATTENTION -> StatusTone.FAILED
-    AccountStatus.OFFLINE -> StatusTone.OFFLINE
+    AccountStatus.FAILED_NEEDS_ATTENTION, AccountStatus.OFFLINE -> StatusTone.FAILED
 }
 
 /** The chip, so a test presses it rather than a word that may appear twice. */
@@ -276,6 +308,7 @@ private fun RegistrationIndicatorPreview() = PreviewSurface {
     val local = AccountIndicatorRow(AccountId("1"), "Local", "1001", AccountStatus.REGISTERED, isDefault = true)
     val office = AccountIndicatorRow(AccountId("2"), "Office", "7001", AccountStatus.FAILED_RETRYING, isDefault = false)
     val failing = office.copy(status = AccountStatus.FAILED_NEEDS_ATTENTION, isDefault = true)
+    val offline = local.copy(status = AccountStatus.OFFLINE)
 
     Column(verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.small)) {
         // On the header it is designed for, so the colours are judged where they are used.
@@ -294,6 +327,16 @@ private fun RegistrationIndicatorPreview() = PreviewSurface {
             actions = {
                 RegistrationIndicator(
                     state = RegistrationStatusUiState.Content(accounts = listOf(failing), default = failing),
+                    onSetDefault = {},
+                    onManageAccounts = {},
+                )
+            },
+        )
+        AppTopBar(
+            title = "Chats",
+            actions = {
+                RegistrationIndicator(
+                    state = RegistrationStatusUiState.Content(accounts = listOf(offline), default = offline),
                     onSetDefault = {},
                     onManageAccounts = {},
                 )

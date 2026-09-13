@@ -2,6 +2,7 @@ package com.whatsappv2.feature.settings
 
 import app.cash.turbine.test
 import com.whatsappv2.domain.model.AppSettings
+import com.whatsappv2.domain.model.CallHistoryRetention
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
@@ -46,6 +47,7 @@ class SettingsViewModelTest {
             // DISABLED since 2026-09-10: OPTIONAL failed every outgoing call on FreeSWITCH.
             assertEquals(SrtpPolicy.DISABLED, state.settings.defaultSrtpPolicy)
             assertEquals(PreferredAudioRoute.AUTOMATIC, state.settings.preferredAudioRoute)
+            assertEquals(CallHistoryRetention.DEFAULT, state.settings.callHistoryRetention)
             cancelAndIgnoreRemainingEvents()
         }
     }
@@ -84,6 +86,7 @@ class SettingsViewModelTest {
         model.setPreferredAudioRoute(PreferredAudioRoute.SPEAKER)
         model.setThemeMode(ThemeMode.LIGHT)
         model.setSipTraceEnabled(true)
+        model.setCallHistoryRetention(CallHistoryRetention.ofDays(NINETY))
         advanceUntilIdle()
 
         model.uiState.test {
@@ -94,6 +97,7 @@ class SettingsViewModelTest {
             assertEquals(PreferredAudioRoute.SPEAKER, state.preferredAudioRoute)
             assertEquals(ThemeMode.LIGHT, state.themeMode)
             assertTrue(state.sipTraceEnabled)
+            assertEquals(NINETY, state.callHistoryRetention.days)
             cancelAndIgnoreRemainingEvents()
         }
     }
@@ -113,5 +117,9 @@ class SettingsViewModelTest {
             assertEquals(PreferredAudioRoute.EARPIECE, expectMostRecentItem().settings.preferredAudioRoute)
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    private companion object {
+        const val NINETY = 90
     }
 }

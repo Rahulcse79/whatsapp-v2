@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only. Turns off LeakCanary's own installer provider so that
+  LeakCanaryConfigProvider can install the object watcher itself, with the one watch
+  it must not make - see that class.
+-->
+<resources>
+    <bool name="leak_canary_watcher_auto_install">false</bool>
+</resources>

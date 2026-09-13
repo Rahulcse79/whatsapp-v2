@@ -1,5 +1,7 @@
 package com.whatsappv2
 
+import android.content.Context
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -7,15 +9,17 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.domain.repository.AppSettingsRepository
+import com.whatsappv2.onboarding.FirstRunGate
+import com.whatsappv2.onboarding.FirstRunStore
 import com.whatsappv2.permission.LocalPermissionCoordinator
 import com.whatsappv2.permission.PermissionCoordinator
 import com.whatsappv2.permission.PermissionOnboarding
 import com.whatsappv2.permission.rememberCameraGate
 import com.whatsappv2.ui.AppRoot
+import com.whatsappv2.ui.navigation.AppDestination
 import com.whatsappv2.ui.theme.AppThemed
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -52,10 +56,26 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var settings: AppSettingsRepository
 
+    /** What the user has already been through: the terms, and the tour. */
+    @Inject
+    lateinit var firstRun: FirstRunStore
+
+    /**
+     * A screen another activity asked this one to open, until it has been opened.
+     *
+     * The call screen's "Add call" is the only sender today. It runs in its own task, so
+     * it cannot navigate this graph — it can only start this activity with a request, and
+     * `singleTop` (the manifest) means that request arrives at [onNewIntent] rather than
+     * at a second `MainActivity`. State, because it can land while the app is already up
+     * and already on another screen.
+     */
+    private var openDestination by mutableStateOf<AppDestination?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         logger.debug(TAG, "MainActivity created")
+        openDestination = intent?.requestedDestination()
 
         setContent {
             AppThemed(settings, statusBarOverHeader = true) {
@@ -65,29 +85,60 @@ class MainActivity : ComponentActivity() {
                 CompositionLocalProvider(
                     LocalPermissionCoordinator provides permissionCoordinator,
                 ) {
-                    var onboarding by rememberSaveable {
-                        mutableStateOf(permissionCoordinator.needsOnboarding())
-                    }
-
-                    if (onboarding) {
-                        PermissionOnboarding(
-                            coordinator = permissionCoordinator,
-                            onFinished = {
-                                permissionCoordinator.markOnboardingComplete()
-                                onboarding = false
-                            },
-                        )
-                    } else {
+                    // Terms, then the tour, then permissions, then the app. The order and
+                    // the reasons for it live in FirstRunGate; this is only where it is
+                    // mounted, which is above everything so no screen can be reached
+                    // around it.
+                    FirstRunGate(
+                        store = firstRun,
+                        permissionsNeeded = permissionCoordinator::needsOnboarding,
+                        onPermissionsFinished = permissionCoordinator::markOnboardingComplete,
+                        permissionScreen = { onFinished ->
+                            PermissionOnboarding(
+                                coordinator = permissionCoordinator,
+                                onFinished = onFinished,
+                            )
+                        },
+                    ) {
                         // The camera is asked for when a video call is pressed, not only on
                         // the first-run screen somebody may have skipped (Task 74).
-                        AppRoot(videoGate = rememberCameraGate())
+                        AppRoot(
+                            videoGate = rememberCameraGate(),
+                            openDestination = openDestination,
+                            onDestinationOpened = { openDestination = null },
+                        )
                     }
                 }
             }
         }
     }
 
-    private companion object {
-        const val TAG = "MainActivity"
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.requestedDestination()?.let { openDestination = it }
+    }
+
+    private fun Intent.requestedDestination(): AppDestination? =
+        getStringExtra(EXTRA_OPEN_ROUTE)?.let(AppDestination::fromRoute)
+
+    companion object {
+        private const val TAG = "MainActivity"
+
+        private const val EXTRA_OPEN_ROUTE = "com.whatsappv2.OPEN_ROUTE"
+
+        /**
+         * An intent that brings the app forward on [destination].
+         *
+         * `SINGLE_TOP` alongside `NEW_TASK` so the flag is right whether or not the
+         * manifest's launch mode is: the two together are what turn "start the app" into
+         * "bring the app back and tell it where to go", which is what a user pressing Add
+         * call during a live call is asking for.
+         */
+        fun intentFor(context: Context, destination: AppDestination): Intent =
+            Intent(context, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                putExtra(EXTRA_OPEN_ROUTE, destination.route)
+            }
     }
 }

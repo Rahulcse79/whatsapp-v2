@@ -37,6 +37,7 @@ import com.whatsappv2.domain.engine.ConferenceSession
 import com.whatsappv2.domain.engine.IncomingCall
 import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.engine.PlatformCallRegistry
+import com.whatsappv2.domain.engine.PlatformDecision
 import com.whatsappv2.domain.engine.PushToken
 import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.engine.SipEngine
@@ -75,6 +76,7 @@ import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -201,8 +203,17 @@ internal class PjsipSipEngine @Inject constructor(
      */
     override val nextRetryAt: StateFlow<Map<AccountId, Long>> get() = recovery.nextRetryAt
 
+    // Concurrent, all of them, and for one reason. The engine's API runs on whatever
+    // thread called it — a ViewModel's `viewModelScope`, which is Main — while the event
+    // collectors [start] launches run on the stack scope's IO dispatcher. Both sides
+    // write these: `setHold` adds to [pendingHolds] on Main and [endCall] removes from it
+    // on IO, `register` fills [mediaPolicy] and [advance] reads it. A `LinkedHashMap`
+    // written from two threads is not a data race that shows up as a wrong answer; it is
+    // one that shows up as a `ConcurrentModificationException` or a corrupted table, on
+    // some other call, weeks later.
+
     /** Requested expiry per account, so a state event can report the right figure. */
-    private val requestedExpiry = mutableMapOf<String, Int>()
+    private val requestedExpiry = ConcurrentHashMap<String, Int>()
 
     /**
      * Each account's media-encryption policy, kept for the enforcement in [advance]
@@ -213,7 +224,7 @@ internal class PjsipSipEngine @Inject constructor(
      * one. Populated by [register] and dropped by [unregister], so an account that is no
      * longer registered cannot leave a stale policy behind.
      */
-    private val mediaPolicy = mutableMapOf<AccountId, SrtpPolicy>()
+    private val mediaPolicy = ConcurrentHashMap<AccountId, SrtpPolicy>()
 
     /**
      * Calls this engine currently knows about, keyed by the app's own call id.
@@ -266,6 +277,7 @@ internal class PjsipSipEngine @Inject constructor(
     }
 
     /** What [applyCameraPolicy] last told the stack, so it does not tell it again. */
+    @Volatile
     private var cameraCapturing = false
 
     /**
@@ -275,7 +287,7 @@ internal class PjsipSipEngine @Inject constructor(
      * entry is here, so declining is a real decline of a live offer rather than a second
      * re-negotiation after the fact.
      */
-    private val pendingVideoRequests = mutableMapOf<CallId, VideoRequest>()
+    private val pendingVideoRequests = ConcurrentHashMap<CallId, VideoRequest>()
 
     // Stated, not inherited. On overflow the emitter suspends; because this one is
     // published with tryEmit from a non-suspend path, [emitOrReport] turns a refusal
@@ -296,7 +308,7 @@ internal class PjsipSipEngine @Inject constructor(
      * `Replaces`, and the two read differently to a user — "transferring to 1002" against
      * "connecting you to 1002". Remembered here for the length of the REFER only.
      */
-    private val transferTypes = mutableMapOf<CallId, TransferType>()
+    private val transferTypes = ConcurrentHashMap<CallId, TransferType>()
 
     /**
      * Calls whose hold re-INVITE is out and unanswered.
@@ -309,7 +321,7 @@ internal class PjsipSipEngine @Inject constructor(
      * logged as "pauseCall failed" — a failure that was not one (TC15, 2026-09-11). The
      * second ask is answered here instead: it wants what is already happening.
      */
-    private val pendingHolds = mutableSetOf<CallId>()
+    private val pendingHolds: MutableSet<CallId> = ConcurrentHashMap.newKeySet()
 
     private val conferenceSessions = MutableStateFlow<List<ConferenceSession>>(emptyList())
     override val conferences: StateFlow<List<ConferenceSession>> = conferenceSessions.asStateFlow()
@@ -374,6 +386,8 @@ internal class PjsipSipEngine @Inject constructor(
     private val ended = eventFlow<CallSnapshot>()
     override val endedCalls: Flow<CallSnapshot> = ended.asSharedFlow()
 
+    /** Set by [start] and read by every API call, on different threads; hence volatile. */
+    @Volatile
     private var started = false
 
     /**
@@ -818,12 +832,21 @@ internal class PjsipSipEngine @Inject constructor(
 
         // Telecom, before the INVITE. It knows about the cellular call this app cannot
         // see, and a refusal is honoured rather than worked around (Task 34, §3). The
-        // snapshot goes back out again on refusal: a call that will never exist must not
-        // be left on screen.
-        if (!platform.registerOutgoing(snapshot)) {
+        // snapshot goes back out again on anything but a yes: a call that will never exist
+        // must not be left on screen. A refusal and a silence part company only in what
+        // the user is told — the first names the other call, the second must not.
+        val notPlaced = when (platform.registerOutgoing(snapshot)) {
+            PlatformDecision.Permitted -> null
+            PlatformDecision.Refused -> SipError.CallNotPermitted
+            PlatformDecision.Unavailable -> SipError.PlatformUnavailable
+        }
+        if (notPlaced != null) {
             updateCalls { it - callId }
-            logger.info(TAG, "Telecom refused an outgoing call")
-            return failure(SipError.CallNotPermitted)
+            when (notPlaced) {
+                SipError.CallNotPermitted -> logger.info(TAG, "Telecom refused an outgoing call")
+                else -> logger.error(TAG, "Telecom did not take an outgoing call; it is not placed")
+            }
+            return failure(notPlaced)
         }
 
         callGateway.placeCall(
@@ -1345,7 +1368,7 @@ internal class PjsipSipEngine @Inject constructor(
 
     override suspend fun refreshRegistration(accountId: AccountId): Outcome<Unit, SipError> {
         if (!started) return failure(SipError.EngineUnavailable)
-        if (accountId.value !in requestedExpiry) return failure(SipError.UnknownAccount)
+        if (!requestedExpiry.containsKey(accountId.value)) return failure(SipError.UnknownAccount)
 
         gateway.refreshAccount(accountId.value)
         return success(Unit)

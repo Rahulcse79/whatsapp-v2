@@ -10,6 +10,7 @@ import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.engine.CallSnapshot
 import com.whatsappv2.domain.engine.IncomingCall
 import com.whatsappv2.domain.engine.PlatformCallRegistry
+import com.whatsappv2.domain.engine.PlatformDecision
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.SipUri
@@ -51,14 +52,18 @@ class TelecomCallRegistry @Inject constructor(
     private val logger: Logger,
 ) : PlatformCallRegistry {
 
-    override suspend fun registerOutgoing(call: CallSnapshot): Boolean {
-        val telecom = telecomManager() ?: return permitWithoutPlatform()
+    override suspend fun registerOutgoing(call: CallSnapshot): PlatformDecision {
+        val telecom = telecomManager()
+        if (telecom == null) {
+            noteNoPlatform()
+            return PlatformDecision.Permitted
+        }
 
         // Asked first because Telecom answers this one synchronously, and a "no" costs
         // nothing to find out before anything is handed over.
         if (!phoneAccount.outgoingCallPermitted()) {
             logger.info(TAG, "Telecom will not permit an outgoing call right now")
-            return false
+            return PlatformDecision.Refused
         }
 
         val waiter = SipConnectionService.expect(call.callId)
@@ -84,7 +89,11 @@ class TelecomCallRegistry @Inject constructor(
     }
 
     override suspend fun registerIncoming(call: IncomingCall): Boolean {
-        val telecom = telecomManager() ?: return permitWithoutPlatform()
+        val telecom = telecomManager()
+        if (telecom == null) {
+            noteNoPlatform()
+            return true
+        }
 
         val waiter = SipConnectionService.expect(call.callId)
         val extras = callExtras(call.callId).apply {
@@ -95,7 +104,9 @@ class TelecomCallRegistry @Inject constructor(
             .onFailure { logger.error(TAG, "Telecom refused the inbound call: ${it.javaClass.simpleName}") }
             .isSuccess
 
-        return awaitDecision(call.callId, waiter, handedOver)
+        // Refused and unanswered come to the same thing for an inbound call — it is
+        // rejected and nobody is shown a sentence — which is why this port stays boolean.
+        return awaitDecision(call.callId, waiter, handedOver) == PlatformDecision.Permitted
     }
 
     override fun onConnected(callId: CallId) = SipConnectionService.reportActive(callId)
@@ -154,36 +165,41 @@ class TelecomCallRegistry @Inject constructor(
     /**
      * Waits for Telecom to create or refuse the connection.
      *
-     * A timeout counts as a refusal. The alternative — proceeding without a connection —
-     * is a call the platform does not know about: no audio focus, no arbitration with the
-     * cellular radio, and no way to end it from the lock screen. A call that visibly did
-     * not start is better than one that half did.
+     * A timeout, or a handover Telecom would not take, is [PlatformDecision.Unavailable]
+     * and not a refusal. Both still stop the call — the alternative, proceeding without a
+     * connection, is a call the platform does not know about: no audio focus, no
+     * arbitration with the cellular radio, and no way to end it from the lock screen. But
+     * they used to come back as the same `false` a refusal did, and the screen then told a
+     * user whose phone was idle that it was on another call. A call that visibly did not
+     * start is better than one that half did; a message that names the actual fault is
+     * better than one that names a call that does not exist.
      */
     private suspend fun awaitDecision(
         callId: CallId,
         waiter: CompletableDeferred<Boolean>,
         handedOver: Boolean,
-    ): Boolean {
+    ): PlatformDecision {
         if (!handedOver) {
             SipConnectionService.forget(callId)
-            return false
+            return PlatformDecision.Unavailable
         }
 
-        val decision = withTimeoutOrNull(DECISION_TIMEOUT_MILLIS) { waiter.await() }
-        if (decision == null) {
-            logger.error(TAG, "Telecom did not answer for $callId; treating it as a refusal")
-            SipConnectionService.forget(callId)
+        return when (withTimeoutOrNull(DECISION_TIMEOUT_MILLIS) { waiter.await() }) {
+            true -> PlatformDecision.Permitted
+            false -> PlatformDecision.Refused
+            null -> {
+                logger.error(TAG, "Telecom did not answer for $callId within ${DECISION_TIMEOUT_MILLIS} ms")
+                SipConnectionService.forget(callId)
+                PlatformDecision.Unavailable
+            }
         }
-        return decision == true
     }
 
     private fun telecomManager(): TelecomManager? =
         context.getSystemService(TelecomManager::class.java)
 
-    private fun permitWithoutPlatform(): Boolean {
+    private fun noteNoPlatform() =
         logger.warn(TAG, "No Telecom on this device; the call proceeds unmanaged")
-        return true
-    }
 
     private fun callExtras(callId: CallId) = Bundle().apply {
         putString(SipConnectionService.EXTRA_CALL_ID, callId.value)

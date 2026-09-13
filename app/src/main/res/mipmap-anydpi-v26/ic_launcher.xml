@@ -1,13 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The launcher icon (Task 66).
+  The launcher icon (Task 66; the CoralX mark since 2026-09-12).
 
-  Three layers, not a bitmap: the launcher masks background and foreground to its own
-  shape and parallaxes them, and <monochrome> is what lets Android 13+ tint the icon to
-  the user's wallpaper instead of dropping a coloured square into a themed home screen.
+  Three layers, not a bitmap for the whole icon: the launcher masks background and
+  foreground to its own shape and parallaxes them, and <monochrome> is what lets Android
+  13+ tint the icon to the user's wallpaper instead of dropping a coloured square into a
+  themed home screen.
+
+  ## The foreground is a bitmap now, and that is a change of premise rather than of mind
+
+  It used to be a vector, on the argument that one file beats five density buckets nobody
+  can review in a diff. That argument holds while the glyph is ours to draw. The CoralX
+  mark is not: it is supplied artwork, and its coral-to-magenta and cyan-to-teal ramps,
+  the soft inner shading of the C and the glow around both strokes are not a path list.
+  Tracing it would ship something that is nearly the brand, which is worse than shipping
+  the brand.
+
+  So the mark ships as PNGs at all five densities, generated from the supplied file and
+  keyed off its own background - the near-black disc inside the C is kept, because it is
+  part of the mark and not part of the ground. The plate behind it stays a vector, and its
+  colour is the median of the pixels the mark was keyed off, so the two cannot drift apart.
+
+  Every layer is 108dp with the mark inside the 66% the launcher is guaranteed to keep,
+  which is what stops a circular mask from cutting the ends off the X.
 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@drawable/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground" />
-    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_monochrome" />
 </adaptive-icon>

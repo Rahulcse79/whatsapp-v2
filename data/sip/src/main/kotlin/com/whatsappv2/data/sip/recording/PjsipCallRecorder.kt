@@ -56,6 +56,9 @@ import javax.inject.Singleton
  * (`docs/HANDOFF.md` §0d). A `suspend` function that blocks its caller is not a seam, it is
  * a trap; there is no store call below that is not wrapped.
  *
+ * The same rule covers the store's start-up sweep of plaintext left by a crash, which
+ * [start] runs on that dispatcher rather than leaving to the store's constructor.
+ *
  * ## Recording stops when the call does, and nothing has to ask
  *
  * A call that ends while recording is the case that leaves a file open and a plaintext
@@ -175,6 +178,10 @@ internal class PjsipCallRecorder @Inject constructor(
     fun start() {
         if (watchJob != null) return
         watchJob = scope.launch {
+            // Before the call list is watched, and on the I/O dispatcher: the sweep of
+            // plaintext left by a crash is file I/O, and it used to run from the store's
+            // constructor -- on whichever thread first injected the store, the main one.
+            withContext(dispatchers.io) { store.sweepAbandoned() }
             calls.activeCalls.collect { onCallsChanged() }
         }
     }

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Runs the push sender next to the Mac's FreeSWITCH as a user agent.
+
+    cp deploy/launchd/com.coralx.push-sender.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.coralx.push-sender.plist
+    tail -f ~/Library/Logs/coralx-push-sender.log
+
+  Edit the three paths below for the machine: the binary, the data directory and the
+  Firebase service-account key. Leave the key argument out to run dry (no FCM).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.coralx.push-sender</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/rahulsingh/Desktop/whatsapp-v2/coralx-push-sender/bin/push-sender</string>
+    <string>-data-dir</string>
+    <string>/Users/rahulsingh/Desktop/whatsapp-v2/coralx-push-sender/data</string>
+    <string>-service-account</string>
+    <string>/Users/rahulsingh/Desktop/whatsapp-v2/coralx-push-sender/data/firebase-service-account.json</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/rahulsingh/Library/Logs/coralx-push-sender.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/rahulsingh/Library/Logs/coralx-push-sender.log</string>
+</dict>
+</plist>
