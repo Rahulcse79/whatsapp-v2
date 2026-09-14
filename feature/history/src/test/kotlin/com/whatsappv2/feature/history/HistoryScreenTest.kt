@@ -6,7 +6,11 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.filterToOne
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onChildren
@@ -102,6 +106,23 @@ class HistoryScreenTest {
             .assertContentDescriptionEquals("Video call")
         compose.onNodeWithTag(mediaTag(missedVideo), useUnmergedTree = true)
             .assertContentDescriptionEquals("Video call")
+    }
+
+    @Test
+    fun `the kind of call leads the row, where the avatar was`() {
+        // Rahul, 2026-09-14: the glyph at the far end of the row was past the text people
+        // scan, and the avatar it replaces said nothing here — no photos, no initials for
+        // an extension. So the glyph sits first, and the title starts to its right.
+        setContent()
+
+        val glyph = compose.onNodeWithTag(mediaTag(voice), useUnmergedTree = true)
+            .getUnclippedBoundsInRoot()
+        val title = compose.onNode(
+            hasText("Echo") and hasAnyAncestor(hasTestTag(entryTag(voice))),
+            useUnmergedTree = true,
+        ).getUnclippedBoundsInRoot()
+
+        assertTrue(glyph.right <= title.left, "glyph $glyph should sit left of the title $title")
     }
 
     @Test

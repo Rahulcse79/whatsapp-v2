@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.CallMade
@@ -85,7 +86,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.paging.compose.LazyPagingItems
 import com.whatsappv2.core.designsystem.component.AppHeaderTabs
 import com.whatsappv2.core.designsystem.component.AppTopBar
-import com.whatsappv2.core.designsystem.component.Avatar
 import com.whatsappv2.core.designsystem.component.ConfirmDialog
 import com.whatsappv2.core.designsystem.component.EmptyState
 import com.whatsappv2.core.designsystem.theme.AppTheme
@@ -733,23 +733,40 @@ private fun CallRowContent(row: HistoryRow.Call, actions: HistoryActions, zone: 
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.medium),
     ) {
-        // The face first, the way every list of people is arranged. The direction moved
-        // down beside the time it belongs to: it describes what happened, not who it was
-        // with, and it had been sitting where the person should be.
-        Avatar(displayName = row.title.takeIf { title -> title.any(Char::isLetter) })
+        // What kind of call it was, where the avatar used to be. The avatar said
+        // nothing on this screen — the log has no photos, and an extension has no
+        // initials — while the kind of call sat as a small glyph at the far end of the
+        // row, past the text people scan. Rahul asked for the two to swap (2026-09-14).
+        // Both kinds get a glyph: video is not the exception being flagged, it is one of
+        // two things a call can be. The direction stays beside the time it belongs to.
+        MediaBadge(entry)
 
         CallRowText(row = row, zone = zone, modifier = Modifier.weight(1f))
+    }
+}
 
-        // What kind of call it was, at the end of the row where a calling app keeps it
-        // (item 5.3). The log records it and the row did not show it, so a missed video
-        // call and a missed audio call looked identical. Both kinds get a glyph: video is
-        // not the exception being flagged, it is one of two things a call can be.
+/**
+ * Voice or video, as the row's leading mark.
+ *
+ * The avatar's exact footprint — the same circle, the same container colour, the glyph
+ * at half the diameter as `Avatar` draws its own placeholder — so the text column starts
+ * where it always did and a row of calls keeps its rhythm.
+ */
+@Composable
+private fun MediaBadge(entry: CallLogEntry) {
+    Box(
+        modifier = Modifier
+            .size(AppTheme.sizing.avatarSmall)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.secondaryContainer),
+        contentAlignment = Alignment.Center,
+    ) {
         Icon(
             imageVector = if (entry.media.hasVideo) Icons.Filled.Videocam else Icons.Filled.Call,
             contentDescription = if (entry.media.hasVideo) "Video call" else "Voice call",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            tint = MaterialTheme.colorScheme.onSecondaryContainer,
             modifier = Modifier
-                .size(AppTheme.sizing.listTrailingIcon)
+                .size(AppTheme.sizing.avatarSmall / 2)
                 .testTag(mediaTag(entry)),
         )
     }
