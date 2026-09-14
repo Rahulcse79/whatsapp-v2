@@ -57,7 +57,7 @@ class CallIntegrationTest {
     private lateinit var harness: CallTestHarness
 
     @Before
-    fun setUp() = runBlocking {
+    fun setUp() = runBlocking<Unit> {
         val target = TestTarget.requireConfigured()
         harness = CallTestHarness(
             context = InstrumentationRegistry.getInstrumentation().targetContext,
@@ -75,7 +75,7 @@ class CallIntegrationTest {
     // ---------------------------------------------------------------- the call itself
 
     @Test
-    fun anOutgoingCallReachesTheOtherExtension() = runBlocking {
+    fun anOutgoingCallReachesTheOtherExtension() = runBlocking<Unit> {
         val callId = placeCall()
 
         // Telecom is asked before the INVITE goes out (Task 34, §3), and on a real call
@@ -85,7 +85,7 @@ class CallIntegrationTest {
     }
 
     @Test
-    fun anInboundInviteArrivesOnTheOtherAccount() = runBlocking {
+    fun anInboundInviteArrivesOnTheOtherAccount() = runBlocking<Unit> {
         placeCall()
 
         // The same call, seen from the callee. It is the registrar that put it there, so
@@ -95,14 +95,14 @@ class CallIntegrationTest {
     }
 
     @Test
-    fun aCallConnectsWhenTheOtherEndAnswers() = runBlocking {
+    fun aCallConnectsWhenTheOtherEndAnswers() = runBlocking<Unit> {
         val connected = connectedCall()
 
         assertNotNull(connected, "the call never reached Connected")
     }
 
     @Test
-    fun hangingUpEndsTheCallAtBothEnds() = runBlocking {
+    fun hangingUpEndsTheCallAtBothEnds() = runBlocking<Unit> {
         val callId = connectedCall()!!.callId
 
         harness.engine.hangup(callId, HangupReason.LOCAL_HANGUP)
@@ -116,7 +116,7 @@ class CallIntegrationTest {
     // ---------------------------------------------------------------- mid-call controls
 
     @Test
-    fun holdAndResumeSurviveARealReInvite() = runBlocking {
+    fun holdAndResumeSurviveARealReInvite() = runBlocking<Unit> {
         val callId = connectedCall()!!.callId
 
         harness.engine.setHold(callId, held = true)
@@ -129,7 +129,7 @@ class CallIntegrationTest {
     }
 
     @Test
-    fun mutingIsReportedOnTheCall() = runBlocking {
+    fun mutingIsReportedOnTheCall() = runBlocking<Unit> {
         val callId = connectedCall()!!.callId
 
         harness.engine.setMuted(callId, muted = true)
@@ -146,7 +146,7 @@ class CallIntegrationTest {
     }
 
     @Test
-    fun theSpeakerRouteIsRequestedAndReported() = runBlocking {
+    fun theSpeakerRouteIsRequestedAndReported() = runBlocking<Unit> {
         val callId = connectedCall()!!.callId
 
         val accepted = harness.engine.setAudioRoute(callId, AudioRoute.SPEAKER)
@@ -156,7 +156,7 @@ class CallIntegrationTest {
     }
 
     @Test
-    fun everyDtmfDigitIsAcceptedOnAConnectedCall() = runBlocking {
+    fun everyDtmfDigitIsAcceptedOnAConnectedCall() = runBlocking<Unit> {
         val callId = connectedCall()!!.callId
 
         // All sixteen, because the ones that are not on a keypad — A to D — are the ones

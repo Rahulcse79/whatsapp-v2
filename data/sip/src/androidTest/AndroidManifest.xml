@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      The instrumented SIP suite opens real sockets to a registrar. In :app that permission
+      is merged in from the app manifest; the :data:sip androidTest APK is self-instrumenting
+      and has no app to inherit it from, and the library's own main manifest declares only
+      ACCESS_NETWORK_STATE. Without INTERNET here the test process cannot REGISTER — the UDP
+      cases time out as "never registered" and the TCP case aborts the process with an
+      uncaught pj::Error. Test-only; it never reaches a shipped APK.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+</manifest>

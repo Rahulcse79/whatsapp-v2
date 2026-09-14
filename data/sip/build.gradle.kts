@@ -67,10 +67,12 @@ dependencies {
     testImplementation(libs.turbine)
 
     // Task 33. Only artifacts the catalog already pins: the integration suite cannot run
-    // in `ci.yml` at all - it needs a device and a reachable registrar - so a new,
-    // unverified version pin here would risk the push gate for code the push gate never
-    // executes. If the instrumentation runner turns out to be missing at run time,
-    // docs/testing.md says to add androidx.test:runner.
+    // in `ci.yml` at all - it needs a device and a reachable registrar. androidx.test:runner
+    // carries AndroidJUnitRunner, the class `testInstrumentationRunner` above names; without
+    // it the instrumentation process dies at init with ClassNotFoundException and every run
+    // reports "0 tests" as success (ext:junit and core do NOT pull it in transitively). It
+    // shares androidxTestCore's version, which runner is released in lockstep with.
+    androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.core.ktx)
     androidTestImplementation(libs.kotlin.test)

@@ -3,9 +3,12 @@ package com.whatsappv2.data.sip.registration
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.whatsappv2.core.common.logging.NoOpLogger
+import com.whatsappv2.data.sip.registration.stack.PjsipTrustStore
 import com.whatsappv2.data.sip.registration.stack.RealPjsipCoreGateway
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
@@ -47,8 +50,12 @@ class RegistrationIntegrationTest {
     @Before
     fun setUp() {
         target = TestTarget.requireConfigured()
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
         gateway = RealPjsipCoreGateway(
-            context = InstrumentationRegistry.getInstrumentation().targetContext,
+            context = context,
+            // The real trust store, built as Hilt would build it (its own JVM test covers
+            // the CA-bundle parsing); a TLS transport would read the bundle from it.
+            trustStore = PjsipTrustStore(context, NoOpLogger),
             // NoOpLogger, not the Android one: this run carries a real credential and
             // the stack is chatty (§7, DoD 12).
             logger = NoOpLogger,
@@ -121,12 +128,20 @@ class RegistrationIntegrationTest {
         // manual test instead.
         assertEquals(StackRegistrationState.OK, register(transport = "udp")?.state)
 
+        // assertEquals rather than assertNotNull(recovered): assertNotNull returns the
+        // value it checked, which would make this @Test function's inferred return type the
+        // internal StackRegistrationEvent. Asserting on ?.state keeps it Unit and matches
+        // the transport tests above.
         val recovered = awaitState(StackRegistrationState.OK) {
             gateway.setNetworkReachable(false)
             gateway.setNetworkReachable(true)
-        }
+        }?.state
 
-        assertNotNull(recovered, "the registration did not come back after the transport dropped")
+        assertEquals(
+            StackRegistrationState.OK,
+            recovered,
+            "the registration did not come back after the transport dropped",
+        )
     }
 
     // ---------------------------------------------------------------- helpers
@@ -134,34 +149,39 @@ class RegistrationIntegrationTest {
     /**
      * Adds the account and waits for the registrar's answer, whatever it is.
      *
-     * The REGISTER is sent from `onSubscription`, which runs *after* this collector is
-     * registered and before any value is delivered. `registrationEvents` is a
-     * `SharedFlow` with `replay = 0`, so adding the account first would race: a registrar
-     * on the same LAN can answer before the collector attaches, and the test would hang
-     * for twenty seconds waiting for an event that has already been and gone.
+     * The account is added only *after* the collector is subscribed. `registrationEvents`
+     * is a hot flow with `replay = 0`, so adding it first would race: a registrar on the
+     * same LAN can answer before a late collector attaches, and the test would then hang
+     * for twenty seconds waiting for an event that has already been and gone. Starting the
+     * collector `UNDISPATCHED` runs it up to its first suspension — the point at which
+     * `first` has subscribed — before [addAccount][SipCoreGateway.addAccount] is called,
+     * which is the same guarantee `onSubscription` gave before the flow's type narrowed
+     * from `SharedFlow` to `Flow`.
      */
     private suspend fun register(
         transport: String,
         password: String = target.password,
     ): StackRegistrationEvent? = withTimeoutOrNull(REGISTER_TIMEOUT_MILLIS) {
-        gateway.registrationEvents
-            .onSubscription {
-                gateway.addAccount(
-                    StackAccount(
-                        key = ACCOUNT_KEY,
-                        username = target.extension,
-                        authUsername = target.extension,
-                        password = password,
-                        domain = target.domain,
-                        registrarUri = target.registrarUri,
-                        proxyUri = null,
-                        transport = transport,
-                        expirySeconds = EXPIRY_SECONDS,
-                    ),
-                )
+        coroutineScope {
+            val answered = async(start = CoroutineStart.UNDISPATCHED) {
+                // The first thing that is not "still trying".
+                gateway.registrationEvents.first { it.state != StackRegistrationState.PROGRESS }
             }
-            // The first thing that is not "still trying".
-            .first { it.state != StackRegistrationState.PROGRESS }
+            gateway.addAccount(
+                StackAccount(
+                    key = ACCOUNT_KEY,
+                    username = target.extension,
+                    authUsername = target.extension,
+                    password = password,
+                    domain = target.domain,
+                    registrarUri = target.registrarUri,
+                    proxyUri = null,
+                    transport = transport,
+                    expirySeconds = EXPIRY_SECONDS,
+                ),
+            )
+            answered.await()
+        }
     }
 
     /** Waits for a state, driving [action] once subscribed for the same reason as above. */
@@ -169,9 +189,13 @@ class RegistrationIntegrationTest {
         state: StackRegistrationState,
         action: () -> Unit,
     ): StackRegistrationEvent? = withTimeoutOrNull(RECOVERY_TIMEOUT_MILLIS) {
-        gateway.registrationEvents
-            .onSubscription { action() }
-            .first { it.state == state }
+        coroutineScope {
+            val reached = async(start = CoroutineStart.UNDISPATCHED) {
+                gateway.registrationEvents.first { it.state == state }
+            }
+            action()
+            reached.await()
+        }
     }
 
     private companion object {
