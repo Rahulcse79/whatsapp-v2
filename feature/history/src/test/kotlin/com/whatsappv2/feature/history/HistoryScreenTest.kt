@@ -56,6 +56,7 @@ class HistoryScreenTest {
         id = CallLogId(id),
         accountId = AccountId("acct-1"),
         remote = remote,
+        accountDomain = null,
         remoteDisplayName = "Echo",
         contactName = null,
         direction = CallDirection.INCOMING,

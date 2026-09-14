@@ -8,6 +8,7 @@ import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.model.CallLogId
 import com.whatsappv2.domain.repository.CallLogRepository
+import com.whatsappv2.domain.repository.SipAccountRepository
 import javax.inject.Inject
 
 /**
@@ -26,11 +27,20 @@ import javax.inject.Inject
  * ended: nothing downstream of the state machine needed that until now. Rather than widen
  * the snapshot for one reader, the ending is stamped here, at the moment the engine
  * reports it. The two differ by the time it takes to deliver one emission.
+ *
+ * ## And the account's domain, for the same reason
+ *
+ * The snapshot names the account but not its domain, and the row needs the domain to tell,
+ * later, whether the far end's address was the server's or its own
+ * ([CallLogEntry.redialTarget]). Read here, once, at the ending — the account table is the
+ * only thing that knows it, and reading it when the row is redialled would compare against
+ * whatever the domain had become by then, which is the case that needs telling apart.
  */
 class CallLogRecorder @Inject constructor(
     private val calls: SipCallController,
     private val log: CallLogRepository,
     private val contacts: ContactRepository,
+    private val accounts: SipAccountRepository,
     private val clock: Clock,
 ) {
 
@@ -48,7 +58,10 @@ class CallLogRecorder @Inject constructor(
             // entry on every scroll, and would rewrite history whenever a contact was
             // renamed or deleted (Task 49).
             val contact = contacts.resolve(entry.remote)
-            log.record(entry.copy(contactName = contact?.displayName))
+            // Null if the account was deleted while the call was up: the row is still
+            // written, and reads as one whose domain was never recorded.
+            val domain = accounts.findById(entry.accountId)?.domain
+            log.record(entry.copy(contactName = contact?.displayName, accountDomain = domain))
         }
     }
 }
@@ -68,9 +81,11 @@ fun CallSnapshot.toLogEntry(endedAtEpochMillis: Long): CallLogEntry? {
         id = CallLogId.UNSAVED,
         accountId = accountId,
         remote = remote,
-        remoteDisplayName = remoteDisplayName,
-        // Filled in by the recorder, which is the only thing that has an address book to
+        // Filled in by the recorder, which is the only thing that has an account table to
         // ask. Null here keeps this function pure and testable without one.
+        accountDomain = null,
+        remoteDisplayName = remoteDisplayName,
+        // Likewise, from the address book.
         contactName = null,
         direction = direction,
         startedAtEpochMillis = startedAtEpochMillis,

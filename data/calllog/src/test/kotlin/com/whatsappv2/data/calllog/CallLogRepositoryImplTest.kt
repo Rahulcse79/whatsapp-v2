@@ -66,6 +66,7 @@ class CallLogRepositoryImplTest {
             entry(
                 displayName = "Bob",
                 contactName = "Bob at work",
+                accountDomain = "sip.example.com",
                 answeredAt = ANSWERED_AT,
                 media = MediaProfile.AUDIO_VIDEO,
                 reason = HangupReason.REMOTE_HANGUP,
@@ -186,12 +187,14 @@ class CallLogRepositoryImplTest {
         answeredAt: Long? = null,
         displayName: String? = null,
         contactName: String? = null,
+        accountDomain: String? = null,
         media: MediaProfile = MediaProfile.AUDIO,
         reason: HangupReason = HangupReason.LOCAL_HANGUP,
     ) = CallLogEntry(
         id = CallLogId.UNSAVED,
         accountId = AccountId("acct-1"),
         remote = REMOTE,
+        accountDomain = accountDomain,
         remoteDisplayName = displayName,
         contactName = contactName,
         direction = direction,

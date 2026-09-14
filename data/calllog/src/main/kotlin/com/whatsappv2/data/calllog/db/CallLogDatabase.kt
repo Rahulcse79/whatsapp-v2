@@ -3,6 +3,7 @@ package com.whatsappv2.data.calllog.db
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
  * The call log database.
@@ -33,10 +34,31 @@ abstract class CallLogDatabase : RoomDatabase() {
     abstract fun callLogDao(): CallLogDao
 
     companion object {
-        const val VERSION = 1
+        const val VERSION = 2
         const val NAME = "call-log.db"
 
-        /** Every migration, in order. Empty at version 1, declared so adding one is a line. */
-        val MIGRATIONS: Array<Migration> = emptyArray()
+        /**
+         * Records which server each call was on, so a call back survives the server moving.
+         *
+         * `remote_uri` carries the account's domain in its host — the extension was
+         * completed against it, or the server put its own address in `From` — and until
+         * this version nothing recorded that the host *was* the domain. So when the domain
+         * changed (a laptop-hosted PBX on a new Wi-Fi network, 2026-09-14), every call back
+         * from history sent its INVITE to the previous address and timed out, while the
+         * row still read "1003". `account_domain` is what lets
+         * [com.whatsappv2.domain.model.CallLogEntry.redialTarget] tell the two apart.
+         *
+         * Nullable, and left null on the rows that exist: the information was never
+         * written and cannot be recovered. Those rows are read as being on the account's
+         * own server — see `redialTarget` — which is what every one of them was.
+         */
+        val MIGRATION_1_2: Migration = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE call_log ADD COLUMN account_domain TEXT")
+            }
+        }
+
+        /** Every migration, in order. */
+        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2)
     }
 }
