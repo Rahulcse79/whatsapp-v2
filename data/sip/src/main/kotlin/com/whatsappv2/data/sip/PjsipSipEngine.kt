@@ -3,7 +3,10 @@ package com.whatsappv2.data.sip
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.failure
+import com.whatsappv2.core.common.result.flatMap
 import com.whatsappv2.core.common.result.getOrNull
+import com.whatsappv2.core.common.result.onFailure
+import com.whatsappv2.core.common.result.onSuccess
 import com.whatsappv2.core.common.result.success
 import com.whatsappv2.core.common.time.Clock
 import com.whatsappv2.core.common.time.SystemClock
@@ -476,6 +479,10 @@ internal class PjsipSipEngine @Inject constructor(
             when {
                 known != null -> advance(id, known, event)
                 CallStateMapper.isNewIncoming(event.state) -> onIncomingInvite(id, event)
+                CallStateMapper.isNewOutgoing(event.state) ->
+                    onTransferredCall(id, event, clock, logger, callGateway::terminateCall) { new ->
+                        updateCalls { it + (id to new) }
+                    }
                 // Nothing to move and nothing to create. Logged at debug rather than
                 // warned: a late event for a call the user already hung up is normal.
                 else -> logger.debug(TAG, "Ignoring ${event.state} for unknown call $id")
@@ -589,7 +596,7 @@ internal class PjsipSipEngine @Inject constructor(
         // Any answer from the stack settles the hold that was in flight — the 200 that
         // holds it, or a refusal that leaves it connected — so the next ask is a real one.
         pendingHolds -= id
-        val next = nextStateFor(id, current, event)
+        val next = nextStateFor(id, current, event, logger)
 
         // §7, DoD 13: a call that reached media without encrypting it, on an account that
         // requires encryption, is dropped rather than carried on in the clear. See
@@ -606,25 +613,6 @@ internal class PjsipSipEngine @Inject constructor(
         reportToPlatform(id, current, settled, justConnected)
         store(id, current, settled, media, justConnected)
     }
-
-    /**
-     * Where the FSM says this event takes the call, or null if it says nowhere.
-     *
-     * A rejected transition is logged and dropped rather than forced through: a snapshot
-     * in a state the machine does not allow is worse than one that missed a step.
-     */
-    private fun nextStateFor(id: CallId, current: CallSnapshot, event: StackCallEvent): CallState? =
-        CallStateMapper.toCallEvent(event, current.state, current.direction)
-            ?.let { CallStateMachine.transition(current.state, it) }
-            ?.let { result ->
-                when (result) {
-                    is TransitionResult.Moved -> result.state
-                    is TransitionResult.Rejected -> {
-                        logger.warn(TAG, "Call $id: ${result.event} rejected from ${result.from}")
-                        null
-                    }
-                }
-            }
 
     /**
      * Tells Telecom what this event changed.
@@ -1264,18 +1252,70 @@ internal class PjsipSipEngine @Inject constructor(
         resumeHeldForMix(activeCalls, callIds, logger) { setHold(it, held = false) }
         val live = liveForMix(activeCalls.value, callIds)
 
-        return when (val accepted = conferenceGateway.setConferenceMembers(live.map { it.value }.toSet())) {
-            is Outcome.Failure -> {
-                mixed.value = emptySet()
-                failure(SipError.EngineUnavailable)
-            }
-            is Outcome.Success -> {
-                val ids = accepted.value.map(::CallId).toSet()
-                mixed.value = ids.asConferenceOrEmpty()
-                logger.info(TAG, "Mixing ${ids.size} call(s) on this device")
-                success(ids)
-            }
+        // ADR-009 made audio-only a *decision*; this is what makes it true on the wire.
+        //
+        // A device-mixed conference of four carrying video costs ~540 % of a core against
+        // the ADR's 400 % budget — measured on a TC15, not estimated. Leaving the video
+        // streams up anyway did not buy a video conference: it bought N one-to-one
+        // pictures, a renegotiation on every leg each time anybody was held or resumed,
+        // and the 488 that collapsed the whole conference (2026-09-15). Dropping video
+        // here is one re-INVITE per member, sent once, at the moment the user asks for a
+        // conference.
+        //
+        // A video conference is ADR-003's bridge: dial the room, one composed stream
+        // down, one camera up, and the handset pays for a single video stream.
+        dropVideoForMix(live, logger) { videoGateway.setVideoEnabled(it.value, false) }
+
+        return publishMix(conferenceGateway.setConferenceMembers(live.map { it.value }.toSet()), mixed, logger) {
+            updateCalls { calls -> calls.markingAsConference(it) }
         }
+    }
+
+    /**
+     * Moves every merged leg into the bridge, and follows them in (ADR-003).
+     *
+     * ## The order is the whole of it
+     *
+     * 1. **Resume first.** A REFER is a request inside a dialog, and a held dialog is
+     *    still a dialog — but a transferee that follows a REFER from a leg it believes is
+     *    on hold arrives at the bridge with its media still stopped. Resuming first is one
+     *    re-INVITE per held leg, and it is the same `resumeHeldForMix` the local mix uses,
+     *    for the same reason.
+     * 2. **REFER every leg, then dial.** Sending the REFERs first means the peers are
+     *    already on their way while this device's own INVITE is in flight, so the bridge
+     *    fills from all sides at once rather than in series. It also means a failure to
+     *    place *our* leg leaves a conference the others are in and we are not — which is
+     *    recoverable by dialling the room, and is strictly better than having hung up on
+     *    everybody.
+     * 3. **Nothing is hung up here.** Each merged leg ends when its own transfer
+     *    completes, reported through `transferEvents` exactly as a one-to-one blind
+     *    transfer is. Terminating them here would cut the REFER off before it was
+     *    followed — the leg *is* the dialog the REFER travels in.
+     *
+     * The local audio bridge is torn down before any of it. A device that is mixing and
+     * transferring at the same time would briefly be both a conference host and a
+     * conference member, and the mix would hold ports open for calls on their way out.
+     *
+     * This device joins **with video**, which is the entire reason this path exists rather
+     * than the local mix. A member that joins audio-only is heard and, by the profile's
+     * `video-required-for-canvas`, takes no tile on the canvas — which would be this
+     * handset missing from everybody's screen.
+     */
+    override suspend fun mergeIntoConference(
+        callIds: Set<CallId>,
+        room: SipUri,
+    ): Outcome<CallId, SipError> = when {
+        !started -> failure(SipError.EngineUnavailable)
+
+        else -> referLegsIntoRoom(
+            calls = activeCalls,
+            requested = callIds,
+            mixed = mixed,
+            logger = logger,
+            clearMix = { conferenceGateway.setConferenceMembers(emptySet()) },
+            resume = { setHold(it, held = false) },
+            refer = { transfer(it, room, TransferType.BLIND, consultationCallId = null) },
+        ).flatMap { joinConference(it, room, MediaProfile.AUDIO_VIDEO) }
     }
 
     /**
@@ -1600,6 +1640,158 @@ private suspend fun resumeHeldForMix(
 }
 
 /**
+ * A call the **stack** placed, by following a REFER it accepted.
+ *
+ * The mirror of [onIncomingInvite] and it exists for the same reason: this is a call
+ * nothing above the stack asked for, so there is no snapshot for the events that
+ * follow to move. Without it every one of them was dropped as "unknown call" and a
+ * transferred handset kept showing the leg it had already left.
+ *
+ * Published straight into `Outgoing.Calling`, which is where [placeCall] puts a call
+ * it has just handed to the stack — the same state, reached the same way, because from
+ * here on this *is* an ordinary outgoing call. The media profile is the one the stack
+ * negotiated for it: pjsua carries the transferred call's `call_opt` over from the leg
+ * being replaced (`pjsua_call.c:6248`), so a video call transferred into the bridge
+ * arrives at the bridge with video, and an audio one does not silently grow a camera.
+ *
+ * A transfer this device asked for is not special-cased here. The transferor's own leg
+ * ends with a `REFERRED` then an `ENDED`, both of which name a call the engine already
+ * knows; only the transferee reaches this function.
+ */
+private fun onTransferredCall(
+    id: CallId,
+    event: StackCallEvent,
+    clock: Clock,
+    logger: Logger,
+    terminate: (String) -> Unit,
+    publish: (CallSnapshot) -> Unit,
+) {
+    // Nothing can be shown for a call whose address will not parse, and unlike an
+    // inbound INVITE there is nothing to reject either — the stack has already
+    // accepted the REFER. Hanging it up is the honest end.
+    val snapshot = transferredSnapshot(id, event, clock.nowEpochMillis()) ?: run {
+        logger.warn(PjsipSipEngine.TAG, "Hanging up a transferred call whose address will not parse")
+        return terminate(event.callKey)
+    }
+    publish(snapshot)
+    logger.info(PjsipSipEngine.TAG, "A transfer placed a new call to ${snapshot.remote.render()}")
+}
+
+/**
+ * The snapshot for a call the stack placed by following a REFER.
+ *
+ * At file level so [PjsipSipEngine] stays under detekt's `LargeClass` bound, and because it
+ * is a pure mapping from one event to one snapshot — the kind of thing §1.3 asks to be
+ * decidable without a stack.
+ *
+ * The media is the stack's, not a guess: pjsua carries the replaced leg's `call_opt` over
+ * to the new INVITE (`pjsua_call.c:6248`), so a video call transferred into a bridge
+ * arrives with video and an audio one does not silently grow a camera.
+ */
+private fun transferredSnapshot(
+    id: CallId,
+    event: StackCallEvent,
+    startedAtEpochMillis: Long,
+): CallSnapshot? {
+    val to = SipUri.parse(event.remoteUri).getOrNull() ?: return null
+    return CallSnapshot(
+        callId = id,
+        accountId = AccountId(event.accountKey),
+        remote = to,
+        remoteDisplayName = event.remoteDisplayName,
+        direction = CallDirection.OUTGOING,
+        state = CallState.Outgoing.Calling,
+        media = if (event.videoActive || event.videoOffered) MediaProfile.AUDIO_VIDEO else MediaProfile.AUDIO,
+        startedAtEpochMillis = startedAtEpochMillis,
+        connectedAtEpochMillis = null,
+    )
+}
+
+/**
+ * Records what the stack accepted as the local conference's membership (ADR-009).
+ *
+ * At file level for the reason [resumeHeldForMix] is: `PjsipSipEngine` sits on detekt's
+ * `LargeClass` bound, and this needs nothing of the engine but somewhere to put the
+ * answer. The membership is published *twice* on the way through a merge — once as the
+ * intent, before any resume, and once here as the fact — and this is the second one.
+ *
+ * A refusal empties the set rather than leaving the intent standing: a conference the
+ * stack would not build must not be on screen as though it had been.
+ */
+private fun publishMix(
+    accepted: Outcome<Set<String>, String>,
+    mixed: MutableStateFlow<Set<CallId>>,
+    logger: Logger,
+    stamp: (Set<CallId>) -> Unit,
+): Outcome<Set<CallId>, SipError> = when (accepted) {
+    is Outcome.Failure -> {
+        mixed.value = emptySet()
+        failure(SipError.EngineUnavailable)
+    }
+
+    is Outcome.Success -> {
+        val ids = accepted.value.map(::CallId).toSet()
+        mixed.value = ids.asConferenceOrEmpty()
+        stamp(mixed.value)
+        logger.info(PjsipSipEngine.TAG, "Mixing ${ids.size} call(s) on this device")
+        success(ids)
+    }
+}
+
+/**
+ * Steps 1-3 of [PjsipSipEngine.mergeIntoConference]: tear the mix down, resume, and REFER.
+ *
+ * At file level for the same two reasons as [resumeHeldForMix]: `PjsipSipEngine` is at
+ * detekt's `LargeClass` bound, and this needs nothing of the engine but a call list and
+ * three things it can ask the stack to do. Taking those as lambdas rather than the gateway
+ * is what lets the ordering below — resume *before* REFER — be asserted without a stack.
+ *
+ * @return the account that should dial the room, which is the account the merged legs are
+ *   already on. Failure when there are not enough established calls to be a conference.
+ */
+private suspend fun referLegsIntoRoom(
+    calls: StateFlow<List<CallSnapshot>>,
+    requested: Set<CallId>,
+    mixed: MutableStateFlow<Set<CallId>>,
+    logger: Logger,
+    clearMix: suspend () -> Unit,
+    resume: suspend (CallId) -> Unit,
+    refer: suspend (CallId) -> Outcome<Unit, SipError>,
+): Outcome<AccountId, SipError> {
+    val established = establishedForMix(calls.value, requested)
+
+    // Every leg belongs to the account that will dial the room: the bridge is reached
+    // through the same registrar the calls are on, and there is no second account to
+    // choose between. Taken from a merged call rather than from the default account,
+    // because the default may not be the one in use. Absent when there are not enough
+    // established calls to be a conference at all, which is the same refusal.
+    val accountId = calls.value
+        .takeIf { established.size >= SipConferenceController.MINIMUM_MIXED }
+        ?.firstOrNull { it.callId in established }
+        ?.accountId
+        ?: return failure(SipError.InvalidState("a conference needs at least two established calls"))
+
+    // Before the transfers, not after. A membership that outlives the calls in it holds
+    // native ports open for legs that are on their way out.
+    if (mixed.value.isNotEmpty()) {
+        clearMix()
+        mixed.value = emptySet()
+    }
+
+    resumeHeldForMix(calls, established, logger) { resume(it) }
+
+    liveForMix(calls.value, established).forEach { callId ->
+        refer(callId)
+            // Logged and skipped rather than failing the merge. One handset that will not
+            // take a REFER should not keep the others out of the conference, and the
+            // roster is where its absence shows.
+            .onFailure { logger.warn(PjsipSipEngine.TAG, "Could not transfer $callId into the conference: $it") }
+            .onSuccess { logger.info(PjsipSipEngine.TAG, "Transferred $callId into the conference") }
+    }
+    return success(accountId)
+}
+
+/**
  * Members of a requested mix that are on hold, and must be resumed first (ADR-009).
  *
  * At file level because `PjsipSipEngine` is at detekt's `LargeClass` bound, and because
@@ -1615,6 +1807,81 @@ private fun heldForMix(calls: List<CallSnapshot>, requested: Set<CallId>): List<
  * Established and **not** held: a call still ringing has no media port, and a held one has
  * a port that is stopped. Either would be a member the bridge cannot reach.
  */
+/**
+ * [this] with each of [ids] recorded as having been in a conference (ADR-009).
+ *
+ * ## Why the snapshot carries it and `mixedCalls` does not suffice
+ *
+ * The call log is written from the **terminal** snapshot, which arrives long after the
+ * membership has emptied — so a flag that lived only in `mixedCalls` would be gone by the
+ * time anybody wrote it down, and a merged conference reached history as two unrelated
+ * calls to two people with nothing connecting them (TC15, 2026-09-15).
+ *
+ * Set, never unset, and left alone once true. A participant dropped from the membership
+ * was still in the conference while it lasted, and the row their call writes when it
+ * finally ends should say so — a log is a record of what happened, not of what is still
+ * true. Empty [ids] is a no-op, which is what a membership below
+ * [SipConferenceController.MINIMUM_MIXED] is: one call is a call.
+ */
+/**
+ * Where the FSM says this event takes the call, or null if it says nowhere.
+ *
+ * A rejected transition is logged and dropped rather than forced through: a snapshot in a
+ * state the machine does not allow is worse than one that missed a step.
+ *
+ * At file level, and taking its [logger] rather than reaching for one, because
+ * `PjsipSipEngine` is at detekt's `LargeClass` bound and this needs nothing of the engine
+ * but somewhere to report a refusal — the same reason [resumeHeldForMix] sits out here.
+ */
+private fun nextStateFor(
+    id: CallId,
+    current: CallSnapshot,
+    event: StackCallEvent,
+    logger: Logger,
+): CallState? =
+    CallStateMapper.toCallEvent(event, current.state, current.direction)
+        ?.let { CallStateMachine.transition(current.state, it) }
+        ?.let { result ->
+            when (result) {
+                is TransitionResult.Moved -> result.state
+                is TransitionResult.Rejected -> {
+                    logger.warn(PjsipSipEngine.TAG, "Call $id: ${result.event} rejected from ${result.from}")
+                    null
+                }
+            }
+        }
+
+private fun Map<CallId, CallSnapshot>.markingAsConference(ids: Set<CallId>): Map<CallId, CallSnapshot> =
+    this + ids.mapNotNull { id ->
+        get(id)?.takeIf { !it.isConference }?.let { id to it.copy(isConference = true) }
+    }
+
+/**
+ * Turns video off on every call about to be mixed (ADR-009).
+ *
+ * Out here beside [resumeHeldForMix] for the same reason: it is a loop with a decision in
+ * it, it has to be testable, and the engine method it serves is already long enough to
+ * hide a mistake in.
+ *
+ * Failures are logged and skipped rather than aborting the mix. A leg whose video will not
+ * come down is a leg spending CPU it should not — worth knowing about, and not worth
+ * refusing the conference over, because the alternative on offer is no conference at all.
+ */
+internal inline fun dropVideoForMix(
+    members: Set<CallId>,
+    logger: Logger,
+    dropVideo: (CallId) -> Unit,
+) {
+    members.forEach { callId ->
+        runCatching { dropVideo(callId) }.onFailure {
+            logger.warn(
+                PjsipSipEngine.TAG,
+                "Could not drop video on $callId for the conference: ${it.message}",
+            )
+        }
+    }
+}
+
 private fun liveForMix(calls: List<CallSnapshot>, requested: Set<CallId>): Set<CallId> =
     calls.filterTo(mutableSetOf()) {
         it.callId in requested && it.state.isEstablished && !it.state.isMixPending

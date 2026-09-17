@@ -1,5 +1,8 @@
 package com.whatsappv2.domain.engine
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+
 /**
  * Where video is drawn (Task 52, §5.2).
  *
@@ -45,6 +48,33 @@ interface VideoSurfaceController {
      * much; it belongs here with the surfaces because it comes from the same screen.
      */
     fun setDisplayRotation(degrees: Int)
+
+    /**
+     * The shapes of the two pictures on screen, or [VideoSizes.UNKNOWN].
+     *
+     * ## Why the renderer cannot be trusted to do this
+     *
+     * PJSIP draws a frame onto a full-screen quad with fixed texture coordinates
+     * (`opengl_dev.c:271`) and sets the viewport to the whole surface. There is no
+     * aspect-ratio correction anywhere in that path: whatever arrives is *stretched* to
+     * the bounds of the view it is given. A 352x288 CIF frame in a portrait
+     * `SurfaceView` is a face half again as tall as it should be, which is exactly what
+     * three TC15s showed on 2026-09-14.
+     *
+     * The fix is to give the renderer bounds of the right shape, and that needs this
+     * number. It is a property of the stream and not of any call: it changes when the
+     * peer rotates, when a conference bridge reflows its canvas, or when either end
+     * drops resolution under load, none of which are call-state transitions.
+     *
+     * The local half is the same problem seen in the corner: the self-view is a
+     * preview window drawn by the same renderer, so a square sensor frame in a 16:9
+     * thumbnail is a squashed face there too.
+     *
+     * [VideoSizes.UNKNOWN] until the first frame is decoded, and again once the stream
+     * goes away — a caller must draw something sensible for it rather than dividing by
+     * a zero axis.
+     */
+    val videoSizes: StateFlow<VideoSizes>
 }
 
 /** The controller for a context with no stack. Draws nothing and holds nothing. */
@@ -52,4 +82,5 @@ object NoVideoSurfaces : VideoSurfaceController {
     override fun attach(remoteView: Any?, localPreview: Any?) = Unit
     override fun detach() = Unit
     override fun setDisplayRotation(degrees: Int) = Unit
+    override val videoSizes: StateFlow<VideoSizes> = MutableStateFlow(VideoSizes.UNKNOWN)
 }

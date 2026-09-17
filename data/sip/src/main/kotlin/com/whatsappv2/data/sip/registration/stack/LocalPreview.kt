@@ -1,6 +1,7 @@
 package com.whatsappv2.data.sip.registration.stack
 
 import com.whatsappv2.core.common.logging.Logger
+import com.whatsappv2.domain.engine.VideoSize
 import org.pjsip.pjsua2.VideoPreview
 import org.pjsip.pjsua2.VideoPreviewOpParam
 import org.pjsip.pjsua2.VideoWindowHandle
@@ -39,6 +40,21 @@ internal class LocalPreview(private val logger: Logger) {
                 },
             )
         }.onFailure { logger.warn(TAG, "Could not draw the local preview: ${it.message}") }
+    }
+
+    /**
+     * What shape the camera is actually producing, or null while nothing is running.
+     *
+     * Read from the preview window rather than from the format that was asked for: the
+     * TC15's front camera answers a request for 1280x720 with 1080x1080 square frames,
+     * and a self-view drawn from the *request* is a squashed face in the corner. The
+     * window knows what it got.
+     */
+    fun size(): VideoSize? = preview?.let { running ->
+        runCatching {
+            val size = running.videoWindow.info.size
+            VideoSize(size.w.toInt(), size.h.toInt())
+        }.getOrNull()?.takeIf { it.isKnown }
     }
 
     fun stop() {

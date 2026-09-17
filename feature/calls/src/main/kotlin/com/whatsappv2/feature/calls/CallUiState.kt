@@ -6,6 +6,8 @@ import com.whatsappv2.domain.call.HoldParty
 import com.whatsappv2.domain.contacts.Contact
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.CallSnapshot
+import com.whatsappv2.domain.engine.SipConferenceController
+import com.whatsappv2.domain.engine.VideoSizes
 import com.whatsappv2.domain.model.CallId
 
 /**
@@ -225,6 +227,14 @@ data class CallDisplay(
 
     /** True while this call is a conference leg, so the roster is worth showing (Task 60). */
     val isConference: Boolean = false,
+
+    /**
+     * True while this device is mixing this call with others (ADR-009).
+     *
+     * Then [title] names the conference and [subtitle] its members — see
+     * [inConferenceIfMixed] — and the screen shows a group where a face would be.
+     */
+    val isMixed: Boolean = false,
 ) {
     val availability: CallControlAvailability
         get() = CallControlAvailability.of(phase, controls.isVideoEnabled)
@@ -232,8 +242,30 @@ data class CallDisplay(
     /** True when there is a remote picture to draw — the far end is sending (Task 52). */
     val showsRemoteVideo: Boolean get() = videoActive && phase.hasMedia
 
-    /** True when the local preview should be on screen: we have a camera running. */
-    val showsLocalPreview: Boolean get() = showsRemoteVideo && controls.isVideoEnabled
+    /**
+     * True when the local preview should be on screen: **this** device's camera is running.
+     *
+     * Deliberately independent of [showsRemoteVideo]. It used to require it, and that was
+     * wrong in exactly the case that matters most: between joining a conference and the
+     * bridge's first composed frame there is no remote picture, so a user whose camera was
+     * plainly on — the indicator lit, the shutter open — saw no self-view at all and had
+     * every reason to think the camera had failed. The same gap opens on any video call
+     * whose far end is slow to send, and on one whose peer has muted their camera.
+     *
+     * The self-view answers "is my camera working and am I in frame", which is a question
+     * about this handset. Nothing the far end does changes the answer.
+     */
+    val showsLocalPreview: Boolean get() = controls.isVideoEnabled && phase.hasMedia
+
+    /**
+     * True when a video surface should exist at all — either picture is reason enough.
+     *
+     * The screen draws one video layer holding both surfaces, so this is what gates it.
+     * Gating on [showsRemoteVideo] alone meant the local preview could not be shown before
+     * the first remote frame, because the composable that owns its surface had not been
+     * composed yet.
+     */
+    val showsAnyVideo: Boolean get() = showsRemoteVideo || showsLocalPreview
 }
 
 /** What the call screen is showing. */
@@ -292,6 +324,22 @@ sealed interface CallUiState {
 
         /** How many calls this device is mixing right now; 0 when it is not (ADR-009). */
         val mixedCallCount: Int = 0,
+
+        /**
+         * The shapes of the two pictures on screen, or [VideoSizes.UNKNOWN].
+         *
+         * Here rather than on [CallDisplay] because it is not a fact about the call: it
+         * is a fact about the decoder and the camera, it changes when nothing about the
+         * call has, and it arrives from a different port. [CallDisplay] is built from a
+         * `CallSnapshot`, and putting a renderer's measurement in it would mean inventing
+         * a field on the engine's snapshot that the engine does not know.
+         *
+         * The screen needs it because PJSIP's renderer stretches a frame to whatever
+         * bounds it is handed — see `VideoSurfaceController.videoSizes`. Unknown until
+         * the first frame decodes, which is the ordinary state for the first moments of
+         * every video call.
+         */
+        val videoSizes: VideoSizes = VideoSizes.UNKNOWN,
 
         /**
          * Actions asked of the engine that it has not answered yet (Task 76).
@@ -381,7 +429,7 @@ internal fun CallSnapshot.toDisplay(nowEpochMillis: Long, contact: Contact? = nu
 
     return CallDisplay(
         callId = callId,
-        title = name ?: remote.user ?: remote.host.rendered,
+        title = contact?.displayName?.takeIf { it.isNotBlank() } ?: label(),
         // Only when it adds something: repeating the address under itself is noise.
         subtitle = address.takeIf { name != null },
         photoUri = contact?.photoUri,
@@ -398,4 +446,40 @@ internal fun CallSnapshot.toDisplay(nowEpochMillis: Long, contact: Contact? = nu
     )
 }
 
+/**
+ * The watched call as the conference this device is mixing it into — or itself (ADR-009).
+ *
+ * ## The screen shows the conference, not the leg
+ *
+ * A merged call kept the first leg's name as its title: "9196" over a button reading
+ * "2 calls merged" (TC15, 2026-09-14). The display is built from the watched call, and the
+ * watched call is still one leg. But once this device is mixing it, what the user is in
+ * is a conference — so that is the title, and the members are the line under it, in the
+ * order the calls were made: the information the title carried is moved, not dropped.
+ * The photo goes with the name, because a conference has no face.
+ *
+ * Fewer than [SipConferenceController.MINIMUM_MIXED] mixed calls is a call, not a conference, and a
+ * watched call that is not among the mixed ones — a third call on hold beside a merged
+ * pair — stays itself. Both leave the display exactly as [toDisplay] made it.
+ */
+internal fun CallDisplay.inConferenceIfMixed(calls: List<CallSnapshot>, mixed: Set<CallId>): CallDisplay {
+    if (mixed.size < SipConferenceController.MINIMUM_MIXED || callId !in mixed) return this
+
+    val members = calls.filter { it.callId in mixed }
+    return copy(
+        title = CONFERENCE_TITLE,
+        // The watched call keeps its address-book name; the others carry no contact
+        // lookup, exactly as the held-call banner does not.
+        subtitle = members.joinToString(MEMBER_SEPARATOR) { if (it.callId == callId) title else it.label() },
+        photoUri = null,
+        isMixed = true,
+    )
+}
+
+/** The peer's asserted name, else their extension, else their host — [toDisplay]'s title without an address book. */
+internal fun CallSnapshot.label(): String =
+    remoteDisplayName?.takeIf { it.isNotBlank() } ?: remote.user ?: remote.host.rendered
+
+internal const val CONFERENCE_TITLE = "Conference call"
+private const val MEMBER_SEPARATOR = " · "
 private const val MILLIS_PER_SECOND = 1_000L

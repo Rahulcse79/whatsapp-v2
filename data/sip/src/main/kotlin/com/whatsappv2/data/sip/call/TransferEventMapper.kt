@@ -91,8 +91,12 @@ internal object TransferEventMapper {
             StackCallState.ENDED -> TransferEvent.Failed(callId, toError(event))
 
             // Nothing a transfer does maps to these; a call being held or referred is not
-            // a fact about the REFER in flight.
+            // a fact about the REFER in flight. Nor is OUTGOING_TRANSFERRED, which belongs
+            // to the *transferee* following a REFER it received — the other side of the
+            // transaction this stream reports, and a call of its own rather than news
+            // about the REFER we sent.
             StackCallState.INCOMING_RECEIVED,
+            StackCallState.OUTGOING_TRANSFERRED,
             StackCallState.PAUSED,
             StackCallState.PAUSED_BY_REMOTE,
             StackCallState.RESUMING,

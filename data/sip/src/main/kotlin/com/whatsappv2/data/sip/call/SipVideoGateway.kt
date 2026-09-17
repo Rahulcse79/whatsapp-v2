@@ -1,5 +1,8 @@
 package com.whatsappv2.data.sip.call
 
+import com.whatsappv2.domain.engine.VideoSizes
+import kotlinx.coroutines.flow.StateFlow
+
 /**
  * The video half of the SDK seam (Tasks 51 to 54).
  *
@@ -64,4 +67,15 @@ internal interface SipVideoGateway {
      * captures that come after. See `VideoSurfaceController.setDisplayRotation`.
      */
     fun setCaptureRotation(degrees: Int)
+
+    /**
+     * The shapes of the decoded remote picture and of this device's own preview. See
+     * `VideoSurfaceController.videoSizes` for why anybody needs them — in short, PJSIP's
+     * renderer stretches rather than fitting, so the *views* have to be the right shape.
+     *
+     * One value for the whole stack, not one per call, because there is one pair of
+     * surfaces: the screen draws the call it is watching and nothing else can be visible
+     * at the same time.
+     */
+    val videoSizes: StateFlow<VideoSizes>
 }

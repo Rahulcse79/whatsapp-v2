@@ -3,6 +3,7 @@ package com.whatsappv2.data.sip.registration.stack
 import com.whatsappv2.core.common.logging.NoOpLogger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -46,6 +47,40 @@ class ConferenceBridgeTest {
 
         assertEquals(setOf("a", "b", "c"), live)
         assertEquals(setOf(1 to 2, 1 to 3, 2 to 1, 2 to 3, 3 to 1, 3 to 2), openLinks())
+    }
+
+    @Test
+    fun `an empty membership closes every link, which is how a conference ends`() {
+        givenPort("a", 1)
+        givenPort("b", 2)
+        givenPort("c", 3)
+        bridge.set(setOf("a", "b", "c"))
+        assertEquals(6, openLinks().size)
+
+        // The teardown `SipConferenceGateway` performs, and the one a bridge merge runs
+        // before it REFERs the legs away. It used to return early on the empty set and
+        // leave all six links open, so three people went on hearing each other in a
+        // conference that had ended.
+        val live = bridge.set(emptySet())
+
+        assertEquals(emptySet(), live)
+        assertEquals(emptySet(), openLinks())
+        assertFalse(bridge.isActive)
+    }
+
+    @Test
+    fun `a conference started after a teardown links its members again`() {
+        givenPort("a", 1)
+        givenPort("b", 2)
+        bridge.set(setOf("a", "b"))
+        bridge.set(emptySet())
+
+        // The same calls, on the same ports. Port bookkeeping left behind by the
+        // teardown would make the bridge believe these two were still linked.
+        val live = bridge.set(setOf("a", "b"))
+
+        assertEquals(setOf("a", "b"), live)
+        assertEquals(setOf(1 to 2, 2 to 1), openLinks())
     }
 
     @Test

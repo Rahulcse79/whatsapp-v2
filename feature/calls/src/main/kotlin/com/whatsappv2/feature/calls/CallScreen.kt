@@ -4,8 +4,7 @@ import android.view.accessibility.AccessibilityManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,17 +13,21 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Dialpad
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -40,11 +43,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.zIndex
 import com.whatsappv2.core.designsystem.component.Avatar
 import com.whatsappv2.core.designsystem.component.CallActionButton
 import com.whatsappv2.core.designsystem.component.CallActionStyle
@@ -127,39 +131,62 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
     // call's video: the bridge composes it, and the screen has to say so rather than
     // present the server's arrangement as its own (Task 61).
     val conference = state.conference
-    if (call.showsRemoteVideo) {
+    // `showsAnyVideo`, not `showsRemoteVideo`: this layer owns the local preview's surface
+    // as well as the remote one, so gating it on the far end's picture meant no self-view
+    // until the far end sent a frame — the whole of a conference join, on every handset.
+    val chrome = rememberCallChromeVisibility(state, keypadShown)
+
+    if (call.showsAnyVideo) {
+        // The picture, and the tap that hides the controls, are ONE layer — and they have
+        // to be, because the order inside it is the whole of the problem.
+        //
+        // Three things need stacking: the remote picture at the bottom, the tap target
+        // that toggles the chrome over it, and the floating self-view over that. The
+        // self-view has to be above the tap target or a drag at it only hides the controls;
+        // the remote picture has to be below it or the tap never lands. Both are children
+        // of the video layer, so no amount of `zIndex` out here can put something between
+        // them — the tap target has to go *in*, which is what `onPictureTap` does.
+        //
+        // It is worth being concrete about why the picture blocks anything at all: it is an
+        // `AndroidView` around a `SurfaceView`, and Compose's interop takes the pointer for
+        // the view before a sibling laid over it sees anything. A full-screen `clickable`
+        // out here, composed after this, used to work only because it was on top of the
+        // whole layer — and it swallowed the self-view's drags along with everything else.
+        val videoLayer = Modifier.zIndex(Z_VIDEO)
+        val toggleChrome = { chrome.value = !chrome.value }
+        val toggleLabel = if (chrome.value) "Hide the call controls" else "Show the call controls"
         if (conference != null) {
-            ConferenceVideo(call = call, conference = conference, actions = actions)
+            ConferenceVideo(
+                call = call,
+                conference = conference,
+                actions = actions,
+                sizes = state.videoSizes,
+                onPictureTap = toggleChrome,
+                pictureTapLabel = toggleLabel,
+                modifier = videoLayer,
+            )
         } else {
-            CallVideo(call = call, actions = actions)
+            // Cover, the default: a one-to-one call fills the screen and loses its edges,
+            // which is what every phone video call looks like. The conference above asks
+            // for Fit instead, because its picture is a grid of people.
+            CallVideo(
+                call = call,
+                actions = actions,
+                sizes = state.videoSizes,
+                onPictureTap = toggleChrome,
+                pictureTapLabel = toggleLabel,
+                modifier = videoLayer,
+            )
         }
     }
 
-    val chrome = rememberCallChromeVisibility(state, keypadShown)
-
-    // Under the controls in z-order, so a tap on a button is a button press and only the
-    // picture itself toggles the chrome. Composed only when there is a picture to tap.
-    //
-    // It carries a label because it is the ONLY thing on screen once the controls fade,
-    // and an unlabelled Box is invisible to accessibility: with the chrome hidden the
-    // whole tree was empty, so a screen-reader user had a blank screen and no way back.
-    if (call.showsRemoteVideo) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .clickable(
-                    indication = null,
-                    interactionSource = remember { MutableInteractionSource() },
-                    onClickLabel = if (chrome.value) "Hide the call controls" else "Show the call controls",
-                ) { chrome.value = !chrome.value }
-                .semantics { contentDescription = "${call.title}, video call" },
-        )
-    }
-
     AnimatedVisibility(
-        visible = chrome.value || !call.showsRemoteVideo,
+        visible = chrome.value || !call.showsAnyVideo,
         enter = fadeIn(),
         exit = fadeOut(),
+        // Above the video layer, so a control is always reachable even if the self-view
+        // has been dragged or resized over one. Buttons win over a picture, every time.
+        modifier = Modifier.zIndex(Z_CHROME),
     ) {
         InCallChrome(
             state = state,
@@ -254,6 +281,9 @@ private fun InCallChrome(
         state.conference?.let {
             ConferenceRoster(
                 state = it,
+                // Over the composed picture it becomes a dark card in white text; on an
+                // audio conference there is nothing underneath it and it stays plain.
+                composedVideo = call.showsRemoteVideo,
                 modifier = Modifier.padding(top = AppTheme.spacing.medium),
             )
         }
@@ -372,7 +402,9 @@ private fun CallDialogs(state: CallUiState.Active, actions: CallActions) {
 
     if (state.recording.askingConsent) {
         RecordingConsentPrompt(
-            remoteName = state.call.title,
+            // "your call with Conference call" is not a sentence; "with everyone on this
+            // conference" is, and it is also the truth about who gets recorded.
+            remoteName = if (state.call.isMixed) "everyone on this conference" else state.call.title,
             onConfirm = actions.onConfirmRecording,
             onDismiss = actions.onDismissRecordingConsent,
         )
@@ -390,11 +422,16 @@ private fun CallDialogs(state: CallUiState.Active, actions: CallActions) {
 @Composable
 private fun CallIdentity(call: CallDisplay, showAvatar: Boolean) {
     if (showAvatar) {
-        Avatar(
-            displayName = call.title,
-            size = AppTheme.sizing.avatarLarge,
-            photoUri = call.photoUri,
-        )
+        if (call.isMixed) {
+            // A conference has no face, and initials of "Conference call" would be "CC".
+            ConferenceAvatar()
+        } else {
+            Avatar(
+                displayName = call.title,
+                size = AppTheme.sizing.avatarLarge,
+                photoUri = call.photoUri,
+            )
+        }
     }
 
     Text(
@@ -423,6 +460,26 @@ private fun CallIdentity(call: CallDisplay, showAvatar: Boolean) {
             .padding(top = AppTheme.spacing.small)
             .testTag(TAG_STATUS),
     )
+}
+
+/** The avatar's circle with a group in it, for a call this device is mixing (ADR-009). */
+@Composable
+private fun ConferenceAvatar() {
+    Box(
+        modifier = Modifier
+            .size(AppTheme.sizing.avatarLarge)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.secondaryContainer)
+            .testTag(TAG_CONFERENCE_AVATAR),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Groups,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.size(AppTheme.sizing.avatarLarge / 2),
+        )
+    }
 }
 
 @Composable
@@ -701,7 +758,19 @@ private fun Long.padded(): String = toString().padStart(2, '0')
 private const val SECONDS_PER_MINUTE = 60L
 private const val SECONDS_PER_HOUR = 3_600L
 
+/**
+ * The call screen's three pointer layers, back to front.
+ *
+ * Written down as numbers because composition order is not enough here and the failure is
+ * silent: the chrome toggle is a full-screen `clickable` and whatever it covers cannot be
+ * touched. [Z_VIDEO] lifts the floating self-view above it so it can be dragged, and
+ * [Z_CHROME] keeps the buttons above the self-view so one can never hide the other.
+ */
+private const val Z_VIDEO = 1f
+private const val Z_CHROME = 2f
+
 internal const val TAG_TITLE = "call-title"
+internal const val TAG_CONFERENCE_AVATAR = "call-conference-avatar"
 internal const val TAG_STATUS = "call-status"
 internal const val TAG_ANSWER = "call-answer"
 internal const val TAG_ANSWER_VIDEO = "call-answer-video"

@@ -93,6 +93,44 @@ data class Sizing(
      * competing with the person you are talking to.
      */
     val videoPreview: Dp = 112.dp,
+
+    /**
+     * How far the floating self-view sits above the bottom edge in its lower corners.
+     *
+     * Enough to clear the end-call row, so the preview's default position cannot hide the
+     * one control every user needs to find in a hurry. A token rather than a number at the
+     * call site because it is the *controls'* height that decides it, and the controls are
+     * the design system's.
+     */
+    val videoPreviewControlsInset: Dp = 128.dp,
+
+    /**
+     * The minimise / restore and resize glyphs on the floating self-view (Task 61).
+     *
+     * Smaller than [chipIcon] because these sit *on* the picture rather than beside text,
+     * and the self-view may be a sixth of the screen's width: an icon sized for a chip
+     * would be most of it. The touch target is padded out around the glyph rather than
+     * drawn at this size, so it stays a real target at any preview size.
+     */
+    val videoPreviewControl: Dp = 16.dp,
+
+    /**
+     * The floor for that glyph, which a minimised self-view reaches.
+     *
+     * A minimised preview is small on purpose, and the control has to leave room for the
+     * picture that is the reason it is still on screen at all. `SelfPreview` scales between
+     * this and [videoPreviewControl] from the box's own height rather than switching
+     * between the two.
+     */
+    val videoPreviewControlMinimised: Dp = 10.dp,
+
+    /**
+     * The hairline around the floating self-view.
+     *
+     * It separates a dark preview from the dark conference canvas behind it; without it a
+     * camera pointed at something unlit looks like a hole in the picture.
+     */
+    val videoPreviewBorder: Dp = 2.dp,
 )
 
 val LocalSpacing = staticCompositionLocalOf { Spacing() }

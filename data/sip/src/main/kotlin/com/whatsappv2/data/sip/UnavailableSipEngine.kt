@@ -115,6 +115,12 @@ class UnavailableSipEngine @Inject constructor() : SipEngine {
     override suspend fun mixCalls(callIds: Set<CallId>): Outcome<Set<CallId>, SipError> =
         failure(SipError.EngineUnavailable)
 
+    /** And ADR-003's bridge is reached by dialling it, which needs the same stack. */
+    override suspend fun mergeIntoConference(
+        callIds: Set<CallId>,
+        room: SipUri,
+    ): Outcome<CallId, SipError> = failure(SipError.EngineUnavailable)
+
     override suspend fun shutdown() = Unit
 
     private fun unavailable(): Outcome<Unit, SipError> = failure(SipError.EngineUnavailable)

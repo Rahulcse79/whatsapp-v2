@@ -96,6 +96,7 @@ class FakeSipEngine(
         SEND_DTMF,
         TRANSFER,
         MIX_CALLS,
+        MERGE_INTO_CONFERENCE,
         JOIN_CONFERENCE,
     }
 
@@ -434,7 +435,45 @@ class FakeSipEngine(
             .toSet()
         mixRequests += live
         mixed.value = if (live.size >= SipConferenceController.MINIMUM_MIXED) live else emptySet()
+        // Stamped on the snapshots, as the real engine does, so the ENDING carries it: the
+        // call log is written from the terminal snapshot, long after this set has emptied.
+        // A fake that published the set without stamping would let a broken recorder pass.
+        mixed.value.forEach { id -> updateCall(id) { it.copy(isConference = true) } }
         return guard(Operation.MIX_CALLS) { success(live) }
+    }
+
+    /** Every room [mergeIntoConference] was asked to move calls into, in order. */
+    val bridgeMergeRequests: MutableList<Pair<Set<CallId>, SipUri>> = mutableListOf()
+
+    /**
+     * Transfers each leg into [room] and dials it, as the real engine does (ADR-003).
+     *
+     * The legs are *not* ended here, for the same reason they are not ended for real: a
+     * transferee's leg carries the REFER and dies when the transfer completes, so a fake
+     * that tore them down immediately would let a caller that depends on that ordering
+     * pass here and fail on a handset.
+     */
+    override suspend fun mergeIntoConference(
+        callIds: Set<CallId>,
+        room: SipUri,
+    ): Outcome<CallId, SipError> {
+        record(Operation.MERGE_INTO_CONFERENCE, room.render())
+
+        val established = activeCalls.value
+            .filter { it.callId in callIds && it.state.isEstablished }
+        if (established.size < SipConferenceController.MINIMUM_MIXED) {
+            return failure(SipError.InvalidState("a conference needs at least two established calls"))
+        }
+        val accountId = established.first().accountId
+
+        activeCalls.value
+            .filter { it.callId in callIds && it.state is CallState.Held }
+            .forEach { setHold(it.callId, held = false) }
+
+        bridgeMergeRequests += established.map { it.callId }.toSet() to room
+        established.forEach { transfer(it.callId, room, TransferType.BLIND) }
+
+        return joinConference(accountId, room, MediaProfile.AUDIO_VIDEO)
     }
 
     override suspend fun shutdown() {

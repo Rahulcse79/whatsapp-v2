@@ -1,6 +1,8 @@
 package com.whatsappv2.data.sip.call
 
+import com.whatsappv2.domain.engine.VideoSizes
 import com.whatsappv2.domain.engine.VideoSurfaceController
+import kotlinx.coroutines.flow.StateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -30,4 +32,7 @@ internal class StackVideoSurfaceController @Inject constructor(
     override fun setDisplayRotation(degrees: Int) {
         gateway.setCaptureRotation(degrees)
     }
+
+    /** Straight through: the stack is the only thing that knows what it decoded. */
+    override val videoSizes: StateFlow<VideoSizes> get() = gateway.videoSizes
 }
