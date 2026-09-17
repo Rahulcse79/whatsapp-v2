@@ -155,10 +155,27 @@ class VideoLayoutTest {
     @Test
     fun `the box does not depend on the camera at all any more`() {
         // It used to take the frame's shape. A square takes nothing from the camera, which
-        // is why `previewBox` no longer has a frame parameter to get wrong. 800 rather than
-        // 0.75 x 1080 = 810: on a 16:9 screen the half-height ceiling leaves 1066.7 of the
+        // is why `previewBox` no longer has a frame parameter to get wrong. 480 rather than
+        // 0.45 x 1080 = 486: on a 16:9 screen the half-height ceiling leaves 1066.7 of the
         // 1080 short edge for the range, and the whole range scales to it.
-        assertEquals(VideoSize(800, 800), VideoLayout.previewBox(screen))
+        assertEquals(VideoSize(480, 480), VideoLayout.previewBox(screen))
+    }
+
+    @Test
+    fun `the default size is the floor, half the largest`() {
+        // The box opens as small as it goes and the grip only grows it (2026-09-17).
+        listOf(screen, VideoSize(720, 1450), VideoSize(2400, 1080)).forEach { display ->
+            assertEquals(
+                VideoLayout.previewBox(display, VideoLayout.PREVIEW_MIN_SCALE),
+                VideoLayout.previewBox(display),
+                "the default is not the smallest size on $display",
+            )
+            assertEquals(
+                VideoLayout.previewBox(display, VideoLayout.PREVIEW_MAX_SCALE).width / 2,
+                VideoLayout.previewBox(display).width,
+                "the default is not half the largest on $display",
+            )
+        }
     }
 
     @Test
@@ -270,7 +287,7 @@ class VideoLayoutTest {
         val phone = VideoSize(1080, 2400)
         val share = VideoLayout.previewBox(phone).width.toFloat() /
             VideoLayout.previewBox(phone, VideoLayout.PREVIEW_MAX_SCALE).width
-        assertTrue(kotlin.math.abs(share - 0.75f / 0.90f) < 0.005f, "the phone is not at the default point: $share")
+        assertTrue(kotlin.math.abs(share - 0.5f) < 0.005f, "the phone is not at the default point: $share")
 
         listOf(VideoSize(1600, 2560), VideoSize(2400, 1080)).forEach { display ->
             val default = VideoLayout.previewBox(display)

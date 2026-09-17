@@ -79,14 +79,24 @@ class SelfPreviewTest {
     }
 
     @Test
-    fun `minimising shrinks the preview without taking the camera surface out of the tree`() {
+    fun `minimising shrinks an enlarged preview to the floor and keeps the camera in the tree`() {
         render()
-        val full = sizeOf(TAG_PREVIEW)
+        val opened = sizeOf(TAG_PREVIEW)
+
+        // The box opens at the floor, so there is nothing to shrink until it has been
+        // grown: drag the grip outward — it sits at the box's inward corner, so outward is
+        // up and left for the default bottom-right parking — and let go.
+        compose.onNodeWithTag(TAG_PREVIEW_GRIP).performTouchInput {
+            swipe(start = center, end = Offset(center.x - width * 20, center.y - height * 20), durationMillis = 200)
+        }
+        val enlarged = sizeOf(TAG_PREVIEW)
+        assertTrue(enlarged.width > opened.width, "the grip did not enlarge it: $enlarged from $opened")
 
         compose.onNodeWithTag(TAG_PREVIEW_TOGGLE).performClick()
 
         val minimised = sizeOf(TAG_PREVIEW)
-        assertTrue(minimised.width < full.width, "minimising did not shrink it: $minimised")
+        assertTrue(minimised.width < enlarged.width, "minimising did not shrink it: $minimised")
+        assertEquals(opened, minimised, "minimised is not the size the box opened at, the floor")
 
         // The whole point. A surface that leaves the tree is destroyed, and a destroyed
         // surface is reported to the stack as "stop drawing" — so the camera would be
