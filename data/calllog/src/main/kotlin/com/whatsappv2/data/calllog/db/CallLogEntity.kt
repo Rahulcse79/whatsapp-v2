@@ -47,6 +47,13 @@ data class CallLogEntity(
     @ColumnInfo(name = "remote_uri")
     val remoteUri: String,
 
+    /**
+     * The account's domain when the call happened (version 2). Null on every row version 1
+     * wrote, and on a row whose account was gone by the time the call ended.
+     */
+    @ColumnInfo(name = "account_domain")
+    val accountDomain: String?,
+
     /** What the peer called itself, or null when it sent no display name. */
     @ColumnInfo(name = "remote_display_name")
     val remoteDisplayName: String?,
@@ -85,4 +92,12 @@ data class CallLogEntity(
 
     @ColumnInfo(name = "has_video")
     val hasVideo: Boolean,
+
+    /**
+     * Whether the call was part of a conference (version 3). False on every row versions
+     * 1 and 2 wrote — the fact was never recorded and cannot be recovered, and false is
+     * the honest reading of "we do not know", because the overwhelming majority were.
+     */
+    @ColumnInfo(name = "is_conference", defaultValue = "0")
+    val isConference: Boolean = false,
 )

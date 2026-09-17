@@ -17,6 +17,7 @@ import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.testing.FakeCallLogRepository
 import com.whatsappv2.domain.testing.FakeContactRepository
+import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -42,6 +43,7 @@ class CallLogRecorderTest {
     private val engine = FakeSipEngine()
     private val log = FakeCallLogRepository()
     private val contacts = FakeContactRepository()
+    private val accounts = FakeSipAccountRepository()
 
     /**
      * The engine's own clock, not a second one.
@@ -154,17 +156,79 @@ class CallLogRecorderTest {
         assertNull(log.recorded.single().contactName)
     }
 
+    @Test
+    fun `a call that was in a conference is recorded as one, for both kinds of conference`() =
+        runTest {
+            // The history screen could not tell a conference from an ordinary call. A
+            // dial-in room is one call and was already one row; a conference this device
+            // mixed is several, and they arrived as unrelated calls to unrelated people
+            // (TC15, 2026-09-15). Both kinds set the flag on the snapshot, which is why
+            // the recorder needs to know nothing about either.
+            val first = outgoingCall()
+            engine.simulateRemoteAnswer(first)
+            val second = engine.placeCall(ACCOUNT, OTHER, MediaProfile.AUDIO).getOrNull()!!
+            engine.simulateRemoteAnswer(second)
+            engine.mixCalls(setOf(first, second))
+            runCurrent()
+
+            clock.set(ENDED_AT)
+            engine.simulateRemoteHangup(first)
+            engine.simulateRemoteHangup(second)
+            runCurrent()
+
+            assertEquals(2, log.recorded.size, "one row per leg, each with its own truth")
+            assertTrue(log.recorded.all { it.isConference }, "and both marked as a conference")
+        }
+
+    @Test
+    fun `an ordinary call is not recorded as a conference`() = runTest {
+        // The marker means something only if it is absent from the calls that were not.
+        val callId = outgoingCall()
+        engine.simulateRemoteAnswer(callId)
+        clock.set(ENDED_AT)
+        engine.simulateRemoteHangup(callId)
+        runCurrent()
+
+        assertFalse(log.recorded.single().isConference)
+    }
+
+    @Test
+    fun `the account's domain at the time is recorded with the call`() = runTest {
+        // What lets a call back tell "the server's address then" from "the far end's own
+        // domain" once the server has moved (CallLogEntry.redialTarget). Read at the
+        // ending, because reading it at redial time would see the domain after the move.
+        val callId = outgoingCall()
+        engine.hangup(callId, HangupReason.LOCAL_HANGUP)
+        runCurrent()
+
+        assertEquals(WORK.domain, log.recorded.single().accountDomain)
+    }
+
+    @Test
+    fun `a call whose account was deleted while it was up is still recorded, without one`() = runTest {
+        // The row is the record of a call that happened; losing it because the account
+        // went first would be the log lying. The domain is the one thing that cannot be
+        // recovered, and null is what "not recorded" looks like on every other row.
+        val callId = outgoingCall()
+        accounts.delete(ACCOUNT)
+        engine.hangup(callId, HangupReason.LOCAL_HANGUP)
+        runCurrent()
+
+        assertNull(log.recorded.single().accountDomain)
+    }
+
     // ---------------------------------------------------------------- fixture
 
     /** Starts the recorder collecting, before anything can end. */
     private fun TestScope.recording() {
-        backgroundScope.launch { CallLogRecorder(engine, log, contacts, clock).record() }
+        backgroundScope.launch { CallLogRecorder(engine, log, contacts, accounts, clock).record() }
         runCurrent()
     }
 
     /** A recorder already listening, and an outgoing call placed on a registered account. */
     private suspend fun TestScope.outgoingCall(): CallId {
         recording()
+        accounts.given(WORK)
         engine.givenRegistered(WORK)
         val callId = engine.placeCall(ACCOUNT, REMOTE, MediaProfile.AUDIO).getOrNull()!!
         runCurrent()
@@ -174,6 +238,9 @@ class CallLogRecorderTest {
     private companion object {
         val ACCOUNT = AccountId("acct-1")
         val REMOTE: SipUri = SipUri.parse("sip:bob@sip.example.com").getOrNull()!!
+
+        /** A second party, so a conference has two legs to write two rows for. */
+        val OTHER: SipUri = SipUri.parse("sip:1003@sip.example.com").getOrNull()!!
 
         const val STARTED_AT = 1_700_000_000_000L
         const val ANSWERED_AT = STARTED_AT + 60_000L

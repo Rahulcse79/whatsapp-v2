@@ -23,6 +23,8 @@ import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.recording.CallRecorder
 import com.whatsappv2.domain.usecase.CallWaitingUseCase
+import com.whatsappv2.domain.usecase.MergeCallsUseCase
+import com.whatsappv2.domain.usecase.MergeResult
 import com.whatsappv2.domain.usecase.TransferCallUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -85,6 +87,7 @@ class CallViewModel @Inject constructor(
     private val recorder: CallRecorder,
     private val transfers: TransferCallUseCase,
     private val callWaiting: CallWaitingUseCase,
+    private val mergeCalls: MergeCallsUseCase,
     private val surfaces: VideoSurfaceController,
     private val clock: Clock,
 ) : ViewModel() {
@@ -256,7 +259,17 @@ class CallViewModel @Inject constructor(
             // trade than one extra operator.
         }.combine(mixed) { state, mixedNow -> state.copy(mixed = mixedNow) }
 
-        return combine(engine, ticker(), contactFor(callId), inFlight) { state, now, contact, busy ->
+        // The frame shape is a fifth source rather than something read inside the block,
+        // for the reason the comment above gives: a value only read during a combine does
+        // not re-run it, so the view would keep the shape of the first frame for the rest
+        // of the call — which is the bug this whole path exists to fix.
+        return combine(
+            engine,
+            ticker(),
+            contactFor(callId),
+            inFlight,
+            surfaces.videoSizes,
+        ) { state, now, contact, busy, sizes ->
             val call = state.calls.firstOrNull { it.callId == callId }
             if (call != null) {
                 seen = true
@@ -265,7 +278,9 @@ class CallViewModel @Inject constructor(
 
             when {
                 call != null -> CallUiState.Active(
-                    call = call.toDisplay(now, contact),
+                    // The conference, once this device is mixing it — not the leg that
+                    // happened to be on screen when Merge was pressed.
+                    call = call.toDisplay(now, contact).inConferenceIfMixed(state.calls, state.mixed),
                     otherCalls = heldOthers(state.calls, callId, state.mixed, now),
                     pendingVideoRequest = state.pendingVideo,
                     secondCall = state.secondCallPrompt(callId, call),
@@ -275,6 +290,7 @@ class CallViewModel @Inject constructor(
                     canMerge = state.calls.count { it.state.isEstablished } >= MIN_MERGEABLE,
                     mixedCallCount = state.mixed.size,
                     pendingActions = busy,
+                    videoSizes = sizes,
                 )
                 // Absent after it was present means the call ended. Absent before it was
                 // ever present means the engine has not published it yet, which happens
@@ -490,26 +506,43 @@ class CallViewModel @Inject constructor(
     }
 
     /**
-     * Mixes every established call this device is holding into one conference (ADR-009).
+     * Merges every established call this device is holding into one conference.
      *
-     * Everything on the device, not a chosen pair: the phone has one audio bridge and one
-     * microphone, so "merge" can only ever mean all of them. Ringing calls are left out —
-     * they have no audio to contribute — and join by themselves when they are answered,
-     * because the stack re-plans the mix on every media change.
+     * Everything on the device, not a chosen pair: the phone has one audio bridge, one
+     * microphone and one camera, so "merge" can only ever mean all of them. Ringing calls
+     * are left out — they have no media to contribute — and join by themselves when they
+     * are answered, because the stack re-plans the mix on every media change.
      *
-     * The result is what the stack accepted, not what was asked for, so a member the
-     * bridge refused never appears on screen as merged.
+     * ## Two conferences behind one button
+     *
+     * [MergeCallsUseCase] decides which, and the decision is about video: audio is mixed
+     * here on the device (ADR-009) and video goes to the bridge (ADR-003). The screen has
+     * to react differently to each, which is the whole reason the result is a type rather
+     * than a set of ids:
+     *
+     *  - **Mixed** leaves every leg in place, so the merged set is what the stack accepted
+     *    — a member the bridge refused never appears on screen as merged.
+     *  - **Bridged** replaced every leg with a single call to the room, so the screen is
+     *    re-pointed at it. Without that the user would be left watching a leg that is
+     *    being transferred away and is about to end, and the conference they just built
+     *    would appear to have hung up on them.
      */
     fun merge() {
-        val establishedCalls = calls.activeCalls.value
-            .filter { it.state.isEstablished }
-            .map { it.callId }
-            .toSet()
-        if (establishedCalls.size < MIN_MERGEABLE) return
-
         act(CallAction.MERGE) {
-            conferences.mixCalls(establishedCalls).also { result ->
-                if (result is Outcome.Success) mixed.value = result.value
+            mergeCalls().also { result ->
+                when (result) {
+                    is Outcome.Failure -> Unit
+                    is Outcome.Success -> when (val merged = result.value) {
+                        is MergeResult.Mixed -> mixed.value = merged.callIds
+                        is MergeResult.Bridged -> {
+                            // The local mix is over: this device is a member now, not the
+                            // host. Clearing it stops the screen reporting a mix that no
+                            // longer exists beneath the conference it is showing.
+                            mixed.value = emptySet()
+                            pointAt(merged.callId)
+                        }
+                    }
+                }
             }
         }
     }

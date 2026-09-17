@@ -1,0 +1,46 @@
+<include>
+  <!-- Voicemail check / iDivert target used by Cisco 78xx Decline softkey -->
+  <extension name="cisco_voicemail_star97">
+    <condition field="destination_number" expression="^\*97$">
+      <action application="answer"/>
+      <action application="sleep" data="500"/>
+      <action application="voicemail" data="check default 192.168.103.24 ${caller_id_number}"/>
+    </condition>
+  </extension> -->
+
+  <!-- Direct deposit voicemail (used when Decline diverts via REFER) -->
+  <extension name="cisco_voicemail_deposit">
+    <condition field="destination_number" expression="^vm:(\d+)$">
+      <action application="answer"/>
+      <action application="sleep" data="500"/>
+      <action application="voicemail" data="default 192.168.103.24 $1"/>
+    </condition>
+  </extension> -->
+
+  <!-- Conference room used by Cisco Confrn / MeetMe softkey, and by the handset app.
+
+       The profile is "whatsapp-video", NOT "default". "default" sets no video-mode, so
+       mod_conference runs passthrough and forwards only the floor holder's camera: three
+       handsets join a video conference and all three see the same one face. The
+       whatsapp-video profile in conference.conf.xml composes every member onto a portrait
+       canvas instead. Everything else about this room is unchanged. -->
+  <extension name="cisco_conference_3000">
+    <condition field="destination_number" expression="^(3000)$">
+      <!-- Nothing here can repair a member that arrives with no usable audio codec,
+           and it is worth saying so because the obvious attempts all fail.
+
+           A leg REFERred in from a media-bypassed call is transferred by
+           switch_ivr_session_transfer, which builds its re-INVITE DURING the transfer -
+           before this extension runs. By the time these actions execute the offer has
+           already gone out, and if the dialog's only audio codec was Lyra it went out as
+           `m=audio 0 RTP/AVP 19`: the stream, killed. Tried here on 2026-09-16 and
+           measured as no change: `media_reset`, and `absolute_codec_string=PCMU,PCMA,VP8`.
+
+           The fix is upstream, in dialplan/default/01_coralx_push_wake.xml: a call that
+           offers video does not bypass media, so it reaches this room already speaking
+           PCMU. See docs/Freeswitch_configuration_docs/conference-video/README.md. -->
+      <action application="answer"/>
+      <action application="conference" data="$1@whatsapp-video"/>
+    </condition>
+  </extension> -->
+</include>

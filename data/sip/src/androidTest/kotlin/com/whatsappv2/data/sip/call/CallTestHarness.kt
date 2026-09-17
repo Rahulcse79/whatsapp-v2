@@ -6,6 +6,7 @@ import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.data.sip.PjsipSipEngine
 import com.whatsappv2.data.sip.network.NetworkMonitor
 import com.whatsappv2.data.sip.registration.TestTarget
+import com.whatsappv2.data.sip.registration.stack.PjsipTrustStore
 import com.whatsappv2.data.sip.registration.stack.RealPjsipCoreGateway
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CodecPreferences
@@ -54,6 +55,10 @@ internal class CallTestHarness(context: Context, private val target: TestTarget)
     private val accounts = FakeSipAccountRepository()
     private val gateway = RealPjsipCoreGateway(
         context = context,
+        // The real trust store, built the way Hilt would: a call test may negotiate SRTP,
+        // and this is what a TLS transport would read the CA bundle from. Its own JVM test
+        // covers the parsing; here it just has to exist.
+        trustStore = PjsipTrustStore(context, NoOpLogger),
         // NoOpLogger, not the Android one: this run carries a real credential and the
         // stack is chatty (§7, DoD 12).
         logger = NoOpLogger,
@@ -64,6 +69,8 @@ internal class CallTestHarness(context: Context, private val target: TestTarget)
         gateway = gateway,
         callGateway = gateway,
         videoGateway = gateway,
+        // The gateway implements every SDK-facing seam; conference is one more of them.
+        conferenceGateway = gateway,
         accounts = accounts,
         settings = FakeAppSettingsRepository(),
         networkMonitor = AlwaysOnline,

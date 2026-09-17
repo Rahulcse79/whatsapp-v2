@@ -17,6 +17,7 @@ import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.StackConferenceEvent
 import com.whatsappv2.data.sip.call.StackTransferEvent
 import com.whatsappv2.data.sip.call.TransferEventMapper
+import com.whatsappv2.data.sip.call.VideoOfferClassifier
 import com.whatsappv2.data.sip.registration.NameAddr
 import com.whatsappv2.data.sip.registration.SipCoreGateway
 import com.whatsappv2.data.sip.registration.StackAccount
@@ -26,6 +27,8 @@ import com.whatsappv2.data.sip.registration.StackRegistrationState
 import com.whatsappv2.domain.codec.CodecAudit
 import com.whatsappv2.domain.codec.CodecPriorities
 import com.whatsappv2.domain.engine.SipConferenceController
+import com.whatsappv2.domain.engine.VideoSize
+import com.whatsappv2.domain.engine.VideoSizes
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.BufferOverflow
@@ -50,9 +53,11 @@ import org.pjsip.pjsua2.CallVidSetStreamParam
 import org.pjsip.pjsua2.Endpoint
 import org.pjsip.pjsua2.EpConfig
 import org.pjsip.pjsua2.IpChangeParam
+import org.pjsip.pjsua2.OnCallMediaEventParam
 import org.pjsip.pjsua2.OnCallMediaStateParam
 import org.pjsip.pjsua2.OnCallRxReinviteParam
 import org.pjsip.pjsua2.OnCallStateParam
+import org.pjsip.pjsua2.OnCallTransferRequestParam
 import org.pjsip.pjsua2.OnCallTransferStatusParam
 import org.pjsip.pjsua2.OnCallTsxStateParam
 import org.pjsip.pjsua2.OnIncomingCallParam
@@ -64,6 +69,7 @@ import org.pjsip.pjsua2.VidDevManager
 import org.pjsip.pjsua2.VideoWindowHandle
 import org.pjsip.pjsua2.pj_ssl_sock_proto
 import org.pjsip.pjsua2.pjmedia_dir
+import org.pjsip.pjsua2.pjmedia_event_type
 import org.pjsip.pjsua2.pjmedia_orient
 import org.pjsip.pjsua2.pjmedia_tp_proto
 import org.pjsip.pjsua2.pjmedia_type
@@ -146,6 +152,15 @@ import javax.inject.Singleton
  * hold them; a call is only dropped once `onCallState` reports `DISCONNECTED`.
  */
 @Singleton
+// detekt's ceiling is a reminder, and this class has been sitting on it: HEAD passes by a
+// handful of lines and any addition trips it. Splitting it is not a defect fix — the
+// arrangement is deliberate (one pjsua2 `Endpoint` owns registration, calls, video,
+// recording and conferencing, and the gateway interfaces above already divide it by
+// *caller* rather than by class). Suppressed here rather than by raising the global
+// threshold, so the exemption is this class's alone and stays visible to the next reader.
+// Splitting it for real means giving `PjCall` its own file and a seam to the endpoint,
+// which is worth doing and is worth doing on its own.
+@Suppress("LargeClass")
 internal class RealPjsipCoreGateway @Inject constructor(
     @ApplicationContext private val context: Context,
     private val trustStore: PjsipTrustStore,
@@ -281,6 +296,25 @@ internal class RealPjsipCoreGateway @Inject constructor(
     @Volatile
     private var lyraModelProblem: String? = null
     override val codecAudit: StateFlow<CodecAudit?> = audit.asStateFlow()
+
+    /**
+     * The shapes of the decoded remote picture and of the local preview (§5.2).
+     *
+     * Read back from PJSIP's own video window rather than from the `FMT_CHANGED` event's
+     * payload. The event fires for the capture side too, and its `medIdx` says which
+     * *media* changed, not which *direction* — so acting on the numbers it carries sizes
+     * the remote view to the local camera about half the time. The window is
+     * unambiguous: [PjCall.publishVideoSizes] reads the one belonging to a stream with
+     * `PJMEDIA_DIR_DECODING` in it, and that is the far end's picture by definition. The
+     * event is used only as the signal that it is worth re-reading.
+     *
+     * The local half comes from the preview window, which is a different object again
+     * (see [LocalPreview.size]) and is the only place the camera's *actual* frame shape
+     * is recorded — the format PJSIP was asked for is not what a TC15's front camera
+     * returns.
+     */
+    private val videoSizeFlow = MutableStateFlow(VideoSizes.UNKNOWN)
+    override val videoSizes: StateFlow<VideoSizes> = videoSizeFlow.asStateFlow()
 
     private var endpoint: Endpoint? = null
 
@@ -1245,20 +1279,33 @@ internal class RealPjsipCoreGateway @Inject constructor(
     }
 
     /**
-     * Answers a re-INVITE that offered video (Task 54).
+     * Carries the user's answer to a video offer (Task 54).
      *
-     * The offer was held rather than answered: [PjCall.onCallRxReinvite] sets `isAsync`,
-     * which tells PJSIP not to reply until this app does. Declining answers **without**
-     * the video stream rather than refusing the re-INVITE — the audio call survives, which
-     * is Task 54's second done-when, and a 488 would end the call outright on several
-     * peers.
+     * ## It is a new offer, not a late reply
+     *
+     * The far end's re-INVITE was already answered — by the stack, the moment it arrived,
+     * keeping the call as it was. See [PjCall.onCallRxReinvite] for why nothing waits for
+     * a human inside a SIP transaction. So there is no held transaction to reply to here,
+     * and accepting cannot be a reply: it is **this** device offering video, through the
+     * same re-INVITE [setVideoEnabled] sends for the Video button.
+     *
+     * Declining therefore costs nothing and sends nothing. The call is already exactly
+     * what the user is choosing to keep — audio — which is Task 54's second done-when
+     * reached by doing less rather than more.
      */
     override fun respondToVideoUpdate(callKey: String, accept: Boolean) {
         onPjsip("respondToVideoUpdate") {
             val call = calls[callKey] ?: return@onPjsip
+            // Guards a second tap and a prompt for a call that has moved on; the flag is
+            // cleared either way, because the question has been answered either way.
             if (!call.reinvitePending) return@onPjsip
             call.reinvitePending = false
-            call.answer(callParams(accept).apply { statusCode = pjsip_status_code.PJSIP_SC_OK })
+            if (!accept) {
+                logger.info(TAG, "Video offer declined on $callKey; the call stays audio")
+                return@onPjsip
+            }
+            logger.info(TAG, "Video offer accepted on $callKey; offering video back")
+            call.applyVideoEnabled(enabled = true, info = call.infoOrNull())
         }
     }
 
@@ -1354,6 +1401,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
     override fun setVideoWindows(remoteView: Any?, localPreview: Any?) {
         remoteSurface = remoteView
         previewSurface = localPreview
+        // A surface that has gone takes the last frame's shape with it. Left behind, it
+        // would size the *next* call's view to the previous call's picture for as long as
+        // it takes the first frame to arrive — a visible wrong-shaped flash at the start
+        // of every video call after the first.
+        if (remoteView == null) videoSizeFlow.value = VideoSizes.UNKNOWN
         onPjsip("setVideoWindows") {
             calls.values.forEach {
                 it.applyVideoWindows()
@@ -1534,6 +1586,24 @@ internal class RealPjsipCoreGateway @Inject constructor(
         var reinvitePending: Boolean = false
 
         /**
+         * True once this call has ever had a video stream running.
+         *
+         * The difference between "add video" and "put the video back", which SDP alone
+         * cannot express: both arrive as a re-INVITE offering `m=video` on a call whose
+         * video is not active *right now*. Hold is what makes video stop being active, so
+         * the offer that resumes a held video call is indistinguishable from an
+         * escalation unless somebody remembers — and [onCallRxReinvite] is the one place
+         * that has to tell them apart.
+         *
+         * Sticky on purpose. A call that carried video once is a video call for the rest
+         * of its life as far as this question goes; the user already consented to the
+         * camera, and asking again every time the far end re-syncs the session is the
+         * prompt that dropped a three-way conference (TC15, 2026-09-15).
+         */
+        @Volatile
+        var everHadVideo: Boolean = false
+
+        /**
          * Our resume re-INVITE, between going out and being answered.
          *
          * Read by [onCallTsxState], which is otherwise told about every transaction on
@@ -1633,6 +1703,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
                     media.type == pjmedia_type.PJMEDIA_TYPE_VIDEO &&
                         media.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE -> {
+                        // Recorded here rather than where video is *asked* for, because
+                        // this is the moment it actually ran. See [everHadVideo].
+                        everHadVideo = true
                         // Only once capture is set up: before `START_TRANSMIT` PJSIP
                         // reports INVALID (-3) here, and a preview asked for on -3 fails.
                         if (media.videoCapDev != pjmedia_vid_dev_std_index.PJMEDIA_VID_INVALID_DEV) {
@@ -1682,32 +1755,86 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
 
         /**
-         * Holds the far end's re-INVITE until the user answers it (Task 54) — but only
-         * when it is an **escalation**: video offered on a call that has none running.
+         * Notices the far end offering video, and asks the user — **without making the
+         * far end wait for them** (Task 54).
          *
-         * `isAsync` is what defers the reply. Without it PJSIP answers immediately and the
-         * first anybody knows about an escalation is their own camera light; with it the
-         * call sits in this state until [respondToVideoUpdate] answers, which is what makes
-         * the prompt §5.2 requires possible at all.
+         * `prm.isAsync` is deliberately never set. Setting it tells PJSIP to leave the
+         * re-INVITE unanswered until the app replies, which puts a human's reaction time
+         * inside a SIP transaction; SIP does not wait, and on 2026-09-15 that dropped a
+         * three-way conference (`VideoOfferClassifier`). The stack answers now, keeping
+         * the call as it is; the user is asked afterwards; accepting sends our own
+         * re-INVITE ([respondToVideoUpdate]).
          *
-         * It used to defer *every* re-INVITE whose offer had video in it. A session-timer
-         * refresh on a call already carrying video has video in its offer too, and so does
-         * the far end's hold; both were held for a user prompt that made no sense and was
-         * never shown, and never answered. FreeSWITCH registers as the refresher on the
-         * calls it originates (`Session-Expires: 120;refresher=uac`), so its refresh
-         * re-INVITE at 60 s went unanswered and our own session timer ended the call at
-         * 88 s with `BYE … cause=408 "No session refresh received"`. Every inbound video
-         * call died before the two-minute mark; outbound ones survived only because we
-         * are the refresher there. A re-INVITE on a call that already has an active video
-         * stream is answered by the stack, as any other renegotiation is.
+         * Whether to ask at all is [VideoOfferClassifier]'s, which is where the rule and
+         * the reasons for it live — and where a JVM test can reach them.
          */
         override fun onCallRxReinvite(prm: OnCallRxReinviteParam) {
             val info = infoOrNull() ?: return
-            if (info.remVideoCount > 0 && !info.hasActiveVideo()) {
-                prm.isAsync = true
-                reinvitePending = true
-                publish(StackCallState.UPDATED_BY_REMOTE, info)
-            }
+
+            // Answered by the stack either way: `isAsync` is never set. What this decides
+            // is only whether the *user* is asked afterwards.
+            val escalation = VideoOfferClassifier.isEscalation(
+                remoteVideoCount = info.remVideoCount.toInt(),
+                videoActive = info.hasActiveVideo(),
+                everHadVideo = everHadVideo,
+            )
+            if (!escalation) return
+
+            reinvitePending = true
+            publish(StackCallState.UPDATED_BY_REMOTE, info)
+        }
+
+        /**
+         * A REFER arrived: accept it, and give the call it creates an object of its own.
+         *
+         * ## Why this override has to exist, even though it changes no decision
+         *
+         * pjsua already accepts an inbound REFER and places the new INVITE without any
+         * help — `code = PJSIP_SC_ACCEPTED` before the callback
+         * (`pjsua_call.c:6240`), then `pjsua_call_make_call` after it (`:6384`). So the
+         * transfer *worked* without this. What did not work is everything above the stack,
+         * for two reasons that compound:
+         *
+         *  1. **PJSUA2 reuses this director for the new call.** The new call's `user_data`
+         *     is seeded with the *parent's* `Call` pointer, and `Call::lookup` only
+         *     promotes it to a separate instance when the parent has a `child`
+         *     (`call.cpp:569-584`). With no child it instead assigns the new call's id to
+         *     *this* object — so one `PjCall` ends up driving two native calls, and
+         *     `calls[callKey]` silently addresses whichever was looked up last. PJSIP says
+         *     so itself: *"Warning: application reuses Call instance in call transfer"*
+         *     (`endpoint.cpp:1817`).
+         *  2. **The engine had never heard of the new call.** Every event it raised was
+         *     dropped as "Ignoring … for unknown call", because the only state that may
+         *     name an unknown call was `INCOMING_RECEIVED` and this call is outgoing.
+         *
+         * Together those are why a transferred handset went on showing the leg it had just
+         * left while its audio and camera were already somewhere else. Minting a child
+         * here — with no call id, which is what `Endpoint::on_call_transfer_request2`
+         * asserts — gives the new call its own director, its own key, and its own snapshot.
+         *
+         * The status code is left exactly as pjsua set it. Accepting or refusing a transfer
+         * is not a decision this gateway makes; it is the same 202 it sent before.
+         */
+        override fun onCallTransferRequest(prm: OnCallTransferRequestParam) {
+            val account = accounts[accountKey] ?: return
+
+            // Minted here for the same reason `onIncomingCall` mints one: this is a call
+            // nothing above the stack has seen, so there is no key to look up.
+            val childKey = UUID.randomUUID().toString()
+            val child = PjCall(childKey, account)
+            calls[childKey] = child
+            prm.newCall = child
+
+            // Published before the INVITE goes out, so the engine has a snapshot to move
+            // when the new call starts reporting progress. `remoteUri` is the REFER's
+            // Refer-To — where this call is about to go, which is the only address the
+            // new leg has until it is answered.
+            child.publish(
+                StackCallState.OUTGOING_TRANSFERRED,
+                info = null,
+                remoteUriOverride = prm.dstUri,
+            )
+            logger.info(TAG, "Following a REFER on $callKey to a new call $childKey")
         }
 
         override fun onCallTransferStatus(prm: OnCallTransferStatusParam) {
@@ -1741,6 +1868,42 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     )
                 }.onFailure { logger.warn(TAG, "Could not attach a video surface: ${it.message}") }
             }
+            publishVideoSizes()
+        }
+
+        /**
+         * Notices a stream changing shape (§5.2).
+         *
+         * `PJMEDIA_EVENT_FMT_CHANGED` is the only warning PJSIP gives that the decoded
+         * picture is now a different size — a peer that rotated, a bridge that reflowed
+         * its canvas as somebody joined, either end dropping resolution under load. It
+         * is treated purely as "re-read the window", never as the source of the numbers:
+         * see [remoteVideo] for why its payload cannot be trusted to be the remote side.
+         *
+         * Every other event type falls through deliberately. This callback also carries
+         * keyframe and window events at a rate nothing here needs to react to.
+         */
+        override fun onCallMediaEvent(prm: OnCallMediaEventParam) {
+            val type = runCatching { prm.ev.type }.getOrNull() ?: return
+            if (type != pjmedia_event_type.PJMEDIA_EVENT_FMT_CHANGED) return
+            publishVideoSizes()
+        }
+
+        /**
+         * Republishes the far end's frame shape from PJSIP's own video window.
+         *
+         * Only while a remote surface is attached, and only from a stream that is
+         * *decoding*: a send-only stream's window is this device's camera, and sizing the
+         * remote view to it would be the same stretching bug wearing a different hat.
+         *
+         * Silent when there is nothing to read. A call whose video has not come up yet,
+         * or has just gone, leaves the last known size in place rather than flicking the
+         * view to zero and back — [setVideoWindows] is what clears it, because the screen
+         * going away is the one moment the old shape is certainly wrong.
+         */
+        fun publishVideoSizes() {
+            if (remoteSurface == null && previewSurface == null) return
+            videoSizeFlow.publishVideoSizes(infoOrNull(), localPreview.size(), callKey, logger)
         }
 
         /**
@@ -1779,6 +1942,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
             }
             if (!isTransmittingVideo()) return
             localPreview.draw(captureDevice, surface)
+            // The camera's real frame shape is only knowable once the preview window
+            // exists, which is the line above and not a moment before it.
+            publishVideoSizes()
         }
 
         fun stopPreview() = localPreview.stop()
@@ -1826,8 +1992,19 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 .getOrDefault(false)
         }
 
-        fun publish(state: StackCallState, info: CallInfo? = infoOrNull()) {
-            val remote = NameAddr.of(info?.remoteUri)
+        /**
+         * @param remoteUriOverride the address to report when the call has no `CallInfo`
+         *   yet. Exactly one caller needs it — [onCallTransferRequest], which publishes
+         *   before pjsua has placed the INVITE, so the only address that exists is the
+         *   REFER's `Refer-To`. Everywhere else the stack's own `remoteUri` is the truth
+         *   and this stays null.
+         */
+        fun publish(
+            state: StackCallState,
+            info: CallInfo? = infoOrNull(),
+            remoteUriOverride: String? = null,
+        ) {
+            val remote = NameAddr.of(remoteUriOverride ?: info?.remoteUri)
             callEventFlow.tryEmit(
                 StackCallEvent(
                     callKey = callKey,
@@ -2229,6 +2406,58 @@ private fun transmitOp(capturing: Boolean): Int = if (capturing) {
     pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_START_TRANSMIT
 } else {
     pjsua_call_vid_strm_op.PJSUA_CALL_VID_STRM_STOP_TRANSMIT
+}
+
+/**
+ * Folds whatever this call can say about the two pictures into [this].
+ *
+ * Each half keeps its last known value when the call cannot supply it, so a stream coming
+ * up one at a time does not blank the other's view, and an unchanged pair writes nothing —
+ * this is called on every media event and a `StateFlow` that re-emits the same value would
+ * relayout the screen for no reason.
+ *
+ * A top-level function taking the flow rather than a method, so the gateway class stays
+ * under detekt's size ceiling.
+ */
+private fun MutableStateFlow<VideoSizes>.publishVideoSizes(
+    info: CallInfo?,
+    previewSize: VideoSize?,
+    callKey: String,
+    logger: Logger,
+) {
+    val current = value
+    val updated = VideoSizes(
+        remote = info?.decodedVideoSize() ?: current.remote,
+        local = previewSize ?: current.local,
+    )
+    if (updated == current) return
+
+    logger.info(
+        RealPjsipCoreGateway.TAG,
+        "Video is ${updated.remote.width}x${updated.remote.height} in, " +
+            "${updated.local.width}x${updated.local.height} out, on $callKey",
+    )
+    value = updated
+}
+
+/**
+ * The decoded remote picture's size, read from PJSIP's own video window.
+ *
+ * Only a stream that is **decoding**: a send-only stream's window is this device's camera,
+ * and sizing the remote view to it is the stretching bug wearing a different hat. Null
+ * when no such stream is up, which is the ordinary state before the first frame arrives.
+ *
+ * A top-level function rather than a method so the gateway class stays under detekt's size
+ * ceiling — and it reads no state beyond the `CallInfo` it is given, so it belongs here.
+ */
+private fun CallInfo.decodedVideoSize(): VideoSize? = media.firstNotNullOfOrNull { media ->
+    if (media.type != pjmedia_type.PJMEDIA_TYPE_VIDEO) return@firstNotNullOfOrNull null
+    if (media.status != pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE) return@firstNotNullOfOrNull null
+    if (media.dir and pjmedia_dir.PJMEDIA_DIR_DECODING == 0) return@firstNotNullOfOrNull null
+    runCatching {
+        val window = media.videoWindow.info.size
+        VideoSize(window.w.toInt(), window.h.toInt())
+    }.getOrNull()?.takeIf { it.isKnown }
 }
 
 /** True when a video stream is negotiated and running on this call, in either direction. */

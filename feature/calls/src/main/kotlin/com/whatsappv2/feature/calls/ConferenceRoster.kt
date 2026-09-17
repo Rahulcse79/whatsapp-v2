@@ -1,10 +1,12 @@
 package com.whatsappv2.feature.calls
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.MicOff
@@ -14,6 +16,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import com.whatsappv2.core.designsystem.theme.AppTheme
@@ -43,20 +47,45 @@ import com.whatsappv2.core.designsystem.theme.AppTheme
  * button is a different thing entirely and lives with the call controls; showing them in
  * one list would suggest this app can mute other people, which under a dial-in MCU it
  * cannot.
+ *
+ * ## Over video it is a card, not a column of text
+ *
+ * With [composedVideo] set the roster is drawn on a dark scrim in white, because it is
+ * sitting on top of a picture whose colours are unknown, and `onSurface` over somebody's
+ * face is a paragraph you cannot read. The scrim is also what stops it looking like the
+ * app has printed a list across the call.
+ *
+ * That flag is also the honest place for the thing the screen used to say in grey under
+ * the video: that the bridge, not this app, decides the arrangement. Somebody wondering
+ * why they cannot pin a speaker is reading the participant list, not the middle of the
+ * picture — so the sentence lives here now, and the video got its screen back.
  */
 @Composable
 internal fun ConferenceRoster(
     state: ConferenceUiState,
+    composedVideo: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
+    val primary = if (composedVideo) Color.White else MaterialTheme.colorScheme.onSurface
+    val secondary =
+        if (composedVideo) Color.White.copy(alpha = SCRIM_TEXT) else MaterialTheme.colorScheme.onSurfaceVariant
+    val surface = if (composedVideo) {
+        Modifier
+            .clip(RoundedCornerShape(AppTheme.radius.large))
+            .background(Color.Black.copy(alpha = SCRIM))
+            .padding(AppTheme.spacing.medium)
+    } else {
+        Modifier
+    }
+
     Column(
-        modifier = modifier.fillMaxWidth().testTag(TAG_ROSTER),
+        modifier = modifier.fillMaxWidth().then(surface).testTag(TAG_ROSTER),
         verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraSmall),
     ) {
         Text(
             text = state.heading(),
             style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = secondary,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -66,7 +95,7 @@ internal fun ConferenceRoster(
                 text = "This bridge does not publish a participant list, so the app cannot " +
                     "say who else is here.",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = secondary,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().testTag(TAG_NO_ROSTER),
             )
@@ -74,13 +103,32 @@ internal fun ConferenceRoster(
         }
 
         state.participants.forEach { participant ->
-            ParticipantRow(participant)
+            ParticipantRow(participant, primary = primary, secondary = secondary)
+        }
+
+        if (composedVideo) {
+            Text(
+                text = "The conference server composes this picture, so who is on screen " +
+                    "and how they are arranged is decided there.",
+                style = MaterialTheme.typography.bodySmall,
+                color = secondary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = AppTheme.spacing.small)
+                    .testTag(TAG_MIXED_STREAM_NOTE),
+            )
         }
     }
 }
 
 @Composable
-private fun ParticipantRow(participant: ConferenceParticipantRow, modifier: Modifier = Modifier) {
+private fun ParticipantRow(
+    participant: ConferenceParticipantRow,
+    primary: Color,
+    secondary: Color,
+    modifier: Modifier = Modifier,
+) {
     Row(
         modifier = modifier.fillMaxWidth().padding(vertical = AppTheme.spacing.extraSmall),
         verticalAlignment = Alignment.CenterVertically,
@@ -89,7 +137,7 @@ private fun ParticipantRow(participant: ConferenceParticipantRow, modifier: Modi
         Text(
             text = if (participant.isSelf) "${participant.label} (you)" else participant.label,
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
+            color = primary,
             modifier = Modifier.weight(1f),
         )
 
@@ -97,14 +145,14 @@ private fun ParticipantRow(participant: ConferenceParticipantRow, modifier: Modi
             Icon(
                 imageVector = Icons.Filled.GraphicEq,
                 contentDescription = "Speaking",
-                tint = MaterialTheme.colorScheme.primary,
+                tint = primary,
             )
         }
         if (participant.isMuted) {
             Icon(
                 imageVector = Icons.Filled.MicOff,
                 contentDescription = "Muted by the bridge",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = secondary,
             )
         }
     }
@@ -123,5 +171,12 @@ private fun ConferenceUiState.heading(): String = when {
     else -> "In this conference — ${participants.size}"
 }
 
+/** Dark enough for white text over any frame; light enough to see the call through. */
+private const val SCRIM = 0.55f
+
+/** Secondary text, dimmed the way `onSurfaceVariant` is against `onSurface`. */
+private const val SCRIM_TEXT = 0.75f
+
 internal const val TAG_ROSTER = "conference-roster"
 internal const val TAG_NO_ROSTER = "conference-no-roster"
+internal const val TAG_MIXED_STREAM_NOTE = "conference-mixed-stream-note"

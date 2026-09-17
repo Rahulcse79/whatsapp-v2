@@ -54,6 +54,22 @@ class CallScreenTest {
     }
 
     @Test
+    fun `a merged call shows the conference, not a person`() {
+        // The title is the ViewModel's; the screen's part is the face. A group where the
+        // avatar was, because initials of "Conference call" would read "CC".
+        setContent(
+            display(CallPhase.CONNECTED, durationSeconds = 5).copy(
+                title = CONFERENCE_TITLE,
+                subtitle = "Carol · 1003",
+                isMixed = true,
+            ),
+        )
+
+        compose.onNodeWithTag(TAG_TITLE).assertTextEquals(CONFERENCE_TITLE)
+        compose.onNodeWithTag(TAG_CONFERENCE_AVATAR).assertIsDisplayed()
+    }
+
+    @Test
     fun `a ringing inbound call offers answer and decline, and nothing else`() {
         var answeredWithVideo: Boolean? = null
         setContent(

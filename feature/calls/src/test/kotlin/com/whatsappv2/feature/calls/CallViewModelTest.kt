@@ -7,9 +7,13 @@ import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.SecondCallResponse
+import com.whatsappv2.domain.engine.ConferenceRoom
 import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.engine.NoVideoSurfaces
 import com.whatsappv2.domain.engine.SipError
+import com.whatsappv2.domain.engine.VideoSize
+import com.whatsappv2.domain.engine.VideoSizes
+import com.whatsappv2.domain.engine.VideoSurfaceController
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.CodecPreferences
@@ -26,9 +30,12 @@ import com.whatsappv2.domain.testing.FakeContactRepository
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
 import com.whatsappv2.domain.usecase.CallWaitingUseCase
+import com.whatsappv2.domain.usecase.MergeCallsUseCase
 import com.whatsappv2.domain.usecase.TransferCallUseCase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
@@ -61,6 +68,25 @@ class CallViewModelTest {
     private val clock = engine.clock
     private val dispatcher = StandardTestDispatcher()
 
+    /**
+     * The conference bridge these tests merge into.
+     *
+     * Configured by default, because the interesting cases are about *which* topology a
+     * merge chooses; the "no room at all" case sets [ConferenceRoom.NONE] itself.
+     */
+    private var room = ConferenceRoom.DEFAULT
+
+    /**
+     * Surfaces that draw nothing but can be told what shape the picture is.
+     *
+     * [NoVideoSurfaces] answers [VideoSizes.UNKNOWN] forever, which is the right default
+     * and is untestable: the whole point of the field is that it *changes* mid-call.
+     */
+    private val surfaces = object : VideoSurfaceController by NoVideoSurfaces {
+        val sizes = MutableStateFlow(VideoSizes.UNKNOWN)
+        override val videoSizes: StateFlow<VideoSizes> get() = sizes
+    }
+
     @Before
     fun setUp() = Dispatchers.setMain(dispatcher)
 
@@ -77,7 +103,8 @@ class CallViewModelTest {
         // they enforce is the thing worth exercising from here (Tasks 55-57).
         transfers = TransferCallUseCase(engine, accounts),
         callWaiting = CallWaitingUseCase(engine, NoCameraAvailable),
-        surfaces = NoVideoSurfaces,
+        mergeCalls = MergeCallsUseCase(engine, engine, accounts, room),
+        surfaces = surfaces,
         clock = clock,
     )
 
@@ -387,6 +414,68 @@ class CallViewModelTest {
     }
 
     @Test
+    fun `a merged conference is titled as one, with its members underneath`() = runTest {
+        // The screen kept the first leg's extension as its title after Merge — "9196"
+        // over a button reading "2 calls merged" (TC15, 2026-09-14). What the user is in
+        // is a conference; the members move to the line below, in the order they were
+        // called, so nothing the title said is lost.
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO).getOrNull()!!
+        engine.simulateRemoteAnswer(second)
+        val viewModel = viewModel().also { it.watch(first) }
+        runCurrent()
+
+        viewModel.uiState.test {
+            val alone = awaitDisplay { it.phase == CallPhase.CONNECTED }
+            assertEquals("bob", alone.title, "a 1:1 call is titled by its extension")
+            assertFalse(alone.isMixed)
+
+            viewModel.merge()
+            runCurrent()
+
+            val merged = awaitActive { it.mixedCallCount >= MIN_MIXED_IN_TEST }
+            assertEquals(CONFERENCE_TITLE, merged.call.title)
+            assertEquals("bob · 1003", merged.call.subtitle)
+            assertTrue(merged.call.isMixed)
+            assertNull(merged.call.photoUri)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `the screen is told what shape the far end's picture is, and when it changes`() = runTest {
+        // PJSIP's renderer stretches a frame to whatever bounds it is handed, so the view
+        // has to be sized from this number rather than filling the space (TC15,
+        // 2026-09-14: a landscape frame down a portrait screen, faces a head too tall).
+        // It has to keep arriving, too — a conference canvas reflows as people join, and
+        // a screen that only ever saw the first frame's shape would stretch every one
+        // after it.
+        val callId = placeCall()
+        engine.simulateRemoteAnswer(callId)
+        val viewModel = viewModel().also { it.watch(callId) }
+        runCurrent()
+
+        viewModel.uiState.test {
+            val first = awaitActive { it.videoSizes == VideoSizes.UNKNOWN }
+            assertFalse(first.videoSizes.remote.isKnown, "nothing is decoded yet")
+
+            surfaces.sizes.value = VideoSizes(remote = VideoSize(352, 288), local = VideoSize(1080, 1080))
+            runCurrent()
+            val decoded = awaitActive { it.videoSizes.remote.isKnown }
+            assertEquals(VideoSize(352, 288), decoded.videoSizes.remote)
+            assertEquals(VideoSize(1080, 1080), decoded.videoSizes.local, "the self-view is stretched too")
+
+            // The bridge reflows its canvas as a third member joins.
+            surfaces.sizes.value = decoded.videoSizes.copy(remote = VideoSize(720, 1280))
+            runCurrent()
+            val reflowed = awaitActive { it.videoSizes.remote == VideoSize(720, 1280) }
+            assertEquals(VideoSize(720, 1280), reflowed.videoSizes.remote)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun `a connected call offers Add call, so a conference can be started at all`() = runTest {
         // Merge only appears once two calls exist. Without this control the only route to
         // a second outgoing leg was to leave the call screen, reopen the app and find the
@@ -683,6 +772,66 @@ class CallViewModelTest {
         }
     }
 
+    @Test
+    fun `merging video calls moves the screen to the conference leg`() = runTest {
+        // The defect this pins: a bridged merge replaces every leg with one call to the
+        // room, so a screen still watching a merged leg would show it being transferred
+        // away and then ending — the conference the user just built, apparently hanging up
+        // on them.
+        engine.givenRegistered(ACCOUNT)
+        // The room is resolved against the account's domain, so the repository has to
+        // know the account — `givenRegistered` is the engine's business, not its.
+        accounts.given(ACCOUNT)
+        val first = engine.placeCall(ACCOUNT.id, REMOTE, MediaProfile.AUDIO_VIDEO).getOrNull()!!
+        engine.simulateRemoteAnswer(first)
+        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO_VIDEO).getOrNull()!!
+        engine.simulateRemoteAnswer(second)
+
+        val viewModel = viewModel().also { it.watch(first) }
+        runCurrent()
+
+        viewModel.uiState.test {
+            awaitActive { it.call.phase == CallPhase.CONNECTED }
+
+            viewModel.merge()
+            runCurrent()
+
+            val conference = awaitActive { it.conference != null }
+            // Watching the room, not either merged leg.
+            assertTrue(conference.call.callId != first && conference.call.callId != second)
+            assertEquals(
+                "sip:3000@sip.example.com",
+                engine.conferences.value.single { it.callId == conference.call.callId }
+                    .conferenceUri.render(),
+            )
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `merging audio calls mixes here and leaves the screen where it is`() = runTest {
+        engine.givenRegistered(ACCOUNT)
+        val first = engine.placeCall(ACCOUNT.id, REMOTE, MediaProfile.AUDIO).getOrNull()!!
+        engine.simulateRemoteAnswer(first)
+        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO).getOrNull()!!
+        engine.simulateRemoteAnswer(second)
+
+        val viewModel = viewModel().also { it.watch(first) }
+        runCurrent()
+
+        viewModel.uiState.test {
+            awaitActive { it.call.phase == CallPhase.CONNECTED }
+
+            viewModel.merge()
+            runCurrent()
+
+            val merged = awaitActive { it.call.isMixed }
+            assertEquals(first, merged.call.callId, "a local mix keeps every leg, and the screen")
+            assertTrue(engine.bridgeMergeRequests.isEmpty(), "no server was involved")
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
     private suspend fun placeCall(): CallId {
         engine.givenRegistered(ACCOUNT)
         return engine.placeCall(ACCOUNT.id, REMOTE, MediaProfile.AUDIO).getOrNull()!!
@@ -723,6 +872,7 @@ class CallViewModelTest {
 
     private companion object {
         val REMOTE: SipUri = SipUri.parse("sip:bob@sip.example.com").getOrNull()!!
+        val OTHER: SipUri = SipUri.parse("sip:1003@sip.example.com").getOrNull()!!
 
         /** Two mixed calls is a conference (ADR-009). */
         const val MIN_MIXED_IN_TEST = 2

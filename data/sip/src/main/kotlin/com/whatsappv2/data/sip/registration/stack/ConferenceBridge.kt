@@ -63,7 +63,12 @@ internal class ConferenceBridge(
      */
     fun set(callKeys: Set<String>): Set<String> {
         members = callKeys
-        return remix()
+        val live = remix()
+        // An empty membership is a teardown, and [remix] has just closed every link to
+        // get there. The port bookkeeping goes with them: keeping it would make the next
+        // conference believe a member was already linked on a port that no longer exists.
+        if (members.isEmpty()) portIds.clear()
+        return live
     }
 
     /**
@@ -74,8 +79,14 @@ internal class ConferenceBridge(
      * anything actually moved.
      */
     fun remix(): Set<String> {
-        if (members.isEmpty()) return emptySet()
-
+        // No early return on an empty membership, and that is the whole of a teardown.
+        // It used to bail out here, so `set(emptySet())` — which is how
+        // [SipConferenceGateway] ends a conference, and what a bridge merge runs before
+        // it REFERs the legs away — dropped the membership and left every
+        // `pjmedia_conf` link open. The participants went on hearing each other after
+        // the conference they were in had ended, and nothing closed the links until
+        // each call happened to disconnect. Falling through instead costs one empty
+        // plan when there is no conference and tears the real one down when there is.
         val live = members.filterTo(mutableSetOf()) { mediaOf(it) != null }
         forgetRebuiltPorts(live)
         val plan = ConferenceMix.plan(links, live)

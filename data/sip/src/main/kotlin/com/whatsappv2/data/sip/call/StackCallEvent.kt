@@ -85,6 +85,21 @@ internal enum class StackCallState {
      */
     REFERRED,
 
+    /**
+     * The stack has created an outgoing call by **following** a REFER it accepted.
+     *
+     * The second state that can name a call this module has never seen before, and the
+     * reason it exists: pjsua answers an inbound REFER with 202 and places the new INVITE
+     * itself (`pjsua_call.c:6240` sets `PJSIP_SC_ACCEPTED`, `:6384` calls
+     * `pjsua_call_make_call`). Nothing above the stack asked for that call, so nothing
+     * above the stack has a snapshot for it — and until this existed the engine dropped
+     * every event it raised as *"Ignoring … for unknown call"*, leaving the transferee
+     * talking to a bridge its own UI could not see.
+     *
+     * Distinct from [OUTGOING_INIT], which belongs to a call the app itself placed.
+     */
+    OUTGOING_TRANSFERRED,
+
     /** Ended normally — BYE sent or received, or CANCEL acknowledged. */
     ENDED,
 

@@ -226,6 +226,7 @@ class CallLogPagingSourceTest {
         id = CallLogId.UNSAVED,
         accountId = AccountId("acct-1"),
         remote = REMOTE,
+        accountDomain = null,
         remoteDisplayName = null,
         contactName = null,
         direction = direction,

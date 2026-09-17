@@ -117,6 +117,7 @@ class CallLogTitlesTest {
         id = CallLogId(1L),
         accountId = AccountId("acct-1"),
         remote = checkNotNull(SipUri.parse(remote).getOrNull()),
+        accountDomain = null,
         remoteDisplayName = remoteDisplayName,
         contactName = contactName,
         direction = direction,

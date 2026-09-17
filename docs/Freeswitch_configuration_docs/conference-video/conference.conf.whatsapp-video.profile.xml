@@ -1,0 +1,89 @@
+    <!-- ==================================================================== -->
+    <!-- The room extension 3000 dials, for the handset app.                  -->
+    <!--                                                                      -->
+    <!-- WHY THIS EXISTS AT ALL                                               -->
+    <!--                                                                      -->
+    <!-- 3000 used to land in the "default" profile above, which sets no       -->
+    <!-- video-mode. mod_conference's default is passthrough: it forwards the  -->
+    <!-- FLOOR HOLDER's video to everyone and nobody else's. Three handsets    -->
+    <!-- joined and all three saw the same single face. That is the bug, and it  -->
+    <!-- was a server setting, not the app.                                    -->
+    <!--                                                                      -->
+    <!-- video-mode=mux is the fix: FreeSWITCH decodes every member, composes  -->
+    <!-- them onto one canvas and encodes that canvas once (see               -->
+    <!-- minimize-video-encoding below), so everyone sees everyone.           -->
+    <!--                                                                      -->
+    <!-- CODECS: this build has no mod_av (it fails to load, see the startup   -->
+    <!-- log), so H.264 cannot be decoded and therefore cannot be composed.    -->
+    <!-- VP8 can: it lives in the core as switch_vpx.c, libvpx 1.8.1. The      -->
+    <!-- internal profile already offers PCMU,PCMA,VP8 and the app offers VP8, -->
+    <!-- so the composed path is VP8 end to end. A member that can only do     -->
+    <!-- H.264 will be heard and will not be seen.                            -->
+    <!-- ==================================================================== -->
+    <profile name="whatsapp-video">
+      <param name="domain" value="$${domain}"/>
+
+      <!-- 8 kHz mono to match the internal profile's PCMU/PCMA preference.
+	   The stock video-mcu profiles are 48 kHz stereo, which buys nothing
+	   over a narrowband handset leg and costs the mixer real work. -->
+      <param name="rate" value="8000"/>
+      <param name="interval" value="20"/>
+      <param name="energy-level" value="100"/>
+      <param name="comfort-noise" value="true"/>
+
+      <param name="muted-sound" value="conference/conf-muted.wav"/>
+      <param name="unmuted-sound" value="conference/conf-unmuted.wav"/>
+      <param name="alone-sound" value="conference/conf-alone.wav"/>
+      <param name="moh-sound" value="$${hold_music}"/>
+      <param name="enter-sound" value="tone_stream://%(200,0,500,600,700)"/>
+      <param name="exit-sound" value="tone_stream://%(500,0,300,200,100,50,25)"/>
+      <param name="kicked-sound" value="conference/conf-kicked.wav"/>
+      <param name="locked-sound" value="conference/conf-locked.wav"/>
+      <param name="is-locked-sound" value="conference/conf-is-locked.wav"/>
+      <param name="is-unlocked-sound" value="conference/conf-is-unlocked.wav"/>
+      <param name="pin-sound" value="conference/conf-pin.wav"/>
+      <param name="bad-pin-sound" value="conference/conf-bad-pin.wav"/>
+      <param name="caller-id-name" value="$${outbound_caller_name}"/>
+      <param name="caller-id-number" value="$${outbound_caller_id}"/>
+
+      <!-- video-floor-only is deliberately ABSENT. It is the flag that says
+	   "send the floor holder and nobody else", which is the bug.
+
+	   minimize-video-encoding        one encode of the canvas shared by every
+					  member, instead of a personal canvas each.
+					  This is what keeps a three-way call on a
+					  laptop affordable.
+	   video-required-for-canvas      an audio-only member does not take a tile
+					  and leave a black square in the grid.
+	   video-mute-exit-canvas         a member who mutes their camera leaves the
+					  grid, and it reflows, rather than holding
+					  their last frame.
+	   manage-inbound-video-bitrate   FreeSWITCH tells senders what it can take,
+					  so one handset on a poor link does not
+					  drag the canvas down.
+	   rfc-4579                       conference event package, for participant
+					  lists. -->
+      <param name="conference-flags"
+	     value="minimize-video-encoding|video-required-for-canvas|video-mute-exit-canvas|manage-inbound-video-bitrate|rfc-4579"/>
+
+      <param name="video-mode" value="mux"/>
+      <param name="video-layout-name" value="group:wa-portrait"/>
+
+      <!-- PORTRAIT, because the clients are handsets held upright. The stock
+	   1280x720 canvas arrives on a phone as a letterboxed strip.
+
+	   720x1280 rather than the TC15's exact 720x1600: both axes are
+	   16-aligned, it is a standard encode size, and the app letterboxes
+	   whatever it is sent without distorting it (VideoLayout.fit). Set this
+	   to 720x1600 if you want the picture edge-to-edge on a TC15 in
+	   particular and are happy to spend 25% more pixels per frame on it. -->
+      <param name="video-canvas-size" value="720x1280"/>
+      <param name="video-canvas-bgcolor" value="#000000"/>
+      <param name="video-layout-bgcolor" value="#000000"/>
+
+      <!-- 15 fps and 1 Mb: this composes and encodes on a laptop that is also
+	   running the build. 30 fps buys very little on a 360px-wide tile. -->
+      <param name="video-fps" value="15"/>
+      <param name="video-codec-bandwidth" value="1mb"/>
+      <param name="video-auto-floor-msec" value="1000"/>
+    </profile>

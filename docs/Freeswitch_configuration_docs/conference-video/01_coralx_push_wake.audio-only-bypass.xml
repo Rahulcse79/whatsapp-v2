@@ -1,0 +1,112 @@
+<include>
+
+  <!--
+    Coral X push wake (RFC 8599 / ADR-004) - github.com/Rahulcse79/coralx-push-sender.
+
+    Matches ANY number that is a user in this server's directory, so it needs no editing
+    per deployment: no extension range, no IP address. $${domain} is the server's own SIP
+    domain from vars.xml, and user_exists is answered by the directory.
+
+    Media is BYPASSED for every handset-to-handset AUDIO call (bypass_media=true): the SDP
+    crosses FreeSWITCH untouched and the two handsets negotiate the codec between
+    themselves, with RTP flowing phone-to-phone. This is what lets two Coral X handsets
+    talk Lyra (ADR-008) - a codec FreeSWITCH does not know and would otherwise strip from
+    the offer, which ends the call as 488 INCOMPATIBLE_DESTINATION. The price is that
+    FreeSWITCH is not in the media path, so handsets on two different NATs cannot reach
+    each other; on such a deployment use proxy_media=true instead (RTP relayed, still not
+    decoded, so Lyra still passes). Calls to the test applications (9196-9199, 3000) are
+    not affected - they are separate extensions and need FreeSWITCH's own media.
+
+    A call that OFFERS VIDEO does not bypass - see the condition on ${switch_r_sdp}
+    below for why, which is that such a call is one merge away from conference 3000 and
+    a bypassed leg arrives there deaf.
+
+    Why one bridge is not enough: a Coral X handset that is asleep, dozing or swiped
+    from Recents still has a registration row here, but nothing behind it - the INVITE
+    to that contact gets no 100 Trying and dies as ORIGINATOR_CANCEL after call_timeout.
+    "Registered" is not "reachable". So:
+
+      1. announce the call (the push sender hears this event and sends the FCM wake
+         immediately, in parallel with step 2);
+      2. try the contact we have, but give it only progress_timeout seconds to say
+         100/180 - an app that is awake answers well inside that, a dead socket never
+         will - and only the "unreachable" causes fall through (a 486 from a live
+         callee still reaches the caller as a 486);
+      3. ring the caller and park. The sender un-parks the call into coralx-resume the
+         moment the device's fresh REGISTER lands, or into coralx-timeout when it does
+         not (12 s). sched_transfer is the belt and braces for a sender that is down:
+         15 s later the call goes to coralx-resume on its own, which is exactly the
+         single direct bridge this rule replaces.
+
+    Put per-user special routing (call forwarding, IVRs) in a file that sorts BEFORE
+    this one, or in the body of default.xml; the first matching extension wins. Note
+    that an extension in the body of default.xml matches BEFORE anything in this
+    directory, and that a nested <condition> on a variable that is only set at execute
+    time (e.g. ${cfwd_to}) is evaluated at parse time, where it is empty - the actions
+    are queued anyway and the extension does not stop the search, so the next matching
+    rules run too. That is how the April agent_1003/agent_1004 rules used to swallow
+    calls to 1003 and 1004 before this one; they were removed on 2026-09-13.
+  -->
+  <extension name="coralx-push-wake">
+    <condition field="${user_exists(id ${destination_number} $${domain})}" expression="^true$">
+      <action application="set" data="hangup_after_bridge=true"/>
+      <action application="set" data="call_timeout=30"/>
+    </condition>
+
+    <!-- Media bypass is for AUDIO calls, and only for them.
+
+         Bypassing is what lets two handsets agree on Lyra (ADR-008) without FreeSWITCH
+         stripping a codec it does not have. The price is that FreeSWITCH then holds a
+         leg whose negotiated audio codec is one it cannot encode - and that price only
+         comes due when the leg has to be moved into the conference bridge.
+
+         It does come due. Merging a VIDEO call REFERs the leg into 3000, FreeSWITCH
+         transfers the existing channel and has to take media back for the mixer. The
+         only codec on that dialog is Lyra, so it offers `m=audio 0 RTP/AVP 19` - the
+         stream, killed - and video alone. The member joins the canvas seen and seeing,
+         on a placeholder L16/0 codec pointed at 127.0.0.1:9999, deaf and mute. Every
+         transferred member, every time (measured 2026-09-16, and reproduced with
+         scripted UAs). Nothing in the 3000 extension can repair it: that re-INVITE is
+         built during the transfer, before the destination extension runs.
+
+         A video call is exactly the call that gets merged - MergeTopology sends any leg
+         with video to the bridge and keeps audio-only conferences on the device - so
+         staying in the media path for video costs nothing that was ever available. The
+         audio codec becomes PCMU, which is what the bridge mixes at anyway, and VP8
+         passes through either way because FreeSWITCH has it in core.
+
+         An audio call still bypasses, still gets Lyra, and still conferences on the
+         handset with no server in the path. Nothing about it changes.
+
+         Note for a Lyra-ONLY account: a video call from one now gets 488 rather than
+         connecting, because FreeSWITCH negotiates and has no Lyra. Keep PCMU in the
+         account's codec list, which CodecPreferences.DEFAULT does. -->
+    <condition field="${switch_r_sdp}" expression="m=video" break="never">
+      <anti-action application="set" data="bypass_media=true"/>
+      <action application="log" data="INFO push_wake: video offer; keeping FreeSWITCH in the media path so this call can be merged into 3000"/>
+    </condition>
+
+    <condition field="${user_exists(id ${destination_number} $${domain})}" expression="^true$">
+
+      <!-- 1. Announce. Fired before the first attempt so the wake-up is already in
+              flight while the direct INVITE is finding out the socket is dead.
+              Event-Name=CUSTOM is required: without it the event app fires a
+              CHANNEL_APPLICATION event, which an ESL `event CUSTOM coralx::push_wake`
+              subscription never sees. -->
+      <action application="event" data="Event-Name=CUSTOM,Event-Subclass=coralx::push_wake,Push-Ext=${destination_number},Push-Caller=${caller_id_number}"/>
+
+      <!-- 2. The direct attempt: 3 s for a provisional response, and fall through only
+              on the causes that mean "nobody is there", never on a rejection. -->
+      <action application="set" data="progress_timeout=3"/>
+      <action application="set" data="continue_on_fail=PROGRESS_TIMEOUT,USER_NOT_REGISTERED,NO_ROUTE_DESTINATION,NETWORK_OUT_OF_ORDER,RECOVERY_ON_TIMER_EXPIRE,NORMAL_TEMPORARY_FAILURE,ORIGINATOR_CANCEL"/>
+      <action application="bridge" data="user/${destination_number}@$${domain}"/>
+
+      <!-- 3. Ringback for the caller, then park until the sender moves us on. -->
+      <action application="log" data="INFO push_wake: no progress from ${destination_number} (${originate_disposition}); parking for the push sender"/>
+      <action application="ring_ready"/>
+      <action application="sched_transfer" data="+15 ${destination_number} XML coralx-resume"/>
+      <action application="park"/>
+    </condition>
+  </extension>
+
+</include>

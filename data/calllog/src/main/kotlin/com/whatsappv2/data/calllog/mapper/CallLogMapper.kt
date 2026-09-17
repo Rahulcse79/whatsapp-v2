@@ -25,6 +25,7 @@ internal fun CallLogEntry.toEntity(): CallLogEntity = CallLogEntity(
     id = id.value,
     accountId = accountId.value,
     remoteUri = remote.render(),
+    accountDomain = accountDomain,
     remoteDisplayName = remoteDisplayName,
     contactName = contactName,
     direction = direction.name,
@@ -34,6 +35,7 @@ internal fun CallLogEntry.toEntity(): CallLogEntity = CallLogEntity(
     reason = reason.name,
     hasAudio = media.hasAudio,
     hasVideo = media.hasVideo,
+    isConference = isConference,
 )
 
 /** The stored row as a domain entry, or null if it cannot be read as one. */
@@ -49,6 +51,7 @@ internal fun CallLogEntity.toDomain(): CallLogEntry? {
         id = CallLogId(id),
         accountId = AccountId(accountId),
         remote = remote,
+        accountDomain = accountDomain,
         remoteDisplayName = remoteDisplayName,
         contactName = contactName,
         direction = direction,
@@ -57,6 +60,7 @@ internal fun CallLogEntity.toDomain(): CallLogEntry? {
         endedAtEpochMillis = endedAtEpochMillis,
         reason = reason,
         media = media,
+        isConference = isConference,
     )
 }
 

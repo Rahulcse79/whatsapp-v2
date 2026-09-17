@@ -404,6 +404,47 @@ interface SipConferenceController {
     suspend fun mixCalls(callIds: Set<CallId>): Outcome<Set<CallId>, SipError>
 
     /**
+     * Moves [callIds] into the bridge at [room], so every participant sees every other
+     * (ADR-003).
+     *
+     * The video answer to [mixCalls], and a different topology rather than a flag on the
+     * same one. [mixCalls] builds a star: this handset holds N-1 legs and mixes them, and
+     * every other participant holds exactly one leg — to here. That is sufficient for
+     * audio, because mixing audio is cheap enough to do on a phone. It cannot be made
+     * sufficient for video at any quality of implementation: a peer with one leg can only
+     * ever receive the picture on that leg, so for two peers to see *each other* this
+     * device would have to decode both cameras and re-encode a composite for each of
+     * them. ADR-009 measured that at ~540 % of a core for four participants against a
+     * 400 % budget, on the hardware this ships to.
+     *
+     * So the picture is composed where composing it is affordable. Each leg is sent a
+     * REFER to [room] and follows it; this device dials [room] itself; FreeSWITCH's
+     * `mod_conference` decodes every member onto one canvas and sends each member that
+     * one stream. The handset is back to paying for a single video stream, which is what
+     * ADR-009 measured as affordable, and the arrangement inside the picture is the
+     * bridge's — which is the trade ADR-003 made knowingly.
+     *
+     * ## What the caller gets back, and what it does not
+     *
+     * The returned [CallId] is **this device's** leg into [room] — the call the screen
+     * should follow, because the legs that were merged are on their way out. They are not
+     * hung up here: a transferee's leg ends when its own transfer completes, and killing
+     * it early would cut the REFER off before it was followed.
+     *
+     * Success means every REFER was accepted and this device's leg was placed. It does
+     * **not** mean every participant arrived — a handset that accepts a REFER and then
+     * fails to reach the bridge leaves the conference smaller than it was asked for, and
+     * the roster is where that becomes visible.
+     *
+     * @param callIds the established calls to move. Fewer than two is not a conference.
+     * @param room the bridge's address, e.g. `sip:3000@example.com`.
+     */
+    suspend fun mergeIntoConference(
+        callIds: Set<CallId>,
+        room: SipUri,
+    ): Outcome<CallId, SipError>
+
+    /**
      * The calls currently mixed on this device by [mixCalls], or empty when there is no
      * local conference.
      *
@@ -427,5 +468,21 @@ interface SipConferenceController {
 
         /** Fewer than two mixed calls is a call, not a conference; [mixedCalls] is empty below it. */
         const val MINIMUM_MIXED = 2
+
+        /**
+         * The most participants a **video** conference carries, counting this handset.
+         *
+         * Four, and it is a product decision rather than a measurement: the bridge composes
+         * what it is given — the `wa-portrait` layout group runs to nine tiles — and the
+         * handset pays for one stream however many people are in the picture. What four
+         * protects is the picture itself. On a 9:20 screen a 2x2 of portrait tiles is four
+         * faces you can recognise; the six- and nine-way layouts are the same canvas cut
+         * into stamps.
+         *
+         * Enforced on the merge, which is the only place this app decides a conference's
+         * size. Somebody who dials the room directly is the bridge's business, and the
+         * bridge will compose them.
+         */
+        const val MAX_VIDEO_CONFERENCE = 4
     }
 }

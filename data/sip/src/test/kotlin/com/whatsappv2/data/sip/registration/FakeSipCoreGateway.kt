@@ -13,6 +13,7 @@ import com.whatsappv2.data.sip.call.StackConferenceEvent
 import com.whatsappv2.data.sip.call.StackParticipant
 import com.whatsappv2.data.sip.call.StackTransferEvent
 import com.whatsappv2.domain.codec.CodecAudit
+import com.whatsappv2.domain.engine.VideoSizes
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -300,6 +301,11 @@ internal class FakeSipCoreGateway :
     override fun setCaptureRotation(degrees: Int) {
         captureRotations += degrees
     }
+
+    /** Settable, so a test can drive the screen through a resolution change. */
+    val videoSizeFlow: MutableStateFlow<VideoSizes> = MutableStateFlow(VideoSizes.UNKNOWN)
+
+    override val videoSizes: StateFlow<VideoSizes> = videoSizeFlow
 
     override fun transferCall(callKey: String, destination: String) {
         blindTransfers += callKey to destination

@@ -223,7 +223,11 @@ class HistoryViewModel @Inject constructor(
         val downgraded = media.hasVideo && !camera.isCameraUsable()
         viewModelScope.launch {
             val result = placeCall(
-                input = entry.remote.render(),
+                // The extension when the far end was on this account's server, so it is
+                // completed against the server's address *now* rather than the one in the
+                // row — which is the address the server had then, and may not have any
+                // more. The full address only for a far end on some other domain.
+                input = entry.redialTarget(),
                 accountOverride = entry.accountId,
                 media = media,
             )

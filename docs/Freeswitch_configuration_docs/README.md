@@ -74,6 +74,7 @@ flowchart LR
 | [07-operations-cheatsheet.md](07-operations-cheatsheet.md) | day-to-day: `fs_cli` commands, verifying a registration, tracing SIP, the failures seen so far and their fixes |
 | [08-changelog.md](08-changelog.md) | you need to know what differs from a vanilla install, when it changed, and where the backup is |
 | [09-push-sender-how-it-works.md](09-push-sender-how-it-works.md) | you deploy the push sender on a new server: how it works in plain words, where every piece lives, why nothing is hard-coded, the four things you set per deployment |
+| [conference-video/](conference-video/README.md) | a video conference shows one face instead of everybody, or you are rebuilding the server and need room 3000's video settings back |
 
 ## Conventions in these pages
 

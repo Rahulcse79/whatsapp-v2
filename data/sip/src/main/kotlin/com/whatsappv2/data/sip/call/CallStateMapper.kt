@@ -70,6 +70,11 @@ internal object CallStateMapper {
         // is no prior state to move out of.
         StackCallState.INCOMING_RECEIVED -> null
 
+        // Nor is this one. The engine creates the call in Outgoing.Calling the moment it
+        // learns the stack has followed a REFER; the states that follow — ringing,
+        // answered — are the ordinary outgoing progression and carry the transitions.
+        StackCallState.OUTGOING_TRANSFERRED -> null
+
         StackCallState.OUTGOING_RINGING -> CallEvent.RemoteRinging
         StackCallState.OUTGOING_EARLY_MEDIA -> CallEvent.RemoteEarlyMedia
 
@@ -214,6 +219,17 @@ internal object CallStateMapper {
 
     /** True when this event announces a call nothing has seen before. */
     fun isNewIncoming(state: StackCallState): Boolean = state == StackCallState.INCOMING_RECEIVED
+
+    /**
+     * True when this event announces an **outgoing** call nothing has seen before.
+     *
+     * Exactly one state does: [StackCallState.OUTGOING_TRANSFERRED], the call pjsua places
+     * by itself after accepting a REFER. Every other outgoing call is created by
+     * `placeCall`, which mints the key before the INVITE and therefore never arrives here
+     * unknown.
+     */
+    fun isNewOutgoing(state: StackCallState): Boolean =
+        state == StackCallState.OUTGOING_TRANSFERRED
 
     /** True when the call is over and the engine should stop tracking it. */
     fun isTerminal(state: StackCallState): Boolean =

@@ -2,14 +2,20 @@ package com.whatsappv2.feature.history
 
 import androidx.paging.PagingData
 import com.whatsappv2.core.common.result.getOrNull
+import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.CameraAvailability
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.model.CallLogId
+import com.whatsappv2.domain.model.CodecPreferences
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
+import com.whatsappv2.domain.model.NatPolicy
+import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SipUri
+import com.whatsappv2.domain.model.SrtpPolicy
+import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.repository.CallDirectionFilter
 import com.whatsappv2.domain.repository.CallLogFilter
 import com.whatsappv2.domain.repository.CallLogQuery
@@ -209,6 +215,38 @@ class HistoryViewModelTest {
     // ------------------------------------------------------------- refreshing
 
     @Test
+    fun `a call back dials the extension on the server's address now, not the one in the row`() = runTest {
+        // The server moved between the call and the call back — a laptop-hosted PBX on a
+        // new Wi-Fi network, 2026-09-14. The row's address is the old one; the account's
+        // domain is the new one; the extension is the same person on both.
+        accounts.given(work(domain = "192.168.0.101"))
+        engine.givenRegistered(work(domain = "192.168.0.101"))
+        val entry = repository.record(
+            entry(remote = "sip:1003@192.168.2.196", accountDomain = "192.168.2.196"),
+        )
+
+        viewModel().onCallBack(entry)
+        advanceUntilIdle()
+
+        assertEquals("sip:1003@192.168.0.101", lastPlacedCall())
+    }
+
+    @Test
+    fun `a call back to another domain dials that domain`() = runTest {
+        // Not the account's server, so not the account's business to rewrite.
+        accounts.given(work(domain = "192.168.0.101"))
+        engine.givenRegistered(work(domain = "192.168.0.101"))
+        val entry = repository.record(
+            entry(remote = "sip:carol@other.example.com", accountDomain = "192.168.0.101"),
+        )
+
+        viewModel().onCallBack(entry)
+        advanceUntilIdle()
+
+        assertEquals("sip:carol@other.example.com", lastPlacedCall())
+    }
+
+    @Test
     fun `a call recorded while the screen is open reaches the list`() = runTest {
         // The regression test for Task 71, and it fails on the parent commit.
         //
@@ -253,10 +291,18 @@ class HistoryViewModelTest {
         collector.cancel()
     }
 
-    private fun entry() = CallLogEntry(
+    /** What the engine was last asked to dial, rendered — the URI after completion. */
+    private fun lastPlacedCall(): String =
+        engine.invocations.last { it.operation == FakeSipEngine.Operation.PLACE_CALL }.detail
+
+    private fun entry(
+        remote: String = REMOTE.render(),
+        accountDomain: String? = null,
+    ) = CallLogEntry(
         id = CallLogId.UNSAVED,
         accountId = AccountId("acct-1"),
-        remote = REMOTE,
+        remote = checkNotNull(SipUri.parse(remote).getOrNull()) { "bad fixture: $remote" },
+        accountDomain = accountDomain,
         remoteDisplayName = null,
         contactName = null,
         direction = CallDirection.OUTGOING,
@@ -270,5 +316,28 @@ class HistoryViewModelTest {
     private companion object {
         val REMOTE: SipUri = SipUri.parse("sip:bob@sip.example.com").getOrNull()!!
         const val STARTED_AT = 1_700_000_000_000L
+
+        /** The account every fixture entry is on, with whatever domain it has *now*. */
+        fun work(domain: String) = SipAccount(
+            id = AccountId("acct-1"),
+            label = "Work",
+            username = "1002",
+            extension = null,
+            authUsername = null,
+            password = Secret("hunter22"),
+            displayName = null,
+            domain = domain,
+            registrar = null,
+            outboundProxy = null,
+            port = null,
+            transport = Transport.UDP,
+            registrationExpirySeconds = 3_600,
+            stunServer = null,
+            turn = null,
+            natPolicy = NatPolicy.DEFAULT,
+            srtpPolicy = SrtpPolicy.DISABLED,
+            codecs = CodecPreferences.DEFAULT,
+            isDefault = true,
+        )
     }
 }
