@@ -93,5 +93,9 @@ fun CallSnapshot.toLogEntry(endedAtEpochMillis: Long): CallLogEntry? {
         endedAtEpochMillis = endedAtEpochMillis,
         reason = terminal.reason,
         media = media,
+        // Set by `joinConference` for a dial-in room and by `mixCalls` for one this
+        // device mixed; the snapshot carries it to the ending either way, which is why
+        // nothing here has to know which kind it was.
+        isConference = isConference,
     )
 }

@@ -157,6 +157,42 @@ class CallLogRecorderTest {
     }
 
     @Test
+    fun `a call that was in a conference is recorded as one, for both kinds of conference`() =
+        runTest {
+            // The history screen could not tell a conference from an ordinary call. A
+            // dial-in room is one call and was already one row; a conference this device
+            // mixed is several, and they arrived as unrelated calls to unrelated people
+            // (TC15, 2026-09-15). Both kinds set the flag on the snapshot, which is why
+            // the recorder needs to know nothing about either.
+            val first = outgoingCall()
+            engine.simulateRemoteAnswer(first)
+            val second = engine.placeCall(ACCOUNT, OTHER, MediaProfile.AUDIO).getOrNull()!!
+            engine.simulateRemoteAnswer(second)
+            engine.mixCalls(setOf(first, second))
+            runCurrent()
+
+            clock.set(ENDED_AT)
+            engine.simulateRemoteHangup(first)
+            engine.simulateRemoteHangup(second)
+            runCurrent()
+
+            assertEquals(2, log.recorded.size, "one row per leg, each with its own truth")
+            assertTrue(log.recorded.all { it.isConference }, "and both marked as a conference")
+        }
+
+    @Test
+    fun `an ordinary call is not recorded as a conference`() = runTest {
+        // The marker means something only if it is absent from the calls that were not.
+        val callId = outgoingCall()
+        engine.simulateRemoteAnswer(callId)
+        clock.set(ENDED_AT)
+        engine.simulateRemoteHangup(callId)
+        runCurrent()
+
+        assertFalse(log.recorded.single().isConference)
+    }
+
+    @Test
     fun `the account's domain at the time is recorded with the call`() = runTest {
         // What lets a call back tell "the server's address then" from "the far end's own
         // domain" once the server has moved (CallLogEntry.redialTarget). Read at the
@@ -202,6 +238,9 @@ class CallLogRecorderTest {
     private companion object {
         val ACCOUNT = AccountId("acct-1")
         val REMOTE: SipUri = SipUri.parse("sip:bob@sip.example.com").getOrNull()!!
+
+        /** A second party, so a conference has two legs to write two rows for. */
+        val OTHER: SipUri = SipUri.parse("sip:1003@sip.example.com").getOrNull()!!
 
         const val STARTED_AT = 1_700_000_000_000L
         const val ANSWERED_AT = STARTED_AT + 60_000L

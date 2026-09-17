@@ -34,7 +34,7 @@ abstract class CallLogDatabase : RoomDatabase() {
     abstract fun callLogDao(): CallLogDao
 
     companion object {
-        const val VERSION = 2
+        const val VERSION = 3
         const val NAME = "call-log.db"
 
         /**
@@ -58,7 +58,26 @@ abstract class CallLogDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Records that a call was part of a conference, of either kind.
+         *
+         * A dial-in room is one call and was already one row; a conference this device
+         * mixed is several calls, and until this version the history screen showed them
+         * as unrelated calls to unrelated people — a merged three-way read as two
+         * separate calls with no sign they had ever been the same conversation.
+         *
+         * `NOT NULL DEFAULT 0` rather than nullable: the column has a true answer for
+         * every future row, and the existing rows are being told "not a conference",
+         * which is what almost all of them were. A nullable column would offer a third
+         * state that nothing can ever distinguish from the second.
+         */
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE call_log ADD COLUMN is_conference INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         /** Every migration, in order. */
-        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2)
+        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
     }
 }

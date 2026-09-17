@@ -79,12 +79,37 @@ class CallLogMigrationTest {
     }
 
     @Test
-    fun `the migration is the one the builder installs`() {
+    fun `a call logged before version 3 is read as not a conference, and later rows can say`() {
+        // The column has a true answer for every row written from now on and no answer at
+        // all for the rows that already exist. NOT NULL DEFAULT 0 tells those "not a
+        // conference", which is what almost all of them were — and, crucially, is a value
+        // the domain model can read, unlike a null that nothing could tell from a false.
+        writeVersionOne { db ->
+            db.insert("call_log", CONFLICT_FAIL, callRow(remote = "sip:1003@192.168.0.101"))
+        }
+
+        val migrated = openWithMigrations()
+        migrated.openHelper.writableDatabase.insert(
+            "call_log",
+            CONFLICT_FAIL,
+            callRow(remote = "sip:1002@192.168.0.101").apply { put("is_conference", 1) },
+        )
+
+        assertEquals(0, migrated.intOf("SELECT is_conference FROM call_log WHERE id = 1"))
+        assertEquals(1, migrated.intOf("SELECT is_conference FROM call_log WHERE id = 2"))
+    }
+
+    @Test
+    fun `the migrations are the ones the builder installs`() {
         // CallLogModule adds CallLogDatabase.MIGRATIONS and nothing else, so a migration
         // that exists but is not in the array would pass the tests above and still refuse
         // to open — there is no destructive fallback — every history on every device.
         assertTrue(CallLogDatabase.MIGRATIONS.any { it.startVersion == 1 && it.endVersion == 2 })
-        assertEquals(2, CallLogDatabase.VERSION)
+        assertTrue(CallLogDatabase.MIGRATIONS.any { it.startVersion == 2 && it.endVersion == 3 })
+        assertEquals(3, CallLogDatabase.VERSION)
+        // A chain with a gap opens nothing: Room walks 1 -> 2 -> 3 and refuses the file if
+        // any step is missing, so the count matters as much as the endpoints.
+        assertEquals(CallLogDatabase.VERSION - 1, CallLogDatabase.MIGRATIONS.size)
     }
 
     /**

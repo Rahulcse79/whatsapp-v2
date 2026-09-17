@@ -56,7 +56,12 @@ class HistoryScreenTest {
     private val zone: ZoneId = ZoneId.of("Asia/Kolkata")
     private val remote = requireNotNull(SipUri.parse("sip:9196@sip.example.com").getOrNull())
 
-    private fun entry(id: Long, media: MediaProfile, answered: Boolean = true) = CallLogEntry(
+    private fun entry(
+        id: Long,
+        media: MediaProfile,
+        answered: Boolean = true,
+        conference: Boolean = false,
+    ) = CallLogEntry(
         id = CallLogId(id),
         accountId = AccountId("acct-1"),
         remote = remote,
@@ -69,15 +74,18 @@ class HistoryScreenTest {
         endedAtEpochMillis = STARTED_AT + id + 6_000,
         reason = HangupReason.REMOTE_HANGUP,
         media = media,
+        isConference = conference,
     )
 
     private val voice = entry(1, MediaProfile.AUDIO)
     private val video = entry(2, MediaProfile.AUDIO_VIDEO)
     private val missedVideo = entry(3, MediaProfile.AUDIO_VIDEO, answered = false)
+    private val conference = entry(4, MediaProfile.AUDIO_VIDEO, conference = true)
 
     private fun setContent(
         state: HistoryUiState = HistoryUiState(),
-        rows: List<HistoryRow> = listOf(voice, video, missedVideo).map { HistoryRow.Call(it, "Echo") },
+        rows: List<HistoryRow> =
+            listOf(voice, video, missedVideo, conference).map { HistoryRow.Call(it, "Echo") },
         actions: HistoryActions = HistoryActions(),
     ) {
         compose.setContent {
@@ -106,6 +114,39 @@ class HistoryScreenTest {
             .assertContentDescriptionEquals("Video call")
         compose.onNodeWithTag(mediaTag(missedVideo), useUnmergedTree = true)
             .assertContentDescriptionEquals("Video call")
+    }
+
+    @Test
+    fun `a conference is marked as one, in the glyph and in words`() {
+        // A conference this device mixed writes one row per leg, so a merged three-way
+        // arrived in history as two unrelated calls to two people with nothing joining
+        // them up (TC15, 2026-09-15). The group glyph replaces the voice/video one —
+        // "was this the conference" is the question the list could not answer at all,
+        // while voice-versus-video is still in the label and in the swipe actions.
+        setContent()
+
+        compose.onNodeWithTag(mediaTag(conference), useUnmergedTree = true)
+            .assertIsDisplayed()
+            .assertContentDescriptionEquals("Video conference")
+        // And in text, for anyone who does not read a group icon as a word.
+        compose.onNode(
+            hasText("Conference", substring = true) and hasAnyAncestor(hasTestTag(entryTag(conference))),
+            useUnmergedTree = true,
+        ).assertExists()
+    }
+
+    @Test
+    fun `an ordinary call is not marked as a conference`() {
+        // The other half of the claim: the marker means something only if it is absent
+        // from the rows that were not conferences.
+        setContent()
+
+        compose.onNodeWithTag(mediaTag(video), useUnmergedTree = true)
+            .assertContentDescriptionEquals("Video call")
+        compose.onNode(
+            hasText("Conference", substring = true) and hasAnyAncestor(hasTestTag(entryTag(video))),
+            useUnmergedTree = true,
+        ).assertDoesNotExist()
     }
 
     @Test

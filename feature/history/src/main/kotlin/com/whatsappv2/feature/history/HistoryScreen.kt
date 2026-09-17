@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Dialpad
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
@@ -746,14 +747,28 @@ private fun CallRowContent(row: HistoryRow.Call, actions: HistoryActions, zone: 
 }
 
 /**
- * Voice or video, as the row's leading mark.
+ * What kind of call it was, as the row's leading mark.
  *
  * The avatar's exact footprint — the same circle, the same container colour, the glyph
  * at half the diameter as `Avatar` draws its own placeholder — so the text column starts
  * where it always did and a row of calls keeps its rhythm.
+ *
+ * ## A conference takes the group glyph, and it outranks voice/video
+ *
+ * There is one mark and three things it could say, so they are ranked by what somebody
+ * scanning the list is actually looking for. "Was this the conference?" is the question
+ * the list could not answer at all until now: a conference this device mixed writes one
+ * row per leg (see [CallLogEntry.isConference]), so a three-way call appeared as two
+ * unrelated calls to two people, and nothing on the screen connected them. Voice versus
+ * video, by contrast, is also in the subtitle's reach and in the swipe actions.
+ *
+ * The media is not lost — it moves into the label, so "Video conference" and "Voice
+ * conference" are still distinguishable to a screen reader, which is the reader that
+ * cannot see the glyph in the first place.
  */
 @Composable
 private fun MediaBadge(entry: CallLogEntry) {
+    val media = if (entry.media.hasVideo) "Video" else "Voice"
     Box(
         modifier = Modifier
             .size(AppTheme.sizing.avatarSmall)
@@ -762,8 +777,12 @@ private fun MediaBadge(entry: CallLogEntry) {
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            imageVector = if (entry.media.hasVideo) Icons.Filled.Videocam else Icons.Filled.Call,
-            contentDescription = if (entry.media.hasVideo) "Video call" else "Voice call",
+            imageVector = when {
+                entry.isConference -> Icons.Filled.Groups
+                entry.media.hasVideo -> Icons.Filled.Videocam
+                else -> Icons.Filled.Call
+            },
+            contentDescription = if (entry.isConference) "$media conference" else "$media call",
             tint = MaterialTheme.colorScheme.onSecondaryContainer,
             modifier = Modifier
                 .size(AppTheme.sizing.avatarSmall / 2)
@@ -939,7 +958,11 @@ private fun CallLogEntry.directionDescription() = when {
 
 private fun CallLogEntry.subtitle(zone: ZoneId): String {
     val at = Instant.ofEpochMilli(startedAtEpochMillis).atZone(zone).format(TIME_FORMAT)
-    return if (wasAnswered) "$at · ${formatDuration(durationSeconds)}" else at
+    val stamp = if (wasAnswered) "$at · ${formatDuration(durationSeconds)}" else at
+    // In words as well as in the glyph. A row titled "1002" that was one leg of a merged
+    // three-way is indistinguishable from an ordinary call to 1002 otherwise, and the
+    // glyph alone asks the reader to know what a group icon means here.
+    return if (isConference) "Conference · $stamp" else stamp
 }
 
 /** `m:ss`, or `h:mm:ss` past the hour. A 75-minute call is not 75:00. */

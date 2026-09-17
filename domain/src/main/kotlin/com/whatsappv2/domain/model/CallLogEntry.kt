@@ -66,6 +66,25 @@ data class CallLogEntry(
 
     /** What was negotiated. Audio for a call that never connected. */
     val media: MediaProfile,
+
+    /**
+     * True when this call was part of a conference — either kind (ADR-003, ADR-009).
+     *
+     * ## One row per leg, marked, rather than one row per conference
+     *
+     * A dial-in conference is a single call to the bridge, so it is already one row and
+     * this only labels it. A conference **this device** mixed is N calls, each dialled at
+     * a different moment and each ending at its own, and collapsing them into one row
+     * would have to invent a start, an end and a duration that no leg actually had. So
+     * every leg keeps its own row and its own truth, and this says they belonged
+     * together — which is the thing the history screen could not show at all before: a
+     * merged call read as two unrelated calls to two people.
+     *
+     * Never cleared once set. A leg that left the conference before the others still
+     * *was* in one, and a log is a record of what happened rather than of what is still
+     * true.
+     */
+    val isConference: Boolean = false,
 ) {
 
     /** True when media flowed at all — the distinction "missed" is drawn from. */

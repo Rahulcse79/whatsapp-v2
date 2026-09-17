@@ -92,4 +92,12 @@ data class CallLogEntity(
 
     @ColumnInfo(name = "has_video")
     val hasVideo: Boolean,
+
+    /**
+     * Whether the call was part of a conference (version 3). False on every row versions
+     * 1 and 2 wrote — the fact was never recorded and cannot be recovered, and false is
+     * the honest reading of "we do not know", because the overwhelming majority were.
+     */
+    @ColumnInfo(name = "is_conference", defaultValue = "0")
+    val isConference: Boolean = false,
 )
