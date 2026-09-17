@@ -124,8 +124,8 @@ object VideoLayout {
      * spare either side — is the right thing to give up.
      *
      * [minimised] ignores [scale] rather than clamping it: minimising jumps to the smallest
-     * size — half the largest, the same floor the grip stops at — and the size the user had
-     * chosen is still there when they restore it.
+     * size — half the largest, the same floor the grip stops at and the size the box opens
+     * at — and the size the user had chosen is still there when they restore it.
      *
      * A fraction of the **shorter** edge rather than a dp constant, so the self-view is the
      * same relative size on a phone and a tablet and does not become a stripe down a
@@ -211,22 +211,6 @@ object VideoLayout {
     private const val THREE_QUARTER_TURN = 270
 
     /**
-     * Three quarters of the short edge, between a floor of half the ceiling and the
-     * ceiling itself.
-     *
-     * The range used to be built the other way round — a small default with a lot of room
-     * to grow — and every pass of that was too small to be worth having on a handset. The
-     * point of a self-view is to check you are in frame, and you cannot do that in a
-     * thumbnail. So the default sits in the upper half of the range, and the floor is
-     * defined from the ceiling rather than chosen on its own — see [PREVIEW_MIN_FRACTION].
-     *
-     * The controls on it are sized from the box rather than from a constant
-     * ([SelfPreview]'s `CONTROL_SHARE`), so this can move without them going out of
-     * proportion in either direction.
-     */
-    private const val PREVIEW_DEFAULT_FRACTION = 0.75f
-
-    /**
      * The largest, likewise.
      *
      * The physical ceiling, and it is worth writing down why it is not larger.
@@ -271,6 +255,21 @@ object VideoLayout {
      * about what "as small as it goes" means.
      */
     private const val PREVIEW_MINIMISED_FRACTION = PREVIEW_MIN_FRACTION
+
+    /**
+     * The size a fresh self-view opens at: the floor. The grip only grows from it.
+     *
+     * The whole range now hangs off one number, [PREVIEW_MAX_FRACTION]: the floor is half
+     * of it, and the default and the minimised size are both the floor (2026-09-17). It
+     * used to sit in the upper half of the range, after several passes in which every
+     * default was too small to check you are in frame — but "too small" was a floor of an
+     * eleventh of the screen, and a floor of half the largest is not a thumbnail.
+     *
+     * The controls on it are sized from the box rather than from a constant
+     * ([SelfPreview]'s `CONTROL_SHARE`), so this can move without them going out of
+     * proportion in either direction.
+     */
+    private const val PREVIEW_DEFAULT_FRACTION = PREVIEW_MIN_FRACTION
 
     /**
      * The tallest the self-view may be, as a share of the available height.
