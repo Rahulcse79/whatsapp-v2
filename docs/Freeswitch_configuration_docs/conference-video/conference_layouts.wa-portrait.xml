@@ -1,0 +1,72 @@
+      <!-- ================================================================= -->
+      <!-- Portrait tiles for the handset app (group "wa-portrait").          -->
+      <!--                                                                    -->
+      <!-- The stock "grid" group is built for a landscape canvas: its "2x1"  -->
+      <!-- puts two images side by side and leaves the top and bottom of the  -->
+      <!-- canvas empty. On a 9:20 phone that is two thin strips in a band    -->
+      <!-- across the middle. These stack instead, so every tile is portrait  -->
+      <!-- and the canvas is filled edge to edge.                             -->
+      <!--                                                                    -->
+      <!-- Coordinates are on a 0-360 grid: x and scale are fractions of the  -->
+      <!-- canvas WIDTH, y and hscale fractions of its HEIGHT. So the same    -->
+      <!-- numbers describe the same arrangement whatever the canvas is.      -->
+      <!--                                                                    -->
+      <!-- zoom="true" on every image is the point of the exercise: without   -->
+      <!-- it a 16:9 camera frame is letterboxed inside a portrait tile and   -->
+      <!-- the grid is mostly black. With it the frame is cropped to fill the -->
+      <!-- tile, which is what WhatsApp does and what the aspect ratio is     -->
+      <!-- being preserved FOR.                                              -->
+      <!-- ================================================================= -->
+      <layout name="wa-1">
+	<image x="0" y="0" scale="360" hscale="360" zoom="true" floor="true"/>
+      </layout>
+      <!-- Two people: one above the other, each half the screen. -->
+      <layout name="wa-2" auto-3d-position="true">
+	<image x="0" y="0"   scale="360" hscale="180" zoom="true"/>
+	<image x="0" y="180" scale="360" hscale="180" zoom="true"/>
+      </layout>
+      <!-- Three: two across the top, the third spanning the bottom. -->
+      <layout name="wa-3" auto-3d-position="true">
+	<image x="0"   y="0"   scale="180" hscale="180" zoom="true"/>
+	<image x="180" y="0"   scale="180" hscale="180" zoom="true"/>
+	<image x="0"   y="180" scale="360" hscale="180" zoom="true"/>
+      </layout>
+      <layout name="wa-4" auto-3d-position="true">
+	<image x="0"   y="0"   scale="180" hscale="180" zoom="true"/>
+	<image x="180" y="0"   scale="180" hscale="180" zoom="true"/>
+	<image x="0"   y="180" scale="180" hscale="180" zoom="true"/>
+	<image x="180" y="180" scale="180" hscale="180" zoom="true"/>
+      </layout>
+      <!-- Six: two columns, three rows. -->
+      <layout name="wa-6" auto-3d-position="true">
+	<image x="0"   y="0"   scale="180" hscale="120" zoom="true"/>
+	<image x="180" y="0"   scale="180" hscale="120" zoom="true"/>
+	<image x="0"   y="120" scale="180" hscale="120" zoom="true"/>
+	<image x="180" y="120" scale="180" hscale="120" zoom="true"/>
+	<image x="0"   y="240" scale="180" hscale="120" zoom="true"/>
+	<image x="180" y="240" scale="180" hscale="120" zoom="true"/>
+      </layout>
+      <!-- Nine: three by three. Past this a face on a handset is a thumbnail,
+	   so the group stops here and mod_conference keeps the last layout. -->
+      <layout name="wa-9" auto-3d-position="true">
+	<image x="0"   y="0"   scale="120" hscale="120" zoom="true"/>
+	<image x="120" y="0"   scale="120" hscale="120" zoom="true"/>
+	<image x="240" y="0"   scale="120" hscale="120" zoom="true"/>
+	<image x="0"   y="120" scale="120" hscale="120" zoom="true"/>
+	<image x="120" y="120" scale="120" hscale="120" zoom="true"/>
+	<image x="240" y="120" scale="120" hscale="120" zoom="true"/>
+	<image x="0"   y="240" scale="120" hscale="120" zoom="true"/>
+	<image x="120" y="240" scale="120" hscale="120" zoom="true"/>
+	<image x="240" y="240" scale="120" hscale="120" zoom="true"/>
+      </layout>
+
+<!-- ...and, inside <groups>: -->
+
+      <group name="wa-portrait">
+	<layout>wa-1</layout>
+	<layout>wa-2</layout>
+	<layout>wa-3</layout>
+	<layout>wa-4</layout>
+	<layout>wa-6</layout>
+	<layout>wa-9</layout>
+      </group>
