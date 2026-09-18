@@ -11,7 +11,7 @@
 #     available at the time of pinning) ---
 agp = "9.4.0"
 kotlin = "2.4.20"
-ksp = "2.3.11"
+ksp = "2.3.12"
 detekt = "1.23.8"
 hilt = "2.60.1"
 desugar = "2.1.5"
