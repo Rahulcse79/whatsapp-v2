@@ -11,7 +11,7 @@
 #     available at the time of pinning) ---
 agp = "9.4.0"
 kotlin = "2.4.20"
-ksp = "2.3.11"
+ksp = "2.3.12"
 detekt = "1.23.8"
 hilt = "2.60.1"
 desugar = "2.1.5"
@@ -39,7 +39,7 @@ androidxTestExtJunit = "1.3.0"
 # 2.14, the newest stable. 3.0 is still alpha, and a memory-leak detector that itself
 # ships in alpha is the wrong tool for finding out whether a leak is yours (Task 65).
 leakcanary = "2.14"
-robolectric = "4.16.1"
+robolectric = "4.17"
 turbine = "1.2.1"
 javaxInject = "1"
 
