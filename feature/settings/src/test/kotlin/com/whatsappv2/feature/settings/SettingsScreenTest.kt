@@ -39,6 +39,7 @@ class SettingsScreenTest {
         onTrace: (Boolean) -> Unit = {},
         onTheme: (ThemeMode) -> Unit = {},
         onRetention: (CallHistoryRetention) -> Unit = {},
+        backgroundAccess: BackgroundAccessLink? = null,
     ) {
         compose.setContent {
             WhatsAppV2Theme {
@@ -52,11 +53,39 @@ class SettingsScreenTest {
                         onSipTraceChange = onTrace,
                         onRetentionChange = onRetention,
                     ),
-                    links = SettingsLinks(onOpenAccounts = {}),
+                    links = SettingsLinks(onOpenAccounts = {}, backgroundAccess = backgroundAccess),
                     onBack = {},
                 )
             }
         }
+    }
+
+    @Test
+    fun `the background-access row says which way the phone is set, and opens the system screen`() {
+        // Restricted is the state that loses calls, and it is said as that rather than as
+        // "battery optimisation", which does not sound like something that stops a phone
+        // ringing. The row cannot switch it - only the system dialog can - so it opens that.
+        var opened = 0
+        setContent(backgroundAccess = BackgroundAccessLink(allowed = false, onOpen = { opened++ }))
+
+        compose.onNodeWithTag(TAG_BACKGROUND_ACCESS).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Restricted", substring = true).assertIsDisplayed()
+        compose.onNodeWithTag(TAG_BACKGROUND_ACCESS).performClick()
+        assertEquals(1, opened)
+    }
+
+    @Test
+    fun `the background-access row shows Allowed once the exemption is granted`() {
+        setContent(backgroundAccess = BackgroundAccessLink(allowed = true, onOpen = {}))
+
+        compose.onNodeWithTag(TAG_BACKGROUND_ACCESS).performScrollTo()
+        compose.onNodeWithText("Allowed", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun `a build with no background-access switch shows no row for it`() {
+        setContent(backgroundAccess = null)
+        compose.onNodeWithTag(TAG_BACKGROUND_ACCESS).assertDoesNotExist()
     }
 
     @Test

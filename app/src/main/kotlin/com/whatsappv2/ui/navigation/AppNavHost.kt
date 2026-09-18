@@ -16,6 +16,7 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import com.whatsappv2.background.LocalBackgroundAccess
 import com.whatsappv2.call.CallActivity
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
@@ -27,6 +28,7 @@ import com.whatsappv2.feature.accounts.status.RegistrationIndicatorRoute
 import com.whatsappv2.feature.dialer.DialerScreen
 import com.whatsappv2.feature.history.HistoryRoute
 import com.whatsappv2.feature.recordings.RecordingsRoute
+import com.whatsappv2.feature.settings.BackgroundAccessLink
 import com.whatsappv2.feature.settings.SettingsScreen
 import com.whatsappv2.ui.chats.ChatsPlaceholderScreen
 
@@ -164,9 +166,22 @@ private fun NavGraphBuilder.callRoutes(
     }
 
     composable(AppDestination.SETTINGS.route) {
+        // The battery-optimisation state is re-read each time the screen composes, so
+        // coming back from the system dialog shows the new answer.
+        val access = LocalBackgroundAccess.current
+        val context = LocalContext.current
         SettingsScreen(
             onOpenAccounts = { navController.navigate(AppDestination.ACCOUNTS.route) },
             onBack = { navController.popBackStack() },
+            backgroundAccess = access?.let {
+                BackgroundAccessLink(
+                    allowed = it.isExempt(),
+                    onOpen = {
+                        runCatching { context.startActivity(it.requestIntent()) }
+                            .onFailure { _ -> runCatching { context.startActivity(it.settingsIntent()) } }
+                    },
+                )
+            },
         )
     }
 
