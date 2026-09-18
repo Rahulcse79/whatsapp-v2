@@ -65,11 +65,59 @@ class ServiceRunPolicyTest {
     }
 
     @Test
-    fun `a failed registration alone does not keep the service alive`() {
-        // Retrying is scheduled elsewhere; holding a foreground service open for an
-        // account that cannot register is exactly the battery drain §6 forbids.
+    fun `a failure only the user can fix does not keep the service alive on its own`() {
+        // A wrong password is not coming back by itself; holding a foreground service
+        // open for it is the battery drain §6 forbids.
         assertEquals(ServiceDecision.Stop, ServiceRunPolicy.decide(registrations(failedFinal), 0))
-        assertEquals(ServiceDecision.Stop, ServiceRunPolicy.decide(registrations(failedRetrying), 0))
+    }
+
+    @Test
+    fun `a failure that clears on its own keeps the service alive, without a wake lock`() {
+        // The hole the old rule had (2026-09-18): Wi-Fi drops, every Registered account
+        // becomes Failed(NETWORK_UNAVAILABLE), the rule said Stop, the service exited and
+        // the platform killed the now-ordinary process within minutes - so when Wi-Fi
+        // returned nothing was alive to re-register. The registration is *recovering*, and
+        // the process must be there when the network is.
+        val offline = registrations(
+            RegistrationState.Failed(RegistrationFailure.NETWORK_UNAVAILABLE, retryScheduled = false),
+        )
+        val decision = assertIs<ServiceDecision.Run>(ServiceRunPolicy.decide(offline, 0))
+        assertEquals(ServiceReason.REGISTRATION, decision.reason)
+        assertIs<ServiceDecision.Run>(ServiceRunPolicy.decide(registrations(failedRetrying), 0))
+
+        // Waiting costs no CPU - the recovery waits on the platform's connectivity callback -
+        // so §6's wake-lock rule stays as narrow as it was.
+        assertFalse(ServiceRunPolicy.justifiesWakeLock(offline, 0))
+        assertFalse(ServiceRunPolicy.justifiesWakeLock(registrations(failedRetrying), 0))
+    }
+
+    @Test
+    fun `a logged-in account keeps the service alive before the registrar has said anything`() {
+        // The first seconds of a process the platform started - after a reboot, a sticky
+        // restart or a task swipe: the account store says somebody is logged in, the stack
+        // has not been told yet. Stopping here is a notification flashed on and off and a
+        // restart that achieved nothing.
+        val nothingYet = emptyMap<AccountId, RegistrationState>()
+        val decision = assertIs<ServiceDecision.Run>(
+            ServiceRunPolicy.decide(nothingYet, activeCalls = 0, wantsRegistration = true),
+        )
+        assertEquals(ServiceReason.REGISTRATION, decision.reason)
+        assertIs<ServiceDecision.Run>(
+            ServiceRunPolicy.decide(registrations(RegistrationState.Unregistered), 0, wantsRegistration = true),
+        )
+
+        // And the user's intent is the only thing that is not a wake-lock reason.
+        assertFalse(ServiceRunPolicy.justifiesWakeLock(nothingYet, 0))
+    }
+
+    @Test
+    fun `logged out everywhere is the one state that stops it`() {
+        // wantsRegistration false: every account logged out, or none ever added.
+        assertEquals(
+            ServiceDecision.Stop,
+            ServiceRunPolicy.decide(registrations(RegistrationState.Unregistered), 0, wantsRegistration = false),
+        )
+        assertEquals(ServiceDecision.Stop, ServiceRunPolicy.decide(emptyMap<AccountId, RegistrationState>(), 0, false))
     }
 
     @Test

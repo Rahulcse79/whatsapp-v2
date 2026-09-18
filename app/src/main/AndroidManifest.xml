@@ -25,6 +25,16 @@
         android:minSdkVersion="31" />
 
     <!--
+      Staying reachable when the app is not on screen. RECEIVE_BOOT_COMPLETED brings the
+      registrations back after a reboot; REQUEST_IGNORE_BATTERY_OPTIMIZATIONS lets the app
+      ask (once, and the user may say no) to be left out of the background restrictions that
+      would otherwise end the registration service - and, on Android 12+, it is also what
+      permits the service to be restarted from an alarm after the task is swiped away.
+    -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!--
       An incoming call must reach the lock screen (Task 37). From Android 14 this is
       granted only to apps whose core function is calling, which this app's is; a device
       that withholds it still shows the heads-up notification, which stays answerable.
@@ -107,9 +117,16 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.WhatsAppV2">
 
+        <!--
+          stopWithTask=false is the default and is spelled out because the whole design
+          leans on it: the service must outlive the task, and it is onTaskRemoved - only
+          delivered when this is false - that books the restart on the builds that kill the
+          process anyway.
+        -->
         <service
             android:name=".service.RegistrationService"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="phoneCall|specialUse|camera|microphone">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
@@ -157,6 +174,27 @@
         -->
         <receiver
             android:name=".call.CallActionReceiver"
+            android:exported="false" />
+
+        <!--
+          Registrations after a reboot or an update: the process the platform starts to
+          deliver these restores every logged-in account, and the receiver starts the
+          service that keeps it alive. Exported because the sender is the system, and
+          limited to the system by the intent filter - nobody else can send BOOT_COMPLETED.
+        -->
+        <receiver
+            android:name=".boot.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- The restart alarm's target after the task is swiped away; see RegistrationService. -->
+        <receiver
+            android:name=".service.ServiceRestartReceiver"
             android:exported="false" />
 
         <!--

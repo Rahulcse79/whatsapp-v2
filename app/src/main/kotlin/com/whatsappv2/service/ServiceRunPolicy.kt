@@ -60,16 +60,42 @@ fun ServiceDecision.foregroundReason(): ServiceReason =
  *
  * Pure, so the rule can be asserted directly rather than inferred from `dumpsys` output.
  * The service itself only applies the answer.
+ *
+ * ## Running is about intent, not about the current answer from the registrar
+ *
+ * This used to run only while a registration was *usable* (or in flight), and stop the
+ * moment it was not. That rule had a hole a handset fell through every day: Wi-Fi drops,
+ * every `Registered` account is mapped to `Failed(NETWORK_UNAVAILABLE)`, the rule says
+ * `Stop`, the foreground service exits — and the process is now an ordinary background
+ * process that the platform kills within minutes. When Wi-Fi came back nothing was alive
+ * to re-register, and the extension showed as unregistered until somebody opened the app.
+ *
+ * The purpose of the service is to keep a logged-in account **reachable**, and that
+ * purpose does not end when the network does. So the service runs while any account
+ * *wants* to be registered — logged in and never logged out — whether the registrar
+ * currently says Registered, Registering, or Failed for a reason that will clear on its
+ * own. It stops when every account is logged out (or none exists) and no call is up,
+ * which is the only state in which there is genuinely nothing to hold open. §6's "no
+ * service that outlives its purpose" still holds; the purpose was described too narrowly.
+ *
+ * [justifiesWakeLock] is deliberately narrower. Waiting for a network needs no CPU — the
+ * recovery coordinator waits on the platform's connectivity callback, not a timer — so
+ * holding a wake lock through an outage would be the battery bug §6 warns about.
  */
 object ServiceRunPolicy {
 
     /**
-     * @param registrations current state per account.
+     * @param registrations current state per account, as the registrar reports it.
      * @param activeCalls how many calls are in progress.
+     * @param wantsRegistration whether any account is logged in — the user's intent,
+     *   independent of what the registrar has reported so far. True while the process is
+     *   starting and the stack has not yet been told about the accounts, and true through
+     *   a network outage.
      */
     fun decide(
         registrations: Map<*, RegistrationState>,
         activeCalls: Int,
+        wantsRegistration: Boolean = false,
     ): ServiceDecision = when {
         // A call outranks everything: it must keep running even if the registration
         // behind it has since failed, or the call would be killed mid-sentence.
@@ -80,18 +106,30 @@ object ServiceRunPolicy {
         registrations.values.any { it.isUsable || it is RegistrationState.Registering } ->
             ServiceDecision.Run(ServiceReason.REGISTRATION)
 
+        // Recovering: a failure that clears on its own (no network, a timeout, a 503) is a
+        // registration that is coming back, and the process has to be alive when it does.
+        registrations.values.any { it.isRecovering } -> ServiceDecision.Run(ServiceReason.REGISTRATION)
+
+        // Logged in, but the registrar has said nothing yet — the first seconds of a
+        // process the platform started after a reboot, a sticky restart or a task swipe.
+        wantsRegistration -> ServiceDecision.Run(ServiceReason.REGISTRATION)
+
         else -> ServiceDecision.Stop
     }
 
     /**
      * True when the service currently justifies holding a wake lock.
      *
-     * Identical to "should it run at all", stated separately because §6 calls it out: no
-     * wake lock may be held while unregistered, and a rule with its own name is harder to
-     * quietly drift away from.
+     * Narrower than [decide], and on purpose — see the class comment. §6: no wake lock may
+     * be held while unregistered, and waiting for a network is unregistered.
      */
     fun justifiesWakeLock(
         registrations: Map<*, RegistrationState>,
         activeCalls: Int,
-    ): Boolean = decide(registrations, activeCalls) is ServiceDecision.Run
+    ): Boolean = activeCalls > 0 ||
+        registrations.values.any { it.isUsable || it is RegistrationState.Registering }
+
+    /** A failure the app will get past without the user: the network, the server, the link. */
+    private val RegistrationState.isRecovering: Boolean
+        get() = this is RegistrationState.Failed && !reason.requiresUserAction
 }
