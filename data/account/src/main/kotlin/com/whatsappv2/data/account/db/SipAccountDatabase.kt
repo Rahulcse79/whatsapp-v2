@@ -4,6 +4,7 @@ import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.whatsappv2.domain.model.SipAccount
 
 /**
  * The account database.
@@ -33,7 +34,7 @@ abstract class SipAccountDatabase : RoomDatabase() {
     abstract fun sipAccountDao(): SipAccountDao
 
     companion object {
-        const val VERSION = 3
+        const val VERSION = 4
         const val NAME = "sip-accounts.db"
 
         /**
@@ -86,7 +87,37 @@ abstract class SipAccountDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Moves accounts off the hour-long registration expiry, with `MIGRATION_1_2`'s
+         * reasoning a third time.
+         *
+         * `SipAccount.DEFAULT_EXPIRY_SECONDS` is three minutes now, and the account
+         * editor opens on it — but a row written before this build carries the *old*
+         * opening value, 3600, and nobody typed it. The registration expiry is also the
+         * re-registration interval, so leaving those rows alone would ship the change and
+         * leave every handset already in the field refreshing about twice an hour, which
+         * is the behaviour the default moved away from.
+         *
+         * Conditional, unlike the two above, and that is the difference: here there *is*
+         * a way to tell a choice from a default, because the old default was one exact
+         * value. A row on 600, or 1800, or anything else is somebody's decision and is
+         * left where it is. A row that genuinely wants an hour is typed again in the
+         * editor and then survives, because this migration runs once.
+         */
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "UPDATE sip_accounts SET registration_expiry_seconds = " +
+                        "${SipAccount.DEFAULT_EXPIRY_SECONDS} WHERE registration_expiry_seconds = " +
+                        "$OLD_DEFAULT_EXPIRY_SECONDS",
+                )
+            }
+        }
+
+        /** The expiry every account was created with before `MIGRATION_3_4`. */
+        private const val OLD_DEFAULT_EXPIRY_SECONDS = 3_600
+
         /** Every migration, in order. */
-        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
+        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
     }
 }

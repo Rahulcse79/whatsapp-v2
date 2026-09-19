@@ -499,27 +499,41 @@ private fun IncomingActions(call: CallDisplay, actions: CallActions) {
             label = "Decline",
             modifier = Modifier.testTag(TAG_DECLINE),
         )
-        // Offered only when the caller offered video. An audio call answered "with video"
-        // is an escalation the peer never asked for (§5.2).
+        // Two buttons, never three, and which pair depends on what was offered.
+        //
+        // A video call gets Decline and **Video**, and Video answers with video. There
+        // used to be a third button — a plain audio *Answer* sitting beside the video one
+        // — and it was the wrong offer to make twice over. The caller chose video and the
+        // screen announced a video call, so the ordinary thing to do is accept the call
+        // that was placed; an audio-only answer to a video call is the unusual choice, and
+        // putting it next to the usual one at the same size made every incoming video call
+        // a question with two nearly identical answers. Anyone who does not want to be
+        // seen turns their camera off once in, which is one tap and is reversible — where
+        // answering audio-only is neither.
+        //
+        // An audio call gets Decline and Answer, and no video button at all: answering
+        // "with video" would be an escalation the peer never asked for (§5.2).
         if (call.videoOffered) {
             CallActionButton(
                 icon = Icons.Filled.Videocam,
                 contentDescription = "Answer with video",
                 onClick = { actions.onAnswer(true) },
                 style = CallActionStyle.ANSWER,
+                enabled = call.availability.canAnswer,
                 label = "Video",
                 modifier = Modifier.testTag(TAG_ANSWER_VIDEO),
             )
+        } else {
+            CallActionButton(
+                icon = Icons.Filled.Call,
+                contentDescription = "Answer call",
+                onClick = { actions.onAnswer(false) },
+                style = CallActionStyle.ANSWER,
+                enabled = call.availability.canAnswer,
+                label = "Answer",
+                modifier = Modifier.testTag(TAG_ANSWER),
+            )
         }
-        CallActionButton(
-            icon = Icons.Filled.Call,
-            contentDescription = "Answer call",
-            onClick = { actions.onAnswer(false) },
-            style = CallActionStyle.ANSWER,
-            enabled = call.availability.canAnswer,
-            label = "Answer",
-            modifier = Modifier.testTag(TAG_ANSWER),
-        )
     }
 }
 

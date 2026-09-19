@@ -7,9 +7,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.whatsappv2.background.BackgroundAccess
+import com.whatsappv2.background.BackgroundAccessPrompt
+import com.whatsappv2.background.LocalBackgroundAccess
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.domain.repository.AppSettingsRepository
 import com.whatsappv2.onboarding.FirstRunGate
@@ -18,6 +22,8 @@ import com.whatsappv2.permission.LocalPermissionCoordinator
 import com.whatsappv2.permission.PermissionCoordinator
 import com.whatsappv2.permission.PermissionOnboarding
 import com.whatsappv2.permission.rememberCameraGate
+import com.whatsappv2.permission.rememberMicrophoneGate
+import com.whatsappv2.service.RegistrationDemand
 import com.whatsappv2.ui.AppRoot
 import com.whatsappv2.ui.navigation.AppDestination
 import com.whatsappv2.ui.theme.AppThemed
@@ -60,6 +66,13 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var firstRun: FirstRunStore
 
+    /** Read and asked for from here — see [BackgroundAccessPrompt]. */
+    @Inject
+    lateinit var backgroundAccess: BackgroundAccess
+
+    @Inject
+    lateinit var registrationDemand: RegistrationDemand
+
     /**
      * A screen another activity asked this one to open, until it has been opened.
      *
@@ -84,6 +97,7 @@ class MainActivity : ComponentActivity() {
                 // composable in between would couple them all to it.
                 CompositionLocalProvider(
                     LocalPermissionCoordinator provides permissionCoordinator,
+                    LocalBackgroundAccess provides backgroundAccess,
                 ) {
                     // Terms, then the tour, then permissions, then the app. The order and
                     // the reasons for it live in FirstRunGate; this is only where it is
@@ -97,16 +111,31 @@ class MainActivity : ComponentActivity() {
                             PermissionOnboarding(
                                 coordinator = permissionCoordinator,
                                 onFinished = onFinished,
+                                // Asked for on first run too, as the last step. Battery
+                                // optimisation is what stops a phone ringing, and waiting
+                                // for the first login meant a user who set the app up and
+                                // put it down never saw the question at all.
+                                backgroundAccess = backgroundAccess,
                             )
                         },
                     ) {
                         // The camera is asked for when a video call is pressed, not only on
                         // the first-run screen somebody may have skipped (Task 74).
                         AppRoot(
+                            // Both asked for in context, not only on a first-run screen
+                            // somebody may have skipped (Task 74). The microphone gate
+                            // refuses the call when it is denied; the camera's downgrades
+                            // it to audio — see `MicrophoneGate` for why they differ.
                             videoGate = rememberCameraGate(),
+                            callGate = rememberMicrophoneGate(),
                             openDestination = openDestination,
                             onDestinationOpened = { openDestination = null },
                         )
+                        // Once somebody is logged in, and once only: the platform's own
+                        // dialog for staying alive in the background. Above the screens
+                        // so it appears wherever the first login happens.
+                        val wantsRegistration by registrationDemand.wanted.collectAsState()
+                        BackgroundAccessPrompt(wantsRegistration = wantsRegistration)
                     }
                 }
             }

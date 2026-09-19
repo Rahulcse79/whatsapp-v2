@@ -34,7 +34,7 @@ import com.whatsappv2.core.designsystem.preview.ThemePreviews
  * ## The field is read-only, not disabled
  *
  * `readOnly` keeps it focusable and in the accessibility tree, where a screen reader
- * announces the label and then the value — "Keep call history for, 20 days" — with no
+ * announces the label and then the value — "Keep call history for, 7 days" — with no
  * extra description needed. `enabled = false` would grey the current selection out, which
  * is the one thing on the row the user came to read. Typing is not offered because there
  * is nothing to type: the list is the whole of the input.

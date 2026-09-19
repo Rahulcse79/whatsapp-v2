@@ -30,7 +30,7 @@ import javax.inject.Singleton
  * ## Why starting twice is fine
  *
  * `startForegroundService` on a running service is another `onStartCommand`, which this
- * service answers with `START_NOT_STICKY` and nothing else. The alternative — tracking
+ * service answers by re-reading its state and nothing else. The alternative — tracking
  * whether it is running from out here — would be a second copy of state the service
  * already owns, and the two would disagree the first time the platform killed it.
  */
@@ -39,14 +39,15 @@ class ServiceLauncher @Inject constructor(
     @ApplicationContext private val context: Context,
     private val registrar: SipRegistrar,
     private val calls: SipCallController,
+    private val demand: RegistrationDemand,
     @ApplicationScope private val scope: CoroutineScope,
     private val logger: Logger,
 ) {
 
     fun start() {
         scope.launch {
-            combine(registrar.registrationState, calls.activeCalls) { registrations, active ->
-                ServiceRunPolicy.decide(registrations, active.size)
+            combine(registrar.registrationState, calls.activeCalls, demand.wanted) { registrations, active, wanted ->
+                ServiceRunPolicy.decide(registrations, active.size, wanted)
             }
                 .distinctUntilChanged()
                 .collect { decision ->

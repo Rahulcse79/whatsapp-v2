@@ -1,6 +1,9 @@
 package com.whatsappv2.feature.dialer
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -10,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Backspace
@@ -38,8 +42,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -47,6 +55,8 @@ import com.whatsappv2.core.designsystem.component.AppTopBar
 import com.whatsappv2.core.designsystem.component.Avatar
 import com.whatsappv2.core.designsystem.component.CallActionButton
 import com.whatsappv2.core.designsystem.component.CallActionStyle
+import com.whatsappv2.core.designsystem.component.StatusLabel
+import com.whatsappv2.core.designsystem.component.StatusTone
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
 import com.whatsappv2.core.designsystem.theme.AppTheme
@@ -75,6 +85,12 @@ fun DialerScreen(
      * declined camera still places an audio call, which is `MediaProfile`'s rule.
      */
     videoGate: (proceed: () -> Unit) -> Unit = { it() },
+    /**
+     * Runs an audio call once the microphone has been asked for, and not at all if it is
+     * refused: the stack cannot open a capture device without it, so the call would hang
+     * at *Calling* rather than fail in a way anybody could act on.
+     */
+    callGate: (proceed: () -> Unit) -> Unit = { it() },
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -104,9 +120,13 @@ fun DialerScreen(
             onClear = viewModel::onClear,
             onAccountSelected = viewModel::onAccountSelected,
             onRecentSelected = viewModel::onRecentSelected,
-            onContactSelected = viewModel::onContactSelected,
-            onCall = viewModel::onCall,
-            onVideoCall = { videoGate { viewModel.onVideoCall() } },
+            // Every path that starts a call goes through a gate, because every one of them
+            // needs a microphone the user may not have granted yet.
+            onContactSelected = { contact -> callGate { viewModel.onContactSelected(contact) } },
+            onCall = { callGate { viewModel.onCall() } },
+            // Both permissions, in the order they matter: without the microphone there is
+            // no call to make, and without the camera there is still an audio one.
+            onVideoCall = { callGate { videoGate { viewModel.onVideoCall() } } },
             onBack = onBack,
         ),
         modifier = modifier,
@@ -145,6 +165,9 @@ internal fun DialerScreen(
                 AccountPicker(state = state, onAccountSelected = actions.onAccountSelected)
             }
 
+            // Always, even with one account — see [AccountStatus].
+            AccountStatus(account = state.selectedAccount)
+
             DialledNumber(state = state, actions = actions)
 
             Suggestions(state = state, actions = actions)
@@ -169,46 +192,122 @@ internal fun DialerScreen(
  */
 @Composable
 private fun DialledNumber(state: DialerUiState, actions: DialerActions) {
-    TextField(
-        value = state.input,
-        onValueChange = actions.onInputChanged,
-        singleLine = true,
-        placeholder = {
-            Text(
-                text = "Number or SIP address",
-                style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth(),
+    // The caret is kept at the end of the text, deliberately, and this is why the field
+    // takes a `TextFieldValue` rather than a `String`.
+    //
+    // The `String` overload owns the selection itself and does not move it when the value
+    // changes from somewhere other than the keyboard. Every digit here arrives from the
+    // keypad, so the text grew while the selection stayed at index 0 — the caret blinked
+    // against the left edge and each new digit appeared to its right, which read as typing
+    // backwards into the middle of the number. Holding the selection at `input.length`
+    // puts the caret after the last digit, where a dialler's caret belongs.
+    val field = TextFieldValue(text = state.input, selection = TextRange(state.input.length))
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().padding(top = AppTheme.spacing.medium),
+    ) {
+        // A spacer the same width as the backspace button, so the number is centred on the
+        // screen rather than on the space the button leaves. As a `trailingIcon` the
+        // button was inside the text field, and "centred" then meant centred in what was
+        // left over — the number sat visibly left of centre whenever the button was there
+        // and jumped right when it went away.
+        Spacer(Modifier.size(AppTheme.sizing.callActionButton))
+
+        TextField(
+            value = field,
+            onValueChange = { actions.onInputChanged(it.text) },
+            singleLine = true,
+            placeholder = {
+                Text(
+                    text = "Number or SIP address",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            textStyle = MaterialTheme.typography.displaySmall.copy(textAlign = TextAlign.Center),
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = Color.Transparent,
+                unfocusedContainerColor = Color.Transparent,
+                disabledContainerColor = Color.Transparent,
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent,
+                disabledIndicatorColor = Color.Transparent,
+            ),
+            modifier = Modifier.weight(1f).testTag(TAG_INPUT),
+        )
+
+        // Outside the field and always occupying its slot, so nothing reflows when the
+        // first digit is typed. Invisible rather than absent while there is nothing to
+        // delete — `alpha` keeps the layout, and it is not clickable when there is nothing
+        // to remove, so a screen reader is not offered a control that does nothing.
+        IconButton(
+            onClick = actions.onBackspace,
+            enabled = state.input.isNotEmpty(),
+            modifier = Modifier
+                .size(AppTheme.sizing.callActionButton)
+                .alpha(if (state.input.isEmpty()) 0f else 1f)
+                .testTag(TAG_BACKSPACE),
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.Backspace,
+                contentDescription = "Delete last character",
             )
-        },
-        textStyle = MaterialTheme.typography.headlineMedium.copy(textAlign = TextAlign.Center),
-        trailingIcon = {
-            if (state.input.isNotEmpty()) {
-                IconButton(
-                    onClick = actions.onBackspace,
-                    modifier = Modifier.testTag(TAG_BACKSPACE),
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Backspace,
-                        contentDescription = "Delete last character",
-                    )
-                }
-            }
-        },
-        colors = TextFieldDefaults.colors(
-            focusedContainerColor = Color.Transparent,
-            unfocusedContainerColor = Color.Transparent,
-            disabledContainerColor = Color.Transparent,
-            focusedIndicatorColor = Color.Transparent,
-            unfocusedIndicatorColor = Color.Transparent,
-            disabledIndicatorColor = Color.Transparent,
-        ),
+        }
+    }
+}
+
+/**
+ * Which extension this call goes out on, and whether it can go out at all.
+ *
+ * ## Why it is always on screen
+ *
+ * It was not shown at all with one account: [AccountPicker] is hidden below two, on the
+ * reasoning that a picker with one entry is a control that cannot be used. That is right
+ * about the *picker* and wrong about the *information* — the one thing a dialler has to
+ * answer before the call button is pressed is "am I reachable, and as whom", and a single
+ * account is still an account that can be offline. So the identity and its state are here
+ * unconditionally, and choosing between accounts stays the picker's job.
+ *
+ * The dot and the word carry the same fact twice on purpose. Colour alone fails for the
+ * ~8% of men with a red/green deficiency, and this is exactly the pairing where that
+ * matters: the two states are red and green and nothing else distinguishes them.
+ */
+@Composable
+private fun AccountStatus(account: DialerAccount?) {
+    account ?: return
+
+    val tone = if (account.isRegistered) StatusTone.ONLINE else StatusTone.FAILED
+    val colour = if (account.isRegistered) {
+        AppTheme.statusColors.online
+    } else {
+        AppTheme.statusColors.failed
+    }
+
+    // `StatusLabel` rather than a dot and a Text of this file's own: it is the design
+    // system's pairing and it is the thing that makes "never colour alone" hard to break.
+    // The extension is a second Text beside it because the identity is not the *state* —
+    // it takes the state's colour so the eye reads them as one thing, while the word after
+    // it is what a screen reader and a colour-blind user actually rely on.
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
+        verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = AppTheme.spacing.medium)
-            .testTag(TAG_INPUT),
-    )
+            .padding(top = AppTheme.spacing.small)
+            .testTag(TAG_ACCOUNT_STATUS),
+    ) {
+        Text(
+            text = account.identity,
+            style = MaterialTheme.typography.labelLarge,
+            color = colour,
+        )
+        StatusLabel(
+            tone = tone,
+            text = if (account.isRegistered) "Registered" else "Unregistered",
+        )
+    }
 }
 
 /** A back arrow, because the dialler is a screen opened from Calls now, not a tab (Task 70). */
@@ -409,22 +508,9 @@ private fun Keypad(onDigit: (Char) -> Unit, onClear: () -> Unit) {
     ) {
         KEYPAD_ROWS.forEach { row ->
             Row(
-                horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraLarge),
+                horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.large),
             ) {
-                row.forEach { key ->
-                    TextButton(
-                        onClick = { onDigit(key) },
-                        modifier = Modifier
-                            .size(AppTheme.sizing.callActionButton)
-                            .testTag(keyTag(key)),
-                    ) {
-                        Text(
-                            text = key.toString(),
-                            style = MaterialTheme.typography.headlineSmall,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-                }
+                row.forEach { key -> KeypadKey(key = key, onDigit = onDigit) }
             }
         }
         TextButton(onClick = onClear, modifier = Modifier.testTag(TAG_CLEAR)) {
@@ -432,6 +518,67 @@ private fun Keypad(onDigit: (Char) -> Unit, onClear: () -> Unit) {
         }
     }
 }
+
+/**
+ * One key: a filled circle, the digit, and the letters under it.
+ *
+ * ## Why a circle and not a `TextButton`
+ *
+ * The keys were bare text in a square hit area, which left the commonest control on the
+ * screen with nothing to aim at — the ripple was a rectangle around a glyph and there was
+ * no resting shape at all, so the keypad read as a list of numbers rather than as buttons.
+ * A tinted circle gives the thumb a target it can see without looking, which on a keypad
+ * is the whole job.
+ *
+ * ## The letters
+ *
+ * `2 ABC` and the rest, because a SIP address is often given as a word and because every
+ * phone keypad since the rotary dial has carried them — their absence is the kind of thing
+ * that reads as unfinished without anybody being able to say why. `1`, `*`, `0` and `#`
+ * have none, and get a blank line of the same height so the twelve keys stay on one grid
+ * instead of four rows of two different heights.
+ */
+@Composable
+private fun KeypadKey(key: Char, onDigit: (Char) -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(AppTheme.sizing.callActionButton)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+            .clickable { onDigit(key) }
+            .testTag(keyTag(key)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = key.toString(),
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                // A space, not an empty string: an empty Text collapses to nothing and the
+                // keys without letters would then sit a few pixels higher than the rest.
+                text = KEYPAD_LETTERS[key] ?: " ",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+/** What each key carries under its digit. The four without letters are absent, not blank. */
+private val KEYPAD_LETTERS = mapOf(
+    '2' to "ABC",
+    '3' to "DEF",
+    '4' to "GHI",
+    '5' to "JKL",
+    '6' to "MNO",
+    '7' to "PQRS",
+    '8' to "TUV",
+    '9' to "WXYZ",
+)
 
 private val KEYPAD_ROWS = listOf(
     listOf('1', '2', '3'),
@@ -447,6 +594,7 @@ internal const val TAG_BACK = "dialer-back"
 internal const val TAG_BACKSPACE = "dialer-backspace"
 internal const val TAG_CLEAR = "dialer-clear"
 internal const val TAG_ACCOUNT = "dialer-account"
+internal const val TAG_ACCOUNT_STATUS = "dialer-account-status"
 internal const val TAG_RECENTS = "dialer-recents"
 internal const val TAG_CONTACTS = "dialer-contacts"
 

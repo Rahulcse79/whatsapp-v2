@@ -13,11 +13,10 @@ import com.whatsappv2.domain.repository.CallLogFilter
  * than another argument threaded through the rows. `:feature:dialer` and `:feature:calls`
  * group their own for the same reason.
  *
- * The last one leaves this module entirely (Task 70). Calls is the app's home screen, so
- * the dialler is reached from it — and `:feature:history` may not navigate to another
- * feature, so it says *that the user asked* and `:app` decides what that opens. Settings
- * used to be reached from here too; it is behind the gear on Chats now, and the callback
- * went with it rather than staying as a parameter nothing reads.
+ * The last three leave this module entirely (Task 70). Calls is a top-level destination,
+ * so the dialler, the recordings and settings are reached from it — and `:feature:history`
+ * may not navigate to another feature, so it says *that the user asked* and `:app` decides
+ * what that opens.
  */
 @Stable
 data class HistoryActions(
@@ -51,4 +50,13 @@ data class HistoryActions(
     val onOpenDialer: () -> Unit = {},
     /** Open the call recordings. Leaves this module, so :app decides the destination. */
     val onOpenRecordings: () -> Unit = {},
+
+    /**
+     * Open settings. Null on a surface with nowhere to go, and the gear is absent with it.
+     *
+     * Nullable where the others default to a no-op, because this one decides whether a
+     * control is drawn at all. A `{}` default would put a gear in the bar of a preview
+     * that has no navigation behind it — an icon that does nothing is worse than no icon.
+     */
+    val onOpenSettings: (() -> Unit)? = null,
 )

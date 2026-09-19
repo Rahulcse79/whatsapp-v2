@@ -60,6 +60,10 @@ class CallHistoryPrunerTest {
 
     @Test
     fun `shortening the retention prunes at once`() = runTest(UnconfinedTestDispatcher()) {
+        // Starts from a named long retention rather than from the default, because what
+        // is under test is the move from long to short — it has to hold whatever length a
+        // fresh install happens to begin at.
+        settings.setCallHistoryRetention(CallHistoryRetention.ofDays(THIRTY))
         val kept = log.record(entry(daysAgo = ONE))
         val tenDaysOld = log.record(entry(daysAgo = TEN))
         pruner().start()
@@ -75,7 +79,9 @@ class CallHistoryPrunerTest {
         runTest(UnconfinedTestDispatcher()) {
             // No setting changed and the app did not restart; time passed. The entry
             // that was inside the retention at start is outside it by the time the next
-            // call is logged, and the log must not keep showing it.
+            // call is logged, and the log must not keep showing it. The retention is
+            // named so the entry sits just inside it whatever the default is.
+            settings.setCallHistoryRetention(CallHistoryRetention.ofDays(TWENTY))
             val ageing = log.record(entry(daysAgo = NINETEEN))
             pruner().start()
             assertEquals(listOf(ageing.id), remainingIds())
@@ -92,6 +98,7 @@ class CallHistoryPrunerTest {
             // Not for correctness — an extra prune would delete nothing wrong — but so
             // the theme toggle is not paying for a database write it has nothing to do
             // with. Observable here because time moves between the start and the write.
+            settings.setCallHistoryRetention(CallHistoryRetention.ofDays(TWENTY))
             val ageing = log.record(entry(daysAgo = NINETEEN))
             pruner().start()
             clock.advanceBy(TWO * CallHistoryRetention.MILLIS_PER_DAY)
@@ -140,6 +147,7 @@ class CallHistoryPrunerTest {
         const val SEVEN = 7
         const val TEN = 10
         const val NINETEEN = 19
+        const val TWENTY = 20
         const val THIRTY = 30
         const val TEN_YEARS_IN_DAYS = 3_650
     }

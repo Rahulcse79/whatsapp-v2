@@ -17,12 +17,15 @@ import kotlin.test.assertTrue
 class SelfPreviewPlacementTest {
 
     @Test
-    fun `it starts bottom-right, full size, and visible`() {
+    fun `it starts bottom-right, minimised, at the small 9-16 card`() {
+        // Minimised is the opening state, so the control on the preview grows it rather
+        // than appearing to do nothing — see `VideoLayout.PREVIEW_DEFAULT_FRACTION` for
+        // the defect that came of the two sizes being equal.
         val placement = SelfPreviewPlacement()
 
         assertEquals(PreviewCorner.BottomEnd, placement.corner)
         assertEquals(1f, placement.scale)
-        assertFalse(placement.isMinimised)
+        assertTrue(placement.isMinimised)
     }
 
     @Test
@@ -41,11 +44,19 @@ class SelfPreviewPlacementTest {
 
     @Test
     fun `minimising keeps the size the user chose, and restoring gives it back`() {
-        val resized = SelfPreviewPlacement().resizedTo(1.1f)
+        // Starts minimised now, so the sequence under test is maximise, resize, minimise,
+        // restore — and the size chosen with the grip has to survive the round trip.
+        val opened = SelfPreviewPlacement()
+        assertTrue(opened.isMinimised, "the preview opens minimised")
+
+        // A scale inside the range: 1f is the maximum now, so the grip's travel runs
+        // downwards from it to PREVIEW_MIN_SCALE and 1.1f would simply clamp.
+        val resized = opened.toggledMinimised().resizedTo(0.75f)
+        assertFalse(resized.isMinimised)
 
         val minimised = resized.toggledMinimised()
         assertTrue(minimised.isMinimised)
-        assertEquals(1.1f, minimised.scale, "minimising overwrote the chosen size")
+        assertEquals(0.75f, minimised.scale, "minimising overwrote the chosen size")
 
         val restored = minimised.toggledMinimised()
         assertFalse(restored.isMinimised)

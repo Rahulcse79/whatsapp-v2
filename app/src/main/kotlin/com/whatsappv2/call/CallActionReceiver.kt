@@ -5,10 +5,12 @@ import android.content.Context
 import android.content.Intent
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.di.ApplicationScope
+import com.whatsappv2.domain.engine.CameraAvailability
 import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
+import com.whatsappv2.telecom.TelecomPolicy
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -37,6 +39,10 @@ class CallActionReceiver : BroadcastReceiver() {
     @Inject
     lateinit var logger: Logger
 
+    /** Asked at the moment of the answer, never cached — see [AndroidCameraAvailability]. */
+    @Inject
+    lateinit var camera: CameraAvailability
+
     @Inject
     @ApplicationScope
     lateinit var scope: CoroutineScope
@@ -58,10 +64,8 @@ class CallActionReceiver : BroadcastReceiver() {
         scope.launch {
             try {
                 when (intent.action) {
-                    // Audio, because a notification button has no way to say "with
-                    // video": a video answer is an explicit choice on the call screen.
                     ACTION_ANSWER -> {
-                        calls.answer(callId, MediaProfile.AUDIO)
+                        calls.answer(callId, answerMediaFor(callId))
                         // The call is answered either way; this only brings the screen up.
                         context.startActivity(CallActivity.intentFor(context, callId))
                     }
@@ -78,6 +82,26 @@ class CallActionReceiver : BroadcastReceiver() {
                 pending.finish()
             }
         }
+    }
+
+    /**
+     * What Answer answers a ringing call with: video when the peer offered video.
+     *
+     * The notification button has no way to say "with video", so it is the *offer* that
+     * says it — [TelecomPolicy.answerMedia] holds the rule and the reasoning, and the
+     * Telecom bridge answers by the same one so the heads-up and a car display cannot
+     * disagree about what pressing Answer on the same call means.
+     *
+     * The camera's veto matters most here. This is a `BroadcastReceiver`: it cannot put a
+     * permission dialog on screen, and a lock-screen answer that needed one would be a
+     * call nobody could take. Without a usable camera the call is answered audio-only, and
+     * the in-call screen this then opens is where video can be asked for properly.
+     */
+    private fun answerMediaFor(callId: CallId): MediaProfile {
+        val offered = calls.activeCalls.value.firstOrNull { it.callId == callId }?.media
+        val media = TelecomPolicy.answerMedia(offered, cameraUsable = camera.isCameraUsable())
+        logger.info(TAG, "Answering $callId from the notification with $media")
+        return media
     }
 
     companion object {

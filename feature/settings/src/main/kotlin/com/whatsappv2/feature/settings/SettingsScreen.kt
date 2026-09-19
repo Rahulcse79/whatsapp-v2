@@ -16,6 +16,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.BatteryAlert
+import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -59,6 +61,8 @@ fun SettingsScreen(
     onOpenAccounts: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Null on a build that has no background-access switch to show. */
+    backgroundAccess: BackgroundAccessLink? = null,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -76,7 +80,7 @@ fun SettingsScreen(
     SettingsScreen(
         state = state,
         actions = actions,
-        links = SettingsLinks(onOpenAccounts = onOpenAccounts),
+        links = SettingsLinks(onOpenAccounts = onOpenAccounts, backgroundAccess = backgroundAccess),
         onBack = onBack,
         modifier = modifier,
     )
@@ -106,6 +110,22 @@ data class SettingsActions(
  */
 data class SettingsLinks(
     val onOpenAccounts: () -> Unit,
+    /** Absent on a build with nothing to show for it, and the row is absent with it. */
+    val backgroundAccess: BackgroundAccessLink? = null,
+)
+
+/**
+ * The platform's battery-optimisation switch for this app, as the settings screen sees it.
+ *
+ * Read by the app module (it is a `PowerManager` question) and opened by it (it is a
+ * system screen); this row only shows the answer and forwards the tap. Shown as a row
+ * rather than a switch because the app cannot set it — only the system dialog can — and
+ * a switch that opens another screen instead of switching is a lie in miniature.
+ */
+data class BackgroundAccessLink(
+    /** True when the app is exempt from battery optimisation. */
+    val allowed: Boolean,
+    val onOpen: () -> Unit,
 )
 
 /** The stateless screen, so it can be previewed and tested with a literal state. */
@@ -239,6 +259,70 @@ private fun SettingsContent(
 private fun LinkCards(links: SettingsLinks?) {
     links ?: return
     SettingsCard { AccountsRow(onClick = links.onOpenAccounts) }
+    links.backgroundAccess?.let { SettingsCard { BackgroundAccessRow(it) } }
+}
+
+/**
+ * Whether the phone will leave the app running to receive calls, and the way to change it.
+ *
+ * Restricted is the state that loses calls: the registration service is ended when the
+ * app is off screen and nothing re-registers when the network returns. The text says so
+ * plainly rather than naming the setting, because "battery optimisation" does not sound
+ * like something that stops a phone ringing.
+ *
+ * ## The chevron is only there while there is something to do
+ *
+ * A `>` is a promise that tapping leads somewhere worth going. While the app is
+ * *Restricted* that is exactly true — the row's own last words are "Tap to allow", and the
+ * chevron is what makes them look like a control rather than a complaint. Once the phone
+ * says *Allowed* there is nothing left to ask for: the row has become a statement of fact,
+ * and a chevron beside a settled state reads as an unfinished errand, which is the one
+ * thing this row must not imply on a phone that is already set up correctly.
+ *
+ * The row stays tappable either way. Turning background access back *off* is a thing
+ * somebody may legitimately want, and the system screen is the only place it can be done —
+ * removing the tap would make the app the only route to a setting it then refused to
+ * offer. What goes away is the invitation, not the door.
+ */
+@Composable
+private fun BackgroundAccessRow(link: BackgroundAccessLink) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = link.onOpen)
+            .padding(vertical = AppTheme.spacing.small)
+            .testTag(TAG_BACKGROUND_ACCESS),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.medium),
+    ) {
+        Icon(
+            imageVector = if (link.allowed) Icons.Filled.BatteryFull else Icons.Filled.BatteryAlert,
+            contentDescription = null,
+            tint = if (link.allowed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Run in the background", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = if (link.allowed) {
+                    "Allowed. The phone will keep this app registered and able to receive calls " +
+                        "while it is not on screen."
+                } else {
+                    "Restricted. The phone may stop this app when it is not on screen, and " +
+                        "calls to your extension would be missed. Tap to allow."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (!link.allowed) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag(TAG_BACKGROUND_ACCESS_CHEVRON),
+            )
+        }
+    }
 }
 
 /**
@@ -368,6 +452,10 @@ private fun AccountsRow(onClick: () -> Unit) {
 }
 
 internal const val TAG_ACCOUNTS = "settings-accounts"
+internal const val TAG_BACKGROUND_ACCESS = "settings-background-access"
+
+/** The row's trailing chevron, which exists only while there is something to go and do. */
+internal const val TAG_BACKGROUND_ACCESS_CHEVRON = "settings-background-access-chevron"
 internal const val TAG_BACK = "settings-back"
 internal const val TAG_RETENTION = "settings-retention"
 

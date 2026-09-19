@@ -3,6 +3,7 @@ package com.whatsappv2.telecom
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.di.ApplicationScope
 import com.whatsappv2.domain.call.AudioRoute
+import com.whatsappv2.domain.engine.CameraAvailability
 import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.engine.SipMediaController
@@ -42,15 +43,27 @@ internal class TelecomCallBridge @Inject constructor(
     private val calls: SipCallController,
     private val media: SipMediaController,
     private val conferences: SipConferenceController,
+    /** Asked at the moment of the answer, never cached — see `AndroidCameraAvailability`. */
+    private val camera: CameraAvailability,
     private val logger: Logger,
     @ApplicationScope private val scope: CoroutineScope,
 ) : SipConnection.Listener {
 
+    /**
+     * Telecom's answer button — a car display, a headset, the lock screen.
+     *
+     * The media comes from what the peer offered rather than from the button, because the
+     * button has no way to express it and the offer already did: see
+     * [TelecomPolicy.answerMedia]. The snapshot is read from [SipCallController.activeCalls]
+     * at this instant, which is where the ringing call's negotiated-so-far profile lives;
+     * a call that has already gone answers audio and then fails, which is the same outcome
+     * it had before.
+     */
     override fun onAnswered(callId: CallId) {
-        logger.info(TAG, "Telecom answered $callId")
-        // Audio, because Telecom's answer button has no way to say "with video" — a video
-        // answer is offered by this app's own incoming screen (Task 54).
-        scope.launch { calls.answer(callId, TelecomPolicy.telecomAnswerMedia) }
+        val offered = calls.activeCalls.value.firstOrNull { it.callId == callId }?.media
+        val media = TelecomPolicy.answerMedia(offered, cameraUsable = camera.isCameraUsable())
+        logger.info(TAG, "Telecom answered $callId with $media")
+        scope.launch { calls.answer(callId, media) }
     }
 
     override fun onRejected(callId: CallId, reason: HangupReason) {

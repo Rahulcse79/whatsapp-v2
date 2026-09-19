@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.outlined.DateRange
 import androidx.compose.material.icons.outlined.DeleteSweep
@@ -195,8 +196,15 @@ fun HistoryScreen(
  * behind the one filter icon, in [FilterMenu]. Five chips and a funnel used to sit under
  * the tabs together; two of them said "Missed", and none of them said which was on.
  *
- * That leaves three things in the bar: search, filters, and the three dots everything
- * rare lives behind.
+ * That leaves four things in the bar: search, filters, the three dots everything rare
+ * lives behind, and the gear.
+ *
+ * The gear is last, and it is here for the same reason it is on Chats: Settings stopped
+ * being a tab, so it is reached from a top-level destination — and *which* top-level
+ * destination you happen to be on when you want it is not something a user should have to
+ * think about. Having it on one of the two tabs and not the other made settings a place
+ * you first had to navigate to a different tab to reach. Outermost of the four, because it
+ * is the only one that leaves this screen; the three to its left all act on the list.
  */
 @Composable
 private fun HistoryHeader(state: HistoryUiState, actions: HistoryActions, zone: ZoneId) {
@@ -228,6 +236,13 @@ private fun HistoryHeader(state: HistoryUiState, actions: HistoryActions, zone: 
             FilterMenu(query = state.query, actions = actions, zone = zone)
             if (!state.searching) {
                 OverflowMenu(actions = actions)
+                // Hidden while searching, like the other two: the search field needs the
+                // width, and nobody reaches for settings mid-query.
+                actions.onOpenSettings?.let { open ->
+                    IconButton(onClick = open, modifier = Modifier.testTag(TAG_SETTINGS)) {
+                        Icon(Icons.Filled.Settings, contentDescription = "Open settings")
+                    }
+                }
             }
         },
         below = {
@@ -993,6 +1008,9 @@ internal const val TAG_OVERFLOW = "history-overflow"
 internal const val TAG_RECORDINGS = "history-recordings"
 internal const val TAG_OVERFLOW_MENU = "history-overflow-menu"
 internal const val TAG_SEARCH = "history-search"
+
+/** Identifies the gear, so a test presses the control it means rather than an icon. */
+internal const val TAG_SETTINGS = "history-settings"
 internal const val TAG_SEARCH_FIELD = "history-search-field"
 
 /** Identifies a direction in the filter menu, so a test presses the one it means. */

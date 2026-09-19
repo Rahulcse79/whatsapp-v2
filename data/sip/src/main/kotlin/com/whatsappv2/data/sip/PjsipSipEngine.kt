@@ -1483,7 +1483,18 @@ internal class PjsipSipEngine @Inject constructor(
 
     internal companion object {
         const val TAG = "PjsipSipEngine"
-        const val DEFAULT_EXPIRY_SECONDS = 3_600
+
+        /**
+         * The expiry to report for an account this engine has no requested value for.
+         *
+         * The domain's default rather than a number of its own. It is only ever a
+         * fallback — `requestedExpiry` is written when the account registers — but the
+         * one case it covers is a registration event arriving for an account the engine
+         * did not place, and reporting an hour there while every account in the app asks
+         * for three minutes would put a figure on the account screen that nothing on the
+         * wire agrees with.
+         */
+        const val DEFAULT_EXPIRY_SECONDS = SipAccount.DEFAULT_EXPIRY_SECONDS
 
         /**
          * How many inbound INVITEs may queue for a collector that is not there yet.

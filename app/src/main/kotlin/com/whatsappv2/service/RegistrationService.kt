@@ -1,14 +1,17 @@
 package com.whatsappv2.service
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -26,6 +29,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -57,6 +61,27 @@ import javax.inject.Inject
  * notification beside this one would leave the user looking at "1 active call" and a
  * ringing card that disagree, and would leave the `phoneCall` foreground type attached to
  * the wrong one.
+ *
+ * ## Surviving the platform
+ *
+ * The service is what keeps the process — and with it every registration — alive when
+ * the app is not on screen, so it has to come back from the three ways Android takes a
+ * process away short of a force-stop:
+ *
+ * - **Killed for memory, or by an OEM that ends a process with its task.** `START_STICKY`
+ *   while there is a reason to run: the platform restarts the service in a new process,
+ *   `SipApplication.onCreate` restores every logged-in account, and the restore grace
+ *   below stops the service from stopping itself before that restore has reported.
+ * - **The task swiped from Recents.** [onTaskRemoved] starts the service again on the
+ *   spot and books a restart alarm a few seconds out, for the handsets (a Zebra, a
+ *   Samsung) that kill the process regardless of the foreground service. Both are no-ops
+ *   on a platform that did the right thing already.
+ * - **A reboot or an update.** `BootReceiver` starts the service; the process start does
+ *   the rest.
+ *
+ * What none of this can do is survive a *force-stop*: Android puts the package in the
+ * stopped state and delivers it nothing — no alarm, no broadcast, no push — until the
+ * user opens it. That is the platform's rule, and the app recovers on the next launch.
  *
  * ## Failing to start
  *
@@ -98,6 +123,10 @@ class RegistrationService : Service() {
     @Inject
     lateinit var ringer: Ringer
 
+    /** Whether any account is logged in — the user's intent, read beside the registrar's state. */
+    @Inject
+    lateinit var demand: RegistrationDemand
+
     /**
      * The main thread, deliberately.
      *
@@ -118,9 +147,9 @@ class RegistrationService : Service() {
         callNotifications.createChannel()
 
         scope.launch {
-            combine(registrar.registrationState, calls.activeCalls) { registrations, active ->
+            combine(registrar.registrationState, calls.activeCalls, demand.wanted) { registrations, active, wanted ->
                 Presentation(
-                    decision = ServiceRunPolicy.decide(registrations, active.size),
+                    decision = ServiceRunPolicy.decide(registrations, active.size, wanted),
                     summary = RegistrationSummaryFactory.summarise(registrations, active.size),
                     call = CallNotificationPolicy.decide(active),
                 )
@@ -169,17 +198,66 @@ class RegistrationService : Service() {
      * `startForegroundService`, and it has to be kept even when the answer is "there is
      * nothing to do". Stopping without keeping it is the crash.
      *
-     * START_NOT_STICKY: if the process is killed, the app decides whether to register
-     * again on next launch. Restarting a bare service with no state would put a
-     * notification on screen with nothing behind it.
+     * ## Sticky while there is a reason to be
+     *
+     * `START_STICKY` when the decision is to run, so a process the platform kills comes
+     * back with its service; `START_NOT_STICKY` when it is to stop, so a service that has
+     * nothing to hold open is not resurrected to put an empty notification on screen.
+     *
+     * ## The restore grace
+     *
+     * A sticky restart arrives with a null intent; a boot or a task swipe arrives with
+     * [EXTRA_EXPECT_RESTORE]. Both mean "the accounts are about to be restored" — and both
+     * arrive in a process so new that the account store has not answered yet, so
+     * [RegistrationDemand] still says false and the registrar's map is empty. The policy
+     * would say `Stop`, the service would stop, and the restart would have achieved a
+     * notification flashed on and off. So a start of that kind holds the service up for
+     * [RESTORE_GRACE_MS] regardless of the decision, then re-evaluates: by then the store
+     * has answered and the stack has started registering, or there genuinely is nothing.
      */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val expectRestore = intent == null || intent.getBooleanExtra(EXTRA_EXPECT_RESTORE, false)
+        if (expectRestore) beginRestoreGrace()
+
         val presentation = currentPresentation()
 
         startOrUpdate(presentation.decision.foregroundReason(), presentation)
 
-        if (presentation.decision is ServiceDecision.Stop) stopSelfSafely()
-        return START_NOT_STICKY
+        if (presentation.decision is ServiceDecision.Stop && !inRestoreGrace()) stopSelfSafely()
+        return if (presentation.decision is ServiceDecision.Run || inRestoreGrace()) START_STICKY else START_NOT_STICKY
+    }
+
+    /**
+     * The task was swiped from Recents. The service is meant to outlive that, and on most
+     * builds it does with no help; this is for the ones where it does not.
+     *
+     * Starting again from here is a no-op on a platform that keeps the process, and on
+     * one that ends it the alarm is what brings it back — the alarm belongs to the system,
+     * not to this process. Nothing is booked when there is no reason to run: a logged-out
+     * app swiped away should stay away.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (currentPresentation().decision is ServiceDecision.Run) {
+            logger.info(TAG, "Task removed; keeping the registration alive")
+            start(this, expectRestore = true)
+            scheduleRestart(this)
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
+    /** Elapsed-realtime deadline until which a `Stop` decision is not acted on. */
+    private var restoreGraceUntil = 0L
+
+    private fun inRestoreGrace(): Boolean = SystemClock.elapsedRealtime() < restoreGraceUntil
+
+    private fun beginRestoreGrace() {
+        restoreGraceUntil = SystemClock.elapsedRealtime() + RESTORE_GRACE_MS
+        // When the grace ends the flow may not emit — nothing changed — so the decision is
+        // taken again explicitly. A restore that succeeded has made this a no-op.
+        scope.launch {
+            delay(RESTORE_GRACE_MS)
+            render(currentPresentation())
+        }
     }
 
     /** What the service should be showing right now, read straight from the state holders. */
@@ -187,7 +265,7 @@ class RegistrationService : Service() {
         val registrations = registrar.registrationState.value
         val active = calls.activeCalls.value
         return Presentation(
-            decision = ServiceRunPolicy.decide(registrations, active.size),
+            decision = ServiceRunPolicy.decide(registrations, active.size, demand.wanted.value),
             summary = RegistrationSummaryFactory.summarise(registrations, active.size),
             call = CallNotificationPolicy.decide(active),
         )
@@ -210,7 +288,10 @@ class RegistrationService : Service() {
         }
 
         when (val decision = presentation.decision) {
-            is ServiceDecision.Stop -> stopSelfSafely()
+            // Inside the restore grace a Stop is "nothing reported yet", not "nothing to
+            // do": stay foreground with whatever summary there is and wait it out.
+            is ServiceDecision.Stop ->
+                if (inRestoreGrace()) startOrUpdate(ServiceReason.REGISTRATION, presentation) else stopSelfSafely()
             is ServiceDecision.Run -> startOrUpdate(decision.reason, presentation)
         }
     }
@@ -429,11 +510,43 @@ class RegistrationService : Service() {
          * registration right now, which is the platform's decision to make. The next
          * foreground moment starts it.
          */
-        fun start(context: Context) {
+        fun start(context: Context, expectRestore: Boolean = false) {
             runCatching {
-                context.startForegroundService(Intent(context, RegistrationService::class.java))
+                context.startForegroundService(startIntent(context, expectRestore))
             }
         }
+
+        private fun startIntent(context: Context, expectRestore: Boolean): Intent =
+            Intent(context, RegistrationService::class.java).putExtra(EXTRA_EXPECT_RESTORE, expectRestore)
+
+        /**
+         * Books [ServiceRestartReceiver] a few seconds out. Inexact and allowed while idle:
+         * a few seconds either way do not matter, and an exact alarm needs a permission
+         * this app has no other use for.
+         */
+        fun scheduleRestart(context: Context) {
+            val alarms = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val pending = PendingIntent.getBroadcast(
+                context,
+                RESTART_REQUEST_CODE,
+                Intent(context, ServiceRestartReceiver::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            alarms.setAndAllowWhileIdle(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                SystemClock.elapsedRealtime() + RESTART_DELAY_MS,
+                pending,
+            )
+        }
+
+        /** "The accounts are about to be restored — do not stop before they are." */
+        private const val EXTRA_EXPECT_RESTORE = "com.whatsappv2.EXPECT_RESTORE"
+
+        /** Long enough for the account store to answer and the first REGISTER to go out. */
+        private const val RESTORE_GRACE_MS = 20_000L
+
+        private const val RESTART_DELAY_MS = 3_000L
+        private const val RESTART_REQUEST_CODE = 41
 
         fun stop(context: Context) {
             context.stopService(Intent(context, RegistrationService::class.java))

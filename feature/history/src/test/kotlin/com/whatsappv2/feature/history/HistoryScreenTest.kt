@@ -167,6 +167,27 @@ class HistoryScreenTest {
     }
 
     @Test
+    fun `the gear opens settings, and is absent where there is nowhere to go`() {
+        // Settings is not a tab, so it is reached from a top-level destination - and it is
+        // on both of them now, not just Chats, so which tab you happen to be on when you
+        // want it is not something to think about.
+        var opened = 0
+        setContent(actions = HistoryActions(onOpenSettings = { opened++ }))
+
+        compose.onNodeWithTag(TAG_SETTINGS).assertIsDisplayed().performClick()
+        assertEquals(1, opened)
+    }
+
+    @Test
+    fun `no gear is drawn without somewhere for it to go`() {
+        // The callback is nullable precisely so a preview, or a surface with no navigation
+        // behind it, gets no gear rather than one that does nothing when pressed.
+        setContent(actions = HistoryActions())
+
+        compose.onNodeWithTag(TAG_SETTINGS).assertDoesNotExist()
+    }
+
+    @Test
     fun `clearing the whole log is behind the overflow, not a button in the bar`() {
         // Deleting everything was one tap from the bar it shares with Search. It is a
         // once-a-year action, so it lives where once-a-year actions live.

@@ -62,13 +62,26 @@ fun AppRoot(
     modifier: Modifier = Modifier,
     navController: NavHostController = rememberNavController(),
     /**
-     * Runs a video call once the camera has been asked for (Task 74).
+     * Runs a video call once the microphone and the camera have been asked for (Task 74).
      *
      * Defaulted to a pass-through so a test or a preview can render the whole app without
      * a `PermissionCoordinator`. `MainActivity` supplies the real one, which is also the
      * only place that provides the coordinator it needs.
+     *
+     * It may decline to run `proceed` at all — see [callGate]. That is a change from when
+     * this gate only covered the camera and always proceeded.
      */
     videoGate: (proceed: () -> Unit) -> Unit = { it() },
+    /**
+     * Runs an audio call once the microphone has been asked for.
+     *
+     * Separate from [videoGate] because the two answers mean different things, not because
+     * the flow differs: a refused camera still places the call (audio only), and a refused
+     * microphone places nothing, because the stack cannot open a capture device and the
+     * call would hang at *Calling* with no explanation. `:app` composes both gates; the
+     * screens below only know that pressing a call button goes through one of them.
+     */
+    callGate: (proceed: () -> Unit) -> Unit = { it() },
     /**
      * A destination something outside this graph has asked for, or null.
      *
@@ -109,6 +122,7 @@ fun AppRoot(
                 // same padding is what stops every screen re-adding that inset.
                 .consumeWindowInsets(padding),
             videoGate = videoGate,
+            callGate = callGate,
         )
     }
 }

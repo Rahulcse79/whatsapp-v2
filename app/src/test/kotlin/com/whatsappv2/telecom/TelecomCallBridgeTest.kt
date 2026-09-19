@@ -4,6 +4,7 @@ import com.whatsappv2.core.common.logging.NoOpLogger
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.call.CallState
+import com.whatsappv2.domain.engine.CameraAvailability
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.CodecPreferences
@@ -59,7 +60,21 @@ class TelecomCallBridgeTest {
         isDefault = true,
     )
 
-    private fun TestScope.bridge() = TelecomCallBridge(engine, engine, engine, NoOpLogger, this)
+    /** A camera whose answer is fixed, so the downgrade rule is exercised both ways. */
+    private class FixedCamera(private val usable: Boolean) : CameraAvailability {
+        override fun isCameraUsable(): Boolean = usable
+    }
+
+    private fun TestScope.bridge(cameraUsable: Boolean = true) =
+        TelecomCallBridge(engine, engine, engine, FixedCamera(cameraUsable), NoOpLogger, this)
+
+    private suspend fun ringingCall(offered: MediaProfile): CallId {
+        engine.givenRegistered(account())
+        return engine.simulateIncomingCall(account().id, target, media = offered).callId
+    }
+
+    private fun answeredMedia(call: CallId): MediaProfile? =
+        engine.activeCalls.value.firstOrNull { it.callId == call }?.media
 
     private suspend fun connectedCall(): CallId {
         val id = requireNotNull(engine.placeCall(account().id, target, MediaProfile.AUDIO).getOrNull())
@@ -107,4 +122,40 @@ class TelecomCallBridgeTest {
 
         assertEquals(listOf("${first.value}:false"), holdsAsked())
     }
+
+    @Test
+    fun `Telecom answering a video call answers it with video`() = runTest(UnconfinedTestDispatcher()) {
+        // The defect this closes: the heads-up notification and Telecom both answered
+        // every call audio-only, so a video call picked up from the popup connected with
+        // no video and no way back to it but a re-INVITE.
+        val call = ringingCall(MediaProfile.AUDIO_VIDEO)
+
+        bridge().onAnswered(call)
+
+        assertEquals(MediaProfile.AUDIO_VIDEO, answeredMedia(call))
+    }
+
+    @Test
+    fun `Telecom answering an audio call does not add video to it`() = runTest(UnconfinedTestDispatcher()) {
+        // The other half of the rule. Answering follows the offer; it never escalates,
+        // because an audio caller did not ask to be seen.
+        val call = ringingCall(MediaProfile.AUDIO)
+
+        bridge().onAnswered(call)
+
+        assertEquals(MediaProfile.AUDIO, answeredMedia(call))
+    }
+
+    @Test
+    fun `a video call answers audio-only when the camera cannot be used`() =
+        runTest(UnconfinedTestDispatcher()) {
+            // Downgrade, never refuse. Telecom's answer can arrive from a lock screen or a
+            // car display, neither of which can show a permission dialog, so a call that
+            // needed one would be a call nobody could take.
+            val call = ringingCall(MediaProfile.AUDIO_VIDEO)
+
+            bridge(cameraUsable = false).onAnswered(call)
+
+            assertEquals(MediaProfile.AUDIO, answeredMedia(call))
+        }
 }

@@ -8,6 +8,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
+import com.whatsappv2.domain.model.SipAccount
 import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -17,7 +18,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * The version 1 → 2 migration, against a version 1 database built by hand.
+ * Every migration, against a version 1 database built by hand.
  *
  * ## Why not `MigrationTestHelper`
  *
@@ -123,7 +124,62 @@ class SipAccountMigrationTest {
         // still delete every account on a real device.
         assertTrue(SipAccountDatabase.MIGRATIONS.any { it.startVersion == 1 && it.endVersion == 2 })
         assertTrue(SipAccountDatabase.MIGRATIONS.any { it.startVersion == 2 && it.endVersion == 3 })
-        assertEquals(3, SipAccountDatabase.VERSION)
+        assertTrue(SipAccountDatabase.MIGRATIONS.any { it.startVersion == 3 && it.endVersion == 4 })
+        assertEquals(4, SipAccountDatabase.VERSION)
+    }
+
+    @Test
+    fun `an account on the old hour-long expiry is moved to the new default`() {
+        // `MIGRATION_1_2`'s argument a third time: 3600 was the draft's opening value and
+        // nobody typed it. The expiry is also the re-registration interval, so leaving the
+        // row alone ships the new default and leaves the handset refreshing twice an hour
+        // behind a NAT mapping that is long gone.
+        writeVersionOne { db ->
+            db.insert("sip_accounts", CONFLICT_FAIL, accountRow(id = "acct-1", iceEnabled = 0))
+        }
+
+        val migrated = openWithMigrations()
+
+        assertEquals(
+            SipAccount.DEFAULT_EXPIRY_SECONDS,
+            migrated.intOf("SELECT registration_expiry_seconds FROM sip_accounts WHERE id = 'acct-1'"),
+        )
+    }
+
+    @Test
+    fun `an expiry somebody actually chose is left alone`() {
+        // The difference from the two migrations above, and the reason this one has a
+        // WHERE clause: the old default was one exact value, so a row on anything else is
+        // a decision and survives. 180 is already the new default and must not move either.
+        writeVersionOne { db ->
+            db.insert(
+                "sip_accounts",
+                CONFLICT_FAIL,
+                accountRow(id = "acct-1", iceEnabled = 0, expirySeconds = 600),
+            )
+            db.insert(
+                "sip_accounts",
+                CONFLICT_FAIL,
+                accountRow(id = "acct-2", iceEnabled = 0, expirySeconds = 86_400),
+            )
+            db.insert(
+                "sip_accounts",
+                CONFLICT_FAIL,
+                accountRow(id = "acct-3", iceEnabled = 0, expirySeconds = SipAccount.DEFAULT_EXPIRY_SECONDS),
+            )
+        }
+
+        val migrated = openWithMigrations()
+
+        assertEquals(600, migrated.intOf("SELECT registration_expiry_seconds FROM sip_accounts WHERE id = 'acct-1'"))
+        assertEquals(
+            86_400,
+            migrated.intOf("SELECT registration_expiry_seconds FROM sip_accounts WHERE id = 'acct-2'"),
+        )
+        assertEquals(
+            SipAccount.DEFAULT_EXPIRY_SECONDS,
+            migrated.intOf("SELECT registration_expiry_seconds FROM sip_accounts WHERE id = 'acct-3'"),
+        )
     }
 
     /**
@@ -184,7 +240,13 @@ class SipAccountMigrationTest {
             cursor.getString(0)
         }
 
-    private fun accountRow(id: String, iceEnabled: Int, srtp: String = "OPTIONAL") = ContentValues().apply {
+    private fun accountRow(
+        id: String,
+        iceEnabled: Int,
+        srtp: String = "OPTIONAL",
+        /** The value every account carried before `MIGRATION_3_4`. */
+        expirySeconds: Int = 3_600,
+    ) = ContentValues().apply {
         put("id", id)
         put("label", "Work")
         // Distinct per row: `index_sip_accounts_username_domain` is unique, so three
@@ -193,7 +255,7 @@ class SipAccountMigrationTest {
         put("password_ciphertext", "hunter22-ciphertext")
         put("domain", "sip.example.com")
         put("transport", "UDP")
-        put("registration_expiry_seconds", 3_600)
+        put("registration_expiry_seconds", expirySeconds)
         put("ice_enabled", iceEnabled)
         put("stun_enabled", 1)
         put("keepalive_interval_seconds", 30)
