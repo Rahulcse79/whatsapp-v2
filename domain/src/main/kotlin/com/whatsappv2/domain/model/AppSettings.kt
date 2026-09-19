@@ -36,7 +36,7 @@ enum class PreferredAudioRoute {
  * schedule without anyone having asked it to.
  */
 enum class ThemeMode {
-    /** The default. Dark when the phone is dark, light when it is light. */
+    /** Dark when the phone is dark, light when it is light. Not the default — see [AppSettings]. */
     SYSTEM,
 
     /** Light, whatever the phone is doing. */
@@ -87,10 +87,19 @@ data class AppSettings(
     /**
      * Light, dark, or follow the phone.
      *
-     * Follows the phone on a fresh install, which is what the app did before there was a
-     * choice, so nobody's phone changes appearance because it updated.
+     * **Light** on a fresh install. It followed the phone, on the reasoning that this is
+     * what the app did before there was a choice and so nobody's appearance changes
+     * because of an update — a good argument about the *update* and the wrong default for
+     * the app. This is a softphone whose screens are a green bar over pale surfaces, and
+     * the light palette is the one they were drawn and checked in; a handset in dark mode
+     * got the dark palette on first launch without anybody having asked for it.
+     *
+     * Only the default moves. `SYSTEM` is still in the enum, still offered in Settings and
+     * still the right answer for anyone who wants it — and a choice already stored is
+     * untouched, because this is `AppSettings.DEFAULT` and DataStore only falls back to it
+     * for a key that was never written.
      */
-    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val themeMode: ThemeMode = ThemeMode.LIGHT,
 
     /**
      * Whether SIP signalling is written to the log.
