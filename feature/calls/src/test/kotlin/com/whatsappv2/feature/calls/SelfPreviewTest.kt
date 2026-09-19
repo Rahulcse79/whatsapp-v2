@@ -69,13 +69,38 @@ class SelfPreviewTest {
         compose.onNodeWithTag(tag).getBoundsInRoot().let { DpSize(it.width, it.height) }
 
     @Test
-    fun `it shows the camera, a minimise control and a resize grip`() {
+    fun `it shows the camera and a size control, and the grip once maximised`() {
         render()
 
         compose.onNodeWithTag(TAG_PREVIEW).assertIsDisplayed()
         compose.onNodeWithTag(TAG_PREVIEW_PICTURE).assertIsDisplayed()
         compose.onNodeWithTag(TAG_PREVIEW_TOGGLE).assertIsDisplayed()
+        // It opens minimised, and minimised is already the floor the grip stops at, so
+        // there is nothing for the grip to do until the card has been grown.
+        compose.onNodeWithTag(TAG_PREVIEW_GRIP).assertDoesNotExist()
+
+        compose.onNodeWithTag(TAG_PREVIEW_TOGGLE).performClick()
+
         compose.onNodeWithTag(TAG_PREVIEW_GRIP).assertIsDisplayed()
+    }
+
+    @Test
+    fun `maximising doubles the card and minimising brings it back`() {
+        // The control's whole job, and what it could not be seen to do before: the two
+        // ends were the same size unless the grip had been used first.
+        render()
+        val minimised = sizeOf(TAG_PREVIEW)
+
+        compose.onNodeWithTag(TAG_PREVIEW_TOGGLE).performClick()
+        val maximised = sizeOf(TAG_PREVIEW)
+
+        assertTrue(
+            kotlin.math.abs(minimised.width.value * 2 - maximised.width.value) <= 1f,
+            "maximised is not twice minimised: $maximised from $minimised",
+        )
+
+        compose.onNodeWithTag(TAG_PREVIEW_TOGGLE).performClick()
+        assertEquals(minimised, sizeOf(TAG_PREVIEW), "minimising did not return to the small card")
     }
 
     @Test
@@ -83,9 +108,11 @@ class SelfPreviewTest {
         render()
         val opened = sizeOf(TAG_PREVIEW)
 
-        // The box opens at the floor, so there is nothing to shrink until it has been
-        // grown: drag the grip outward — it sits at the box's inward corner, so outward is
-        // up and left for the default bottom-right parking — and let go.
+        // The box opens minimised, so maximise it before the grip exists to be dragged.
+        compose.onNodeWithTag(TAG_PREVIEW_TOGGLE).performClick()
+
+        // Drag the grip outward — it sits at the box's inward corner, so outward is up and
+        // left for the default bottom-right parking — and let go.
         compose.onNodeWithTag(TAG_PREVIEW_GRIP).performTouchInput {
             swipe(start = center, end = Offset(center.x - width * 20, center.y - height * 20), durationMillis = 200)
         }
@@ -107,7 +134,12 @@ class SelfPreviewTest {
     @Test
     fun `restoring gives back the size it had, and the grip with it`() {
         render()
+
+        // Maximise first — the preview opens minimised now — and that is the size the
+        // round trip below has to give back.
+        compose.onNodeWithTag(TAG_PREVIEW_TOGGLE).performClick()
         val full = sizeOf(TAG_PREVIEW)
+        compose.onNodeWithTag(TAG_PREVIEW_GRIP).assertIsDisplayed()
 
         compose.onNodeWithTag(TAG_PREVIEW_TOGGLE).performClick()
         // No grip while minimised: minimised is already the floor the grip stops at.
@@ -120,15 +152,19 @@ class SelfPreviewTest {
     }
 
     @Test
-    fun `the preview is square, and the camera's window is the whole of it`() {
+    fun `the preview is 9-16 portrait, and the camera's window is the whole of it`() {
+        // A landscape camera, deliberately: the box's shape is its own and takes nothing
+        // from the frame, so a 1280x720 sensor must still produce a tall card.
         render(localFrame = VideoSize(1280, 720))
 
         val box = sizeOf(TAG_PREVIEW)
         val window = sizeOf(TAG_PREVIEW_PICTURE)
 
+        val expectedHeight = box.width.value *
+            VideoLayout.PREVIEW_ASPECT_HEIGHT / VideoLayout.PREVIEW_ASPECT_WIDTH
         assertTrue(
-            kotlin.math.abs(box.width.value - box.height.value) <= 1f,
-            "not square: $box",
+            kotlin.math.abs(box.height.value - expectedHeight) <= 1f,
+            "not 9:16: $box",
         )
         // The camera's visible window is the box itself, with no margin inside it. The
         // view *within* that window is larger — `VideoLayout.previewPicture` covers rather
@@ -137,7 +173,7 @@ class SelfPreviewTest {
         // picture covers is asserted in `VideoLayoutTest`; that it is cropped rather than
         // overflowing depends on the camera being a `TextureView` (a `SurfaceView` drew
         // across the whole screen, 2026-09-17), which only a handset shows.
-        assertEquals(box, window, "the camera does not fill its square")
+        assertEquals(box, window, "the camera does not fill its box")
     }
 
     @Test

@@ -101,27 +101,36 @@ object VideoLayout {
     }
 
     /**
-     * The self-view's box: a square, at the size the user chose.
+     * The self-view's box: **9:16 portrait**, at the size the user chose.
      *
-     * ## Square, and nothing from the camera
+     * ## The shape is fixed, and it comes from the screen rather than the camera
      *
-     * [scale] and [minimised] set the width and the height is the same, whatever the
-     * camera is producing. The picture is then scaled to **cover** the square and the
-     * overflow cropped — see [previewPicture] — so the box is full of camera at every
-     * frame and there is no black bar to explain away.
+     * [scale] and [minimised] set the width; the height follows from
+     * [PREVIEW_ASPECT_WIDTH]:[PREVIEW_ASPECT_HEIGHT], whatever the camera is producing.
+     * The picture is then scaled to **cover** the box and the overflow cropped — see
+     * [previewPicture] — so the box is full of camera at every frame and there is no black
+     * bar to explain away.
      *
-     * The box used to take the frame's shape, and a camera's shape changes: a peer
-     * rotating, a stream dropping resolution under load, or this handset joining a
-     * conference all re-shape the local frame, and the self-view then grew, shrank and
-     * shifted around the corner it was pinned to. Pinned by only two of its edges, a box
-     * whose other two move reads as sliding about the screen. A square takes nothing from
-     * the camera, so nothing the camera does can move it.
+     * Portrait because that is the shape of the phone and of the person in front of it.
+     * Every video-calling app this one sits beside shows the self-view as a tall card in a
+     * corner, and the reason is not fashion: a head-and-shoulders framing is taller than it
+     * is wide, so a portrait window shows the subject and crops the room, while a wide one
+     * shows the room and crops the subject. 9:16 is the sensor's own portrait ratio on
+     * these handsets, so the crop is usually only the overscan.
      *
-     * It was a fixed 3:4 for a while, with the frame fitted inside — and on a handset whose
-     * camera reports a landscape frame that meant a portrait box holding a wide strip of
-     * picture with roughly half the self-view black. Covering a square gives up the edges
-     * of a landscape frame instead, which for a self-view — a face in the middle, room to
-     * spare either side — is the right thing to give up.
+     * It was a **square** before this, and the square was itself a fix: the box used to
+     * take the frame's shape, and a camera's shape changes — a peer rotating, a stream
+     * dropping resolution under load, or this handset joining a conference all re-shape the
+     * local frame, and the self-view then grew, shrank and shifted around the corner it was
+     * pinned to. Pinned by only two of its edges, a box whose other two move reads as
+     * sliding about the screen. That reasoning is why the ratio here is a **constant** and
+     * not the camera's: 9:16 takes nothing from the frame, so nothing the frame does can
+     * move the box. Only the number changed, not the rule.
+     *
+     * Before the square it was a fixed 3:4 with the frame *fitted* inside, which on a
+     * handset reporting a landscape frame meant a portrait box holding a wide strip of
+     * picture with roughly half the self-view black. Covering rather than fitting is what
+     * stopped that, and it is unchanged here.
      *
      * [minimised] ignores [scale] rather than clamping it: minimising jumps to the smallest
      * size — half the largest, the same floor the grip stops at and the size the box opens
@@ -140,8 +149,13 @@ object VideoLayout {
     ): VideoSize {
         if (!available.isKnown) return VideoSize.UNKNOWN
         val fraction = if (minimised) PREVIEW_MINIMISED_FRACTION else fractionFor(scale)
-        val side = (previewBasis(available) * fraction).roundToInt().coerceAtLeast(1)
-        return VideoSize(side, side)
+        val width = (previewBasis(available) * fraction).roundToInt().coerceAtLeast(1)
+        // Integer arithmetic from the width, so the ratio is exact at every size rather
+        // than drifting by a pixel where a float would round the two axes apart.
+        val height = (width.toLong() * PREVIEW_ASPECT_HEIGHT / PREVIEW_ASPECT_WIDTH)
+            .toInt()
+            .coerceAtLeast(1)
+        return VideoSize(width, height)
     }
 
     /**
@@ -177,7 +191,15 @@ object VideoLayout {
      */
     private fun previewBasis(available: VideoSize): Float {
         val short = minOf(available.width, available.height).toFloat()
-        val tallest = available.height * PREVIEW_MAX_HEIGHT_FRACTION / PREVIEW_MAX_FRACTION
+        // The height ceiling, converted back into the width basis the fractions are taken
+        // of. A 9:16 box is nearly twice as tall as it is wide, so this binds long before
+        // the width rule does on any ordinary phone — which is the whole reason the
+        // conversion has to be here rather than a clamp applied afterwards. Clamping the
+        // finished box would cap the top of the range and leave the resize gesture with
+        // nowhere to travel; scaling the basis keeps every size in the same proportion to
+        // every other, which is the property [PREVIEW_MIN_FRACTION] depends on.
+        val tallest = available.height * PREVIEW_MAX_HEIGHT_FRACTION /
+            PREVIEW_MAX_FRACTION * PREVIEW_ASPECT_WIDTH / PREVIEW_ASPECT_HEIGHT
         return minOf(short, tallest).coerceAtLeast(1f)
     }
 
@@ -188,10 +210,11 @@ object VideoLayout {
     /**
      * The camera's picture over [previewBox]: never distorted, never a bar, always cropped.
      *
-     * [cover], so the square is full of camera whatever shape the frame is — a 16:9 frame
-     * loses a strip off each side, a portrait one loses top and bottom, and a face in the
-     * middle keeps everything that matters. The alternative, [fit], leaves a quarter of the
-     * square black above and below a landscape frame, which is what this replaced.
+     * [cover], so the box is full of camera whatever shape the frame is — a landscape
+     * frame loses a strip off each side, a taller-than-9:16 one loses top and bottom, and a
+     * face in the middle keeps everything that matters. The alternative, [fit], leaves the
+     * box black above and below a landscape frame, which is what this replaced. Against a
+     * 9:16 box a sensor already delivering 9:16 portrait loses nothing at all.
      *
      * ## The crop is the caller's, and the view type is what makes it possible
      *
@@ -205,6 +228,18 @@ object VideoLayout {
      * ([CallVideo]), and `SelfPreview`'s container crops it like any other view.
      */
     fun previewPicture(frame: VideoSize, box: VideoSize): VideoSize = cover(frame, box)
+
+    /**
+     * The self-view's shape: 9 wide to 16 tall.
+     *
+     * Two integers rather than one float, so [previewBox] can do the conversion in integer
+     * arithmetic and land on an exact ratio at every size. A float multiplier rounds the
+     * axes independently and leaves a box that is a pixel off square-of-ratio at some
+     * scales — invisible on its own, and visible as a one-pixel seam against the rounded
+     * clip in `SelfPreview.previewSkin`.
+     */
+    const val PREVIEW_ASPECT_WIDTH = 9
+    const val PREVIEW_ASPECT_HEIGHT = 16
 
     private const val FULL_TURN = 360
     private const val QUARTER_TURN = 90
@@ -257,26 +292,43 @@ object VideoLayout {
     private const val PREVIEW_MINIMISED_FRACTION = PREVIEW_MIN_FRACTION
 
     /**
-     * The size a fresh self-view opens at: the floor. The grip only grows from it.
+     * The size the **maximised** self-view takes: the ceiling, twice the floor.
      *
-     * The whole range now hangs off one number, [PREVIEW_MAX_FRACTION]: the floor is half
-     * of it, and the default and the minimised size are both the floor (2026-09-17). It
-     * used to sit in the upper half of the range, after several passes in which every
-     * default was too small to check you are in frame — but "too small" was a floor of an
-     * eleventh of the screen, and a floor of half the largest is not a thumbnail.
+     * ## Why this is the ceiling and not the floor
+     *
+     * It was the floor, and that made the minimise button do nothing. `scale` starts at
+     * `1f`, so a fresh preview's un-minimised size was `PREVIEW_DEFAULT_FRACTION` — and
+     * with the default equal to [PREVIEW_MINIMISED_FRACTION], minimising a box that had
+     * never been touched by the grip moved it from the floor to the floor. The control
+     * animated, the accessibility text changed, and the picture stayed exactly the same
+     * size. Nobody who had not first used the resize grip could see the button work at all.
+     *
+     * So the two ends of the toggle are now genuinely two sizes: minimised is the floor
+     * and maximised is the ceiling, which [PREVIEW_MIN_FRACTION] defines as exactly half
+     * of — so maximising a 9:16 card gives a 9:16 card of twice the width. The grip still
+     * reaches everything in between, and a size chosen with it is still what restoring
+     * gives back.
+     *
+     * The preview **opens** minimised — see `SelfPreviewPlacement.isMinimised` — so the
+     * first thing on screen is the small card and the button grows it. That reverses the
+     * 2026-09-17 decision that the box opens at the floor and the grip only grows it: the
+     * opening size is unchanged, but it is now the *minimised* state rather than a
+     * coincidence of two constants being equal.
      *
      * The controls on it are sized from the box rather than from a constant
      * ([SelfPreview]'s `CONTROL_SHARE`), so this can move without them going out of
      * proportion in either direction.
      */
-    private const val PREVIEW_DEFAULT_FRACTION = PREVIEW_MIN_FRACTION
+    private const val PREVIEW_DEFAULT_FRACTION = PREVIEW_MAX_FRACTION
 
     /**
      * The tallest the self-view may be, as a share of the available height.
      *
-     * For a square box this is the bound that stops a legal *width* from being an illegal
-     * *height* — on a short screen, or in landscape, a box as wide as the width rule allows
-     * would be taller than the display.
+     * This is the bound that stops a legal *width* from being an illegal *height*. It
+     * mattered for a square box on a short screen or in landscape; for a 9:16 box it is the
+     * binding constraint almost everywhere, because the height is 1.78x the width and the
+     * width fraction is taken of the *shorter* edge. See [previewBasis], which converts it
+     * into that basis rather than clamping the finished box.
      *
      * Half the height rather than the 0.40 it was: at 0.40 the ceiling bound the box before
      * the width fraction did on an ordinary 16:9 phone, so the default and the maximum came

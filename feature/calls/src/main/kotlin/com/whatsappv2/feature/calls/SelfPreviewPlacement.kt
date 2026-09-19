@@ -31,8 +31,17 @@ internal data class SelfPreviewPlacement(
     /** A multiplier on the default box, within [VideoLayout.PREVIEW_MIN_SCALE]..MAX. */
     val scale: Float = 1f,
 
-    /** Compact, and still on screen. Never a reason to stop the camera — see [SelfPreview]. */
-    val isMinimised: Boolean = false,
+    /**
+     * Compact, and still on screen. Never a reason to stop the camera — see [SelfPreview].
+     *
+     * **True to begin with**, so the preview opens as the small 9:16 card and the control
+     * on it grows the card to twice the size. It opened un-minimised before, which with
+     * the old `PREVIEW_DEFAULT_FRACTION` meant it opened at the same size minimising would
+     * have given it — a button that could not be seen to do anything until the resize grip
+     * had been used first. The opening size is the same; what changed is that the state it
+     * opens in is now the one the button leaves.
+     */
+    val isMinimised: Boolean = true,
 ) {
 
     /** Parked in [corner], which is where a drag leaves it. */

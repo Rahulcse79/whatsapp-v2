@@ -201,13 +201,18 @@ private fun BoxScope.PreviewContents(
 
     // The controls are sized from the box, not from a constant, and that is what lets the
     // box get small. A fixed 16dp glyph inside 8dp of padding is 32dp of control; in a
-    // preview that is 36dp tall — which a landscape camera at the default width now is —
-    // it covers the picture it is meant to sit on. A share of the box's height instead,
-    // held between the two design-system sizes so it can neither vanish on a minimised
-    // preview nor grow past the size it was drawn for.
-    val control = with(density) { (box.height * CONTROL_SHARE).toDp() }
+    // preview only a little taller than that, it covers the picture it is meant to sit on.
+    // A share of the box instead, held between the two design-system sizes so it can
+    // neither vanish on a minimised preview nor grow past the size it was drawn for.
+    //
+    // The box's **narrower** edge, which since the box became 9:16 portrait is its width.
+    // It was the height, and against a portrait box that is the wrong edge: the height is
+    // 1.78x the width, so a share of it puts a control on the picture wider than the space
+    // beside it and two of them meet in the middle. The narrow edge is the one the
+    // controls have to fit across.
+    val control = with(density) { (minOf(box.width, box.height) * CONTROL_SHARE).toDp() }
         .coerceIn(AppTheme.sizing.videoPreviewControlMinimised, AppTheme.sizing.videoPreviewControl)
-    // The camera, scaled to cover the square and cropped to it by the container.
+    // The camera, scaled to cover the 9:16 box and cropped to it by the container.
     //
     // The crop is real only because the camera is a `TextureView`. A `SurfaceView` in this
     // container drew straight across the screen (2026-09-17): it composites on its own
@@ -218,7 +223,7 @@ private fun BoxScope.PreviewContents(
     //
     // PJSIP's renderer stretches every frame to the bounds it is given (`opengl_dev.c`), so
     // the *view* is still sized in the camera's own proportion. It is only the visible
-    // window onto it that is square.
+    // window onto it that is 9:16.
     val picture = VideoLayout.previewPicture(localFrame, box)
     AndroidView(
         factory = { context ->

@@ -137,43 +137,85 @@ class VideoLayoutTest {
     private val camera = VideoSize(1280, 720)
 
     @Test
-    fun `the box is square at every size the user can reach`() {
-        val sizes = listOf(
-            VideoLayout.previewBox(screen, VideoLayout.PREVIEW_MIN_SCALE),
-            VideoLayout.previewBox(screen, 0.9f),
-            VideoLayout.previewBox(screen),
-            VideoLayout.previewBox(screen, 1.1f),
-            VideoLayout.previewBox(screen, VideoLayout.PREVIEW_MAX_SCALE),
-            VideoLayout.previewBox(screen, minimised = true),
+    fun `the box is 9-16 portrait at every size the user can reach`() {
+        // One shape at every scale, on every screen. The ratio is the rule the self-view
+        // is pinned by: a box whose proportions move as the camera or the scale changes
+        // reads as sliding about the corner it is parked in.
+        val displays = listOf(screen, VideoSize(720, 1600), VideoSize(1080, 2400), VideoSize(2400, 1080))
+        val scales = listOf(
+            VideoLayout.PREVIEW_MIN_SCALE,
+            0.9f,
+            1f,
+            1.1f,
+            VideoLayout.PREVIEW_MAX_SCALE,
         )
 
-        sizes.forEach { box ->
-            assertEquals(box.width, box.height, "not square: $box")
+        displays.forEach { display ->
+            val boxes = scales.map { VideoLayout.previewBox(display, it) } +
+                VideoLayout.previewBox(display, minimised = true)
+
+            boxes.forEach { box ->
+                assertTrue(box.height > box.width, "not portrait: $box on $display")
+                // Exact to the pixel the integer arithmetic lands on, not merely close.
+                assertEquals(
+                    box.width * VideoLayout.PREVIEW_ASPECT_HEIGHT / VideoLayout.PREVIEW_ASPECT_WIDTH,
+                    box.height,
+                    "not 9:16: $box on $display",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `the box never grows past half the height it is allowed`() {
+        // A 9:16 box is 1.78x as tall as it is wide, so the height ceiling — not the width
+        // fraction — is what binds on an ordinary phone. The defect this pins is a box
+        // whose legal width makes it taller than the screen it parks in.
+        listOf(screen, VideoSize(720, 1600), VideoSize(1080, 2400), VideoSize(2400, 1080)).forEach { display ->
+            val largest = VideoLayout.previewBox(display, VideoLayout.PREVIEW_MAX_SCALE)
+            assertTrue(
+                largest.height <= display.height / 2,
+                "taller than half of $display: $largest",
+            )
         }
     }
 
     @Test
     fun `the box does not depend on the camera at all any more`() {
-        // It used to take the frame's shape. A square takes nothing from the camera, which
-        // is why `previewBox` no longer has a frame parameter to get wrong. 480 rather than
-        // 0.45 x 1080 = 486: on a 16:9 screen the half-height ceiling leaves 1066.7 of the
-        // 1080 short edge for the range, and the whole range scales to it.
-        assertEquals(VideoSize(480, 480), VideoLayout.previewBox(screen))
+        // It used to take the frame's shape. A fixed ratio takes nothing from the camera,
+        // which is why `previewBox` has no frame parameter to get wrong.
+        //
+        // On this 1080x1920 screen the half-height ceiling is 960px of picture, which at
+        // 9:16 is 540px of width. `scale = 1f` is now the *maximised* size, so that is
+        // what an untouched box measures; minimised is half of it.
+        assertEquals(VideoSize(540, 960), VideoLayout.previewBox(screen))
+        assertEquals(VideoSize(270, 480), VideoLayout.previewBox(screen, minimised = true))
     }
 
     @Test
-    fun `the default size is the floor, half the largest`() {
-        // The box opens as small as it goes and the grip only grows it (2026-09-17).
-        listOf(screen, VideoSize(720, 1450), VideoSize(2400, 1080)).forEach { display ->
-            assertEquals(
-                VideoLayout.previewBox(display, VideoLayout.PREVIEW_MIN_SCALE),
-                VideoLayout.previewBox(display),
-                "the default is not the smallest size on $display",
+    fun `maximised is exactly twice minimised, on every screen`() {
+        // The two ends of the toggle, and the rule the user sees: the small 9:16 card and
+        // a 9:16 card of twice the width. They were the same size before, which is what
+        // made the control look broken.
+        listOf(screen, VideoSize(720, 1450), VideoSize(720, 1600), VideoSize(2400, 1080)).forEach { display ->
+            val minimised = VideoLayout.previewBox(display, minimised = true)
+            val maximised = VideoLayout.previewBox(display)
+
+            // Within a pixel, not to the pixel: the two sizes come from rounding two
+            // fractions of the same basis independently, and 2 x round(x) is not
+            // round(2x) at every basis — 720x1450 lands on 724 against 725.
+            assertTrue(
+                kotlin.math.abs(minimised.width * 2 - maximised.width) <= 1,
+                "maximised is not twice minimised on $display: $minimised vs $maximised",
+            )
+            assertTrue(
+                kotlin.math.abs(minimised.height * 2 - maximised.height) <= 2,
+                "maximised is not twice minimised on $display: $minimised vs $maximised",
             )
             assertEquals(
-                VideoLayout.previewBox(display, VideoLayout.PREVIEW_MAX_SCALE).width / 2,
-                VideoLayout.previewBox(display).width,
-                "the default is not half the largest on $display",
+                VideoLayout.previewBox(display, VideoLayout.PREVIEW_MAX_SCALE),
+                maximised,
+                "an untouched box is not the maximised size on $display",
             )
         }
     }
@@ -184,10 +226,10 @@ class VideoLayoutTest {
     }
 
     @Test
-    fun `the camera covers the square, so there is no black space in it`() {
-        // The defect this pins: fitting a 16:9 frame inside a square leaves a quarter of
-        // the box black, top and bottom. Covering fills it and the surplus is cropped by
-        // the Android-level clip `SelfPreview` wraps the surface in.
+    fun `the camera covers the box, so there is no black space in it`() {
+        // The defect this pins: fitting a landscape frame inside the box leaves it black
+        // top and bottom. Covering fills it and the surplus is cropped by the
+        // Android-level clip `SelfPreview` wraps the surface in.
         val box = VideoLayout.previewBox(screen)
 
         listOf(camera, VideoSize(720, 1280), VideoSize(720, 720)).forEach { frame ->
@@ -203,9 +245,10 @@ class VideoLayoutTest {
     }
 
     @Test
-    fun `the square never exceeds the screen, in either direction`() {
-        // Width is bounded by the fraction; height by PREVIEW_MAX_HEIGHT_FRACTION, which for
-        // a square is the binding one on a tall screen and the only one on a short screen.
+    fun `the box never exceeds the screen, in either direction`() {
+        // Width is bounded by the fraction; height by PREVIEW_MAX_HEIGHT_FRACTION, which
+        // for a 9:16 box is the binding one nearly everywhere — the height is 1.78x the
+        // width while the width fraction is taken of the *shorter* edge.
         listOf(screen, VideoSize(1920, 1080), VideoSize(1080, 2400), VideoSize(2560, 1600))
             .forEach { display ->
                 val box = VideoLayout.previewBox(display, VideoLayout.PREVIEW_MAX_SCALE)
@@ -215,7 +258,11 @@ class VideoLayoutTest {
                     "wider than the screen allows: $box on $display",
                 )
                 assertTrue(box.height < display.height, "taller than the screen: $box on $display")
-                assertEquals(box.width, box.height, "not square on $display")
+                assertEquals(
+                    box.width * VideoLayout.PREVIEW_ASPECT_HEIGHT / VideoLayout.PREVIEW_ASPECT_WIDTH,
+                    box.height,
+                    "not 9:16 on $display",
+                )
             }
     }
 
@@ -274,7 +321,11 @@ class VideoLayoutTest {
             fromLargest.width,
             "minimised is not half the largest",
         )
-        assertEquals(fromLargest.width, fromLargest.height, "the minimised box is not square")
+        assertEquals(
+            fromLargest.width * VideoLayout.PREVIEW_ASPECT_HEIGHT / VideoLayout.PREVIEW_ASPECT_WIDTH,
+            fromLargest.height,
+            "the minimised box is not 9:16",
+        )
     }
 
     @Test
@@ -285,18 +336,18 @@ class VideoLayoutTest {
         // rotation does not move it under the user's finger. The tablet and the landscape
         // phone are the two where the ceiling binds; the phone is one where it does not.
         val phone = VideoSize(1080, 2400)
-        val share = VideoLayout.previewBox(phone).width.toFloat() /
+        val share = VideoLayout.previewBox(phone, minimised = true).width.toFloat() /
             VideoLayout.previewBox(phone, VideoLayout.PREVIEW_MAX_SCALE).width
-        assertTrue(kotlin.math.abs(share - 0.5f) < 0.005f, "the phone is not at the default point: $share")
+        assertTrue(kotlin.math.abs(share - 0.5f) < 0.005f, "the phone is not at the minimised point: $share")
 
         listOf(VideoSize(1600, 2560), VideoSize(2400, 1080)).forEach { display ->
-            val default = VideoLayout.previewBox(display)
+            val minimised = VideoLayout.previewBox(display, minimised = true)
             val largest = VideoLayout.previewBox(display, VideoLayout.PREVIEW_MAX_SCALE)
-            val here = default.width.toFloat() / largest.width
+            val here = minimised.width.toFloat() / largest.width
 
             assertTrue(
                 kotlin.math.abs(here - share) < 0.005f,
-                "a different point of the range on $display: $default of $largest, phone is $share",
+                "a different point of the range on $display: $minimised of $largest, phone is $share",
             )
         }
     }
