@@ -61,13 +61,38 @@ internal object TelecomPolicy {
     }
 
     /**
-     * What Telecom's answer button answers with.
+     * What an answer button outside the in-call screen answers with.
      *
-     * Audio, always. The platform's answer action has no way to say "with video", and
-     * guessing video from the offer would turn a lock-screen tap into an unannounced
-     * camera. A video answer is an explicit button on this app's own incoming screen.
+     * ## The offer decides, not the button
+     *
+     * This used to be the constant [MediaProfile.AUDIO], on the reasoning that neither
+     * Telecom's answer action nor a notification action has a way to say "with video", and
+     * that inferring video from the offer would turn one tap into an unannounced camera.
+     * The first half is true and the second was wrong about whose expectation is being
+     * met. A caller who places a *video* call, and a person who sees a video call
+     * announced and presses Answer, have both already said which kind of call this is —
+     * answering it audio-only is the surprise, and it is the one that cannot be undone
+     * without a re-INVITE neither of them knows how to ask for. Every phone app this one
+     * sits beside answers a video call with video from the heads-up notification.
+     *
+     * So: video when the peer offered video, audio otherwise. There is no third case —
+     * this never *escalates*, because [MediaProfile.withVideo] is not reachable from here.
+     * An audio call answered from a notification is still an audio call.
+     *
+     * ## And the camera still has a veto
+     *
+     * [MediaProfile.downgradedWhenCameraUnavailable] is the same rule the dialler and the
+     * call log use: **downgrade, never refuse**. It matters more here than anywhere else,
+     * because the two callers are a `BroadcastReceiver` and a Telecom callback and neither
+     * can put a permission dialog on screen — a lock-screen answer that needed one would
+     * be a call that could not be taken. Without the camera the call is answered audio-
+     * only and the in-call screen, which *can* ask, offers video from there.
+     *
+     * @param offered what the peer put in its SDP, or null for a call that has already
+     *   gone away — in which case the answer will fail anyway and audio is the safe guess.
      */
-    val telecomAnswerMedia: MediaProfile = MediaProfile.AUDIO
+    fun answerMedia(offered: MediaProfile?, cameraUsable: Boolean): MediaProfile =
+        (offered ?: MediaProfile.AUDIO).downgradedWhenCameraUnavailable(cameraUsable)
 
     /** Hold and unhold, as the FSM understands them. */
     fun holdEvent(held: Boolean): CallEvent =

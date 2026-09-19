@@ -3,6 +3,7 @@ package com.whatsappv2.telecom
 import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallEvent
 import com.whatsappv2.domain.model.HangupReason
+import com.whatsappv2.domain.model.MediaProfile
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -103,6 +104,44 @@ class TelecomPolicyTest {
             "Telecom's refusal is final",
         )
         assertTrue(TelecomPolicy.mayPlaceCall(cellularCallInProgress = false, telecomPermits = true))
+    }
+
+    // ------------------------------------------------------------- answering a call
+
+    @Test
+    fun `a video call is answered with video`() {
+        // The defect: an answer button outside the in-call screen used to answer with the
+        // constant AUDIO, so a video call taken from the heads-up popup connected with no
+        // video at all — and getting it back needed a re-INVITE nobody knows to ask for.
+        assertEquals(
+            MediaProfile.AUDIO_VIDEO,
+            TelecomPolicy.answerMedia(MediaProfile.AUDIO_VIDEO, cameraUsable = true),
+        )
+    }
+
+    @Test
+    fun `an audio call is never escalated to video`() {
+        // The offer decides, in both directions. Answering an audio call "with video"
+        // would be an escalation the caller never asked for (§5.2).
+        assertEquals(MediaProfile.AUDIO, TelecomPolicy.answerMedia(MediaProfile.AUDIO, cameraUsable = true))
+    }
+
+    @Test
+    fun `no usable camera downgrades the answer rather than refusing it`() {
+        // Downgrade, never refuse (Task 51). Both callers of this rule — a
+        // BroadcastReceiver and a Telecom callback — can be reached from a lock screen,
+        // where no permission dialog can be shown, so refusing would lose the call.
+        assertEquals(
+            MediaProfile.AUDIO,
+            TelecomPolicy.answerMedia(MediaProfile.AUDIO_VIDEO, cameraUsable = false),
+        )
+    }
+
+    @Test
+    fun `a call that has already gone is answered as audio`() {
+        // There is no offer left to read. The answer fails either way; guessing video
+        // would mean asking the platform for a camera on the way to that failure.
+        assertEquals(MediaProfile.AUDIO, TelecomPolicy.answerMedia(offered = null, cameraUsable = true))
     }
 
     private companion object {
