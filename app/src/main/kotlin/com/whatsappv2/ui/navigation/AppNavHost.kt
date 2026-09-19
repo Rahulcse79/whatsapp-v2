@@ -59,6 +59,8 @@ fun AppNavHost(
      * machinery to draw a screen that has nothing to do with permissions.
      */
     videoGate: (proceed: () -> Unit) -> Unit = { it() },
+    /** Asks for the microphone before an audio call, and refuses the call without it. */
+    callGate: (proceed: () -> Unit) -> Unit = { it() },
 ) {
     val context = LocalContext.current
 
@@ -109,7 +111,7 @@ fun AppNavHost(
                 fadeOut(tween(PUSH_MILLIS))
         },
     ) {
-        callRoutes(navController, openCall, videoGate)
+        callRoutes(navController, openCall, videoGate, callGate)
         accountRoutes(navController)
     }
 }
@@ -128,6 +130,7 @@ private fun NavGraphBuilder.callRoutes(
     navController: NavHostController,
     openCall: (CallId) -> Unit,
     videoGate: (proceed: () -> Unit) -> Unit,
+    callGate: (proceed: () -> Unit) -> Unit,
 ) {
     // All three routes that can start a video call share one gate. One launcher is
     // enough: only one destination is on screen to press it.
@@ -157,6 +160,7 @@ private fun NavGraphBuilder.callRoutes(
             // having it on only one of the two made it a two-step journey from the other.
             onOpenSettings = { navController.navigate(AppDestination.SETTINGS.route) },
             videoGate = videoGate,
+            callGate = callGate,
         )
     }
 
@@ -165,6 +169,7 @@ private fun NavGraphBuilder.callRoutes(
             onCallPlaced = openCall,
             onBack = { navController.popBackStack() },
             videoGate = videoGate,
+            callGate = callGate,
         )
     }
 

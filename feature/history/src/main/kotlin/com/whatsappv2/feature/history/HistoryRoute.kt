@@ -39,6 +39,11 @@ fun HistoryRoute(
      * declined camera still places an audio call, which is `MediaProfile`'s rule.
      */
     videoGate: (proceed: () -> Unit) -> Unit = { it() },
+    /**
+     * Runs a redial once the microphone has been asked for, and not at all if it is
+     * refused — the stack cannot open a capture device without one.
+     */
+    callGate: (proceed: () -> Unit) -> Unit = { it() },
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val rows = viewModel.rows.collectAsLazyPagingItems()
@@ -64,7 +69,7 @@ fun HistoryRoute(
         }
     }
 
-    val actions = remember(viewModel, onOpenDialer, onOpenRecordings, onOpenSettings, videoGate) {
+    val actions = remember(viewModel, onOpenDialer, onOpenRecordings, onOpenSettings, videoGate, callGate) {
         HistoryActions(
             onFilterChanged = viewModel::onFilterChanged,
             onSearchToggled = viewModel::onSearchToggled,
@@ -78,8 +83,9 @@ fun HistoryRoute(
             onClearAllRequested = viewModel::onClearAllRequested,
             onClearAllDismissed = viewModel::onClearAllDismissed,
             onClearAllConfirmed = viewModel::onClearAllConfirmed,
-            onCallBack = viewModel::onCallBack,
-            onVideoCallBack = { entry -> videoGate { viewModel.onVideoCallBack(entry) } },
+            // Gated like the dialler's: a redial is a call, and a call needs a microphone.
+            onCallBack = { entry -> callGate { viewModel.onCallBack(entry) } },
+            onVideoCallBack = { entry -> callGate { videoGate { viewModel.onVideoCallBack(entry) } } },
             onOpenDialer = onOpenDialer,
             onOpenRecordings = onOpenRecordings,
             onOpenSettings = onOpenSettings,

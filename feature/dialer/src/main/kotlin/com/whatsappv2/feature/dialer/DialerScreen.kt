@@ -75,6 +75,12 @@ fun DialerScreen(
      * declined camera still places an audio call, which is `MediaProfile`'s rule.
      */
     videoGate: (proceed: () -> Unit) -> Unit = { it() },
+    /**
+     * Runs an audio call once the microphone has been asked for, and not at all if it is
+     * refused: the stack cannot open a capture device without it, so the call would hang
+     * at *Calling* rather than fail in a way anybody could act on.
+     */
+    callGate: (proceed: () -> Unit) -> Unit = { it() },
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -104,9 +110,13 @@ fun DialerScreen(
             onClear = viewModel::onClear,
             onAccountSelected = viewModel::onAccountSelected,
             onRecentSelected = viewModel::onRecentSelected,
-            onContactSelected = viewModel::onContactSelected,
-            onCall = viewModel::onCall,
-            onVideoCall = { videoGate { viewModel.onVideoCall() } },
+            // Every path that starts a call goes through a gate, because every one of them
+            // needs a microphone the user may not have granted yet.
+            onContactSelected = { contact -> callGate { viewModel.onContactSelected(contact) } },
+            onCall = { callGate { viewModel.onCall() } },
+            // Both permissions, in the order they matter: without the microphone there is
+            // no call to make, and without the camera there is still an audio one.
+            onVideoCall = { callGate { videoGate { viewModel.onVideoCall() } } },
             onBack = onBack,
         ),
         modifier = modifier,

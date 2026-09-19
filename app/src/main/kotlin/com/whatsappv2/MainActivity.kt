@@ -22,6 +22,7 @@ import com.whatsappv2.permission.LocalPermissionCoordinator
 import com.whatsappv2.permission.PermissionCoordinator
 import com.whatsappv2.permission.PermissionOnboarding
 import com.whatsappv2.permission.rememberCameraGate
+import com.whatsappv2.permission.rememberMicrophoneGate
 import com.whatsappv2.service.RegistrationDemand
 import com.whatsappv2.ui.AppRoot
 import com.whatsappv2.ui.navigation.AppDestination
@@ -121,7 +122,12 @@ class MainActivity : ComponentActivity() {
                         // The camera is asked for when a video call is pressed, not only on
                         // the first-run screen somebody may have skipped (Task 74).
                         AppRoot(
+                            // Both asked for in context, not only on a first-run screen
+                            // somebody may have skipped (Task 74). The microphone gate
+                            // refuses the call when it is denied; the camera's downgrades
+                            // it to audio — see `MicrophoneGate` for why they differ.
                             videoGate = rememberCameraGate(),
+                            callGate = rememberMicrophoneGate(),
                             openDestination = openDestination,
                             onDestinationOpened = { openDestination = null },
                         )
