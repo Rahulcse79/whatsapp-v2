@@ -138,7 +138,28 @@ data class SipAccount(
         /** 24 hours. Longer and a stale binding outlives any plausible network change. */
         const val MAX_EXPIRY_SECONDS = 86_400
 
-        const val DEFAULT_EXPIRY_SECONDS = 3_600
+        /**
+         * Three minutes.
+         *
+         * The registration expiry is also the re-registration interval: the client
+         * refreshes at roughly half of whatever the registrar granted, so an hour-long
+         * binding is refreshed about twice an hour. That is fine on a server that keeps
+         * its side of the contract and wrong on the two things this app actually meets —
+         * a NAT whose UDP mapping is gone in well under a minute, and a handset that
+         * changes network without telling anybody. Both leave a binding the registrar
+         * still believes in and no path back to the phone, and the calls that arrive in
+         * between are not "delayed", they are lost.
+         *
+         * Three minutes puts a refresh inside the lifetime of every NAT mapping worth
+         * worrying about, and costs one short exchange every ninety seconds — far less
+         * than the keepalive traffic already on the wire. Anything shorter starts paying
+         * real battery for the same result, which is what [MIN_EXPIRY_SECONDS] is about.
+         *
+         * A default, not a rule: the field is in the account editor and a server with its
+         * own policy is entered there. The registrar's granted value still wins when it
+         * is lower (§5.1).
+         */
+        const val DEFAULT_EXPIRY_SECONDS = 180
     }
 }
 

@@ -66,7 +66,10 @@ class SaveAccountUseCaseTest {
         outboundProxy = null,
         port = null,
         transport = transport,
-        registrationExpirySeconds = 3_600,
+        // The draft's own default, so an edit that changes only the label really does
+        // change only the label. Pinned to 3600 this fixture made every "rename" also a
+        // change of registration expiry, which re-registers by design.
+        registrationExpirySeconds = SipAccount.DEFAULT_EXPIRY_SECONDS,
         stunServer = null,
         turn = null,
         natPolicy = NatPolicy.DEFAULT,
