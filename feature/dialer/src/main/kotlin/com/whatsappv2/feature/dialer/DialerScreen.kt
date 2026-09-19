@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Backspace
@@ -46,9 +47,14 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.whatsappv2.core.designsystem.component.AppTopBar
@@ -161,12 +167,8 @@ internal fun DialerScreen(
                 .padding(AppTheme.spacing.large),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            if (state.hasChoiceOfAccounts) {
-                AccountPicker(state = state, onAccountSelected = actions.onAccountSelected)
-            }
-
-            // Always, even with one account — see [AccountStatus].
-            AccountStatus(account = state.selectedAccount)
+            // Always, even with one account — see [AccountHeader].
+            AccountHeader(state = state, onAccountSelected = actions.onAccountSelected)
 
             DialledNumber(state = state, actions = actions)
 
@@ -205,14 +207,14 @@ private fun DialledNumber(state: DialerUiState, actions: DialerActions) {
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().padding(top = AppTheme.spacing.medium),
+        modifier = Modifier.fillMaxWidth().padding(top = AppTheme.spacing.small),
     ) {
         // A spacer the same width as the backspace button, so the number is centred on the
         // screen rather than on the space the button leaves. As a `trailingIcon` the
         // button was inside the text field, and "centred" then meant centred in what was
         // left over — the number sat visibly left of centre whenever the button was there
         // and jumped right when it went away.
-        Spacer(Modifier.size(AppTheme.sizing.callActionButton))
+        Spacer(Modifier.size(AppTheme.sizing.dialKey))
 
         TextField(
             value = field,
@@ -247,7 +249,7 @@ private fun DialledNumber(state: DialerUiState, actions: DialerActions) {
             onClick = actions.onBackspace,
             enabled = state.input.isNotEmpty(),
             modifier = Modifier
-                .size(AppTheme.sizing.callActionButton)
+                .size(AppTheme.sizing.dialKey)
                 .alpha(if (state.input.isEmpty()) 0f else 1f)
                 .testTag(TAG_BACKSPACE),
         ) {
@@ -260,54 +262,137 @@ private fun DialledNumber(state: DialerUiState, actions: DialerActions) {
 }
 
 /**
- * Which extension this call goes out on, and whether it can go out at all.
+ * Which account this call goes out on, whether it can go out at all, and — with more than
+ * one — the way to change it. One card, because it is one question: "as whom, and am I
+ * reachable".
  *
  * ## Why it is always on screen
  *
- * It was not shown at all with one account: [AccountPicker] is hidden below two, on the
- * reasoning that a picker with one entry is a control that cannot be used. That is right
- * about the *picker* and wrong about the *information* — the one thing a dialler has to
- * answer before the call button is pressed is "am I reachable, and as whom", and a single
- * account is still an account that can be offline. So the identity and its state are here
- * unconditionally, and choosing between accounts stays the picker's job.
+ * A picker with one entry is a control that cannot be used, and hiding it was right. But
+ * the *information* it carried went with it, and the one thing a dialler has to answer
+ * before the call button is pressed is exactly that information — a single account is
+ * still an account that can be offline. So the card is unconditional; only the chevron
+ * and the tap are reserved for a real choice.
  *
- * The dot and the word carry the same fact twice on purpose. Colour alone fails for the
- * ~8% of men with a red/green deficiency, and this is exactly the pairing where that
- * matters: the two states are red and green and nothing else distinguishes them.
+ * ## One card, not three lines
+ *
+ * The chooser, the identity under it and the status line under that each said "1000" or
+ * "1000@10.62.196.214" once more: three rows, the address twice (TC15, 2026-09-19). The
+ * label leads, the identity sits under it in the quieter colour — it decides where a bare
+ * extension goes, so it stays — and the state sits at the end, where the eye goes to
+ * check a thing before acting on it.
+ *
+ * ## The dot and the word carry the same fact twice on purpose
+ *
+ * Colour alone fails for the ~8% of men with a red/green deficiency, and this is exactly
+ * the pairing where that matters: the two states are red and green and nothing else
+ * distinguishes them. `StatusLabel` is the design system's pairing and the thing that
+ * makes "never colour alone" hard to break.
  */
 @Composable
-private fun AccountStatus(account: DialerAccount?) {
-    account ?: return
+private fun AccountHeader(
+    state: DialerUiState,
+    onAccountSelected: (AccountId) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selected = state.selectedAccount
+    val choosable = state.hasChoiceOfAccounts
 
-    val tone = if (account.isRegistered) StatusTone.ONLINE else StatusTone.FAILED
-    val colour = if (account.isRegistered) {
-        AppTheme.statusColors.online
-    } else {
-        AppTheme.statusColors.failed
-    }
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(AppTheme.radius.large))
+                .background(MaterialTheme.colorScheme.surfaceContainer)
+                .then(accountChooser(choosable) { expanded = true })
+                .padding(horizontal = AppTheme.spacing.medium, vertical = AppTheme.spacing.small),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.medium),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = selected?.label ?: "Choose an account",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                selected?.let {
+                    Text(
+                        text = it.identity,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            selected?.let {
+                StatusLabel(
+                    tone = if (it.isRegistered) StatusTone.ONLINE else StatusTone.FAILED,
+                    text = if (it.isRegistered) "Registered" else "Unregistered",
+                    modifier = Modifier.testTag(TAG_ACCOUNT_STATUS),
+                )
+            }
+            if (choosable) {
+                Icon(
+                    imageVector = Icons.Filled.ExpandMore,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
 
-    // `StatusLabel` rather than a dot and a Text of this file's own: it is the design
-    // system's pairing and it is the thing that makes "never colour alone" hard to break.
-    // The extension is a second Text beside it because the identity is not the *state* —
-    // it takes the state's colour so the eye reads them as one thing, while the word after
-    // it is what a screen reader and a colour-blind user actually rely on.
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .padding(top = AppTheme.spacing.small)
-            .testTag(TAG_ACCOUNT_STATUS),
-    ) {
-        Text(
-            text = account.identity,
-            style = MaterialTheme.typography.labelLarge,
-            color = colour,
-        )
-        StatusLabel(
-            tone = tone,
-            text = if (account.isRegistered) "Registered" else "Unregistered",
+        AccountMenu(
+            accounts = state.accounts,
+            expanded = expanded,
+            onDismiss = { expanded = false },
+            onAccountSelected = {
+                onAccountSelected(it)
+                expanded = false
+            },
         )
     }
+}
+
+/** The accounts to choose from, dropped down from the card. */
+@Composable
+private fun AccountMenu(
+    accounts: List<DialerAccount>,
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    onAccountSelected: (AccountId) -> Unit,
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        accounts.forEach { account ->
+            DropdownMenuItem(
+                text = {
+                    Column {
+                        Text(account.label)
+                        Text(
+                            // The status is here because it changes what will happen: an
+                            // unregistered account cannot place a call, and the refusal
+                            // is easier to understand before it arrives.
+                            text = if (account.isRegistered) account.identity else "${account.identity} · offline",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                onClick = { onAccountSelected(account.id) },
+                modifier = Modifier.testTag(accountTag(account.id)),
+            )
+        }
+    }
+}
+
+/** The card as a button when there is a choice to make, and plain when there is not. */
+private fun accountChooser(choosable: Boolean, onOpen: () -> Unit): Modifier {
+    if (!choosable) return Modifier
+    return Modifier
+        .clickable(onClick = onOpen, role = Role.Button)
+        .semantics { contentDescription = "Choose the account to call from" }
+        .testTag(TAG_ACCOUNT)
 }
 
 /** A back arrow, because the dialler is a screen opened from Calls now, not a tab (Task 70). */
@@ -338,10 +423,9 @@ private fun DialerTopBar(onBack: () -> Unit) {
 private fun DialerCallButtons(state: DialerUiState, actions: DialerActions) {
     Row(
         horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraLarge),
-        modifier = Modifier.padding(
-            top = AppTheme.spacing.large,
-            bottom = AppTheme.spacing.large,
-        ),
+        // Above only: the Scaffold already keeps the navigation bar clear, and a second
+        // margin below was part of what pushed this row off the screen.
+        modifier = Modifier.padding(top = AppTheme.spacing.medium),
     ) {
         CallActionButton(
             icon = Icons.Filled.Call,
@@ -361,67 +445,6 @@ private fun DialerCallButtons(state: DialerUiState, actions: DialerActions) {
             label = "Video",
             modifier = Modifier.testTag(TAG_VIDEO_CALL),
         )
-    }
-}
-
-/**
- * The per-call account override.
- *
- * Shown only with more than one account, because a picker with one entry is a control that
- * cannot be used. The selected account's identity is shown beneath it: a bare extension is
- * completed against that domain, so which account is chosen decides where `1001` goes.
- */
-@Composable
-private fun AccountPicker(
-    state: DialerUiState,
-    onAccountSelected: (AccountId) -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    val selected = state.selectedAccount
-
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        TextButton(
-            onClick = { expanded = true },
-            modifier = Modifier.testTag(TAG_ACCOUNT),
-        ) {
-            Text(selected?.label ?: "Choose an account")
-            Icon(
-                imageVector = Icons.Filled.ExpandMore,
-                contentDescription = "Choose the account to call from",
-            )
-        }
-        selected?.let {
-            Text(
-                text = it.identity,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            state.accounts.forEach { account ->
-                DropdownMenuItem(
-                    text = {
-                        Column {
-                            Text(account.label)
-                            Text(
-                                // The status is here because it changes what will happen:
-                                // an unregistered account cannot place a call, and the
-                                // refusal is easier to understand before it arrives.
-                                text = if (account.isRegistered) account.identity else "${account.identity} · offline",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    },
-                    onClick = {
-                        onAccountSelected(account.id)
-                        expanded = false
-                    },
-                    modifier = Modifier.testTag(accountTag(account.id)),
-                )
-            }
-        }
     }
 }
 
@@ -508,7 +531,7 @@ private fun Keypad(onDigit: (Char) -> Unit, onClear: () -> Unit) {
     ) {
         KEYPAD_ROWS.forEach { row ->
             Row(
-                horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.large),
+                horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraLarge),
             ) {
                 row.forEach { key -> KeypadKey(key = key, onDigit = onDigit) }
             }
@@ -542,7 +565,7 @@ private fun Keypad(onDigit: (Char) -> Unit, onClear: () -> Unit) {
 private fun KeypadKey(key: Char, onDigit: (Char) -> Unit) {
     Box(
         modifier = Modifier
-            .size(AppTheme.sizing.callActionButton)
+            .size(AppTheme.sizing.dialKey)
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.surfaceContainerHighest)
             .clickable { onDigit(key) }

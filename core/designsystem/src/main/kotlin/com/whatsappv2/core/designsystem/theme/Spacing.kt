@@ -79,6 +79,17 @@ data class Sizing(
     /** Diameter of a call action button. */
     val callActionButton: Dp = 64.dp,
 
+    /**
+     * Diameter of a dial-pad key.
+     *
+     * Smaller than a call control because there are twelve of them in four rows, and the
+     * rows have to sit above the number, the account and the call buttons on a 360 × 800
+     * handset: at 64 dp the keypad pushed the call buttons off the bottom of the screen
+     * and crushed their icons (TC15, 2026-09-19). 56 dp is still above the 48 dp touch
+     * minimum with room to spare.
+     */
+    val dialKey: Dp = 56.dp,
+
     /** Diameter of the answer and hang-up buttons, deliberately larger. */
     val callPrimaryButton: Dp = 72.dp,
 
