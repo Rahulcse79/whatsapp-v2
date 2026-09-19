@@ -85,10 +85,13 @@ class CallScreenTest {
     }
 
     @Test
-    fun `a video answer is offered only when video was offered`() {
-        // Answering with video an offer that was audio-only is an escalation the peer
-        // never asked for, so the button is not there to press.
+    fun `a video offer swaps the answer button rather than adding a third`() {
+        // Two buttons, never three. An audio offer gets Decline and Answer; a video offer
+        // gets Decline and Video, and Video is the *only* way to accept it — the plain
+        // audio Answer that used to sit beside it made every incoming video call a choice
+        // between two nearly identical buttons, one of which quietly dropped the video.
         val state = setContent(display(CallPhase.INCOMING, direction = CallDirection.INCOMING))
+        compose.onNodeWithTag(TAG_ANSWER).assertIsDisplayed()
         compose.onNodeWithTag(TAG_ANSWER_VIDEO).assertDoesNotExist()
 
         state.value = CallUiState.Active(
@@ -97,6 +100,24 @@ class CallScreenTest {
         compose.waitForIdle()
 
         compose.onNodeWithTag(TAG_ANSWER_VIDEO).assertIsDisplayed()
+        compose.onNodeWithTag(TAG_ANSWER).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_DECLINE).assertIsDisplayed()
+    }
+
+    @Test
+    fun `accepting a video call answers it with video`() {
+        // The defect behind the button change: the call was announced as video, accepted,
+        // and connected audio-only because the button that was pressed said audio.
+        var answeredWithVideo: Boolean? = null
+        setContent(
+            display(CallPhase.INCOMING, direction = CallDirection.INCOMING, videoOffered = true),
+            CallActions(onAnswer = { answeredWithVideo = it }),
+        )
+
+        compose.onNodeWithTag(TAG_ANSWER_VIDEO).performClick()
+        compose.waitForIdle()
+
+        assertEquals(true, answeredWithVideo, "accepting a video call must answer with video")
     }
 
     @Test
