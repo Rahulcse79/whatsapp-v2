@@ -110,6 +110,11 @@ class MainActivity : ComponentActivity() {
                             PermissionOnboarding(
                                 coordinator = permissionCoordinator,
                                 onFinished = onFinished,
+                                // Asked for on first run too, as the last step. Battery
+                                // optimisation is what stops a phone ringing, and waiting
+                                // for the first login meant a user who set the app up and
+                                // put it down never saw the question at all.
+                                backgroundAccess = backgroundAccess,
                             )
                         },
                     ) {

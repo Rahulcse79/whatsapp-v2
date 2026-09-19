@@ -28,6 +28,8 @@ fun HistoryRoute(
     onOpenDialer: () -> Unit,
     onOpenRecordings: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Opens settings, the gear in this screen's bar. Null where there is nowhere to go. */
+    onOpenSettings: (() -> Unit)? = null,
     viewModel: HistoryViewModel = hiltViewModel(),
     /**
      * Runs a video call only after the camera has been asked for (Task 74).
@@ -62,7 +64,7 @@ fun HistoryRoute(
         }
     }
 
-    val actions = remember(viewModel, onOpenDialer, onOpenRecordings, videoGate) {
+    val actions = remember(viewModel, onOpenDialer, onOpenRecordings, onOpenSettings, videoGate) {
         HistoryActions(
             onFilterChanged = viewModel::onFilterChanged,
             onSearchToggled = viewModel::onSearchToggled,
@@ -80,6 +82,7 @@ fun HistoryRoute(
             onVideoCallBack = { entry -> videoGate { viewModel.onVideoCallBack(entry) } },
             onOpenDialer = onOpenDialer,
             onOpenRecordings = onOpenRecordings,
+            onOpenSettings = onOpenSettings,
         )
     }
 

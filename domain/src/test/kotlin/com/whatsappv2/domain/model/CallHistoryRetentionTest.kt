@@ -9,8 +9,8 @@ import kotlin.test.assertTrue
 class CallHistoryRetentionTest {
 
     @Test
-    fun `a fresh install keeps twenty days`() {
-        assertEquals(TWENTY, AppSettings.DEFAULT.callHistoryRetention.days)
+    fun `a fresh install keeps seven days`() {
+        assertEquals(SEVEN, AppSettings.DEFAULT.callHistoryRetention.days)
         assertEquals(CallHistoryRetention.DEFAULT, AppSettings.DEFAULT.callHistoryRetention)
     }
 
@@ -62,6 +62,5 @@ class CallHistoryRetentionTest {
         const val NOW = 1_700_000_000_000L
         const val SEVEN = 7
         const val ELEVEN = 11
-        const val TWENTY = 20
     }
 }

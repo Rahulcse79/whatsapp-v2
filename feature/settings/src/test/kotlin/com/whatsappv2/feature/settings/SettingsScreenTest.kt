@@ -83,6 +83,45 @@ class SettingsScreenTest {
     }
 
     @Test
+    fun `the chevron is gone once background access is allowed`() {
+        // A `>` promises that tapping leads somewhere worth going. Allowed is a settled
+        // state with nothing left to ask for, and a chevron beside it reads as an
+        // unfinished errand on a phone that is already set up correctly.
+        setContent(backgroundAccess = BackgroundAccessLink(allowed = true, onOpen = {}))
+
+        compose.onNodeWithTag(TAG_BACKGROUND_ACCESS).performScrollTo()
+        // The unmerged tree: the row is `clickable`, which merges its children's
+        // semantics, so a decorative icon carrying only a test tag is not a node of its
+        // own in the merged one whether it is drawn or not.
+        compose.onNodeWithTag(TAG_BACKGROUND_ACCESS_CHEVRON, useUnmergedTree = true)
+            .assertDoesNotExist()
+    }
+
+    @Test
+    fun `the chevron is there while something still needs doing`() {
+        // The other half: Restricted ends in "Tap to allow", and the chevron is what makes
+        // those words look like a control rather than a complaint.
+        setContent(backgroundAccess = BackgroundAccessLink(allowed = false, onOpen = {}))
+
+        compose.onNodeWithTag(TAG_BACKGROUND_ACCESS).performScrollTo()
+        compose.onNodeWithTag(TAG_BACKGROUND_ACCESS_CHEVRON, useUnmergedTree = true)
+            .assertExists()
+    }
+
+    @Test
+    fun `an allowed row still opens the system screen, so it can be turned back off`() {
+        // Losing the chevron loses the invitation, not the door. The system screen is the
+        // only place background access can be revoked, and the app must not be the one
+        // route to a setting it then refuses to offer.
+        var opened = 0
+        setContent(backgroundAccess = BackgroundAccessLink(allowed = true, onOpen = { opened++ }))
+
+        compose.onNodeWithTag(TAG_BACKGROUND_ACCESS).performScrollTo().performClick()
+
+        assertEquals(1, opened)
+    }
+
+    @Test
     fun `a build with no background-access switch shows no row for it`() {
         setContent(backgroundAccess = null)
         compose.onNodeWithTag(TAG_BACKGROUND_ACCESS).assertDoesNotExist()
@@ -114,10 +153,10 @@ class SettingsScreenTest {
     }
 
     @Test
-    fun `a fresh install shows twenty days`() {
+    fun `a fresh install shows seven days`() {
         setContent()
 
-        compose.onNodeWithText("20 days").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("7 days").performScrollTo().assertIsDisplayed()
     }
 
     @Test
@@ -125,11 +164,13 @@ class SettingsScreenTest {
         var chosen: CallHistoryRetention? = null
         setContent(onRetention = { chosen = it })
 
+        // A length other than the one a fresh install starts at, so what is asserted is
+        // that the tap was reported and not that the field already held it.
         compose.onNodeWithTag(TAG_RETENTION).performScrollTo().performClick()
-        compose.onNodeWithTag(retentionOptionTag(CallHistoryRetention.ofDays(SEVEN))).performClick()
+        compose.onNodeWithTag(retentionOptionTag(CallHistoryRetention.ofDays(NINETY))).performClick()
         compose.waitForIdle()
 
-        assertEquals(CallHistoryRetention.ofDays(SEVEN), chosen)
+        assertEquals(CallHistoryRetention.ofDays(NINETY), chosen)
     }
 
     @Test
@@ -220,7 +261,6 @@ class SettingsScreenTest {
     }
 
     private companion object {
-        const val SEVEN = 7
         const val NINETY = 90
     }
 }

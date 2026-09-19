@@ -16,7 +16,7 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
-import com.whatsappv2.background.LocalBackgroundAccess
+import com.whatsappv2.background.rememberBackgroundAccessLink
 import com.whatsappv2.call.CallActivity
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
@@ -28,7 +28,6 @@ import com.whatsappv2.feature.accounts.status.RegistrationIndicatorRoute
 import com.whatsappv2.feature.dialer.DialerScreen
 import com.whatsappv2.feature.history.HistoryRoute
 import com.whatsappv2.feature.recordings.RecordingsRoute
-import com.whatsappv2.feature.settings.BackgroundAccessLink
 import com.whatsappv2.feature.settings.SettingsScreen
 import com.whatsappv2.ui.chats.ChatsPlaceholderScreen
 
@@ -153,6 +152,10 @@ private fun NavGraphBuilder.callRoutes(
             onCallPlaced = openCall,
             onOpenDialer = { navController.navigate(AppDestination.DIALER.route) },
             onOpenRecordings = { navController.navigate(AppDestination.RECORDINGS.route) },
+            // The same gear as the one on Chats, reaching the same route. Settings is not
+            // a tab, so it is reached from whichever top-level destination you are on —
+            // having it on only one of the two made it a two-step journey from the other.
+            onOpenSettings = { navController.navigate(AppDestination.SETTINGS.route) },
             videoGate = videoGate,
         )
     }
@@ -166,22 +169,13 @@ private fun NavGraphBuilder.callRoutes(
     }
 
     composable(AppDestination.SETTINGS.route) {
-        // The battery-optimisation state is re-read each time the screen composes, so
-        // coming back from the system dialog shows the new answer.
-        val access = LocalBackgroundAccess.current
-        val context = LocalContext.current
         SettingsScreen(
             onOpenAccounts = { navController.navigate(AppDestination.ACCOUNTS.route) },
             onBack = { navController.popBackStack() },
-            backgroundAccess = access?.let {
-                BackgroundAccessLink(
-                    allowed = it.isExempt(),
-                    onOpen = {
-                        runCatching { context.startActivity(it.requestIntent()) }
-                            .onFailure { _ -> runCatching { context.startActivity(it.settingsIntent()) } }
-                    },
-                )
-            },
+            // Re-read on every resume, not on every composition — returning from the
+            // system dialog is a resume and was not a recomposition, which is why the row
+            // used to go on saying "Restricted" after the user had just allowed it.
+            backgroundAccess = rememberBackgroundAccessLink(),
         )
     }
 

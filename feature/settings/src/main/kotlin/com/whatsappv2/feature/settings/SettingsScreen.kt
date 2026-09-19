@@ -269,6 +269,20 @@ private fun LinkCards(links: SettingsLinks?) {
  * app is off screen and nothing re-registers when the network returns. The text says so
  * plainly rather than naming the setting, because "battery optimisation" does not sound
  * like something that stops a phone ringing.
+ *
+ * ## The chevron is only there while there is something to do
+ *
+ * A `>` is a promise that tapping leads somewhere worth going. While the app is
+ * *Restricted* that is exactly true — the row's own last words are "Tap to allow", and the
+ * chevron is what makes them look like a control rather than a complaint. Once the phone
+ * says *Allowed* there is nothing left to ask for: the row has become a statement of fact,
+ * and a chevron beside a settled state reads as an unfinished errand, which is the one
+ * thing this row must not imply on a phone that is already set up correctly.
+ *
+ * The row stays tappable either way. Turning background access back *off* is a thing
+ * somebody may legitimately want, and the system screen is the only place it can be done —
+ * removing the tap would make the app the only route to a setting it then refused to
+ * offer. What goes away is the invitation, not the door.
  */
 @Composable
 private fun BackgroundAccessRow(link: BackgroundAccessLink) {
@@ -300,11 +314,14 @@ private fun BackgroundAccessRow(link: BackgroundAccessLink) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Icon(
-            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        if (!link.allowed) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag(TAG_BACKGROUND_ACCESS_CHEVRON),
+            )
+        }
     }
 }
 
@@ -436,6 +453,9 @@ private fun AccountsRow(onClick: () -> Unit) {
 
 internal const val TAG_ACCOUNTS = "settings-accounts"
 internal const val TAG_BACKGROUND_ACCESS = "settings-background-access"
+
+/** The row's trailing chevron, which exists only while there is something to go and do. */
+internal const val TAG_BACKGROUND_ACCESS_CHEVRON = "settings-background-access-chevron"
 internal const val TAG_BACK = "settings-back"
 internal const val TAG_RETENTION = "settings-retention"
 

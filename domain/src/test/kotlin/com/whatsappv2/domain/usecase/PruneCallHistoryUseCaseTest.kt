@@ -24,6 +24,10 @@ import kotlin.test.assertFalse
  * Every entry here is placed relative to one fixed "now", because the cutoff is computed
  * from the clock the use case is given and nothing else — a test that used the wall clock
  * would pass or fail depending on when it ran.
+ *
+ * The retention is named outright rather than taken from `CallHistoryRetention.DEFAULT`:
+ * what is under test is the rule, and it has to hold at any length, including lengths no
+ * fresh install starts at.
  */
 class PruneCallHistoryUseCaseTest {
 
@@ -36,7 +40,7 @@ class PruneCallHistoryUseCaseTest {
         val old = log.record(entry(daysAgo = TWENTY_ONE))
         val recent = log.record(entry(daysAgo = NINETEEN))
 
-        val removed = prune(CallHistoryRetention.DEFAULT)
+        val removed = prune(TWENTY_DAYS)
 
         assertEquals(1, removed)
         assertEquals(listOf(recent.id), remainingIds())
@@ -53,17 +57,17 @@ class PruneCallHistoryUseCaseTest {
         val keptAudio = log.record(entry(daysAgo = NINETEEN, media = MediaProfile.AUDIO))
         val keptVideo = log.record(entry(daysAgo = NINETEEN, media = MediaProfile.AUDIO_VIDEO))
 
-        assertEquals(2, prune(CallHistoryRetention.DEFAULT))
+        assertEquals(2, prune(TWENTY_DAYS))
         assertEquals(setOf(keptAudio.id, keptVideo.id), remainingIds().toSet())
     }
 
     @Test
     fun `a call that started exactly at the cutoff is kept`() = runTest {
-        // Strictly older than the retention. "Keep 20 days" that dropped a call from
+        // Strictly older than the retention. A "keep 20 days" that dropped a call from
         // exactly 20 days ago would be keeping 19 days and a bit.
         log.record(entry(daysAgo = TWENTY))
 
-        assertEquals(0, prune(CallHistoryRetention.DEFAULT))
+        assertEquals(0, prune(TWENTY_DAYS))
         assertEquals(1, remainingIds().size)
     }
 
@@ -80,7 +84,7 @@ class PruneCallHistoryUseCaseTest {
         // Changing the setting is not retroactive in either direction: a shorter one
         // removes on the next run, and nothing brings a removed call back.
         val kept = log.record(entry(daysAgo = NINETEEN))
-        assertEquals(0, prune(CallHistoryRetention.DEFAULT))
+        assertEquals(0, prune(TWENTY_DAYS))
 
         assertEquals(1, prune(CallHistoryRetention.ofDays(SEVEN)))
         assertFalse(kept.id in remainingIds())
@@ -114,6 +118,7 @@ class PruneCallHistoryUseCaseTest {
         const val NINETEEN = 19
         const val TWENTY = 20
         const val TWENTY_ONE = 21
+        val TWENTY_DAYS: CallHistoryRetention = CallHistoryRetention.ofDays(TWENTY)
         const val TEN_YEARS_IN_DAYS = 3_650
     }
 }

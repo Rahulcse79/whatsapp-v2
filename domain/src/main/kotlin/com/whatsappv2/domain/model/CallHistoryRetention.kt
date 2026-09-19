@@ -52,13 +52,16 @@ value class CallHistoryRetention private constructor(val days: Int) {
         val KEEP_EVERYTHING = CallHistoryRetention(KEEP_EVERYTHING_DAYS)
 
         /**
-         * Twenty days.
+         * Seven days.
          *
-         * Long enough that "who called me a couple of weeks ago" is still answerable, and
-         * short enough that a phone in daily use does not accumulate a log nobody has ever
-         * scrolled to the end of.
+         * A week is the span people reach back over unaided — "who called me on Monday" —
+         * and it is the shortest preset that still answers that question. A fresh install
+         * therefore keeps the least history that is useful rather than the most it could:
+         * the log is a record of who rang, and holding one longer than anybody asked for
+         * is storage the user did not choose. Eight longer lengths are one tap away in
+         * Settings for anyone who wants them.
          */
-        val DEFAULT = CallHistoryRetention(20)
+        val DEFAULT = CallHistoryRetention(7)
 
         /**
          * What the dropdown offers, shortest first, with "keep everything" last.
@@ -67,9 +70,9 @@ value class CallHistoryRetention private constructor(val days: Int) {
          * user looking for "longer than what I have" scans downwards and stops.
          */
         val PRESETS: List<CallHistoryRetention> = listOf(
-            CallHistoryRetention(7),
-            CallHistoryRetention(14),
             DEFAULT,
+            CallHistoryRetention(14),
+            CallHistoryRetention(20),
             CallHistoryRetention(30),
             CallHistoryRetention(60),
             CallHistoryRetention(90),

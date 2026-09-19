@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -24,7 +26,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import com.whatsappv2.background.BackgroundAccess
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
 import com.whatsappv2.core.designsystem.theme.AppTheme
@@ -49,6 +54,21 @@ import com.whatsappv2.core.designsystem.theme.AppTheme
  *  - the in-context path still exists, so a permission declined here is asked for again by
  *    the feature that needs it, once, at the moment it would work.
  *
+ * ## The last step is not a runtime permission
+ *
+ * Battery-optimisation exemption — "run in the background" — is asked for here too, after
+ * the runtime permissions and last of all. It is not an [AppPermission] and cannot be:
+ * there is no `requestPermissions` call behind it, no rationale flow, and no "denied
+ * permanently" state, only a system switch the app may open and the user may set. So it
+ * gets a step of the same shape rather than a place in the enum, which would put a member
+ * in `AppPermission` that every `when` over it would have to pretend to handle.
+ *
+ * It is last deliberately. The runtime permissions block features and this one blocks
+ * *reachability*, which is harder to feel on a phone with no account on it yet — by the
+ * end of the flow the user has at least seen what the app is for. And it is still asked
+ * again after the first login, by `BackgroundAccessPrompt`, for anyone who took the
+ * "Skip all" door out of this screen before reaching it.
+ *
  * ## What it does not ask for
  *
  * An "Accounts" permission. `GET_ACCOUNTS` reads the *device's* account list — Google,
@@ -62,10 +82,26 @@ fun PermissionOnboarding(
     coordinator: PermissionCoordinator,
     onFinished: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * The battery-optimisation switch, for the final step. Null leaves that step out —
+     * which is how a preview, a test, and a build with nothing to show for it get the
+     * runtime permissions alone.
+     */
+    backgroundAccess: BackgroundAccess? = null,
 ) {
+    val context = LocalContext.current
+
     // Everything that exists on this device and is not already held. A permission the
     // platform grants implicitly must not be shown as something to decide.
     val requests = remember(coordinator) { onboardingPermissions(coordinator) }
+
+    // Decided once, on the way in, and not re-read. The step count is printed on every
+    // screen ("Step 2 of 6"), and a count that shrank underneath the user when they came
+    // back from the system dialog would be worse than a count that is briefly one too many.
+    val backgroundStep = remember(backgroundAccess) {
+        backgroundAccess != null && !backgroundAccess.isExempt()
+    }
+    val stepCount = requests.size + if (backgroundStep) 1 else 0
 
     var index by remember { mutableIntStateOf(0) }
     val current = requests.getOrNull(index)
@@ -80,28 +116,84 @@ fun PermissionOnboarding(
         index += 1
     }
 
-    if (current == null) {
-        // Nothing left to ask, on this run or at all. Finishing from a composition effect
-        // rather than during composition: onFinished writes to a tracker.
-        LaunchedEffect(Unit) { onFinished() }
+    if (current != null) {
+        OnboardingStep(
+            content = current.asStepContent(),
+            stepNumber = index + 1,
+            stepCount = stepCount,
+            onAllow = { launcher.launch(current.manifestPermission) },
+            onSkipOne = { index += 1 },
+            onSkipAll = onFinished,
+            modifier = modifier,
+        )
         return
     }
 
-    OnboardingStep(
-        permission = current,
-        stepNumber = index + 1,
-        stepCount = requests.size,
-        onAllow = { launcher.launch(current.manifestPermission) },
-        onSkipOne = { index += 1 },
-        onSkipAll = onFinished,
-        modifier = modifier,
-    )
+    if (backgroundStep && index == requests.size && backgroundAccess != null) {
+        // Answered either way, so `BackgroundAccessPrompt` does not raise the same
+        // question again after the first login. Somebody who leaves by "Skip all" never
+        // reaches this line, and that later prompt is deliberately still waiting for them.
+        fun answered() {
+            backgroundAccess.markAsked()
+            index += 1
+        }
+
+        OnboardingStep(
+            content = BACKGROUND_ACCESS_STEP,
+            stepNumber = stepCount,
+            stepCount = stepCount,
+            onAllow = {
+                answered()
+                // The system's own dialog decides this, not the app. The full
+                // battery-optimisation list is the fallback for a handset whose
+                // per-package dialog is missing or whose OEM refuses the direct request.
+                runCatching { context.startActivity(backgroundAccess.requestIntent()) }
+                    .onFailure {
+                        runCatching { context.startActivity(backgroundAccess.settingsIntent()) }
+                    }
+            },
+            onSkipOne = ::answered,
+            onSkipAll = onFinished,
+            modifier = modifier,
+        )
+        return
+    }
+
+    // Nothing left to ask, on this run or at all. Finishing from a composition effect
+    // rather than during composition: onFinished writes to a tracker.
+    LaunchedEffect(Unit) { onFinished() }
 }
 
-/** One permission, explained before it is asked for. */
+/**
+ * What one step says, gathered into one value.
+ *
+ * Four fields rather than an [AppPermission], because the last step is not one:
+ * battery-optimisation exemption is a system switch, not a runtime permission, and it has
+ * to read identically to the steps before it or it looks like a different kind of request
+ * bolted on the end. Grouped rather than passed loose for the reason `SettingsActions` is:
+ * they are four halves of one thing, and spread across a signature they pushed
+ * [OnboardingStep] past the parameter limit that keeps it readable.
+ */
+private data class StepContent(
+    val icon: ImageVector,
+    val title: String,
+    val rationale: String,
+    /** What the user loses by saying no, said *before* they choose. */
+    val deniedExplanation: String,
+)
+
+/** A runtime permission's own words, which already exist on the enum. */
+private fun AppPermission.asStepContent() = StepContent(
+    icon = iconForSheet(),
+    title = title,
+    rationale = rationale,
+    deniedExplanation = deniedExplanation,
+)
+
+/** One thing to be asked for, explained before it is asked. */
 @Composable
 private fun OnboardingStep(
-    permission: AppPermission,
+    content: StepContent,
     stepNumber: Int,
     stepCount: Int,
     onAllow: () -> Unit,
@@ -132,19 +224,19 @@ private fun OnboardingStep(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Icon(
-                    imageVector = permission.iconForSheet(),
+                    imageVector = content.icon,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                 )
-                Text(permission.title, style = MaterialTheme.typography.headlineSmall)
+                Text(content.title, style = MaterialTheme.typography.headlineSmall)
             }
 
-            Text(permission.rationale, style = MaterialTheme.typography.bodyMedium)
+            Text(content.rationale, style = MaterialTheme.typography.bodyMedium)
 
             Text(
                 // Said before the choice, not after it. Somebody deciding whether to
                 // decline is entitled to know what declining costs.
-                text = "If you say no: ${permission.deniedExplanation}",
+                text = "If you say no: ${content.deniedExplanation}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -185,6 +277,22 @@ internal fun onboardingPermissions(coordinator: PermissionCoordinator): List<App
             permission.appliesToThisDevice &&
             !coordinator.status(permission, activity = null).isGranted
     }
+
+/**
+ * The last step's words.
+ *
+ * A file-level value rather than four arguments at the call site, so the wording sits
+ * beside the permission rationales it has to read like rather than inside a `when`.
+ */
+private val BACKGROUND_ACCESS_STEP = StepContent(
+    icon = Icons.Filled.BatteryFull,
+    title = "Run in the background",
+    rationale = "This phone may stop the app when it is not on screen, and calls to your " +
+        "extension would then be missed until you open it again. Allowing the app to run " +
+        "in the background keeps it registered and able to ring.",
+    deniedExplanation = "the phone may stop the app when it is not on screen, so calls " +
+        "could be missed. You can allow it later from Settings.",
+)
 
 internal const val TAG_PROGRESS = "onboarding-progress"
 internal const val TAG_ALLOW = "onboarding-allow"

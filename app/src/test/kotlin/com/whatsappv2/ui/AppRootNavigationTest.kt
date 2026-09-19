@@ -29,7 +29,7 @@ import org.robolectric.annotation.Config
  * is still reachable, and the shell survives a configuration change.
  *
  * It clicks what is on screen — the two tabs, the floating button on Calls, the gear on
- * Chats, and the accounts row inside settings. That is the check worth having. Route
+ * each of the two tabs, and the accounts row inside settings. That is the check worth having. Route
  * uniqueness is unit-tested next door, but that proves the routes differ, not that
  * anything on screen can actually open them — which is exactly what regressed when the
  * bar was removed, and what would regress again if the gear went missing.
@@ -166,6 +166,23 @@ class AppRootNavigationTest {
         compose.onNodeWithText("App settings").assertIsDisplayed()
 
         restoration.emulateSavedInstanceStateRestore()
+        compose.waitForIdle()
+
+        compose.onNodeWithText("App settings").assertIsDisplayed()
+    }
+
+    @Test
+    fun `the gear on Calls opens settings too`() {
+        // Settings is reachable from both top-level destinations, not just the first one.
+        // It used to be on Chats alone, which made settings a two-step journey from the
+        // tab a phone app actually sits on.
+        compose.setContent { WhatsAppV2Theme { AppRoot() } }
+
+        compose.onNodeWithTag(tabTag(AppDestination.HISTORY)).performClick()
+        compose.waitForIdle()
+        // By its description rather than its tag: the tag is internal to
+        // `:feature:history`, and the dialler button above is reached the same way.
+        compose.onNodeWithContentDescription("Open settings").performClick()
         compose.waitForIdle()
 
         compose.onNodeWithText("App settings").assertIsDisplayed()
