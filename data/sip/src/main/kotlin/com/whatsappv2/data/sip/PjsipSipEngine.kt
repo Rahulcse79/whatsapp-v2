@@ -853,15 +853,27 @@ internal class PjsipSipEngine @Inject constructor(
      * succeeds quietly, because the caller cannot act on being told otherwise and the
      * outcome they wanted is already true.
      */
+    /**
+     * Ends the call — and the conference it is in, when this device is mixing one.
+     *
+     * Every caller means "the user is ending this call": the End button, the
+     * notification's Hang up, Telecom's disconnect, call waiting's "end this and answer
+     * that". One End button sits under "Conference call", and pressing it used to end the
+     * leg the screen was watching and leave the user in a conference of the other six
+     * (TC15, 2026-09-19). The far end *leaving* is a different path — the stack's ENDED
+     * reaches [endCall] directly — so one member hanging up still leaves the rest talking.
+     * See [deviceControlTargets].
+     */
     override suspend fun hangup(callId: CallId, reason: HangupReason): Outcome<Unit, SipError> {
         if (!started) return failure(SipError.EngineUnavailable)
-        if (callId !in calls.value) return success(Unit)
 
-        callGateway.terminateCall(callId.value)
-        // Ended locally rather than on the stack's ENDED event. The user pressed hang up;
-        // a row that lingers until a BYE is acknowledged reads as a button that did
-        // nothing.
-        endCall(callId, reason)
+        deviceControlTargets(mixed.value, callId).filter { it in calls.value }.forEach { member ->
+            callGateway.terminateCall(member.value)
+            // Ended locally rather than on the stack's ENDED event. The user pressed hang
+            // up; a row that lingers until a BYE is acknowledged reads as a button that
+            // did nothing.
+            endCall(member, reason)
+        }
         return success(Unit)
     }
 
@@ -916,11 +928,28 @@ internal class PjsipSipEngine @Inject constructor(
      * **Already-muted is success, not work.** A headset's mute button arrives here through
      * Telecom, and answering it by setting the platform's mute again would be this app
      * echoing the platform back at itself. The [SipEngine] contract asks for idempotence
-     * anyway; here it also breaks the loop.
+     * anyway; here it also breaks the loop. Idempotence is decided per call rather than
+     * once for the request, because a conference can arrive here half-muted — that is
+     * precisely the state this used to leave behind — and a single early return would
+     * make the repair a no-op.
+     *
+     * **The microphone is a device, not a call.** A member of the local mix holds its own
+     * link from the capture port, so muting reaches every member of the conference this
+     * call is in — see [deviceControlTargets] for what one tap used to do instead.
      */
     override suspend fun setMuted(callId: CallId, muted: Boolean): Outcome<Unit, SipError> {
         if (!started) return failure(SipError.EngineUnavailable)
 
+        // A member that refuses — one that ended between the membership being read and
+        // this line — is a fault worth a warning: it is a leg of the conference left at
+        // the wrong state, and idempotence has already excused the ones with nothing to do.
+        return acrossTheMix(mixed.value, callId, { muteLeg(it, muted) }) { member, error ->
+            logger.warn(TAG, "Microphone state not applied to conference member $member: $error")
+        }
+    }
+
+    /** One leg's half of [setMuted]: the stack's link, the platform's flag, and the FSM. */
+    private fun muteLeg(callId: CallId, muted: Boolean): Outcome<Unit, SipError> {
         val call = calls.value[callId] ?: return failure(SipError.UnknownCall)
         if (call.state.controlsOrNull?.isMuted == muted) return success(Unit)
 
@@ -948,31 +977,34 @@ internal class PjsipSipEngine @Inject constructor(
      * answer by holding us again. With both ends holding, our resume moves the call from
      * `Held(BOTH)` to `Held(REMOTE)` — still held, which is the answer that makes
      * "resume did nothing" impossible to ship.
+     *
+     * ## A conference is held as a conference
+     *
+     * The screen shows one Hold button over "Conference call", so the instruction is about
+     * the conference and every member is held. Holding the watched leg alone left the
+     * other members mixed and live — the user had stepped out of a room that could still
+     * hear them, and the leg they did hold came back on a new `pjmedia_conf` port that
+     * only the resume repaired. See [deviceControlTargets].
      */
     override suspend fun setHold(callId: CallId, held: Boolean): Outcome<Unit, SipError> {
         if (!started) return failure(SipError.EngineUnavailable)
 
-        val call = calls.value[callId] ?: return failure(SipError.UnknownCall)
-        val event = if (held) CallEvent.LocalHold else CallEvent.LocalResume
-
-        val result = CallStateMachine.transition(call.state, event)
-        if (result is TransitionResult.Rejected) {
-            // Logged, not just returned. On a handset the Hold button did nothing twice
-            // over and the app's entire output for both taps was two GC lines - so there
-            // was no way to tell a rejected transition from a re-INVITE the far end never
-            // answered. They need different fixes, so they must look different.
-            logger.warn(TAG, "Hold refused for $callId: cannot ${if (held) "hold" else "resume"} in ${call.state}")
-            return failure(SipError.InvalidState("cannot ${if (held) "hold" else "resume"} in ${call.state}"))
-        }
-
-        if (held && !pendingHolds.add(callId)) {
-            logger.debug(TAG, "Hold already requested for $callId; waiting for the far end")
-            return success(Unit)
-        }
-        logger.info(TAG, "Asking the stack to ${if (held) "hold" else "resume"} $callId")
-        if (held) callGateway.pauseCall(callId.value) else callGateway.resumeCall(callId.value)
-        return success(Unit)
+        // A member the FSM turns away is left where it is, at debug: a member that is
+        // already live when the conference is resumed is the common case, not a fault —
+        // the platform resumes one leg and the others never left — and a warning for
+        // each of them would bury the one below. That one is logged, not just returned:
+        // on a handset the Hold button did nothing twice over and the app's entire output
+        // for both taps was two GC lines, so there was no way to tell a rejected
+        // transition from a re-INVITE the far end never answered. They need different
+        // fixes, so they must look different.
+        return acrossTheMix(mixed.value, callId, { holdLeg(it, held) }) { member, error ->
+            logger.debug(TAG, "Conference member $member left as it is: $error")
+        }.onFailure { logger.warn(TAG, "Hold refused for $callId: $it") }
     }
+
+    /** One leg's half of [setHold]; see [holdLeg] for why the mix uses it directly. */
+    private fun holdLeg(callId: CallId, held: Boolean): Outcome<Unit, SipError> =
+        holdLeg(calls.value[callId], held, pendingHolds, callGateway, logger)
 
     /**
      * Sends one DTMF digit (Task 43, DoD 8).
@@ -1249,7 +1281,7 @@ internal class PjsipSipEngine @Inject constructor(
         // declines those holds reads this set — a membership published only once the
         // stack accepted it would arrive after the holds it exists to refuse.
         mixed.value = establishedForMix(activeCalls.value, callIds).asConferenceOrEmpty()
-        resumeHeldForMix(activeCalls, callIds, logger) { setHold(it, held = false) }
+        resumeHeldForMix(activeCalls, callIds, logger) { holdLeg(it, held = false) }
         val live = liveForMix(activeCalls.value, callIds)
 
         // ADR-009 made audio-only a *decision*; this is what makes it true on the wire.
@@ -1313,7 +1345,7 @@ internal class PjsipSipEngine @Inject constructor(
             mixed = mixed,
             logger = logger,
             clearMix = { conferenceGateway.setConferenceMembers(emptySet()) },
-            resume = { setHold(it, held = false) },
+            resume = { holdLeg(it, held = false) },
             refer = { transfer(it, room, TransferType.BLIND, consultationCallId = null) },
         ).flatMap { joinConference(it, room, MediaProfile.AUDIO_VIDEO) }
     }
@@ -1639,12 +1671,18 @@ private suspend fun resumeHeldForMix(
     calls: StateFlow<List<CallSnapshot>>,
     requested: Set<CallId>,
     logger: Logger,
-    resume: suspend (CallId) -> Unit,
+    resume: suspend (CallId) -> Outcome<Unit, SipError>,
 ) {
     val held = heldForMix(calls.value, requested)
     if (held.isEmpty()) return
 
-    held.forEach { resume(it) }
+    // Each held leg, and only those: this is the engine's own resume, not the user's, so
+    // it does not go through `setHold` and is not fanned out across members that never
+    // left. A leg that cannot be resumed — held by the far end, say — is said so and the
+    // mix goes on without it, exactly as the timeout below treats one that is slow.
+    held.forEach { id ->
+        resume(id).onFailure { logger.warn(PjsipSipEngine.TAG, "Cannot resume $id for the mix: $it") }
+    }
     withTimeoutOrNull(PjsipSipEngine.RESUME_FOR_MIX_TIMEOUT_MILLIS) {
         calls.first { pendingForMix(it, requested).isEmpty() }
     } ?: logger.warn("PjsipSipEngine", "Some calls did not finish resuming in time; mixing the rest")
@@ -1766,7 +1804,7 @@ private suspend fun referLegsIntoRoom(
     mixed: MutableStateFlow<Set<CallId>>,
     logger: Logger,
     clearMix: suspend () -> Unit,
-    resume: suspend (CallId) -> Unit,
+    resume: suspend (CallId) -> Outcome<Unit, SipError>,
     refer: suspend (CallId) -> Outcome<Unit, SipError>,
 ): Outcome<AccountId, SipError> {
     val established = establishedForMix(calls.value, requested)
@@ -1930,3 +1968,98 @@ private fun <T> eventFlow(): MutableSharedFlow<T> = MutableSharedFlow(
 /** Fewer than two mixed calls is a call, not a conference, and the published set says so by being empty. */
 private fun Set<CallId>.asConferenceOrEmpty(): Set<CallId> =
     takeIf { it.size >= SipConferenceController.MINIMUM_MIXED } ?: emptySet()
+
+/**
+ * Every call a **device-level** control has to reach, given the current local mix (ADR-009).
+ *
+ * ## Why this exists at all
+ *
+ * There is one microphone, and a locally-mixed conference gives every member its own link
+ * from it: `pjmedia_conf` connects port 0 (the capture device) to each member's port
+ * separately, so seven members is seven links. `setMicrophoneMuted` opens or closes
+ * exactly one of them. A mute addressed to the leg the screen happens to be watching
+ * therefore silenced the user for one participant and left the other six hearing them,
+ * and the unmute that followed brought the microphone back for that one participant only
+ * — the rest heard silence for the rest of the conference while the button read
+ * "unmuted". Measured on a TC15 on 2026-09-19 against a seven-member mix: one tap
+ * produced exactly one `Port 0 (Android JNI) stop transmitting to port 6` where seven
+ * were needed.
+ *
+ * The same is true of hold: the user holds *the conference*, because that is what the
+ * screen shows, and holding one leg leaves the other six in a conference that is still
+ * carrying the room they believe they have stepped out of.
+ *
+ * ## Why the membership decides, and not the caller
+ *
+ * Every mute path — the in-call button, a headset's own button arriving through Telecom,
+ * and the focus-loss mute in `CallAudioCoordinator` — names a single call, because a
+ * single call is all any of them knows about. None of them can be expected to know that
+ * this device is mixing. The engine owns the membership, so the engine is where one call
+ * becomes the set that shares the device.
+ *
+ * A pure function, and at file level rather than in the engine, so the rule is decidable
+ * in a JVM test and `PjsipSipEngine` stays under detekt's `LargeClass` bound.
+ *
+ * @param mixed the local mix's membership, empty when this device is not mixing.
+ * @return [callId] alone when it is not a member, and the whole conference when it is.
+ *   Never empty: a control always reaches at least the call it named.
+ */
+internal fun deviceControlTargets(mixed: Set<CallId>, callId: CallId): Set<CallId> =
+    if (callId in mixed) mixed else setOf(callId)
+
+/**
+ * Applies a device-level control to [callId] and, through [deviceControlTargets], to every
+ * other member of the local mix it is in.
+ *
+ * The named call's answer is the request's answer: it is the call the caller is looking
+ * at, and a failure there is the one the caller can act on. The other members are
+ * reported to [onMemberRefused] and never allowed to change the result, because one leg
+ * cannot be allowed to leave the rest of the conference at the wrong state — a member
+ * that refuses is skipped, not a reason to stop.
+ */
+private inline fun acrossTheMix(
+    mixed: Set<CallId>,
+    callId: CallId,
+    apply: (CallId) -> Outcome<Unit, SipError>,
+    onMemberRefused: (CallId, SipError) -> Unit,
+): Outcome<Unit, SipError> {
+    val result = apply(callId)
+    (deviceControlTargets(mixed, callId) - callId).forEach { member ->
+        apply(member).onFailure { onMemberRefused(member, it) }
+    }
+    return result
+}
+
+/**
+ * One leg's half of [PjsipSipEngine.setHold]: the FSM's permission, then the re-INVITE.
+ *
+ * At file level like [resumeHeldForMix], and used by it directly rather than through
+ * `setHold`: a mix resumes exactly the legs that are held, one by one, and `setHold`
+ * speaks for the whole conference — the membership the mix has just published would fan
+ * each of those resumes back out across members that are already live.
+ *
+ * @param pendingHolds the holds whose re-INVITE is out. A second ask for one of them is
+ *   answered without a second re-INVITE; see the field for who asks twice.
+ */
+private fun holdLeg(
+    call: CallSnapshot?,
+    held: Boolean,
+    pendingHolds: MutableSet<CallId>,
+    gateway: SipCallGateway,
+    logger: Logger,
+): Outcome<Unit, SipError> {
+    if (call == null) return failure(SipError.UnknownCall)
+    val event = if (held) CallEvent.LocalHold else CallEvent.LocalResume
+    val verb = if (held) "hold" else "resume"
+
+    if (CallStateMachine.transition(call.state, event) is TransitionResult.Rejected) {
+        return failure(SipError.InvalidState("cannot $verb in ${call.state}"))
+    }
+    if (held && !pendingHolds.add(call.callId)) {
+        logger.debug(PjsipSipEngine.TAG, "Hold already requested for ${call.callId}; waiting for the far end")
+        return success(Unit)
+    }
+    logger.info(PjsipSipEngine.TAG, "Asking the stack to $verb ${call.callId}")
+    if (held) gateway.pauseCall(call.callId.value) else gateway.resumeCall(call.callId.value)
+    return success(Unit)
+}

@@ -6,11 +6,13 @@ import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.model.CallId
+import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.SipUri
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -267,5 +269,200 @@ class PjsipSipEngineConferenceTest {
         assertIs<Outcome.Failure<*>>(result)
         assertTrue(fixture.gateway.conferenceMemberships.isEmpty(), "the stack was asked anyway")
         engine.stop()
+    }
+
+    // ------------------------------------------------ the device's own controls (2026-09-19)
+
+    @Test
+    fun `muting a conference mutes every member, because the device has one microphone`() = runTest {
+        // The defect this exists for, measured on a TC15 against a seven-member mix: one
+        // tap on Mute produced exactly one `Port 0 (Android JNI) stop transmitting to
+        // port 6` in pjmedia's own log, and the other six participants went on hearing
+        // the room. `pjmedia_conf` gives every member its own link from the capture port,
+        // so a mute addressed to the leg the screen happens to be watching is a mute of
+        // one seventh of the microphone.
+        val engine = mixedConferenceOfThree()
+        val members = engine.mixedCalls.value
+        assertEquals(3, members.size, "the fixture must build a real conference")
+        fixture.gateway.mutedCalls.clear()
+
+        assertIs<Outcome.Success<Unit>>(engine.setMuted(members.first(), muted = true))
+        advanceUntilIdle()
+
+        assertEquals(
+            members.associate { it.value to true },
+            fixture.gateway.mutedCalls,
+            "every member's link from the capture device must be closed",
+        )
+        assertTrue(
+            engine.activeCalls.value.all { it.state.controlsOrNull?.isMuted == true },
+            "and every member's own state must say so, or the screen and the bridge disagree",
+        )
+        engine.stop()
+    }
+
+    @Test
+    fun `unmuting a conference repairs members that were already muted when they joined`() = runTest {
+        // The reported symptom, in its exact shape: the user is muted, presses unmute, and
+        // stays inaudible to everyone but one participant. A single early return on the
+        // watched call's state — the idempotence shortcut this used to take for the whole
+        // request — makes the repair a no-op precisely when a conference needs it most.
+        val engine = with(fixture) { connectedCall() }
+        val first = engine.activeCalls.value.single().callId
+        engine.setMuted(first, muted = true)
+        runCurrent()
+
+        val members = joinTwoMore(engine)
+        engine.mixCalls(members)
+        advanceUntilIdle()
+        fixture.gateway.mutedCalls.clear()
+
+        // Asked of a member that is *not* the muted one, which is what the screen does:
+        // the button reads the watched leg, and the watched leg may be live already.
+        val watched = members.first { it != first }
+        assertIs<Outcome.Success<Unit>>(engine.setMuted(watched, muted = false))
+        advanceUntilIdle()
+
+        assertEquals(
+            false,
+            fixture.gateway.mutedCalls[first.value],
+            "the member that was muted must have its link from the capture device reopened",
+        )
+        assertTrue(
+            engine.activeCalls.value.none { it.state.controlsOrNull?.isMuted == true },
+            "and no member may be left muted behind an unmuted button",
+        )
+        // Idempotence is per call and stays per call: a member that was never muted is
+        // not asked again, so this cannot become a storm of `pjmedia_conf` calls on every
+        // press in a conference of eight.
+        assertEquals(
+            setOf(first.value),
+            fixture.gateway.mutedCalls.keys,
+            "only the member whose state actually moved should reach the stack",
+        )
+        engine.stop()
+    }
+
+    @Test
+    fun `holding a conference holds every member, not only the leg on screen`() = runTest {
+        // One Hold button sits under the title "Conference call", so it is the conference
+        // that is being held. Holding the watched leg alone left the others mixed and
+        // live: the user had stepped out of a room that could still hear them.
+        val engine = mixedConferenceOfThree()
+        val members = engine.mixedCalls.value
+        fixture.gateway.holdRequests.clear()
+
+        assertIs<Outcome.Success<Unit>>(engine.setHold(members.first(), held = true))
+        advanceUntilIdle()
+
+        assertEquals(
+            members.mapTo(mutableSetOf()) { it.value to true },
+            fixture.gateway.holdRequests.toSet(),
+            "every member must be asked to hold",
+        )
+        engine.stop()
+    }
+
+    @Test
+    fun `a merge resumes exactly the held legs, and asks nothing of the live ones`() = runTest {
+        // The fan-out is for the user's controls, not the engine's own. `mixCalls`
+        // publishes the membership and then resumes each held member; had those resumes
+        // gone through the fanned-out `setHold`, every one of them would have been
+        // re-issued across the members that were never held — rejected by the FSM, but
+        // a warning per live member per merge, and a log in which the real refusal is
+        // one line among many.
+        val engine = with(fixture) { twoCallsOneHeld() }
+        val ids = engine.activeCalls.value.map { it.callId }.toSet()
+        val held = engine.activeCalls.value.single { it.state is CallState.Held }.callId
+        fixture.gateway.holdRequests.clear()
+
+        val merging = async { engine.mixCalls(ids) }
+        runCurrent()
+        fixture.gateway.emitCall(held.value, StackCallState.STREAMS_RUNNING)
+        advanceUntilIdle()
+
+        assertIs<Outcome.Success<Set<CallId>>>(merging.await())
+        assertEquals(
+            listOf(held.value to false),
+            fixture.gateway.holdRequests,
+            "one resume, for the one member that was held",
+        )
+        engine.stop()
+    }
+
+    @Test
+    fun `hanging up a conference ends every member, because one End button is what the screen offers`() = runTest {
+        // Pressing End under "Conference call" ended the leg the screen was watching and
+        // left the user in a conference of the other six (TC15, 2026-09-19).
+        val engine = mixedConferenceOfThree()
+        val members = engine.mixedCalls.value
+        fixture.gateway.terminatedCalls.clear()
+
+        assertIs<Outcome.Success<Unit>>(engine.hangup(members.first(), HangupReason.LOCAL_HANGUP))
+        advanceUntilIdle()
+
+        assertEquals(members.mapTo(mutableSetOf()) { it.value }, fixture.gateway.terminatedCalls.toSet())
+        assertTrue(engine.activeCalls.value.isEmpty(), "no leg may outlive the conference the user ended")
+        assertEquals(emptySet(), engine.mixedCalls.value)
+        engine.stop()
+    }
+
+    @Test
+    fun `a member leaving does not end the conference`() = runTest {
+        // The other direction, which must stay per leg: the far end's BYE is that member
+        // going, and the rest of the room keeps talking.
+        val engine = mixedConferenceOfThree()
+        val members = engine.mixedCalls.value
+        fixture.gateway.terminatedCalls.clear()
+
+        fixture.gateway.emitCall(members.first().value, StackCallState.ENDED)
+        advanceUntilIdle()
+
+        assertTrue(fixture.gateway.terminatedCalls.isEmpty(), "nobody else was hung up")
+        assertEquals(members - members.first(), engine.mixedCalls.value, "the other two are still a conference")
+        engine.stop()
+    }
+
+    @Test
+    fun `a call that is not in a conference is still muted by itself`() = runTest {
+        // The fan-out is the membership's doing and nothing else's. A second call on hold
+        // beside a live one is not a conference, and muting one must not silence the other.
+        val engine = with(fixture) { twoCallsOneHeld() }
+        val connected = engine.activeCalls.value.first { it.state is CallState.Connected }.callId
+        assertEquals(emptySet(), engine.mixedCalls.value, "these calls are not mixed")
+        fixture.gateway.mutedCalls.clear()
+
+        engine.setMuted(connected, muted = true)
+        advanceUntilIdle()
+
+        assertEquals(mapOf(connected.value to true), fixture.gateway.mutedCalls)
+        engine.stop()
+    }
+
+    /** Three connected calls, mixed — the smallest conference that can show a partial fan-out. */
+    private suspend fun TestScope.mixedConferenceOfThree(): PjsipSipEngine {
+        val engine = with(fixture) { connectedCall() }
+        engine.mixCalls(joinTwoMore(engine))
+        advanceUntilIdle()
+        return engine
+    }
+
+    /**
+     * Two further connected calls, and the whole membership afterwards.
+     *
+     * Every leg is already `Connected`, so `mixCalls` has nothing to resume and the merge
+     * lands without the re-INVITE dance the tests above exist to model. Deliberate: these
+     * tests are about a control reaching every member, and a resume in the middle would
+     * only make a partial fan-out harder to read.
+     */
+    private suspend fun TestScope.joinTwoMore(engine: PjsipSipEngine): Set<CallId> {
+        repeat(2) {
+            val id = engine.placeCall(fixture.account.id, PjsipSipEngineFixture.TARGET, MediaProfile.AUDIO)
+                .getOrNull()!!
+            runCurrent()
+            fixture.gateway.emitCall(id.value, StackCallState.CONNECTED)
+            runCurrent()
+        }
+        return engine.activeCalls.value.mapTo(mutableSetOf()) { it.callId }
     }
 }

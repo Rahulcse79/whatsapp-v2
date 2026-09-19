@@ -71,8 +71,18 @@ class CallAudioCoordinator @Inject constructor(
     @Volatile
     private var preference: PreferredAudioRoute = PreferredAudioRoute.AUTOMATIC
 
-    /** True when focus loss muted the call, so regaining it can unmute exactly that. */
-    private var mutedByFocusLoss = false
+    /**
+     * The call whose microphone **this** muted on focus loss, so regaining focus can lift
+     * exactly that and nothing else.
+     *
+     * The call and not a boolean, because the two can disagree: focus is lost while one
+     * call is followed and regained after audio has moved to another, and the flag version
+     * then either unmuted a call it had never muted or — once [end] had cleared it —
+     * unmuted nothing at all and left a live conference with a microphone switched off and
+     * a button reading "unmuted". Naming the call makes both impossible, and makes [end]'s
+     * obligation obvious: restore it before forgetting it.
+     */
+    private var mutedByFocusLoss: CallId? = null
 
     /** The last route this coordinator asked for, to tell its own choices from the user's. */
     private var lastApplied: AudioRoute? = null
@@ -195,7 +205,6 @@ class CallAudioCoordinator @Inject constructor(
         // ran, overriding the press. The request lives on the snapshot until then.
         chosenRoute = call.chosenAudioRoute
         lastApplied = null
-        mutedByFocusLoss = false
         // Before `applyRoute`, which reads it to decide the proximity lock.
         callHasVideo = call.hasVideo
 
@@ -215,10 +224,13 @@ class CallAudioCoordinator @Inject constructor(
         proximity.release()
         audioManager()?.unregisterAudioDeviceCallback(deviceCallback)
         abandonFocus()
+        // Before the call is forgotten, not after: a microphone this coordinator switched
+        // off is this coordinator's to switch back on, and past here there is nothing left
+        // that knows it was ever off.
+        restoreFocusMute()
         activeCall = null
         chosenRoute = null
         lastApplied = null
-        mutedByFocusLoss = false
         callHasVideo = false
         logger.info(TAG, "Call audio released")
     }
@@ -266,20 +278,35 @@ class CallAudioCoordinator @Inject constructor(
 
         when (AudioRoutePolicy.actionFor(change)) {
             FocusAction.MUTE -> {
-                mutedByFocusLoss = true
+                mutedByFocusLoss = callId
                 logger.info(TAG, "Audio focus lost; muting the microphone")
                 scope.launch { media.setMuted(callId, muted = true) }
             }
 
-            FocusAction.RESUME -> if (mutedByFocusLoss) {
-                mutedByFocusLoss = false
-                // Only what focus loss muted. Unmuting a call the user muted themselves
-                // would put a live microphone in a room they thought was private.
-                scope.launch { media.setMuted(callId, muted = false) }
-            }
+            // Only what focus loss muted, and only the call it was applied to. Unmuting a
+            // call the user muted themselves would put a live microphone in a room they
+            // thought was private.
+            FocusAction.RESUME -> restoreFocusMute()
 
             FocusAction.IGNORE -> Unit
         }
+    }
+
+    /**
+     * Lifts the mute this coordinator applied on focus loss, if one is outstanding.
+     *
+     * Called both when focus comes back and when audio stops following the call, because
+     * those are the only two ways the mute can legitimately end — and the second one used
+     * to drop the obligation instead of discharging it: [end] cleared the flag, so a
+     * conference whose focus was lost while a leg was being added kept a dead microphone
+     * for the rest of its life. The engine spreads the unmute across every member of a
+     * local mix, so one call named here restores the whole conference.
+     */
+    private fun restoreFocusMute() {
+        val muted = mutedByFocusLoss ?: return
+        mutedByFocusLoss = null
+        logger.info(TAG, "Restoring the microphone that focus loss muted on $muted")
+        scope.launch { media.setMuted(muted, muted = false) }
     }
 
     private fun requestFocus() {
