@@ -454,23 +454,25 @@ internal fun CallSnapshot.toDisplay(nowEpochMillis: Long, contact: Contact? = nu
  * A merged call kept the first leg's name as its title: "9196" over a button reading
  * "2 calls merged" (TC15, 2026-09-14). The display is built from the watched call, and the
  * watched call is still one leg. But once this device is mixing it, what the user is in
- * is a conference — so that is the title, and the members are the line under it, in the
- * order the calls were made: the information the title carried is moved, not dropped.
- * The photo goes with the name, because a conference has no face.
+ * is a conference — so that is the title, and the photo goes with the name, because a
+ * conference has no face.
+ *
+ * The members are not the line under it. They were, once — every label joined with a
+ * dot — and on a conference of seven that line read `1005 · 1001 · 1002 · 1003 · 1005 ·
+ * 1004 · 9198` and truncated (TC15, 2026-09-19). The roster is where they belong: one row
+ * each, name and extension both, and the state of anyone not carrying audio — see
+ * `localMixRoster`. Saying it twice, once legibly and once not, is worse than once.
  *
  * Fewer than [SipConferenceController.MINIMUM_MIXED] mixed calls is a call, not a conference, and a
  * watched call that is not among the mixed ones — a third call on hold beside a merged
  * pair — stays itself. Both leave the display exactly as [toDisplay] made it.
  */
-internal fun CallDisplay.inConferenceIfMixed(calls: List<CallSnapshot>, mixed: Set<CallId>): CallDisplay {
+internal fun CallDisplay.inConferenceIfMixed(mixed: Set<CallId>): CallDisplay {
     if (mixed.size < SipConferenceController.MINIMUM_MIXED || callId !in mixed) return this
 
-    val members = calls.filter { it.callId in mixed }
     return copy(
         title = CONFERENCE_TITLE,
-        // The watched call keeps its address-book name; the others carry no contact
-        // lookup, exactly as the held-call banner does not.
-        subtitle = members.joinToString(MEMBER_SEPARATOR) { if (it.callId == callId) title else it.label() },
+        subtitle = null,
         photoUri = null,
         isMixed = true,
     )
@@ -481,5 +483,4 @@ internal fun CallSnapshot.label(): String =
     remoteDisplayName?.takeIf { it.isNotBlank() } ?: remote.user ?: remote.host.rendered
 
 internal const val CONFERENCE_TITLE = "Conference call"
-private const val MEMBER_SEPARATOR = " · "
 private const val MILLIS_PER_SECOND = 1_000L

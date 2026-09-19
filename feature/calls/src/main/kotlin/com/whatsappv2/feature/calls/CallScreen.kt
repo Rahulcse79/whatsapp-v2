@@ -9,7 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -87,7 +87,14 @@ internal fun CallScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                // Consumed as well as applied, or they are applied twice: Material 3's
+                // Scaffold pads for the system bars but does not consume them, so the
+                // chrome's own `systemBarsPadding()` added the status bar and the
+                // navigation bar a second time — 90 dp of blank on a 360 × 800 handset,
+                // which is the difference between a roster of one row and one of five
+                // (TC15, 2026-09-19).
+                .consumeWindowInsets(padding),
             contentAlignment = Alignment.Center,
         ) {
             when (state) {
@@ -268,27 +275,45 @@ private fun InCallChrome(
     ) {
         CallBanners(state = state, actions = actions)
 
-        Spacer(Modifier.weight(1f))
-
-        // The avatar gives way to the keypad rather than being scrolled off it: on a small
-        // screen both do not fit, and the keys are what the caller is trying to reach. It
-        // also gives way to video, where the picture is the identity.
-        CallIdentity(call = call, showAvatar = !keypadShown && !call.showsRemoteVideo)
-
-        // The roster stays even with video on: under a mixing bridge the composed picture
-        // is the only place a participant appears, and it does not say who is muted or
-        // who has just left (Task 60).
-        state.conference?.let {
-            ConferenceRoster(
-                state = it,
-                // Over the composed picture it becomes a dark card in white text; on an
-                // audio conference there is nothing underneath it and it stays plain.
-                composedVideo = call.showsRemoteVideo,
-                modifier = Modifier.padding(top = AppTheme.spacing.medium),
+        // The identity and the roster share whatever the controls leave, centred in it —
+        // and the roster is the part that gives way. It is bounded by that space and
+        // scrolls inside it, because a list that grows with the conference used to grow
+        // the column past the screen: three members were enough to draw the End button
+        // over the third row's labels and clip its own icon (TC15, 2026-09-19). Mute and
+        // End are worth reaching more than the eighth row is worth seeing unscrolled.
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // The avatar gives way to the keypad rather than being scrolled off it: on a
+            // small screen both do not fit, and the keys are what the caller is trying to
+            // reach. It also gives way to video, where the picture is the identity, and
+            // to the roster, which is a conference's identity — a group glyph over a list
+            // of the group says nothing the list does not.
+            CallIdentity(
+                call = call,
+                showAvatar = !keypadShown && !call.showsRemoteVideo && state.conference == null,
             )
-        }
 
-        Spacer(Modifier.weight(1f))
+            // The roster stays even with video on: under a mixing bridge the composed
+            // picture is the only place a participant appears, and it does not say who
+            // is muted or who has just left (Task 60).
+            state.conference?.let {
+                ConferenceRoster(
+                    state = it,
+                    // Over the composed picture it becomes a dark card in white text; on
+                    // an audio conference there is nothing underneath it and it stays
+                    // plain.
+                    composedVideo = call.showsRemoteVideo,
+                    modifier = Modifier
+                        .padding(top = AppTheme.spacing.medium)
+                        .weight(1f, fill = false),
+                )
+            }
+        }
 
         CallActionArea(
             state = state,

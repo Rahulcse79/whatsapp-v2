@@ -21,7 +21,10 @@ import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.DtmfDigit
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
+import com.whatsappv2.domain.model.SipAccount
+import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.recording.CallRecorder
+import com.whatsappv2.domain.repository.SipAccountRepository
 import com.whatsappv2.domain.usecase.CallWaitingUseCase
 import com.whatsappv2.domain.usecase.MergeCallsUseCase
 import com.whatsappv2.domain.usecase.MergeResult
@@ -89,6 +92,11 @@ class CallViewModel @Inject constructor(
     private val callWaiting: CallWaitingUseCase,
     private val mergeCalls: MergeCallsUseCase,
     private val surfaces: VideoSurfaceController,
+    // Read for one thing only: this device's own name and extension, so the conference
+    // roster can list the user as the member they are rather than leaving them to count
+    // themselves in. Observed rather than fetched, so it needs no suspending lookup in
+    // the middle of assembling a frame.
+    private val accounts: SipAccountRepository,
     private val clock: Clock,
 ) : ViewModel() {
 
@@ -226,6 +234,9 @@ class CallViewModel @Inject constructor(
         val pendingVideo: PendingVideoRequest?,
         val transfer: TransferUiState,
         val mixed: Set<CallId> = emptySet(),
+        val accounts: List<SipAccount> = emptyList(),
+        /** The address book's name for each call's address, where it has one. */
+        val contacts: Map<SipUri, Contact> = emptyMap(),
     )
 
     private fun stateFor(callId: CallId): Flow<CallUiState> {
@@ -257,7 +268,10 @@ class CallViewModel @Inject constructor(
             // Folded in after the five above rather than as a sixth source: `combine`
             // stops being type-checked past five, and an indexed array of Any is a worse
             // trade than one extra operator.
-        }.combine(mixed) { state, mixedNow -> state.copy(mixed = mixedNow) }
+        }
+            .combine(mixed) { state, mixedNow -> state.copy(mixed = mixedNow) }
+            .combine(accounts.observeAccounts()) { state, all -> state.copy(accounts = all) }
+            .combine(memberContacts()) { state, known -> state.copy(contacts = known) }
 
         // The frame shape is a fifth source rather than something read inside the block,
         // for the reason the comment above gives: a value only read during a combine does
@@ -280,13 +294,18 @@ class CallViewModel @Inject constructor(
                 call != null -> CallUiState.Active(
                     // The conference, once this device is mixing it — not the leg that
                     // happened to be on screen when Merge was pressed.
-                    call = call.toDisplay(now, contact).inConferenceIfMixed(state.calls, state.mixed),
+                    call = call.toDisplay(now, contact).inConferenceIfMixed(state.mixed),
                     otherCalls = heldOthers(state.calls, callId, state.mixed, now),
                     pendingVideoRequest = state.pendingVideo,
                     secondCall = state.secondCallPrompt(callId, call),
                     transfer = state.transfer,
                     recording = state.recording,
-                    conference = state.conference?.toUiState(UNKNOWN_PARTICIPANT),
+                    // The bridge's roster when there is a bridge, and this device's own
+                    // membership when it is the one mixing — the two never coexist, because
+                    // a merge into the bridge tears the local mix down before it transfers
+                    // anybody.
+                    conference = state.conference?.toUiState(UNKNOWN_PARTICIPANT)
+                        ?: localMixRoster(state.calls, state.mixed, state.localParticipant(call), state.contacts),
                     canMerge = state.calls.count { it.state.isEstablished } >= MIN_MERGEABLE,
                     mixedCallCount = state.mixed.size,
                     pendingActions = busy,
@@ -301,6 +320,24 @@ class CallViewModel @Inject constructor(
             }
         }
     }
+
+    /**
+     * This device's identity in the conference, from the account the calls are on.
+     *
+     * The watched call's account rather than the default one: a handset with two accounts
+     * may well be conferencing on the one that is not default, and listing the user under
+     * the wrong extension is worse than not listing them at all. Null until the account is
+     * read back, which the roster renders as a conference of the members alone rather
+     * than as a row with no name.
+     */
+    private fun EngineState.localParticipant(call: CallSnapshot): LocalParticipant? =
+        accounts.firstOrNull { it.id == call.accountId }?.let { account ->
+            val extension = account.extension?.takeIf { it.isNotBlank() } ?: account.username
+            LocalParticipant(
+                label = account.displayName?.takeIf { it.isNotBlank() } ?: extension,
+                extension = extension,
+            )
+        }
 
     /**
      * A second call ringing while this one is up (Task 56).
@@ -340,6 +377,25 @@ class CallViewModel @Inject constructor(
         .distinctUntilChanged()
         .mapLatest { remote -> contacts.resolve(remote) }
         .onStart { emit(null) }
+
+    /**
+     * The address book's name for every call on this device, for the conference roster.
+     *
+     * [contactFor]'s rule, applied to the whole membership: resolved once per set of
+     * addresses rather than per tick or per emission, so a conference of eight costs eight
+     * reads when it forms and none while it lasts. Empty first, for the same reason that
+     * one starts with null — the list draws now and the names arrive when they arrive.
+     * A member the address book does not know is simply absent from the map, and the row
+     * falls back to the extension.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun memberContacts(): Flow<Map<SipUri, Contact>> = calls.activeCalls
+        .map { active -> active.mapTo(LinkedHashSet()) { it.remote } }
+        .distinctUntilChanged()
+        .mapLatest { remotes ->
+            buildMap { remotes.forEach { remote -> contacts.resolve(remote)?.let { put(remote, it) } } }
+        }
+        .onStart { emit(emptyMap()) }
 
     /** Turns each escalation into a question on screen, and waits (Task 54). */
     private fun watchVideoRequests() {

@@ -8,6 +8,7 @@ import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -67,6 +68,63 @@ class CallScreenTest {
 
         compose.onNodeWithTag(TAG_TITLE).assertTextEquals(CONFERENCE_TITLE)
         compose.onNodeWithTag(TAG_CONFERENCE_AVATAR).assertIsDisplayed()
+    }
+
+    @Test
+    fun `a conference lists its members in a dropdown where the face was`() {
+        // A group glyph over a list of the group says nothing the list does not, and on a
+        // handset the space is what keeps the End button on screen (TC15, 2026-09-19).
+        // Nine rows do not fit above the controls either, so the list is behind a header
+        // that says how many are here and drops the names down on request.
+        val state = setContent(
+            display(CallPhase.CONNECTED, durationSeconds = 5).copy(title = CONFERENCE_TITLE, isMixed = true),
+        )
+        state.value = (state.value as CallUiState.Active).copy(
+            conference = ConferenceUiState(
+                participants = listOf(
+                    ConferenceParticipantRow("self", "1000", isMuted = true, isSpeaking = false, isSelf = true),
+                    ConferenceParticipantRow(
+                        id = "a",
+                        label = "Carol",
+                        isMuted = false,
+                        isSpeaking = false,
+                        isSelf = false,
+                        detail = "1003",
+                        status = ParticipantStatus.ON_HOLD,
+                    ),
+                ),
+                rosterAvailable = true,
+            ),
+        )
+
+        compose.onNodeWithTag(TAG_ROSTER).assertIsDisplayed()
+        compose.onNodeWithTag(TAG_ROSTER_SUMMARY, useUnmergedTree = true).assertTextEquals("2 in this call")
+        compose.onNodeWithTag(TAG_ROSTER_LIST).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_CONFERENCE_AVATAR).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_HANG_UP).assertIsDisplayed()
+
+        compose.onNodeWithTag(TAG_ROSTER_TOGGLE).performClick()
+
+        compose.onNodeWithTag(TAG_ROSTER_LIST).assertIsDisplayed()
+        compose.onNodeWithText("1000").assertIsDisplayed()
+        compose.onNodeWithText("You").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Your microphone is off").assertIsDisplayed()
+        compose.onNodeWithText("Carol").assertIsDisplayed()
+        compose.onNodeWithText("1003").assertIsDisplayed()
+        compose.onNodeWithText("On hold").assertIsDisplayed()
+        compose.onNodeWithTag(TAG_HANG_UP).assertIsDisplayed()
+    }
+
+    @Test
+    fun `a bridge that publishes no roster says so, and has nothing to drop down`() {
+        val state = setContent(display(CallPhase.CONNECTED, durationSeconds = 5))
+        state.value = (state.value as CallUiState.Active).copy(
+            conference = ConferenceUiState(participants = emptyList(), rosterAvailable = false),
+        )
+
+        compose.onNodeWithTag(TAG_ROSTER_SUMMARY, useUnmergedTree = true)
+            .assertTextEquals("This bridge does not publish a participant list")
+        compose.onNodeWithTag(TAG_ROSTER_TOGGLE).assertDoesNotExist()
     }
 
     @Test

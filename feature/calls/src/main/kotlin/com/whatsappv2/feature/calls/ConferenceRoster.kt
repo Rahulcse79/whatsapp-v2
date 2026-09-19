@@ -1,64 +1,94 @@
 package com.whatsappv2.feature.calls
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.whatsappv2.core.designsystem.component.Avatar
+import com.whatsappv2.core.designsystem.component.StatusLabel
+import com.whatsappv2.core.designsystem.component.StatusTone
 import com.whatsappv2.core.designsystem.theme.AppTheme
 
 /**
- * Who else is in the conference (Task 60, §2.2, DoD 11).
+ * Who is in the conference (Task 60, §2.2, DoD 11), as a card that drops its list down.
+ *
+ * ## A dropdown, because the list does not fit and the controls must
+ *
+ * A conference of eight is nine rows including the user, and nine rows do not fit between
+ * the title and the control grid on a handset. The header — a count and a chevron — is
+ * what the screen shows by default; tapping it drops the list down beneath, bounded by
+ * the space the controls leave and scrolling inside it. Collapsed, the screen reads as a
+ * call; expanded, it reads as a room. The choice survives rotation.
  *
  * ## The empty case is three cases, and only one of them is "nobody"
  *
  * §13 and Task 60's third done-when are the same rule seen twice: a bridge that publishes
- * no roster must be *said* to publish none, not drawn as an empty room. So this renders
+ * no roster must be *said* to publish none, not drawn as an empty room. So the header says
  * three different things —
  *
- * - **No roster at all**: a line saying the server does not publish one. The call still
- *   works; the app simply does not know who is there, and claiming otherwise would be an
- *   invention.
+ * - **No roster at all**: that the server does not publish one. The call still works; the
+ *   app simply does not know who is there, and claiming otherwise would be an invention.
+ *   There is nothing to drop down, and the chevron is not offered.
  * - **A roster with only you in it**: you are the first to arrive. That is knowledge, and
  *   it is different from the line above.
- * - **A roster with other people**: the list.
+ * - **A roster with other people**: the count, and the list on request.
  *
- * A single "no participants" state would collapse the first two, and the collapse is the
- * dishonest direction: it turns "we cannot see" into "there is nobody".
+ * ## Whose microphone the icon reports
  *
- * ## Mute is the bridge's, not ours
+ * On the user's own row it is this device's microphone, which the user can fix with the
+ * Mute button beside it. On everyone else's it is what the bridge said — the local mix
+ * reports nobody, because it cannot know — and under a dial-in MCU this app cannot change
+ * it, which is why the list offers no per-member controls.
  *
- * The mute icon means the *bridge* reports that participant as muted. The local mute
- * button is a different thing entirely and lives with the call controls; showing them in
- * one list would suggest this app can mute other people, which under a dial-in MCU it
- * cannot.
+ * ## Over video it is a dark card, not a light one
  *
- * ## Over video it is a card, not a column of text
- *
- * With [composedVideo] set the roster is drawn on a dark scrim in white, because it is
- * sitting on top of a picture whose colours are unknown, and `onSurface` over somebody's
- * face is a paragraph you cannot read. The scrim is also what stops it looking like the
- * app has printed a list across the call.
- *
- * That flag is also the honest place for the thing the screen used to say in grey under
- * the video: that the bridge, not this app, decides the arrangement. Somebody wondering
- * why they cannot pin a speaker is reading the participant list, not the middle of the
- * picture — so the sentence lives here now, and the video got its screen back.
+ * With [composedVideo] set the card is translucent black in white, because it is sitting
+ * on top of a picture whose colours are unknown, and `onSurface` over somebody's face is a
+ * paragraph you cannot read. That case is also where the sentence about the bridge
+ * composing the picture belongs: somebody wondering why they cannot pin a speaker is
+ * reading the participant list, not the middle of the picture.
  */
 @Composable
 internal fun ConferenceRoster(
@@ -66,44 +96,145 @@ internal fun ConferenceRoster(
     composedVideo: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    val primary = if (composedVideo) Color.White else MaterialTheme.colorScheme.onSurface
-    val secondary =
-        if (composedVideo) Color.White.copy(alpha = SCRIM_TEXT) else MaterialTheme.colorScheme.onSurfaceVariant
-    val surface = if (composedVideo) {
-        Modifier
-            .clip(RoundedCornerShape(AppTheme.radius.large))
-            .background(Color.Black.copy(alpha = SCRIM))
-            .padding(AppTheme.spacing.medium)
-    } else {
-        Modifier
-    }
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val palette = if (composedVideo) RosterPalette.overVideo() else RosterPalette.plain()
+    val open = expanded && state.rosterAvailable
 
     Column(
-        modifier = modifier.fillMaxWidth().then(surface).testTag(TAG_ROSTER),
-        verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraSmall),
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(AppTheme.radius.large))
+            .background(palette.container)
+            .testTag(TAG_ROSTER),
     ) {
-        Text(
-            text = state.heading(),
-            style = MaterialTheme.typography.titleSmall,
-            color = secondary,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
+        RosterHeader(
+            state = state,
+            expanded = open,
+            palette = palette,
+            onToggle = { expanded = !expanded }.takeIf { state.rosterAvailable },
         )
 
-        if (!state.rosterAvailable) {
+        // Weighted so the list is what yields when the screen is short: the header always
+        // fits, and the rows scroll inside whatever is left above the control grid.
+        AnimatedVisibility(
+            visible = open,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut(),
+            modifier = Modifier.weight(1f, fill = false),
+        ) {
+            ParticipantList(state = state, composedVideo = composedVideo, palette = palette)
+        }
+    }
+}
+
+/**
+ * The always-visible line: a group badge, "Participants", the count, and the chevron.
+ *
+ * One tap target rather than a chevron button beside static text: the whole header is the
+ * affordance, and a 24 dp icon at the end of a 300 dp row is a small thing to find under a
+ * thumb. Announced as a button whose state is "expanded" or "collapsed", so a screen
+ * reader hears what a tap will do rather than a count beside a mystery icon.
+ */
+@Composable
+private fun RosterHeader(
+    state: ConferenceUiState,
+    expanded: Boolean,
+    palette: RosterPalette,
+    onToggle: (() -> Unit)?,
+) {
+    val chevron by animateFloatAsState(targetValue = if (expanded) CHEVRON_OPEN else 0f, label = "chevron")
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(toggleSemantics(expanded, onToggle))
+            .padding(horizontal = AppTheme.spacing.medium, vertical = AppTheme.spacing.small),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.medium),
+    ) {
+        GroupBadge(palette)
+
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "This bridge does not publish a participant list, so the app cannot " +
-                    "say who else is here.",
-                style = MaterialTheme.typography.bodySmall,
-                color = secondary,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().testTag(TAG_NO_ROSTER),
+                text = "Participants",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = palette.primary,
             )
-            return@Column
+            Text(
+                text = state.summary(),
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.secondary,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag(TAG_ROSTER_SUMMARY),
+            )
         }
 
-        state.participants.forEach { participant ->
-            ParticipantRow(participant, primary = primary, secondary = secondary)
+        if (onToggle != null) {
+            Icon(
+                imageVector = Icons.Filled.ExpandMore,
+                contentDescription = null,
+                tint = palette.secondary,
+                modifier = Modifier.rotate(chevron),
+            )
+        }
+    }
+}
+
+/** The header as a button, when there is a list to show; plain otherwise. */
+private fun toggleSemantics(expanded: Boolean, onToggle: (() -> Unit)?): Modifier {
+    if (onToggle == null) return Modifier
+    return Modifier
+        .clickable(onClick = onToggle, role = Role.Button)
+        .semantics {
+            contentDescription = if (expanded) "Hide participants" else "Show participants"
+            stateDescription = if (expanded) "Expanded" else "Collapsed"
+        }
+        .testTag(TAG_ROSTER_TOGGLE)
+}
+
+/** The group glyph in a tinted circle, the size of a row's avatar so the header lines up with the rows. */
+@Composable
+private fun GroupBadge(palette: RosterPalette) {
+    Box(
+        modifier = Modifier
+            .size(AppTheme.sizing.avatarSmall)
+            .clip(CircleShape)
+            .background(palette.badge),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Groups,
+            contentDescription = null,
+            tint = palette.onBadge,
+            modifier = Modifier.size(AppTheme.sizing.listTrailingIcon),
+        )
+    }
+}
+
+@Composable
+private fun ParticipantList(
+    state: ConferenceUiState,
+    composedVideo: Boolean,
+    palette: RosterPalette,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .testTag(TAG_ROSTER_LIST),
+    ) {
+        HorizontalDivider(color = palette.divider)
+
+        state.participants.forEachIndexed { index, participant ->
+            ParticipantRow(participant = participant, palette = palette)
+            if (index < state.participants.lastIndex) {
+                HorizontalDivider(
+                    color = palette.divider,
+                    modifier = Modifier.padding(start = ROW_DIVIDER_INSET),
+                )
+            }
         }
 
         if (composedVideo) {
@@ -111,64 +242,165 @@ internal fun ConferenceRoster(
                 text = "The conference server composes this picture, so who is on screen " +
                     "and how they are arranged is decided there.",
                 style = MaterialTheme.typography.bodySmall,
-                color = secondary,
-                textAlign = TextAlign.Center,
+                color = palette.secondary,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = AppTheme.spacing.small)
+                    .padding(horizontal = AppTheme.spacing.medium, vertical = AppTheme.spacing.small)
                     .testTag(TAG_MIXED_STREAM_NOTE),
             )
         }
     }
 }
 
+/**
+ * One member: their face or initials, their name over their extension, and whatever is
+ * true of them right now — that they are you, that they are held, that they are speaking,
+ * that their microphone is off.
+ *
+ * The name carries the weight and the extension sits under it in the quieter colour,
+ * because "who" is read first and "which extension" is read when somebody has to be
+ * dialled again. The state lives at the end of the row, where a glance down the list
+ * finds every member who is not simply present.
+ */
 @Composable
 private fun ParticipantRow(
     participant: ConferenceParticipantRow,
-    primary: Color,
-    secondary: Color,
+    palette: RosterPalette,
     modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier = modifier.fillMaxWidth().padding(vertical = AppTheme.spacing.extraSmall),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = AppTheme.spacing.medium, vertical = AppTheme.spacing.small)
+            .testTag(participantRowTag(participant.id)),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
+        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.medium),
     ) {
-        Text(
-            text = if (participant.isSelf) "${participant.label} (you)" else participant.label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = primary,
-            modifier = Modifier.weight(1f),
-        )
+        Avatar(displayName = participant.label, photoUri = participant.photoUri)
 
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = participant.label,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                color = palette.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            participant.detail?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.secondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        if (participant.isSelf) {
+            Tag(text = "You", palette = palette)
+        }
+        participant.status?.let {
+            StatusLabel(tone = it.tone(), text = it.label, color = palette.secondary)
+        }
         if (participant.isSpeaking) {
             Icon(
                 imageVector = Icons.Filled.GraphicEq,
                 contentDescription = "Speaking",
-                tint = primary,
+                tint = palette.accent,
+                modifier = Modifier.size(AppTheme.sizing.listTrailingIcon),
             )
         }
         if (participant.isMuted) {
             Icon(
                 imageVector = Icons.Filled.MicOff,
-                contentDescription = "Muted by the bridge",
-                tint = secondary,
+                // Whose mute this is depends on whose row it is: the user's row reports
+                // this device's own microphone, and everyone else's reports what the
+                // bridge said. Saying "muted by the bridge" over your own row would name
+                // the wrong culprit for the one case the user can actually fix.
+                contentDescription = if (participant.isSelf) "Your microphone is off" else "Muted by the bridge",
+                tint = palette.secondary,
+                modifier = Modifier.size(AppTheme.sizing.listTrailingIcon),
             )
         }
     }
 }
 
+/** A small rounded label — "You" — in the card's accent, so it reads as a tag and not as text. */
+@Composable
+private fun Tag(text: String, palette: RosterPalette) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.SemiBold,
+        color = palette.onBadge,
+        modifier = Modifier
+            .clip(RoundedCornerShape(AppTheme.radius.full))
+            .background(palette.badge)
+            .padding(horizontal = AppTheme.spacing.small, vertical = AppTheme.spacing.extraSmall),
+    )
+}
+
 /**
- * What to call the section, given what is actually known.
+ * What the header says under "Participants", given what is actually known.
  *
- * A count only when there is a roster to count. "In this conference" with no number is the
- * honest heading for a bridge that does not say — better than "0 participants", which is a
- * claim, and better than omitting the heading, which hides that this is a conference.
+ * A count only when there is a roster to count. "This bridge does not publish a
+ * participant list" is the honest line for a server that does not say — better than
+ * "0 participants", which is a claim, and better than silence, which hides that this is a
+ * conference.
  */
-private fun ConferenceUiState.heading(): String = when {
-    !rosterAvailable -> "In this conference"
-    participants.isEmpty() -> "In this conference — just you so far"
-    else -> "In this conference — ${participants.size}"
+private fun ConferenceUiState.summary(): String = when {
+    !rosterAvailable -> "This bridge does not publish a participant list"
+    participants.size <= 1 -> "Just you so far"
+    else -> "${participants.size} in this call"
+}
+
+/** The dot beside a member's state: held is deliberately off; the rest are on their way. */
+private fun ParticipantStatus.tone(): StatusTone = when (this) {
+    ParticipantStatus.ON_HOLD -> StatusTone.OFFLINE
+    ParticipantStatus.REJOINING, ParticipantStatus.CONNECTING -> StatusTone.CONNECTING
+}
+
+/**
+ * The card's colours, in one place, so the plain and over-video variants cannot drift.
+ *
+ * Over video everything is white on translucent black; on a plain surface it is the
+ * theme's container roles, so the card sits on the call screen like any other Material
+ * surface rather than as a thing painted on it.
+ */
+private data class RosterPalette(
+    val container: Color,
+    val primary: Color,
+    val secondary: Color,
+    val divider: Color,
+    val badge: Color,
+    val onBadge: Color,
+    val accent: Color,
+) {
+    companion object {
+        @Composable
+        fun plain() = RosterPalette(
+            container = MaterialTheme.colorScheme.surfaceContainer,
+            primary = MaterialTheme.colorScheme.onSurface,
+            secondary = MaterialTheme.colorScheme.onSurfaceVariant,
+            divider = MaterialTheme.colorScheme.outlineVariant,
+            badge = MaterialTheme.colorScheme.primaryContainer,
+            onBadge = MaterialTheme.colorScheme.onPrimaryContainer,
+            accent = MaterialTheme.colorScheme.primary,
+        )
+
+        @Composable
+        fun overVideo() = RosterPalette(
+            container = Color.Black.copy(alpha = SCRIM),
+            primary = Color.White,
+            secondary = Color.White.copy(alpha = SCRIM_TEXT),
+            divider = Color.White.copy(alpha = SCRIM_LINE),
+            badge = Color.White.copy(alpha = SCRIM_BADGE),
+            onBadge = Color.White,
+            accent = Color.White,
+        )
+    }
 }
 
 /** Dark enough for white text over any frame; light enough to see the call through. */
@@ -177,6 +409,23 @@ private const val SCRIM = 0.55f
 /** Secondary text, dimmed the way `onSurfaceVariant` is against `onSurface`. */
 private const val SCRIM_TEXT = 0.75f
 
+/** A divider that separates without drawing a line across somebody's face. */
+private const val SCRIM_LINE = 0.15f
+
+/** The badge behind the group glyph and the "You" tag, over video. */
+private const val SCRIM_BADGE = 0.2f
+
+/** The chevron points down when closed and up when open. */
+private const val CHEVRON_OPEN = 180f
+
+/** Row dividers start after the avatar, the way Material lists inset theirs. */
+private val ROW_DIVIDER_INSET = 64.dp
+
 internal const val TAG_ROSTER = "conference-roster"
-internal const val TAG_NO_ROSTER = "conference-no-roster"
+internal const val TAG_ROSTER_TOGGLE = "conference-roster-toggle"
+internal const val TAG_ROSTER_SUMMARY = "conference-roster-summary"
+internal const val TAG_ROSTER_LIST = "conference-roster-list"
 internal const val TAG_MIXED_STREAM_NOTE = "conference-mixed-stream-note"
+
+/** The test tag of one member's row, by the row's id. */
+internal fun participantRowTag(id: String): String = "conference-participant-$id"

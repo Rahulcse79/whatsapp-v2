@@ -106,6 +106,7 @@ class CallViewModelTest {
         mergeCalls = MergeCallsUseCase(engine, engine, accounts, room),
         surfaces = surfaces,
         clock = clock,
+        accounts = accounts,
     )
 
     @Test
@@ -414,11 +415,13 @@ class CallViewModelTest {
     }
 
     @Test
-    fun `a merged conference is titled as one, with its members underneath`() = runTest {
+    fun `a merged conference is titled as one, and every member is listed with the user first`() = runTest {
         // The screen kept the first leg's extension as its title after Merge — "9196"
         // over a button reading "2 calls merged" (TC15, 2026-09-14). What the user is in
-        // is a conference; the members move to the line below, in the order they were
-        // called, so nothing the title said is lost.
+        // is a conference; that is the title, and the members are the roster below it.
+        // A line of names under the title came first and truncated at seven members
+        // (TC15, 2026-09-19); the roster is one row each and does not.
+        accounts.given(ACCOUNT)
         val first = placeCall()
         engine.simulateRemoteAnswer(first)
         val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO).getOrNull()!!
@@ -427,18 +430,28 @@ class CallViewModelTest {
         runCurrent()
 
         viewModel.uiState.test {
-            val alone = awaitDisplay { it.phase == CallPhase.CONNECTED }
-            assertEquals("bob", alone.title, "a 1:1 call is titled by its extension")
-            assertFalse(alone.isMixed)
+            val alone = awaitActive { it.call.phase == CallPhase.CONNECTED }
+            assertEquals("bob", alone.call.title, "a 1:1 call is titled by its extension")
+            assertFalse(alone.call.isMixed)
+            assertNull(alone.conference, "two separate calls are not a conference")
 
             viewModel.merge()
             runCurrent()
 
-            val merged = awaitActive { it.mixedCallCount >= MIN_MIXED_IN_TEST }
+            val merged = awaitActive { it.mixedCallCount >= MIN_MIXED_IN_TEST && it.conference != null }
             assertEquals(CONFERENCE_TITLE, merged.call.title)
-            assertEquals("bob · 1003", merged.call.subtitle)
+            assertNull(merged.call.subtitle, "the members are the roster, not a line that truncates")
             assertTrue(merged.call.isMixed)
             assertNull(merged.call.photoUri)
+
+            val roster = merged.conference!!
+            assertTrue(roster.rosterAvailable, "this device is the mixer, so it knows exactly who is here")
+            assertEquals(
+                listOf("alice", "bob", "1003"),
+                roster.participants.map { it.label },
+                "the user first, then every leg in the order it was called",
+            )
+            assertEquals(listOf(true, false, false), roster.participants.map { it.isSelf })
             cancelAndIgnoreRemainingEvents()
         }
     }
