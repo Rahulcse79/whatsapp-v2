@@ -1,0 +1,4 @@
+# Build output and the staged copies of the vendored Lyra closure (see scripts/build-lyra.sh).
+build/
+*.wav
+*.pcm

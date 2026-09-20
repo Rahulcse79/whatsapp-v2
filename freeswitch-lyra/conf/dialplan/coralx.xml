@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Contexts the Coral X push sender transfers a parked caller into (ADR-004), WITH
+  server-side Lyra recording merged in (freeswitch-lyra). This is the deployed
+  coralx.xml with the same recording hook as 01_coralx_push_wake.xml: the ONLY
+  additions are marked "LYRA RECORDING", and when recording is disabled the file
+  behaves byte-for-byte like the original.
+-->
+<include>
+
+  <!-- The device sent a fresh REGISTER: bridge to it. -->
+  <context name="coralx-resume">
+    <extension name="coralx-resume">
+      <condition field="${user_exists(id ${destination_number} $${domain})}" expression="^true$">
+        <action application="set" data="hangup_after_bridge=true"/>
+        <action application="set" data="call_timeout=30"/>
+        <!-- LYRA RECORDING: resolve the switch once, inline. -->
+        <action application="set" inline="true" data="lyra_record_enabled=${lyra_recording(enabled)}"/>
+        <!-- Media bypass, unless recording: a bypassed call never reaches the server so
+             it cannot be recorded. ${cond} → true (bypass) when off, false when on. -->
+        <action application="set" data="bypass_media=${cond(${lyra_record_enabled} == true ? false : true)}"/>
+        <!-- LYRA RECORDING: recording ON only — force Lyra end to end and arm the recorder. -->
+        <action application="set" data="proxy_media=${cond(${lyra_record_enabled} == true ? false : ${proxy_media})}"/>
+        <action application="set" data="absolute_codec_string=${cond(${lyra_record_enabled} == true ? lyra@16000h@20i,PCMU,PCMA : ${absolute_codec_string})}"/>
+        <action application="set" data="execute_on_answer=${cond(${lyra_record_enabled} == true ? lyra_record : ${execute_on_answer})}"/>
+        <action application="unset" data="progress_timeout"/>
+        <action application="set" data="continue_on_fail=false"/>
+        <action application="log" data="INFO push_wake: resuming ${destination_number} after ${sip_call_id} (recording=${lyra_record_enabled})"/>
+        <action application="bridge" data="user/${destination_number}@$${domain}"/>
+      </condition>
+    </extension>
+  </context>
+
+  <!-- The device did not register within the wake timeout: 486 Busy Here. -->
+  <context name="coralx-timeout">
+    <extension name="coralx-timeout">
+      <condition field="${user_exists(id ${destination_number} $${domain})}" expression="^true$">
+        <action application="log" data="WARNING push_wake: ${destination_number} did not wake in time; busy to the caller"/>
+        <action application="hangup" data="USER_BUSY"/>
+      </condition>
+    </extension>
+  </context>
+
+</include>

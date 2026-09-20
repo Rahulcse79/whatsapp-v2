@@ -1,0 +1,26 @@
+<include>
+  <!--
+    Integration-test routing ONLY. Installed into the FreeSWITCH dialplan by
+    run_integration.sh and removed afterwards; it is not part of a deployment.
+
+    A call to itest<NNNN> is bridged to user/<NNNN> with the same recording decision the
+    production push-wake rule makes: when lyra_recording.conf has enabled=true, keep
+    FreeSWITCH in the media path, force Lyra end to end, and arm lyra_record on answer;
+    when disabled, bypass media so the two UAs talk directly (and nothing is recorded).
+    Using a dedicated itest prefix means the test never has to edit the real push-wake
+    file to exercise the module.
+  -->
+  <extension name="lyra-record-itest">
+    <condition field="destination_number" expression="^itest(\d{3,4})$">
+      <action application="set" data="hangup_after_bridge=true"/>
+      <action application="set" data="call_timeout=20"/>
+      <action application="set" inline="true" data="lyra_record_enabled=${lyra_recording(enabled)}"/>
+      <action application="set" data="bypass_media=${cond(${lyra_record_enabled} == true ? false : true)}"/>
+      <!-- export (not set) so the bridged b-leg is offered Lyra too, not just the a-leg. -->
+      <action application="export" data="absolute_codec_string=lyra@16000h@20i,PCMU,PCMA"/>
+      <action application="set" data="execute_on_answer=lyra_record"/>
+      <action application="log" data="INFO lyra itest: dest=$1 recording=${lyra_record_enabled}"/>
+      <action application="bridge" data="user/$1@$${domain}"/>
+    </condition>
+  </extension>
+</include>

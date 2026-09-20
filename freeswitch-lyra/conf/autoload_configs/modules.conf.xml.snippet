@@ -1,0 +1,14 @@
+<!--
+  Add these two lines to autoload_configs/modules.conf.xml so both modules load at
+  start-up. Any position works — a codec is looked up at call-negotiation time, not at
+  module load, so mod_lyra does not have to precede mod_sofia. Placing them next to the
+  other codecs / applications just keeps the file tidy.
+
+  scripts/install.sh inserts them for you; this file documents the exact lines.
+-->
+
+<!-- in the <modules> list, with the other codecs (before mod_sofia): -->
+<load module="mod_lyra"/>
+
+<!-- in the <modules> list, with the applications: -->
+<load module="mod_lyra_record"/>

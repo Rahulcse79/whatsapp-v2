@@ -1,0 +1,48 @@
+<configuration name="lyra_recording.conf" description="Server-side recording of Lyra-to-Lyra calls">
+  <settings>
+    <!--
+      The master switch. false (the default) means this module does nothing: no bug,
+      no decoder, no file, and the dialplan leaves the call on bypass_media exactly as
+      it is today. Set true to record Lyra-to-Lyra calls on the server.
+
+      After changing anything here, run `reloadxml` then `fsctl reload_lyra_recording`
+      (an alias for `lyra_recording reload`) — no restart needed. See
+      docs/04-configuration.md.
+    -->
+    <param name="enabled" value="false"/>
+
+    <!-- Absolute directory every recording is written under. Required when enabled.
+         The module creates it (recursively) at load/reload if it is missing, and
+         refuses to write anything outside it. -->
+    <param name="recording-path" value="/usr/local/freeswitch/var/lib/freeswitch/recordings/lyra"/>
+
+    <!-- Container/extension mod_sndfile writes. wav (16-bit PCM) is lossless and
+         universally playable. -->
+    <param name="format" value="wav"/>
+
+    <!-- stereo: caller on the left channel, callee on the right (best for later
+         analysis; cannot be recovered from a mix). mixed: both summed to one channel. -->
+    <param name="track" value="stereo"/>
+
+    <!-- Recording sample rate. 0 follows the call (16000 for Lyra). 8000/16000/32000/48000
+         force a rate; the core resamples if it differs from the call. -->
+    <param name="sample-rate" value="16000"/>
+
+    <!-- Subdirectory under recording-path, tokens expanded. {date}=YYYYMMDD. Empty for
+         a flat directory. Nesting with '/' is allowed, e.g. "{date}/{callee}". -->
+    <param name="directory-pattern" value="{date}"/>
+
+    <!-- File name (without extension), tokens expanded and sanitised:
+         {date} {time} {epoch} {caller} {callee} {uuid} {domain}. The UUID keeps names
+         unique across concurrent calls. -->
+    <param name="filename-pattern" value="{time}_{caller}_{callee}_{uuid}"/>
+
+    <!-- Refuse to start a recording when free space under the root is below this many
+         MB, so a full disk fails a recording rather than the server. 0 disables the check. -->
+    <param name="min-free-mb" value="100"/>
+
+    <!-- Hard cap on one recording in seconds (0 = unlimited). Guards a stuck call from
+         filling the disk. -->
+    <param name="max-seconds" value="0"/>
+  </settings>
+</configuration>

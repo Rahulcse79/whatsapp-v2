@@ -22,6 +22,25 @@ multi-account SIP registration, Telecom integration, and conferencing against Fr
 | [`docs/native-dependencies.md`](docs/native-dependencies.md) | Every vendored native dependency: version, commit, licence, reason, patches, measured size — plus the pinned toolchain |
 | [`docs/calling-completeness-prompt.md`](docs/calling-completeness-prompt.md) | The prompt for finishing the calling stack: two bugs traced to root cause, the codec gaps against what the server accepts, video's real blocker, and Lyra |
 | [`docs/reconciliation.md`](docs/reconciliation.md) | Where the documents and the code disagree, with a citation and an owning phase for each |
+| [`docs/lyra-recording-setup.md`](docs/lyra-recording-setup.md) | Server-side Lyra call recording: build, install, configure and verify, step by step (macOS + Linux) |
+
+## Server-side Lyra call recording
+
+[`freeswitch-lyra/`](freeswitch-lyra/) adds **server-side recording of Lyra-to-Lyra calls**
+to FreeSWITCH, as two C++ modules built against the installed server and the same
+`third_party/lyra` closure the app uses:
+
+* **`mod_lyra`** — a FreeSWITCH codec module wrapping Google Lyra v1.3.2, so the server can
+  decode/encode `lyra/16000` (a codec it otherwise strips).
+* **`mod_lyra_record`** — the recording policy: it drives FreeSWITCH's own recording engine
+  to write a stereo WAV per call. Controlled entirely by `lyra_recording.conf.xml`;
+  `enabled=false` (the default) changes nothing about a call.
+
+The correction that shaped it: Lyra calls run with `bypass_media=true`, so the server never
+sees the audio — recording therefore also takes a small, recording-only dialplan change to
+keep FreeSWITCH in the media path. The design, failure/security review and a real
+SIP/RTP integration test live under [`freeswitch-lyra/docs/`](freeswitch-lyra/docs/); the
+step-by-step operator guide is [`docs/lyra-recording-setup.md`](docs/lyra-recording-setup.md).
 
 ## Build policy — CI checks the JVM half; the native half is built here
 

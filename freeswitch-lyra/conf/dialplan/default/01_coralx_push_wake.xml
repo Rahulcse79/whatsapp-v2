@@ -1,0 +1,88 @@
+<include>
+
+  <!--
+    Coral X push wake (RFC 8599 / ADR-004) WITH server-side Lyra recording (freeswitch-lyra).
+
+    This is the existing 01_coralx_push_wake.xml with the recording hook merged in. The
+    ONLY additions are marked "LYRA RECORDING" below; everything else is byte-for-byte
+    the deployed rule. When recording is disabled (the default), this file behaves
+    identically to the original — the recording condition fails, no variable it sets
+    survives, and the call bypasses media exactly as before.
+
+    How recording changes a call, and only when lyra_recording.conf.xml has enabled=true:
+      * bypass_media stays OFF, so FreeSWITCH is in the media path and can decode the
+        Lyra RTP to PCM for the recorder (a bypassed call never reaches the server, so
+        it cannot be recorded — see freeswitch-lyra/docs/01-analysis.md §1.2);
+      * Lyra is forced as the negotiated audio codec on both legs (absolute_codec_string),
+        so the server, which now has mod_lyra, actually speaks it end to end;
+      * execute_on_answer arms the `lyra_record` application, which starts the core
+        recorder once media is up. `lyra_record` is itself a no-op when recording is
+        disabled or the call is not on Lyra, so arming it is always safe.
+
+    Media is BYPASSED for every handset-to-handset AUDIO call that is NOT being recorded
+    (bypass_media=true): the SDP crosses FreeSWITCH untouched and the two handsets
+    negotiate the codec between themselves, with RTP flowing phone-to-phone. This is what
+    lets two Coral X handsets talk Lyra (ADR-008) when FreeSWITCH is not recording. On a
+    deployment where handsets sit behind different NATs, use proxy_media instead.
+
+    A call that OFFERS VIDEO does not bypass (it is one merge away from conference 3000
+    and a bypassed leg arrives there deaf) — unchanged from the original.
+
+    Why one bridge is not enough (push wake): a handset that is asleep still has a
+    registration row but nothing behind it; the INVITE dies as ORIGINATOR_CANCEL. So the
+    rule announces the call, tries the contact for progress_timeout seconds, then parks
+    for the push sender. Unchanged from the original.
+  -->
+  <extension name="coralx-push-wake">
+    <condition field="${user_exists(id ${destination_number} $${domain})}" expression="^true$">
+      <action application="set" data="hangup_after_bridge=true"/>
+      <action application="set" data="call_timeout=30"/>
+      <!-- LYRA RECORDING: resolve the switch once, inline, so the conditions below can
+           test it without calling the API again. Returns "true" or "false". -->
+      <action application="set" inline="true" data="lyra_record_enabled=${lyra_recording(enabled)}"/>
+    </condition>
+
+    <!-- LYRA RECORDING: recording ON only. Keep FreeSWITCH in the media path, make Lyra
+         the codec on both legs so the server speaks it, and arm the recorder on answer.
+         break="never" so the push-wake actions below still run. When recording is OFF
+         this whole block is skipped. -->
+    <condition field="${lyra_record_enabled}" expression="^true$" break="never">
+      <action application="set" data="bypass_media=false"/>
+      <action application="set" data="proxy_media=false"/>
+      <!-- export (not set): the codec string must reach the bridged callee leg too, or
+           FreeSWITCH offers the callee PCMU (its profile prefs) and the call is not Lyra. -->
+      <action application="export" data="absolute_codec_string=lyra@16000h@20i,PCMU,PCMA"/>
+      <action application="set" data="execute_on_answer=lyra_record"/>
+      <action application="log" data="INFO lyra recording enabled; FreeSWITCH stays in the media path for ${destination_number}"/>
+    </condition>
+
+    <!-- Media bypass is for AUDIO calls, and only for them — and now only when the call
+         is NOT being recorded. The ${cond(...)} resolves to true (bypass) when recording
+         is off, and false (stay in the media path) when it is on. A VIDEO call still
+         takes the action branch (no bypass) exactly as before. -->
+    <condition field="${switch_r_sdp}" expression="m=video" break="never">
+      <anti-action application="set" data="bypass_media=${cond(${lyra_record_enabled} == true ? false : true)}"/>
+      <action application="log" data="INFO push_wake: video offer; keeping FreeSWITCH in the media path so this call can be merged into 3000"/>
+    </condition>
+
+    <condition field="${user_exists(id ${destination_number} $${domain})}" expression="^true$">
+
+      <!-- 1. Announce. Fired before the first attempt so the wake-up is already in
+              flight while the direct INVITE is finding out the socket is dead. -->
+      <action application="event" data="Event-Name=CUSTOM,Event-Subclass=coralx::push_wake,Push-Ext=${destination_number},Push-Caller=${caller_id_number}"/>
+
+      <!-- 2. The direct attempt: 3 s for a provisional response, and fall through only
+              on the causes that mean "nobody is there", never on a rejection. -->
+      <action application="set" data="progress_timeout=3"/>
+      <action application="set" data="continue_on_fail=PROGRESS_TIMEOUT,USER_NOT_REGISTERED,NO_ROUTE_DESTINATION,NETWORK_OUT_OF_ORDER,RECOVERY_ON_TIMER_EXPIRE,NORMAL_TEMPORARY_FAILURE,ORIGINATOR_CANCEL"/>
+      <action application="bridge" data="user/${destination_number}@$${domain}"/>
+
+      <!-- 3. Ringback for the caller, then park until the sender moves us on. -->
+      <action application="log" data="INFO push_wake: no progress from ${destination_number} (${originate_disposition}); parking for the push sender"/>
+      <action application="ring_ready"/>
+      <action application="sched_transfer" data="+15 ${destination_number} XML coralx-resume"/>
+      <action application="park"/>
+    </condition>
+  </extension>
+
+</include>

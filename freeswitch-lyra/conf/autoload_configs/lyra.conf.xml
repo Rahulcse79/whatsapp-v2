@@ -1,0 +1,26 @@
+<configuration name="lyra.conf" description="Lyra codec (Google Lyra v1.3.2)">
+  <settings>
+    <!--
+      Where the four Lyra model files live (lyra_config.binarypb, lyragan.tflite,
+      quantizer.tflite, soundstream_encoder.tflite). scripts/install.sh puts them at
+      <prefix>/share/freeswitch/lyra/model_coeffs, which is the built-in default when
+      this parameter is omitted. Must be an absolute path.
+    -->
+    <param name="model-path" value="/usr/local/freeswitch/share/freeswitch/lyra/model_coeffs"/>
+
+    <!-- Bitrate FreeSWITCH offers and encodes at when the peer does not ask for a
+         specific one. 3200, 6000 or 9200. The Android client uses 3200. -->
+    <param name="default-bitrate" value="3200"/>
+
+    <!-- Discontinuous transmission: send nothing during silence (the peer fills the
+         gap with comfort noise). Off by default to match the current handset behaviour. -->
+    <param name="dtx" value="false"/>
+
+    <!-- Sample rates to register. Lyra supports 8000, 16000, 32000, 48000; the client
+         negotiates lyra/16000, so 16000 is all that is needed here. -->
+    <param name="sample-rates" value="16000"/>
+
+    <!-- Packet duration in ms; a multiple of 20 up to 120. 20 matches the handsets. -->
+    <param name="ptime" value="20"/>
+  </settings>
+</configuration>
