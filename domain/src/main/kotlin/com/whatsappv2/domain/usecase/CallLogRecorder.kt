@@ -97,5 +97,6 @@ fun CallSnapshot.toLogEntry(endedAtEpochMillis: Long): CallLogEntry? {
         // device mixed; the snapshot carries it to the ending either way, which is why
         // nothing here has to know which kind it was.
         isConference = isConference,
+        conferenceKey = conferenceKey,
     )
 }

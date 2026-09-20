@@ -55,6 +55,18 @@ data class CallSnapshot(
     val isConference: Boolean = false,
 
     /**
+     * Which conference this call belonged to, when this device mixed one (ADR-009).
+     *
+     * One value shared by every leg of the same mix, assigned when the mix forms and
+     * carried by legs that join it later, so the legs can be told apart from the legs of
+     * the conference an hour earlier. [isConference] says *that* a call was in one; this
+     * says *which*. Null for a dial-in room, which is one call and needs no grouping, and
+     * for every call that was never mixed. Never cleared once set, for the same reason
+     * [isConference] is not: a log records what happened.
+     */
+    val conferenceKey: String? = null,
+
+    /**
      * A route the user asked for before the call had controls to hold it, or null.
      *
      * The audio route is the one control that exists before media does: the platform

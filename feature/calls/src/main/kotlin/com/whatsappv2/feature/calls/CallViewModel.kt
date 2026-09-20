@@ -103,14 +103,17 @@ class CallViewModel @Inject constructor(
     private val watched = MutableStateFlow<CallId?>(null)
 
     /**
-     * The calls this device is mixing right now (ADR-009).
+     * The calls this device is mixing right now (ADR-009), as the engine reports them.
      *
-     * Held here rather than read back from the engine because the engine has no
-     * conference *object* to report — local mixing is a property of the bridge, not a
-     * session with a URI. The screen needs to know so it can say "3 calls merged"
-     * instead of leaving the merge silent, and so the button stops offering itself.
+     * This used to be a set of the ViewModel's own, written when *its* Merge button was
+     * pressed — and nothing else. A conference formed any other way was invisible to the
+     * screen: a participant the join coordinator mixed in after the far end answered, or
+     * the whole conference after the screen was recreated, left the title, the roster and
+     * "N calls merged" describing a room that had since changed. The engine has published
+     * its membership since ADR-009 (Telecom's hold bridge reads it), so the screen reads
+     * the same source and cannot disagree with it.
      */
-    private val mixed = MutableStateFlow<Set<CallId>>(emptySet())
+    private val mixed: StateFlow<Set<CallId>> get() = conferences.mixedCalls
 
     private val eventChannel = Channel<CallEvent>(Channel.BUFFERED)
     val events: Flow<CallEvent> = eventChannel.receiveAsFlow()
@@ -353,11 +356,19 @@ class CallViewModel @Inject constructor(
             it.callId != watchedId && it.state is CallState.Incoming
         } ?: return null
 
+        val inLiveMix = current.callId in mixed &&
+            calls.any { it.callId in mixed && it.state is CallState.Connected }
         return SecondCallPrompt(
             callId = ringing.callId,
             from = ringing.remoteDisplayName?.takeIf { it.isNotBlank() } ?: ringing.remote.render(),
-            currentCallWith = current.remoteDisplayName?.takeIf { it.isNotBlank() }
-                ?: current.remote.render(),
+            // The room rather than one member: "You are on a call with 1001" over a
+            // six-way would name one person out of six.
+            currentCallWith = if (inLiveMix) {
+                "a conference of ${mixed.size + 1}"
+            } else {
+                current.remoteDisplayName?.takeIf { it.isNotBlank() } ?: current.remote.render()
+            },
+            canAddToConference = inLiveMix,
         )
     }
 
@@ -589,14 +600,12 @@ class CallViewModel @Inject constructor(
                 when (result) {
                     is Outcome.Failure -> Unit
                     is Outcome.Success -> when (val merged = result.value) {
-                        is MergeResult.Mixed -> mixed.value = merged.callIds
-                        is MergeResult.Bridged -> {
-                            // The local mix is over: this device is a member now, not the
-                            // host. Clearing it stops the screen reporting a mix that no
-                            // longer exists beneath the conference it is showing.
-                            mixed.value = emptySet()
-                            pointAt(merged.callId)
-                        }
+                        // The engine publishes the membership; nothing to record here.
+                        is MergeResult.Mixed -> Unit
+                        // The local mix is over: this device is a member now, not the
+                        // host, and the engine has already emptied the set. The screen
+                        // moves to the leg that is in the room.
+                        is MergeResult.Bridged -> pointAt(merged.callId)
                     }
                 }
             }

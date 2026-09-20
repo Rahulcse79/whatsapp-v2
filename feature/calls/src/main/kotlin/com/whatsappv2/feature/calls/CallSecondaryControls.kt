@@ -64,7 +64,7 @@ internal fun CallSecondaryControls(
         controls = buildList {
             add { VideoButton(videoOn, availability.canToggleVideo, CallAction.VIDEO in pending, actions) }
             add { FlipButton(availability.canSwitchCamera, CallAction.SWITCH_CAMERA in pending, actions) }
-            add { AddCallButton(availability.canAddCall, actions) }
+            add { AddCallButton(availability.canAddCall, call.isMixed, actions) }
             add { TransferButton(availability.canTransfer, actions) }
             add { RecordButton(recording, availability.canRecord, actions) }
             if (showsMerge) add { MergeButton(canMerge, mixedCallCount, actions.onMerge, CallAction.MERGE in pending) }
@@ -112,10 +112,12 @@ private fun FlipButton(enabled: Boolean, pending: Boolean, actions: CallActions)
 
 /** Opens the dialler for a second leg, which is how a conference starts (ADR-009). */
 @Composable
-private fun AddCallButton(enabled: Boolean, actions: CallActions) {
+private fun AddCallButton(enabled: Boolean, toConference: Boolean, actions: CallActions) {
     CallActionButton(
         icon = Icons.Filled.AddIcCall,
-        contentDescription = "Add a call",
+        // On a conference the call being added is a participant, and joins by itself
+        // when answered (ADR-009); on a one-to-one call it is a second call.
+        contentDescription = if (toConference) "Add a participant" else "Add a call",
         onClick = actions.onAddCall,
         enabled = enabled,
         label = "Add",

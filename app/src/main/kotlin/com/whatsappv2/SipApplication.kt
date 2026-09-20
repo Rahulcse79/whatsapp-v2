@@ -8,6 +8,7 @@ import com.whatsappv2.calllog.CallLogWriter
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.data.sip.SipEngineLifecycle
 import com.whatsappv2.di.ApplicationScope
+import com.whatsappv2.domain.usecase.ConferenceJoinCoordinator
 import com.whatsappv2.domain.usecase.RestoreRegistrationsUseCase
 import com.whatsappv2.push.PushTokenPublisher
 import com.whatsappv2.service.ServiceLauncher
@@ -62,6 +63,9 @@ class SipApplication : Application() {
     lateinit var callLog: CallLogWriter
 
     @Inject
+    lateinit var conferenceJoins: ConferenceJoinCoordinator
+
+    @Inject
     lateinit var pushTokens: PushTokenPublisher
 
     @Inject
@@ -97,6 +101,11 @@ class SipApplication : Application() {
         // bargain: nothing held until the first emission, and a log that stays inside its
         // retention without anybody opening the history screen.
         historyPruner.start()
+        // And beside those, for the same reason: a participant the host added from the
+        // conference screen answers after the dialler that placed the call is gone, and
+        // the join must happen anyway (ADR-009). This is what turns "answered" into "in
+        // the room" with no Merge button involved.
+        scope.launch { conferenceJoins.run() }
         // Nothing started the foreground service until now, so it never ran: an account
         // could register and a call could arrive with no service to post a notification
         // from. The same ServiceRunPolicy that stops it decides when to start it.

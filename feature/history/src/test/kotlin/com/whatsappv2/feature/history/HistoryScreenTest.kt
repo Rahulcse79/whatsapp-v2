@@ -330,6 +330,41 @@ class HistoryScreenTest {
         assertTrue(reset)
     }
 
+    @Test
+    fun `a conference is one entry, and its detail names every member`() {
+        // The detail of one leg used to say "1005 · Voice call · Conference": one person
+        // out of six. The entry is the conference, and the members are the detail.
+        val legs = listOf("1001" to "Priya Nair", "1002" to null, "1005" to null).mapIndexed { index, (user, name) ->
+            entry(id = 10L + index, media = MediaProfile.AUDIO, answered = index != 2, conference = true).copy(
+                remote = SipUri.parse("sip:$user@sip.example.com").getOrNull()!!,
+                remoteDisplayName = null,
+                contactName = name,
+                conferenceKey = "k1",
+            )
+        }
+        val rows = legs.reversed().map { HistoryRow.Call(it, it.contactName ?: it.remote.user!!) }
+        val row = groupConferences(rows).single()
+        var deleted: HistoryRow.Call? = null
+        setContent(
+            state = HistoryUiState(openEntry = row),
+            rows = listOf(row),
+            actions = HistoryActions(onDelete = { deleted = it }),
+        )
+
+        compose.onNodeWithTag(entryTag(row.entry)).assertIsDisplayed()
+        compose.onNodeWithTag(TAG_DETAIL).assertIsDisplayed()
+        compose.onNodeWithTag(TAG_DETAIL_MEMBERS).onChildren().assertCountEquals(3)
+        // The row is a plain layout, so its texts are its children rather than merged.
+        fun member(index: Int) = compose.onNodeWithTag(memberTag(legs[index])).onChildren()
+        member(0).filterToOne(hasText("Priya Nair")).assertIsDisplayed()
+        member(0).filterToOne(hasText("1001")).assertIsDisplayed()
+        member(1).filterToOne(hasText("1002")).assertIsDisplayed()
+        member(2).filterToOne(hasText("Not answered")).assertIsDisplayed()
+
+        compose.onNodeWithTag(TAG_DETAIL_DELETE).performClick()
+        assertEquals(row, deleted, "deleting the conference deletes the conference, not one leg")
+    }
+
     private companion object {
         const val STARTED_AT = 1_789_000_000_000L
     }

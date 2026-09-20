@@ -12,6 +12,16 @@ enum class SecondCallResponse {
     /** Answer it and end the call already in progress. */
     ACCEPT_AND_END,
 
+    /**
+     * Answer, and bring the caller into the conference this device is mixing.
+     *
+     * The way somebody who missed the conference gets into it: they call the host, and
+     * the host adds them rather than choosing between them and the room. Nothing is held
+     * and nothing is ended — the conference carries on, and the new leg is mixed into it
+     * the moment it is established. Only offered while a conference is live.
+     */
+    ACCEPT_INTO_CONFERENCE,
+
     /** Refuse it. The call in progress is untouched. */
     REJECT,
 }
@@ -89,6 +99,12 @@ object CallWaitingPolicy {
             SecondCallResponse.ACCEPT_AND_END ->
                 others.map { CallStep.Hangup(it.callId, HangupReason.LOCAL_HANGUP) } +
                     CallStep.Answer(incoming)
+
+            // Nothing held and nothing ended: the room stays live and the caller joins it.
+            // The join itself is not a step — it happens when the leg is established,
+            // which is after every step here has returned — so the use case asks the
+            // join coordinator for it before answering.
+            SecondCallResponse.ACCEPT_INTO_CONFERENCE -> listOf(CallStep.Answer(incoming))
         }
     }
 

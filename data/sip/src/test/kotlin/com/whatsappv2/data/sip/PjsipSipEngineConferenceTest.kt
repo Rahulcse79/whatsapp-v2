@@ -424,6 +424,51 @@ class PjsipSipEngineConferenceTest {
     }
 
     @Test
+    fun `every leg of one conference carries one key, and a leg added later carries the same one`() = runTest {
+        // The history screen groups legs by this key, so a six-way call reads as one
+        // conference rather than as six rows to six people. A member added after the
+        // mix formed joins *that* conference, not a new one.
+        val engine = mixedConferenceOfThree()
+        val keys = engine.activeCalls.value.map { it.conferenceKey }.toSet()
+        assertEquals(1, keys.size, "one conference, one key: $keys")
+        val key = keys.single()
+        assertTrue(!key.isNullOrBlank(), "the key must be something the log can store")
+
+        val late = engine.placeCall(fixture.account.id, PjsipSipEngineFixture.TARGET, MediaProfile.AUDIO)
+            .getOrNull()!!
+        runCurrent()
+        fixture.gateway.emitCall(late.value, StackCallState.CONNECTED)
+        runCurrent()
+        engine.mixCalls(engine.activeCalls.value.mapTo(mutableSetOf()) { it.callId })
+        advanceUntilIdle()
+
+        assertEquals(key, engine.activeCalls.value.single { it.callId == late }.conferenceKey)
+        engine.stop()
+    }
+
+    @Test
+    fun `a second conference gets a key of its own`() = runTest {
+        // Two conferences an hour apart must not be read back as one, however alike.
+        val engine = mixedConferenceOfThree()
+        val first = engine.activeCalls.value.first().conferenceKey
+        engine.hangup(engine.mixedCalls.value.first(), HangupReason.LOCAL_HANGUP)
+        advanceUntilIdle()
+        assertTrue(engine.activeCalls.value.isEmpty(), "the first conference has ended")
+
+        val again = engine.placeCall(fixture.account.id, PjsipSipEngineFixture.TARGET, MediaProfile.AUDIO)
+            .getOrNull()!!
+        runCurrent()
+        fixture.gateway.emitCall(again.value, StackCallState.CONNECTED)
+        runCurrent()
+        engine.mixCalls(joinTwoMore(engine))
+        advanceUntilIdle()
+
+        val second = engine.activeCalls.value.map { it.conferenceKey }.toSet().single()
+        assertTrue(second != first, "a new conference must not reuse the old key")
+        engine.stop()
+    }
+
+    @Test
     fun `a call that is not in a conference is still muted by itself`() = runTest {
         // The fan-out is the membership's doing and nothing else's. A second call on hold
         // beside a live one is not a conference, and muting one must not silence the other.

@@ -65,7 +65,7 @@ class CallWaitingUseCaseTest {
     }
 
     private fun useCase(engine: FakeSipEngine, camera: CameraAvailability = NoCameraAvailable) =
-        CallWaitingUseCase(engine, camera)
+        CallWaitingUseCase(engine, camera, ConferenceJoinCoordinator(engine, engine))
 
     /** A connected first call, and a second one ringing. */
     private suspend fun twoCalls(engine: FakeSipEngine): Pair<CallId, CallId> {

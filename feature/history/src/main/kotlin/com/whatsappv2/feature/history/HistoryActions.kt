@@ -1,7 +1,6 @@
 package com.whatsappv2.feature.history
 
 import androidx.compose.runtime.Stable
-import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.repository.CallDirectionFilter
 import com.whatsappv2.domain.repository.CallLogFilter
 
@@ -38,14 +37,14 @@ data class HistoryActions(
     /** The whole row, so the detail sheet is headed with the name the list showed. */
     val onEntryOpened: (HistoryRow.Call) -> Unit = {},
     val onDetailDismissed: () -> Unit = {},
-    val onDelete: (CallLogEntry) -> Unit = {},
+    val onDelete: (HistoryRow.Call) -> Unit = {},
     val onClearAllRequested: () -> Unit = {},
     val onClearAllDismissed: () -> Unit = {},
     val onClearAllConfirmed: () -> Unit = {},
     /** Redial. The entry rather than the id, because the dialler needs the address. */
-    val onCallBack: (CallLogEntry) -> Unit = {},
+    val onCallBack: (HistoryRow.Call) -> Unit = {},
     /** Redial with video (Task 75). Downgrades to audio when the camera cannot be used. */
-    val onVideoCallBack: (CallLogEntry) -> Unit = {},
+    val onVideoCallBack: (HistoryRow.Call) -> Unit = {},
     /** Open the dialler, which is a floating button on this screen rather than a tab (Task 70). */
     val onOpenDialer: () -> Unit = {},
     /** Open the call recordings. Leaves this module, so :app decides the destination. */

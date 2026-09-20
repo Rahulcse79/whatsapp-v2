@@ -62,6 +62,16 @@ data class DialerUiState(
 
     /** True while a call is being placed, so the button cannot be pressed twice. */
     val isPlacing: Boolean = false,
+
+    /**
+     * True while this device is mixing a live conference, so a call placed now is a
+     * participant being added to it rather than a second call (ADR-009).
+     *
+     * The screen says so — "Add participant" over the keypad, "Add" on the button — and
+     * offers no video, because a leg mixed into an audio conference has its video dropped
+     * the moment it joins; a video button here would be a promise the room cannot keep.
+     */
+    val addingToConference: Boolean = false,
 ) {
     /**
      * Whether the call button does anything.

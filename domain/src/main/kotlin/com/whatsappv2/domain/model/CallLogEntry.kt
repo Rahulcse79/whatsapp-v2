@@ -85,6 +85,18 @@ data class CallLogEntry(
      * true.
      */
     val isConference: Boolean = false,
+
+    /**
+     * Which conference the leg belonged to, so the legs of one can be shown as one.
+     *
+     * The rows stay per leg — see [isConference] for why — but a history that lists a
+     * six-way call as six rows to six people asks the reader to reassemble the meeting
+     * from the timestamps. The key is what lets the screen do that instead: every leg
+     * this device mixed into the same conference carries the same value, and legs with
+     * different values were different conferences, however close in time. Null on rows
+     * written before the column existed and on dial-in rooms, which are one row already.
+     */
+    val conferenceKey: String? = null,
 ) {
 
     /** True when media flowed at all — the distinction "missed" is drawn from. */

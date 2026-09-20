@@ -34,7 +34,7 @@ abstract class CallLogDatabase : RoomDatabase() {
     abstract fun callLogDao(): CallLogDao
 
     companion object {
-        const val VERSION = 3
+        const val VERSION = 4
         const val NAME = "call-log.db"
 
         /**
@@ -77,7 +77,25 @@ abstract class CallLogDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Records *which* conference a leg belonged to, not only that it belonged to one.
+         *
+         * Version 3 could say a row was a conference leg; it could not say which of the
+         * day's conferences, so the history screen still listed a six-way call as six
+         * rows and left the reader to pair them up by the clock. The key is assigned when
+         * a mix forms and shared by every leg that joins it, which is what lets the screen
+         * fold them into one entry with a member list.
+         *
+         * Nullable, and null on every existing row: the information was never written.
+         * Those rows keep reading exactly as version 3 read them.
+         */
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE call_log ADD COLUMN conference_key TEXT")
+            }
+        }
+
         /** Every migration, in order. */
-        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
+        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
     }
 }

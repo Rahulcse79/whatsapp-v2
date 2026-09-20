@@ -100,4 +100,13 @@ data class CallLogEntity(
      */
     @ColumnInfo(name = "is_conference", defaultValue = "0")
     val isConference: Boolean = false,
+
+    /**
+     * Which conference the leg belonged to (version 4), shared by every leg this device
+     * mixed into the same one. Null on rows written before the column existed: they can
+     * still be told to *be* conference legs, but not which conference, and the history
+     * screen shows them as it always did rather than guessing from their timestamps.
+     */
+    @ColumnInfo(name = "conference_key")
+    val conferenceKey: String? = null,
 )

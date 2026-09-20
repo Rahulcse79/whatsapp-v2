@@ -1299,7 +1299,7 @@ internal class PjsipSipEngine @Inject constructor(
         dropVideoForMix(live, logger) { videoGateway.setVideoEnabled(it.value, false) }
 
         return publishMix(conferenceGateway.setConferenceMembers(live.map { it.value }.toSet()), mixed, logger) {
-            updateCalls { calls -> calls.markingAsConference(it) }
+            updateCalls { calls -> calls.markingAsConference(it, newKey = { UUID.randomUUID().toString() }) }
         }
     }
 
@@ -1900,10 +1900,26 @@ private fun nextStateFor(
             }
         }
 
-private fun Map<CallId, CallSnapshot>.markingAsConference(ids: Set<CallId>): Map<CallId, CallSnapshot> =
-    this + ids.mapNotNull { id ->
-        get(id)?.takeIf { !it.isConference }?.let { id to it.copy(isConference = true) }
+/**
+ * [this] with each of [ids] stamped as a member of one conference, under one key.
+ *
+ * The key is the one a member already carries when any does — a leg added to a running
+ * conference joins *that* conference, not a new one — and [newKey] otherwise. A member
+ * that carries a different key (it was in an earlier conference on this device, went
+ * back to being a call, and is being merged again) takes the current one: the log wants
+ * the conference it is in now, and the one it left is already written.
+ */
+private fun Map<CallId, CallSnapshot>.markingAsConference(
+    ids: Set<CallId>,
+    newKey: () -> String,
+): Map<CallId, CallSnapshot> {
+    val key = ids.firstNotNullOfOrNull { id -> get(id)?.conferenceKey?.takeIf { get(id)?.isConference == true } }
+        ?: newKey()
+    return this + ids.mapNotNull { id ->
+        get(id)?.takeIf { !it.isConference || it.conferenceKey != key }
+            ?.let { id to it.copy(isConference = true, conferenceKey = key) }
     }
+}
 
 /**
  * Turns video off on every call about to be mixed (ADR-009).

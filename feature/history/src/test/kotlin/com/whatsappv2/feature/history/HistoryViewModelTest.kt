@@ -24,6 +24,7 @@ import com.whatsappv2.domain.testing.FakeContactRepository
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
 import com.whatsappv2.domain.usecase.CallLogTitles
+import com.whatsappv2.domain.usecase.ConferenceJoinCoordinator
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -76,6 +77,7 @@ class HistoryViewModelTest {
             PlaceCallUseCase(accounts, engine, camera, engine),
             camera,
             CallLogTitles(contacts),
+            ConferenceJoinCoordinator(engine, engine),
         )
 
     /** The row as the list would have built it, title already resolved. */
@@ -247,6 +249,50 @@ class HistoryViewModelTest {
     }
 
     @Test
+    fun `deleting a conference removes every leg, not the one the entry was built on`() = runTest {
+        val first = repository.record(leg("sip:1001@sip.example.com"))
+        val second = repository.record(leg("sip:1002@sip.example.com"))
+        val unrelated = repository.record(entry(remote = "sip:1003@sip.example.com"))
+        val conference = groupConferences(listOf(row(second), row(first))).single()
+        val viewModel = viewModel()
+        viewModel.onEntryOpened(conference)
+        runCurrent()
+
+        viewModel.onDelete(conference)
+        runCurrent()
+
+        assertEquals(listOf(unrelated), repository.recorded, "both legs gone, the other call untouched")
+        assertNull(viewModel.uiState.value.openEntry)
+    }
+
+    @Test
+    fun `calling a conference back dials every member once and asks for each to join`() = runTest {
+        // Called back as one, the way a group call is anywhere else: one INVITE per
+        // distinct member — 1005 was dialled twice in the original — and each mixed in
+        // as they answer, which is the join coordinator's job from here.
+        accounts.given(work(domain = "sip.example.com"))
+        engine.givenRegistered(work(domain = "sip.example.com"))
+        val legs = listOf("1001", "1005", "1005", "1002").mapIndexed { index, user ->
+            repository.record(
+                entry(remote = "sip:$user@sip.example.com").copy(
+                    isConference = true,
+                    conferenceKey = "k1",
+                    startedAtEpochMillis = STARTED_AT + index,
+                ),
+            )
+        }
+        val conference = groupConferences(legs.reversed().map(::row)).single()
+
+        viewModel().onCallBack(conference)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("sip:1001@sip.example.com", "sip:1005@sip.example.com", "sip:1002@sip.example.com"),
+            engine.activeCalls.value.map { it.remote.render() },
+        )
+    }
+
+    @Test
     fun `a call recorded while the screen is open reaches the list`() = runTest {
         // The regression test for Task 71, and it fails on the parent commit.
         //
@@ -294,6 +340,9 @@ class HistoryViewModelTest {
     /** What the engine was last asked to dial, rendered — the URI after completion. */
     private fun lastPlacedCall(): String =
         engine.invocations.last { it.operation == FakeSipEngine.Operation.PLACE_CALL }.detail
+
+    /** One leg of the conference "k1", as the recorder would have written it. */
+    private fun leg(remote: String) = entry(remote = remote).copy(isConference = true, conferenceKey = "k1")
 
     private fun entry(
         remote: String = REMOTE.render(),

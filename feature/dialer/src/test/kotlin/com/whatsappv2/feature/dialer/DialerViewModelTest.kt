@@ -20,6 +20,7 @@ import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.testing.FakeContactRepository
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
+import com.whatsappv2.domain.usecase.ConferenceJoinCoordinator
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -84,6 +85,7 @@ class DialerViewModelTest {
         repository = repository,
         savedState = savedState,
         registrar = engine,
+        joins = ConferenceJoinCoordinator(engine, engine),
     )
 
     @Test

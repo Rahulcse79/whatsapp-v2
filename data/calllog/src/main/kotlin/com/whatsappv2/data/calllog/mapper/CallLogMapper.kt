@@ -36,6 +36,7 @@ internal fun CallLogEntry.toEntity(): CallLogEntity = CallLogEntity(
     hasAudio = media.hasAudio,
     hasVideo = media.hasVideo,
     isConference = isConference,
+    conferenceKey = conferenceKey,
 )
 
 /** The stored row as a domain entry, or null if it cannot be read as one. */
@@ -61,6 +62,7 @@ internal fun CallLogEntity.toDomain(): CallLogEntry? {
         reason = reason,
         media = media,
         isConference = isConference,
+    conferenceKey = conferenceKey,
     )
 }
 

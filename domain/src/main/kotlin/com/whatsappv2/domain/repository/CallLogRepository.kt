@@ -87,6 +87,15 @@ interface CallLogRepository {
     /** Removes one entry. Deleting an entry that is already gone is not an error. */
     suspend fun delete(id: CallLogId)
 
+    /**
+     * Removes every leg of the conference [conferenceKey] names.
+     *
+     * A conference is shown as one entry and is deleted as one: removing the leg the
+     * entry happened to be built on and leaving five others would put the conference
+     * straight back in the list, one member shorter.
+     */
+    suspend fun deleteConference(conferenceKey: String)
+
     /** Removes every entry. */
     suspend fun clear()
 

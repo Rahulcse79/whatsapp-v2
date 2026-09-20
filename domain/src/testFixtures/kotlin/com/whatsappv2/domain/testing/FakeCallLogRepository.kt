@@ -81,6 +81,10 @@ class FakeCallLogRepository : CallLogRepository {
         entries.value = entries.value.filterNot { it.id == id }
     }
 
+    override suspend fun deleteConference(conferenceKey: String) {
+        entries.value = entries.value.filterNot { it.conferenceKey == conferenceKey }
+    }
+
     override suspend fun clear() {
         entries.value = emptyList()
     }

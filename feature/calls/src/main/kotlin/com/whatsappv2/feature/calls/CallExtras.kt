@@ -74,6 +74,17 @@ data class SecondCallPrompt(
 
     /** Who they would be interrupting, so the choice is between two named people. */
     val currentCallWith: String,
+
+    /**
+     * True when the call in progress is a live conference this device mixes, so the
+     * caller can be brought into it instead of interrupting it (ADR-009).
+     *
+     * This is how somebody who missed the conference gets in: they call the host. Not
+     * offered over a held conference — the host stepped out of the room, and answering
+     * into it would put them back in without asking — and not over a dial-in bridge,
+     * which this app cannot add a second leg to.
+     */
+    val canAddToConference: Boolean = false,
 )
 
 /** One row of a conference roster (Task 60). */

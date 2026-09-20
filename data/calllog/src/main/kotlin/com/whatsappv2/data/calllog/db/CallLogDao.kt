@@ -118,6 +118,10 @@ interface CallLogDao {
     @Query("DELETE FROM call_log WHERE id = :id")
     suspend fun deleteById(id: Long)
 
+    /** Every leg of one conference, which is what deleting "the conference" means. */
+    @Query("DELETE FROM call_log WHERE conference_key = :conferenceKey")
+    suspend fun deleteByConferenceKey(conferenceKey: String)
+
     @Query("DELETE FROM call_log")
     suspend fun deleteAll()
 

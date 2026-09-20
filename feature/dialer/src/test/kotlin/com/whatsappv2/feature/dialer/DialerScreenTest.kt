@@ -22,6 +22,7 @@ import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.testing.FakeContactRepository
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
+import com.whatsappv2.domain.usecase.ConferenceJoinCoordinator
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import org.junit.Rule
 import org.junit.Test
@@ -135,6 +136,7 @@ class DialerScreenTest {
             repository = repository,
             savedState = SavedStateHandle(),
             registrar = engine,
+            joins = ConferenceJoinCoordinator(engine, engine),
         )
 
         compose.setContent {

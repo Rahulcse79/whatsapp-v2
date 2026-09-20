@@ -23,8 +23,51 @@ sealed interface HistoryRow {
      * it out means asking the address book (`CallLogTitles`) and a composable that did
      * that would do it again on every recomposition. Resolved once, as the page loads.
      */
-    data class Call(val entry: CallLogEntry, val title: String) : HistoryRow
+    data class Call(
+        val entry: CallLogEntry,
+        val title: String,
+        /**
+         * Every leg of the conference this entry began, oldest first — [entry] included —
+         * or empty for a call that was not one (ADR-009).
+         *
+         * A conference this device mixed is one row per leg in the log, for the reasons
+         * [CallLogEntry.isConference] gives; on screen it is one entry, the way a group
+         * call is one entry in any messaging app, with the people in it listed rather
+         * than scattered down the day as calls to strangers. The legs are carried so the
+         * detail can name each member and the whole thing can be deleted or called back
+         * as one.
+         */
+        val legs: List<Member> = emptyList(),
+    ) : HistoryRow {
+
+        /** True when this row stands for a conference with more than one leg. */
+        val isConferenceGroup: Boolean get() = legs.size > 1
+
+        /** When the conference started: its first leg. */
+        val startedAtEpochMillis: Long
+            get() = legs.firstOrNull()?.entry?.startedAtEpochMillis ?: entry.startedAtEpochMillis
+
+        /** Whether anybody in it was ever reached. */
+        val wasAnswered: Boolean get() = if (legs.isEmpty()) entry.wasAnswered else legs.any { it.entry.wasAnswered }
+
+        /**
+         * How long the conference lasted: from the first answer to the last ending. A
+         * single call is its own duration, as before.
+         */
+        val durationSeconds: Long
+            get() {
+                if (legs.isEmpty()) return entry.durationSeconds
+                val answered = legs.mapNotNull { it.entry.answeredAtEpochMillis }.minOrNull() ?: return 0L
+                val ended = legs.maxOf { it.entry.endedAtEpochMillis }
+                return (ended - answered).coerceAtLeast(0L) / MILLIS_PER_SECOND
+            }
+    }
+
+    /** One leg of a conference, with what to call the person on it. */
+    data class Member(val entry: CallLogEntry, val title: String)
 }
+
+private const val MILLIS_PER_SECOND = 1_000L
 
 /**
  * What the screen is showing besides the list.

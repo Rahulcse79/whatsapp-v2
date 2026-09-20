@@ -13,7 +13,10 @@ import com.whatsappv2.domain.engine.SipRegistrar
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.MediaProfile
+import com.whatsappv2.domain.model.RegistrationState
+import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.repository.SipAccountRepository
+import com.whatsappv2.domain.usecase.ConferenceJoinCoordinator
 import com.whatsappv2.domain.usecase.PlaceCallError
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -78,6 +81,12 @@ class DialerViewModel @Inject constructor(
      */
     private val savedState: SavedStateHandle,
     registrar: SipRegistrar,
+    /**
+     * How a call placed from a live conference becomes a participant of it: the dialler
+     * asks for the join, and the coordinator mixes the leg when the far end answers —
+     * long after this screen has been left (ADR-009).
+     */
+    private val joins: ConferenceJoinCoordinator,
 ) : ViewModel() {
 
     /**
@@ -120,6 +129,27 @@ class DialerViewModel @Inject constructor(
         recentDials.recent,
         matchingContacts,
     ) { accounts, registrations, current, recent, matches ->
+        Frame(accounts, registrations, current, recent, matches)
+    }.combine(joins.hostingLiveConference) { frame, adding -> frame.toUiState(adding) }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(SUBSCRIPTION_TIMEOUT_MILLIS),
+        initialValue = DialerUiState(),
+    )
+
+    /**
+     * The five sources `combine` type-checks, folded before the sixth is added: past
+     * five it stops being type-checked, and an indexed array of Any is a worse trade
+     * than one small class.
+     */
+    private data class Frame(
+        val accounts: List<SipAccount>,
+        val registrations: Map<AccountId, RegistrationState>,
+        val current: Entry,
+        val recent: List<String>,
+        val matches: List<SipContact>,
+    )
+
+    private fun Frame.toUiState(addingToConference: Boolean): DialerUiState {
         val rows = accounts.map { account ->
             DialerAccount(
                 id = account.id,
@@ -134,7 +164,7 @@ class DialerViewModel @Inject constructor(
             ?: accounts.firstOrNull { it.isDefault }?.let { default -> rows.first { it.id == default.id } }
             ?: rows.firstOrNull()
 
-        DialerUiState(
+        return DialerUiState(
             input = current.input,
             accounts = rows,
             selectedAccount = selected,
@@ -143,12 +173,9 @@ class DialerViewModel @Inject constructor(
             recent = recent,
             contacts = matches,
             isPlacing = current.placing,
+            addingToConference = addingToConference,
         )
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(SUBSCRIPTION_TIMEOUT_MILLIS),
-        initialValue = DialerUiState(),
-    )
+    }
 
     /** Replaces the input, for the text field. */
     fun onInputChanged(value: String) {
@@ -252,6 +279,10 @@ class DialerViewModel @Inject constructor(
                     input = target,
                     media = media,
                 )
+                // Decided from the state the screen showed, which is what the user was
+                // told this call would be. Asked for before anything else can happen to
+                // the call, so an answer that comes back quickly still finds the request.
+                if (result is Outcome.Success && state.addingToConference) joins.joinOnConnect(result.value)
                 eventChannel.send(result.toEvent(target))
                 // Said after the call is on its way, not instead of it: the call still
                 // happened, and the notice explains which kind it turned out to be.

@@ -1,49 +1,21 @@
 package com.whatsappv2.feature.calls
 
-import app.cash.turbine.ReceiveTurbine
 import app.cash.turbine.test
 import com.whatsappv2.core.common.result.getOrNull
-import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.SecondCallResponse
-import com.whatsappv2.domain.engine.ConferenceRoom
-import com.whatsappv2.domain.engine.NoCameraAvailable
-import com.whatsappv2.domain.engine.NoVideoSurfaces
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.VideoSize
 import com.whatsappv2.domain.engine.VideoSizes
-import com.whatsappv2.domain.engine.VideoSurfaceController
-import com.whatsappv2.domain.model.AccountId
-import com.whatsappv2.domain.model.CallId
-import com.whatsappv2.domain.model.CodecPreferences
 import com.whatsappv2.domain.model.DtmfDigit
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
-import com.whatsappv2.domain.model.NatPolicy
-import com.whatsappv2.domain.model.SipAccount
-import com.whatsappv2.domain.model.SipUri
-import com.whatsappv2.domain.model.SrtpPolicy
-import com.whatsappv2.domain.model.Transport
-import com.whatsappv2.domain.testing.FakeCallRecorder
-import com.whatsappv2.domain.testing.FakeContactRepository
-import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
-import com.whatsappv2.domain.usecase.CallWaitingUseCase
-import com.whatsappv2.domain.usecase.MergeCallsUseCase
-import com.whatsappv2.domain.usecase.TransferCallUseCase
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
-import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.test.setMain
-import org.junit.After
-import org.junit.Before
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -59,55 +31,7 @@ import kotlin.test.assertTrue
  * production enforces.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-class CallViewModelTest {
-
-    private val engine = FakeSipEngine()
-    private val contacts = FakeContactRepository()
-    private val accounts = FakeSipAccountRepository()
-    private val recorder = FakeCallRecorder()
-    private val clock = engine.clock
-    private val dispatcher = StandardTestDispatcher()
-
-    /**
-     * The conference bridge these tests merge into.
-     *
-     * Configured by default, because the interesting cases are about *which* topology a
-     * merge chooses; the "no room at all" case sets [ConferenceRoom.NONE] itself.
-     */
-    private var room = ConferenceRoom.DEFAULT
-
-    /**
-     * Surfaces that draw nothing but can be told what shape the picture is.
-     *
-     * [NoVideoSurfaces] answers [VideoSizes.UNKNOWN] forever, which is the right default
-     * and is untestable: the whole point of the field is that it *changes* mid-call.
-     */
-    private val surfaces = object : VideoSurfaceController by NoVideoSurfaces {
-        val sizes = MutableStateFlow(VideoSizes.UNKNOWN)
-        override val videoSizes: StateFlow<VideoSizes> get() = sizes
-    }
-
-    @Before
-    fun setUp() = Dispatchers.setMain(dispatcher)
-
-    @After
-    fun tearDown() = Dispatchers.resetMain()
-
-    private fun viewModel() = CallViewModel(
-        calls = engine,
-        media = engine,
-        contacts = contacts,
-        conferences = engine,
-        recorder = recorder,
-        // The real use cases over the fake engine, not fakes of their own: the ordering
-        // they enforce is the thing worth exercising from here (Tasks 55-57).
-        transfers = TransferCallUseCase(engine, accounts),
-        callWaiting = CallWaitingUseCase(engine, NoCameraAvailable),
-        mergeCalls = MergeCallsUseCase(engine, engine, accounts, room),
-        surfaces = surfaces,
-        clock = clock,
-        accounts = accounts,
-    )
+class CallViewModelTest : CallViewModelFixture() {
 
     @Test
     fun `an outgoing call renders its phase as the stack moves it`() = runTest {
@@ -380,78 +304,6 @@ class CallViewModelTest {
 
             val held = awaitActive { it.otherCalls.isNotEmpty() }
             assertEquals(listOf(second), held.otherCalls.map { it.callId })
-            cancelAndIgnoreRemainingEvents()
-        }
-    }
-
-    @Test
-    fun `a merged conference offers no held banner at all`() = runTest {
-        // On the TC15 the bridge had both links open and the button read "2 calls merged",
-        // over a banner saying the other member was on hold. The banner is tappable, and
-        // the swap it offers holds everyone else — it would have torn down the conference
-        // the user had just built (2026-09-12 12:01).
-        val first = placeCall()
-        engine.simulateRemoteAnswer(first)
-        val second = placeCall()
-        engine.simulateRemoteAnswer(second)
-        engine.setHold(second, held = true)
-        val viewModel = viewModel().also { it.watch(first) }
-        runCurrent()
-
-        viewModel.uiState.test {
-            awaitActive { it.otherCalls.isNotEmpty() }
-
-            viewModel.merge()
-            runCurrent()
-
-            val merged = awaitActive { it.mixedCallCount >= MIN_MIXED_IN_TEST }
-            assertEquals(
-                emptyList(),
-                merged.otherCalls.map { it.title },
-                "a conference member was drawn as on hold",
-            )
-            cancelAndIgnoreRemainingEvents()
-        }
-    }
-
-    @Test
-    fun `a merged conference is titled as one, and every member is listed with the user first`() = runTest {
-        // The screen kept the first leg's extension as its title after Merge — "9196"
-        // over a button reading "2 calls merged" (TC15, 2026-09-14). What the user is in
-        // is a conference; that is the title, and the members are the roster below it.
-        // A line of names under the title came first and truncated at seven members
-        // (TC15, 2026-09-19); the roster is one row each and does not.
-        accounts.given(ACCOUNT)
-        val first = placeCall()
-        engine.simulateRemoteAnswer(first)
-        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO).getOrNull()!!
-        engine.simulateRemoteAnswer(second)
-        val viewModel = viewModel().also { it.watch(first) }
-        runCurrent()
-
-        viewModel.uiState.test {
-            val alone = awaitActive { it.call.phase == CallPhase.CONNECTED }
-            assertEquals("bob", alone.call.title, "a 1:1 call is titled by its extension")
-            assertFalse(alone.call.isMixed)
-            assertNull(alone.conference, "two separate calls are not a conference")
-
-            viewModel.merge()
-            runCurrent()
-
-            val merged = awaitActive { it.mixedCallCount >= MIN_MIXED_IN_TEST && it.conference != null }
-            assertEquals(CONFERENCE_TITLE, merged.call.title)
-            assertNull(merged.call.subtitle, "the members are the roster, not a line that truncates")
-            assertTrue(merged.call.isMixed)
-            assertNull(merged.call.photoUri)
-
-            val roster = merged.conference!!
-            assertTrue(roster.rosterAvailable, "this device is the mixer, so it knows exactly who is here")
-            assertEquals(
-                listOf("alice", "bob", "1003"),
-                roster.participants.map { it.label },
-                "the user first, then every leg in the order it was called",
-            )
-            assertEquals(listOf(true, false, false), roster.participants.map { it.isSelf })
             cancelAndIgnoreRemainingEvents()
         }
     }
@@ -843,82 +695,5 @@ class CallViewModelTest {
             assertTrue(engine.bridgeMergeRequests.isEmpty(), "no server was involved")
             cancelAndIgnoreRemainingEvents()
         }
-    }
-
-    private suspend fun placeCall(): CallId {
-        engine.givenRegistered(ACCOUNT)
-        return engine.placeCall(ACCOUNT.id, REMOTE, MediaProfile.AUDIO).getOrNull()!!
-    }
-
-    /**
-     * Waits for the call to look like [predicate] describes.
-     *
-     * Not "the next item": the screen's state changes for reasons other than the one under
-     * test — a tick, a control, the engine publishing the same call again — and a test that
-     * counted emissions would be asserting the shape of the flow rather than the behaviour
-     * of the screen.
-     */
-    private suspend fun ReceiveTurbine<CallUiState>.awaitDisplay(
-        predicate: (CallDisplay) -> Boolean,
-    ): CallDisplay {
-        while (true) {
-            val item = awaitItem()
-            if (item is CallUiState.Active && predicate(item.call)) return item.call
-        }
-    }
-
-    /** [awaitDisplay]'s sibling, for assertions about the screen rather than the call on it. */
-    private suspend fun ReceiveTurbine<CallUiState>.awaitActive(
-        predicate: (CallUiState.Active) -> Boolean,
-    ): CallUiState.Active {
-        while (true) {
-            val item = awaitItem()
-            if (item is CallUiState.Active && predicate(item)) return item
-        }
-    }
-
-    private suspend fun ReceiveTurbine<CallUiState>.awaitFinished(): CallUiState.Finished {
-        var item = awaitItem()
-        while (item !is CallUiState.Finished) item = awaitItem()
-        return item
-    }
-
-    private companion object {
-        val REMOTE: SipUri = SipUri.parse("sip:bob@sip.example.com").getOrNull()!!
-        val OTHER: SipUri = SipUri.parse("sip:1003@sip.example.com").getOrNull()!!
-
-        /** Two mixed calls is a conference (ADR-009). */
-        const val MIN_MIXED_IN_TEST = 2
-
-        /** [CallViewModel]'s `SUBSCRIPTION_TIMEOUT_MILLIS`, which is private to it. */
-        const val SUBSCRIPTION_TIMEOUT = 5_000L
-
-        const val MILLIS_PER_SECOND = 1_000L
-        const val TICK = 1_100L
-        const val TEN_SECONDS = 10_000L
-        const val THIRTY_SECONDS = 30_000L
-        const val ONE_HOUR = 3_600_000L
-
-        val ACCOUNT = SipAccount(
-            id = AccountId("acct-1"),
-            label = "Work",
-            username = "alice",
-            extension = null,
-            authUsername = null,
-            password = Secret("hunter22"),
-            displayName = null,
-            domain = "sip.example.com",
-            registrar = null,
-            outboundProxy = null,
-            port = null,
-            transport = Transport.TLS,
-            registrationExpirySeconds = 600,
-            stunServer = null,
-            turn = null,
-            natPolicy = NatPolicy.DEFAULT,
-            srtpPolicy = SrtpPolicy.OPTIONAL,
-            codecs = CodecPreferences.DEFAULT,
-            isDefault = true,
-        )
     }
 }

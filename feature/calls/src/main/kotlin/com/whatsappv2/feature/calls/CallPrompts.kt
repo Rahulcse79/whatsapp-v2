@@ -106,12 +106,29 @@ internal fun SecondCallPromptDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onRespond(SecondCallResponse.ACCEPT_AND_HOLD) }) {
-                Text("Hold and answer")
+            // Over a live conference the natural answer is to let them in, so that is
+            // the one in the confirm position. The rest are still there: a caller the
+            // host would rather take privately is held-and-answered as before.
+            if (prompt.canAddToConference) {
+                TextButton(
+                    onClick = { onRespond(SecondCallResponse.ACCEPT_INTO_CONFERENCE) },
+                    modifier = Modifier.testTag(TAG_SECOND_CALL_ADD),
+                ) {
+                    Text("Add to conference")
+                }
+            } else {
+                TextButton(onClick = { onRespond(SecondCallResponse.ACCEPT_AND_HOLD) }) {
+                    Text("Hold and answer")
+                }
             }
         },
         dismissButton = {
             Column {
+                if (prompt.canAddToConference) {
+                    TextButton(onClick = { onRespond(SecondCallResponse.ACCEPT_AND_HOLD) }) {
+                        Text("Hold and answer")
+                    }
+                }
                 TextButton(onClick = { onRespond(SecondCallResponse.ACCEPT_AND_END) }) {
                     Text("End and answer")
                 }
@@ -126,3 +143,4 @@ internal fun SecondCallPromptDialog(
 internal const val TAG_VIDEO_PROMPT = "call-video-request"
 internal const val TAG_RECORDING_PROMPT = "call-recording-consent"
 internal const val TAG_SECOND_CALL = "call-second-call"
+internal const val TAG_SECOND_CALL_ADD = "call-second-call-add"

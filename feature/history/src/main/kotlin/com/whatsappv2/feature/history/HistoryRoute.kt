@@ -12,7 +12,6 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.paging.compose.collectAsLazyPagingItems
 import com.whatsappv2.domain.model.CallId
-import com.whatsappv2.domain.model.CallLogEntry
 
 /**
  * Call history, wired to its ViewModel (Task 48) — the app's home screen since Task 70.
@@ -79,13 +78,13 @@ fun HistoryRoute(
             onFiltersCleared = viewModel::onFiltersCleared,
             onEntryOpened = viewModel::onEntryOpened,
             onDetailDismissed = viewModel::onDetailDismissed,
-            onDelete = { entry: CallLogEntry -> viewModel.onDelete(entry.id) },
+            onDelete = viewModel::onDelete,
             onClearAllRequested = viewModel::onClearAllRequested,
             onClearAllDismissed = viewModel::onClearAllDismissed,
             onClearAllConfirmed = viewModel::onClearAllConfirmed,
             // Gated like the dialler's: a redial is a call, and a call needs a microphone.
-            onCallBack = { entry -> callGate { viewModel.onCallBack(entry) } },
-            onVideoCallBack = { entry -> callGate { videoGate { viewModel.onVideoCallBack(entry) } } },
+            onCallBack = { row -> callGate { viewModel.onCallBack(row) } },
+            onVideoCallBack = { row -> callGate { videoGate { viewModel.onVideoCallBack(row) } } },
             onOpenDialer = onOpenDialer,
             onOpenRecordings = onOpenRecordings,
             onOpenSettings = onOpenSettings,

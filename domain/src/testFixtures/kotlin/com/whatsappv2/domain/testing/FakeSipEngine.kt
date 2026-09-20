@@ -415,6 +415,8 @@ class FakeSipEngine(
     /** Every membership [mixCalls] was asked for, in order — what a test asserts on. */
     val mixRequests: MutableList<Set<CallId>> = mutableListOf()
 
+    private var conferencesFormed = 0
+
     private val mixed = MutableStateFlow<Set<CallId>>(emptySet())
     override val mixedCalls: StateFlow<Set<CallId>> = mixed.asStateFlow()
 
@@ -438,7 +440,10 @@ class FakeSipEngine(
         // Stamped on the snapshots, as the real engine does, so the ENDING carries it: the
         // call log is written from the terminal snapshot, long after this set has emptied.
         // A fake that published the set without stamping would let a broken recorder pass.
-        mixed.value.forEach { id -> updateCall(id) { it.copy(isConference = true) } }
+        // One key per conference, shared by a member added later, as the real engine does.
+        val key = mixed.value.firstNotNullOfOrNull { id -> activeCalls.value.firstOrNull { it.callId == id }?.conferenceKey }
+            ?: "conference-${++conferencesFormed}"
+        mixed.value.forEach { id -> updateCall(id) { it.copy(isConference = true, conferenceKey = key) } }
         return guard(Operation.MIX_CALLS) { success(live) }
     }
 

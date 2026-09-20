@@ -709,8 +709,8 @@ private fun CallRow(row: HistoryRow.Call, actions: HistoryActions, zone: ZoneId)
         backgroundContent = { SwipeAffordance(swipe.dismissDirection) },
         onDismiss = { value ->
             when (value) {
-                SwipeToDismissBoxValue.EndToStart -> actions.onVideoCallBack(entry)
-                SwipeToDismissBoxValue.StartToEnd -> actions.onCallBack(entry)
+                SwipeToDismissBoxValue.EndToStart -> actions.onVideoCallBack(row)
+                SwipeToDismissBoxValue.StartToEnd -> actions.onCallBack(row)
                 SwipeToDismissBoxValue.Settled -> Unit
             }
             scope.launch { swipe.reset() }
@@ -736,11 +736,11 @@ private fun CallRowContent(row: HistoryRow.Call, actions: HistoryActions, zone: 
             .semantics {
                 customActions = listOf(
                     CustomAccessibilityAction("Call ${row.title} back") {
-                        actions.onCallBack(entry)
+                        actions.onCallBack(row)
                         true
                     },
                     CustomAccessibilityAction("Video call ${row.title} back") {
-                        actions.onVideoCallBack(entry)
+                        actions.onVideoCallBack(row)
                         true
                     },
                 )
@@ -836,7 +836,7 @@ private fun CallRowText(row: HistoryRow.Call, zone: ZoneId, modifier: Modifier =
                 modifier = Modifier.size(AppTheme.spacing.medium),
             )
             Text(
-                text = entry.subtitle(zone),
+                text = row.subtitle(zone),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -884,6 +884,10 @@ private fun SwipeAffordance(direction: SwipeToDismissBoxValue) {
 
 @Composable
 private fun CallDetail(row: HistoryRow.Call, actions: HistoryActions, zone: ZoneId) {
+    if (row.isConferenceGroup) {
+        ConferenceHistoryDetail(row = row, actions = actions, zone = zone)
+        return
+    }
     val entry = row.entry
     ConfirmDialog(
         title = row.title,
@@ -896,7 +900,7 @@ private fun CallDetail(row: HistoryRow.Call, actions: HistoryActions, zone: Zone
             append(entry.subtitle(zone))
         },
         confirmLabel = "Delete",
-        onConfirm = { actions.onDelete(entry) },
+        onConfirm = { actions.onDelete(row) },
         onDismiss = actions.onDetailDismissed,
         destructive = true,
         dismissLabel = "Close",
@@ -978,6 +982,14 @@ private fun CallLogEntry.subtitle(zone: ZoneId): String {
     // three-way is indistinguishable from an ordinary call to 1002 otherwise, and the
     // glyph alone asks the reader to know what a group icon means here.
     return if (isConference) "Conference · $stamp" else stamp
+}
+
+/** The row's line: the conference's own start and span when it is one, the call's otherwise. */
+private fun HistoryRow.Call.subtitle(zone: ZoneId): String {
+    if (!isConferenceGroup) return entry.subtitle(zone)
+    val at = Instant.ofEpochMilli(startedAtEpochMillis).atZone(zone).format(TIME_FORMAT)
+    val stamp = if (wasAnswered) "$at · ${formatDuration(durationSeconds)}" else at
+    return "Conference · ${legs.size} people · $stamp"
 }
 
 /** `m:ss`, or `h:mm:ss` past the hour. A 75-minute call is not 75:00. */

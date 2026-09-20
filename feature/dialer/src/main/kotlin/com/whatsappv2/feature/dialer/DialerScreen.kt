@@ -20,6 +20,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.DropdownMenu
@@ -157,7 +158,13 @@ internal fun DialerScreen(
         modifier = modifier,
         // A back arrow, because the dialler is a screen opened from Calls now rather than
         // a tab that is always there (Task 70).
-        topBar = { DialerTopBar(onBack = actions.onBack) },
+        topBar = {
+            DialerTopBar(
+                onBack = actions.onBack,
+                // Said in the title, because it changes what the button below will do.
+                title = if (state.addingToConference) "Add participant" else "Dialler",
+            )
+        },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Column(
@@ -398,9 +405,9 @@ private fun accountChooser(choosable: Boolean, onOpen: () -> Unit): Modifier {
 /** A back arrow, because the dialler is a screen opened from Calls now, not a tab (Task 70). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DialerTopBar(onBack: () -> Unit) {
+private fun DialerTopBar(onBack: () -> Unit, title: String) {
     AppTopBar(
-        title = "Dialler",
+        title = title,
         navigationIcon = {
             IconButton(onClick = onBack, modifier = Modifier.testTag(TAG_BACK)) {
                 Icon(
@@ -413,11 +420,15 @@ private fun DialerTopBar(onBack: () -> Unit) {
 }
 
 /**
- * Two ways to place the same call (Task 74).
+ * Two ways to place the same call (Task 74) — or one, when the call is a participant.
  *
  * Both are enabled by the same rule, because whether video is possible is not this
  * screen's decision: a device with no usable camera places an audio call and is told,
  * rather than being shown a dead button it cannot explain.
+ *
+ * While a live conference is being added to there is no video button at all, and the
+ * one button says "Add": a leg mixed into an audio conference has its video dropped the
+ * moment it joins, so a video call here would be a promise the room cannot keep.
  */
 @Composable
 private fun DialerCallButtons(state: DialerUiState, actions: DialerActions) {
@@ -428,23 +439,25 @@ private fun DialerCallButtons(state: DialerUiState, actions: DialerActions) {
         modifier = Modifier.padding(top = AppTheme.spacing.medium),
     ) {
         CallActionButton(
-            icon = Icons.Filled.Call,
-            contentDescription = "Place call",
+            icon = if (state.addingToConference) Icons.Filled.GroupAdd else Icons.Filled.Call,
+            contentDescription = if (state.addingToConference) "Add to the conference" else "Place call",
             onClick = actions.onCall,
             style = CallActionStyle.ANSWER,
             enabled = state.canPlaceCall,
-            label = "Call",
+            label = if (state.addingToConference) "Add" else "Call",
             modifier = Modifier.testTag(TAG_CALL),
         )
-        CallActionButton(
-            icon = Icons.Filled.Videocam,
-            contentDescription = "Place video call",
-            onClick = actions.onVideoCall,
-            style = CallActionStyle.ANSWER,
-            enabled = state.canPlaceCall,
-            label = "Video",
-            modifier = Modifier.testTag(TAG_VIDEO_CALL),
-        )
+        if (!state.addingToConference) {
+            CallActionButton(
+                icon = Icons.Filled.Videocam,
+                contentDescription = "Place video call",
+                onClick = actions.onVideoCall,
+                style = CallActionStyle.ANSWER,
+                enabled = state.canPlaceCall,
+                label = "Video",
+                modifier = Modifier.testTag(TAG_VIDEO_CALL),
+            )
+        }
     }
 }
 

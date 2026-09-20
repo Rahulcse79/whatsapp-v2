@@ -71,8 +71,11 @@ class CallLogPagingSource(
     override suspend fun load(params: LoadParams<Int>): LoadResult<Int, HistoryRow.Call> {
         val offset = params.key ?: 0
 
+        var loaded = 0
         return runCatching {
-            repository.search(query, offset, params.loadSize).map { HistoryRow.Call(it, titles(it)) }
+            val legs = repository.search(query, offset, params.loadSize)
+            loaded = legs.size
+            groupConferences(legs.map { HistoryRow.Call(it, titles(it)) })
         }
             .fold(
                 onSuccess = { entries ->
@@ -83,8 +86,10 @@ class CallLogPagingSource(
                         // skip two pages when the user scrolled up.
                         prevKey = if (offset == 0) null else (offset - pageSize).coerceAtLeast(0),
                         // A short page is the end of the list. Asking for one more to be
-                        // sure would cost a query per page for the same answer.
-                        nextKey = if (entries.size < params.loadSize) null else offset + entries.size,
+                        // sure would cost a query per page for the same answer. Counted in
+                        // legs, not in rows: a conference folded into one row is still
+                        // several rows of the table, and the next page starts after them.
+                        nextKey = if (loaded < params.loadSize) null else offset + loaded,
                     )
                 },
                 onFailure = { LoadResult.Error(it) },

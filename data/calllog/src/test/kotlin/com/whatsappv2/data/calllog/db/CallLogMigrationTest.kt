@@ -100,13 +100,39 @@ class CallLogMigrationTest {
     }
 
     @Test
+    fun `a leg logged before version 4 has no conference key, and later legs share theirs`() {
+        // Null rather than a default: an old row can be a conference leg without anybody
+        // knowing which conference, and inventing a key would fold strangers together.
+        writeVersionOne { db ->
+            db.insert("call_log", CONFLICT_FAIL, callRow(remote = "sip:1003@192.168.0.101"))
+        }
+
+        val migrated = openWithMigrations()
+        listOf("sip:1001@192.168.0.101", "sip:1002@192.168.0.101").forEach { remote ->
+            migrated.openHelper.writableDatabase.insert(
+                "call_log",
+                CONFLICT_FAIL,
+                callRow(remote = remote).apply {
+                    put("is_conference", 1)
+                    put("conference_key", "conf-1")
+                },
+            )
+        }
+
+        assertNull(migrated.stringOf("SELECT conference_key FROM call_log WHERE id = 1"))
+        assertEquals("conf-1", migrated.stringOf("SELECT conference_key FROM call_log WHERE id = 2"))
+        assertEquals(2, migrated.intOf("SELECT COUNT(*) FROM call_log WHERE conference_key = 'conf-1'"))
+    }
+
+    @Test
     fun `the migrations are the ones the builder installs`() {
         // CallLogModule adds CallLogDatabase.MIGRATIONS and nothing else, so a migration
         // that exists but is not in the array would pass the tests above and still refuse
         // to open — there is no destructive fallback — every history on every device.
         assertTrue(CallLogDatabase.MIGRATIONS.any { it.startVersion == 1 && it.endVersion == 2 })
         assertTrue(CallLogDatabase.MIGRATIONS.any { it.startVersion == 2 && it.endVersion == 3 })
-        assertEquals(3, CallLogDatabase.VERSION)
+        assertTrue(CallLogDatabase.MIGRATIONS.any { it.startVersion == 3 && it.endVersion == 4 })
+        assertEquals(4, CallLogDatabase.VERSION)
         // A chain with a gap opens nothing: Room walks 1 -> 2 -> 3 and refuses the file if
         // any step is missing, so the count matters as much as the endpoints.
         assertEquals(CallLogDatabase.VERSION - 1, CallLogDatabase.MIGRATIONS.size)

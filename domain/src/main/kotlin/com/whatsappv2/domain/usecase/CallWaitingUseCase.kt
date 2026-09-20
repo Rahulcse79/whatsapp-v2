@@ -32,6 +32,7 @@ import javax.inject.Inject
 class CallWaitingUseCase @Inject constructor(
     private val calls: SipCallController,
     private val camera: CameraAvailability,
+    private val joins: ConferenceJoinCoordinator,
 ) {
 
     /**
@@ -47,6 +48,10 @@ class CallWaitingUseCase @Inject constructor(
         withVideo: Boolean = false,
     ): Outcome<Unit, SipError> {
         val steps = CallWaitingPolicy.respondTo(calls.activeCalls.value, incoming, response)
+        // Asked for before the answer goes out, not after it returns: the far end's media
+        // can be up before `answer` comes back, and the coordinator must already be
+        // expecting the call when it is.
+        if (response == SecondCallResponse.ACCEPT_INTO_CONFERENCE) joins.joinOnConnect(incoming)
         return run(steps, withVideo)
     }
 

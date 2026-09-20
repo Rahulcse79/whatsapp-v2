@@ -8,6 +8,7 @@ import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import androidx.paging.insertSeparators
 import com.whatsappv2.core.common.result.Outcome
+import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.domain.call.userMessage
 import com.whatsappv2.domain.engine.CameraAvailability
 import com.whatsappv2.domain.model.CallLogEntry
@@ -18,6 +19,7 @@ import com.whatsappv2.domain.repository.CallLogFilter
 import com.whatsappv2.domain.repository.CallLogQuery
 import com.whatsappv2.domain.repository.CallLogRepository
 import com.whatsappv2.domain.usecase.CallLogTitles
+import com.whatsappv2.domain.usecase.ConferenceJoinCoordinator
 import com.whatsappv2.domain.usecase.PlaceCallError
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -83,6 +85,13 @@ class HistoryViewModel @Inject constructor(
      * nothing.
      */
     private val titles: CallLogTitles,
+    /**
+     * How a conference is called back as one: every member is dialled, and each is mixed
+     * in as they answer, exactly as a participant added from the conference screen is
+     * (ADR-009). The coordinator outlives this screen, which a call back needs — the
+     * user is on the call screen long before the third member picks up.
+     */
+    private val joins: ConferenceJoinCoordinator,
 ) : ViewModel() {
 
     private val state = MutableStateFlow(HistoryUiState())
@@ -182,6 +191,27 @@ class HistoryViewModel @Inject constructor(
 
     fun onClearAllDismissed() = state.update { it.copy(confirmingClearAll = false) }
 
+    /**
+     * Deletes what the row stands for: one call, or every leg of the conference it began.
+     *
+     * A conference is one entry on screen and is deleted as one. Removing only the leg
+     * the entry was built on would put the conference straight back in the list, one
+     * member shorter, which is the opposite of what the user pressed Delete for.
+     */
+    fun onDelete(row: HistoryRow.Call) {
+        val key = row.entry.conferenceKey
+        if (row.isConferenceGroup && key != null) {
+            viewModelScope.launch {
+                repository.deleteConference(key)
+                state.update { current ->
+                    current.copy(openEntry = current.openEntry?.takeIf { it.entry.conferenceKey != key })
+                }
+            }
+        } else {
+            onDelete(row.entry.id)
+        }
+    }
+
     fun onDelete(id: CallLogId) {
         viewModelScope.launch {
             repository.delete(id)
@@ -209,6 +239,41 @@ class HistoryViewModel @Inject constructor(
      * one the original call used, so a call back goes out the way the call came in.
      */
     fun onCallBack(entry: CallLogEntry) = callBack(entry, MediaProfile.AUDIO)
+
+    /** Calls the row back: one person, or the whole conference as one (ADR-009). */
+    fun onCallBack(row: HistoryRow.Call) {
+        if (row.isConferenceGroup) callConferenceBack(row) else callBack(row.entry, MediaProfile.AUDIO)
+    }
+
+    /**
+     * Video, for one person. A conference is audio on this device whatever was asked —
+     * the mix drops video the moment a leg joins — so calling one back with video would
+     * be a promise the room cannot keep, and it goes out as the audio conference it was.
+     */
+    fun onVideoCallBack(row: HistoryRow.Call) {
+        if (row.isConferenceGroup) callConferenceBack(row) else onVideoCallBack(row.entry)
+    }
+
+    /**
+     * Every member dialled, each asked to join as they answer.
+     *
+     * One INVITE per distinct address — a member who was dialled twice in the original
+     * (the roster makes that visible now) is dialled once. The screen is moved to the
+     * first leg that goes out; the coordinator dials the rest one by one from there, for
+     * the reason its `callBack` gives, and a member that cannot be dialled is skipped,
+     * because a conference minus one absent person is still the conference.
+     */
+    private fun callConferenceBack(row: HistoryRow.Call) {
+        viewModelScope.launch {
+            val members = row.legs.map { it.entry }.distinctBy { it.remote }.map { entry ->
+                suspend { placeCall(input = entry.redialTarget(), accountOverride = entry.accountId).getOrNull() }
+            }
+            eventChannel.send(
+                joins.callBack(members)?.let { HistoryEvent.CallPlaced(it) }
+                    ?: HistoryEvent.Refused("Nobody in the conference could be dialled"),
+            )
+        }
+    }
 
     /**
      * Redials with video (Task 75).
