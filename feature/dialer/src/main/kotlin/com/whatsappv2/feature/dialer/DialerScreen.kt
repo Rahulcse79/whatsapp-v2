@@ -326,7 +326,10 @@ private fun AccountHeader(
                 )
                 selected?.let {
                     Text(
-                        text = it.identity,
+                        // "Extension 1001 on 192.168.2.194", not the raw `1001@192.168.2.194`
+                        // — the same fact, read as a sentence rather than as an address, and
+                        // read aloud as one too.
+                        text = describeIdentity(it.identity),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -581,7 +584,12 @@ private fun KeypadKey(key: Char, onDigit: (Char) -> Unit) {
             .size(AppTheme.sizing.dialKey)
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-            .clickable { onDigit(key) }
+            .clickable(role = Role.Button) { onDigit(key) }
+            // The key, and only the key: without this a screen reader read the merged
+            // text — "2 ABC" — with no role, so the commonest control on the screen was
+            // announced as a label. "Star" and "Pound" because "asterisk" and "hash" are
+            // not what a keypad calls them.
+            .semantics(mergeDescendants = true) { contentDescription = keyDescription(key) }
             .testTag(keyTag(key)),
         contentAlignment = Alignment.Center,
     ) {
@@ -602,6 +610,13 @@ private fun KeypadKey(key: Char, onDigit: (Char) -> Unit) {
             )
         }
     }
+}
+
+/** How a screen reader names a key. Digits as themselves; the two symbols by their keypad names. */
+internal fun keyDescription(key: Char): String = when (key) {
+    '*' -> "Star"
+    '#' -> "Pound"
+    else -> key.toString()
 }
 
 /** What each key carries under its digit. The four without letters are absent, not blank. */
@@ -633,6 +648,19 @@ internal const val TAG_ACCOUNT = "dialer-account"
 internal const val TAG_ACCOUNT_STATUS = "dialer-account-status"
 internal const val TAG_RECENTS = "dialer-recents"
 internal const val TAG_CONTACTS = "dialer-contacts"
+
+/**
+ * `user@domain` as a phrase: "Extension 1001 on 192.168.2.194".
+ *
+ * The raw form stays in [DialerAccount.identity] because it is what a bare extension is
+ * completed against; this is only how the card shows it. An identity with no `@` — which
+ * no account produces — is shown as it is rather than invented around.
+ */
+internal fun describeIdentity(identity: String): String {
+    val at = identity.indexOf('@')
+    if (at <= 0 || at == identity.lastIndex) return identity
+    return "Extension ${identity.substring(0, at)} on ${identity.substring(at + 1)}"
+}
 
 internal fun keyTag(key: Char): String = "dialer-key-$key"
 internal fun recentTag(target: String): String = "dialer-recent-$target"

@@ -50,8 +50,22 @@
       <action application="set" data="bypass_media=false"/>
       <action application="set" data="proxy_media=false"/>
       <!-- export (not set): the codec string must reach the bridged callee leg too, or
-           FreeSWITCH offers the callee PCMU (its profile prefs) and the call is not Lyra. -->
-      <action application="export" data="absolute_codec_string=lyra@16000h@20i,PCMU,PCMA"/>
+           FreeSWITCH offers the callee PCMU (its profile prefs) and the call is not Lyra.
+
+           VP8 IS PART OF THIS STRING AND MUST STAY. absolute_codec_string sets the codec
+           list for the WHOLE session, video included, so a list of audio codecs alone is
+           read as "this call has no video": FreeSWITCH answers m=video 0 RTP/AVP 19 and
+           the camera is stripped off every call while recording is on. Measured on
+           2026-09-20 - the handset offered m=video 4010 RTP/AVP 102 103 99 (VP8, VP8,
+           H264) and got m=video 0 back, so a video call arrived as an audio call and
+           MergeTopology, seeing no video leg, would have built a local audio mix instead
+           of a bridge conference.
+
+           VP8 rather than H264 because mod_av does not load on this build, so H.264
+           cannot be composed onto the conference canvas; VP8 is in the core as
+           switch_vpx.c and is what the app offers first. An audio-only offer carries no
+           m=video line, so the extra entry is never used and recording is unchanged. -->
+      <action application="export" data="absolute_codec_string=lyra@16000h@20i,PCMU,PCMA,VP8"/>
       <action application="set" data="execute_on_answer=lyra_record"/>
       <action application="log" data="INFO lyra recording enabled; FreeSWITCH stays in the media path for ${destination_number}"/>
     </condition>

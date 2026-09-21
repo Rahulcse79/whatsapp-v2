@@ -1,6 +1,10 @@
 package com.whatsappv2.data.sip.network.di
 
+import com.whatsappv2.data.sip.network.DeviceWakeMonitor
 import com.whatsappv2.data.sip.network.NetworkMonitor
+import com.whatsappv2.data.sip.network.WakeTimer
+import com.whatsappv2.data.sip.network.platform.AlarmWakeTimer
+import com.whatsappv2.data.sip.network.platform.BroadcastWakeMonitor
 import com.whatsappv2.data.sip.network.platform.ConnectivityNetworkMonitor
 import dagger.Binds
 import dagger.Module
@@ -9,7 +13,7 @@ import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
 /**
- * Binds the platform's network monitor.
+ * Binds the platform's network monitor, its wake monitor, and the doze-proof timer.
  *
  * Internal, and so are both types it names: nothing outside `:data:sip` should be able to
  * ask for a [NetworkMonitor]. Network-change recovery is the SIP stack's business, and a
@@ -27,4 +31,13 @@ internal abstract class NetworkModule {
     @Binds
     @Singleton
     abstract fun bindNetworkMonitor(monitor: ConnectivityNetworkMonitor): NetworkMonitor
+
+    /** `AlarmManager`, because nothing else fires while the device sleeps. See [WakeTimer]. */
+    @Binds
+    @Singleton
+    abstract fun bindWakeTimer(timer: AlarmWakeTimer): WakeTimer
+
+    @Binds
+    @Singleton
+    abstract fun bindDeviceWakeMonitor(monitor: BroadcastWakeMonitor): DeviceWakeMonitor
 }

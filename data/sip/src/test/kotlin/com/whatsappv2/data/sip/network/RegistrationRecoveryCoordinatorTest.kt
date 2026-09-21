@@ -48,6 +48,7 @@ import kotlin.time.Duration.Companion.seconds
 class RegistrationRecoveryCoordinatorTest {
 
     private val monitor = FakeNetworkMonitor()
+    private val device = FakeDeviceWakeMonitor()
     private val engine = FakeSipEngine()
     private val logger = RecordingLogger()
     private val rebinds = mutableListOf<Boolean>()
@@ -86,6 +87,7 @@ class RegistrationRecoveryCoordinatorTest {
         policy = RegistrationRecoveryPolicy(RegistrationBackoff(baseDelay = BASE_DELAY)),
         random = WidestSample,
         clock = clock,
+        wakeMonitor = device,
     )
 
     /** Registered on Wi-Fi, watched, and past the first debounce. */
@@ -214,14 +216,20 @@ class RegistrationRecoveryCoordinatorTest {
         settle(30.minutes)
 
         // The evidence Task 30 asks to capture: each attempt waits longer than the last,
-        // and the attempt number climbs rather than resetting to one.
+        // and the attempt number climbs rather than resetting to one - up to the ceiling,
+        // and then no longer. The ceiling is five minutes because the alternative was
+        // measured: a handset that had been asleep sat on "Reconnecting…" with its next
+        // attempt up to half an hour away.
         assertEquals(
             listOf(
                 "Registrar unreachable for acct-1: retry 1 in 60s",
                 "Registrar unreachable for acct-1: retry 2 in 120s",
                 "Registrar unreachable for acct-1: retry 3 in 240s",
-                "Registrar unreachable for acct-1: retry 4 in 480s",
-                "Registrar unreachable for acct-1: retry 5 in 960s",
+                "Registrar unreachable for acct-1: retry 4 in 300s",
+                "Registrar unreachable for acct-1: retry 5 in 300s",
+                "Registrar unreachable for acct-1: retry 6 in 300s",
+                "Registrar unreachable for acct-1: retry 7 in 300s",
+                "Registrar unreachable for acct-1: retry 8 in 300s",
             ),
             scheduledRetries,
         )
@@ -397,9 +405,163 @@ class RegistrationRecoveryCoordinatorTest {
         )
     }
 
+    // ---------------------------------------------------------------- keepalive
+
+    @Test
+    fun `a registered account is refreshed at half its lease, and keeps being`() = runTest {
+        // The lease is 3600s. PJSIP's own refresh at expiry - 5s runs on a clock that
+        // stops in deep sleep; this one runs on the WakeTimer, which does not, and it is
+        // early enough that an inexact alarm cannot land past the lease.
+        arrangeRegisteredOnWifi()
+        engine.clearInvocations()
+
+        settle(KEEPALIVE - SETTLE)
+        assertTrue(refreshes.isEmpty(), "nothing before the half-lease")
+
+        settle(SETTLE)
+        assertEquals(listOf(account.id.value), refreshes, "one refresh at the half-lease")
+
+        // A refresh that succeeds produces an EQUAL Registered state, which a StateFlow
+        // does not re-emit - so if the keepalive relied on the state to re-arm itself it
+        // would fire exactly once. It re-arms from its own firing instead.
+        settle(KEEPALIVE)
+        assertEquals(2, refreshes.size, "and again a half-lease later")
+    }
+
+    @Test
+    fun `losing the network disarms the keepalive`() = runTest {
+        // DoD 6 applies to this timer as much as to the retry: with no network a REGISTER
+        // wakes the radio for nothing.
+        arrangeRegisteredOnWifi()
+        engine.clearInvocations()
+
+        monitor.lost()
+        settle()
+        engine.simulateNetworkLoss()
+        settle(KEEPALIVE * 3)
+
+        assertTrue(refreshes.isEmpty(), "no keepalive may fire with no network")
+    }
+
+    @Test
+    fun `a failed account has no keepalive, only its retry`() = runTest {
+        // The retry chain owns a failed account. A keepalive firing beside it would be a
+        // second REGISTER cadence on top of the backoff.
+        arrangeRegisteredOnWifi()
+        givenRegistrarUnreachable()
+        runCurrent()
+        engine.clearFailures()
+        engine.clearInvocations()
+        logger.lines.clear()
+
+        // Retry 1 is 60s out and succeeds; from then on only the keepalive should run.
+        settle(BASE_DELAY + SETTLE)
+        assertEquals(listOf(account.id.value), refreshes, "retry 1 fired and succeeded")
+
+        settle(KEEPALIVE)
+        assertEquals(2, refreshes.size, "then the keepalive, once, at the half-lease")
+        assertTrue(scheduledRetries.isEmpty(), "and no retry was scheduled against a healthy account")
+    }
+
+    // ---------------------------------------------------------------- waking up
+
+    @Test
+    fun `waking the device runs a pending retry immediately`() = runTest {
+        // The backoff was earned against a registrar that may have been back for an
+        // hour. A person holding the phone should not wait it out.
+        arrangeRegisteredOnWifi()
+        givenRegistrarUnreachable()
+        engine.clearFailures()
+        runCurrent()
+        assertTrue(refreshes.isEmpty(), "arrange: retry 1 is 60s out and has not fired")
+
+        device.wake(WakeReason.SCREEN_ON)
+        runCurrent()
+
+        assertEquals(listOf(account.id.value), refreshes, "the retry ran on the wake, not on its timer")
+        assertTrue(logger.matching("device woke (SCREEN_ON)").isNotEmpty())
+
+        // And the timer it pre-empted does not fire a second REGISTER when its time comes.
+        settle(BASE_DELAY + SETTLE)
+        assertEquals(1, refreshes.size, "the pre-empted retry was cancelled, not left to fire")
+    }
+
+    @Test
+    fun `waking the device refreshes a registration that looks healthy`() = runTest {
+        // "Healthy" is what the lease looked like when the device went to sleep. Nothing
+        // on the wire says it lapsed, so the only way to know is to REGISTER.
+        arrangeRegisteredOnWifi()
+        engine.clearInvocations()
+
+        device.wake(WakeReason.DOZE_EXIT)
+        runCurrent()
+
+        assertEquals(listOf(account.id.value), refreshes)
+    }
+
+    @Test
+    fun `wakes inside the throttle window are one REGISTER, not three`() = runTest {
+        // Screen on, unlock, app to the front: three events in a second, one reason.
+        val clock = MutableClock().set(NOW)
+        engine.givenRegistered(account)
+        monitor.onWifi()
+        coordinator(backgroundScope, clock).start()
+        settle()
+        engine.clearInvocations()
+
+        device.wake(WakeReason.SCREEN_ON)
+        device.wake(WakeReason.USER_PRESENT)
+        device.wake(WakeReason.APP_FOREGROUND)
+        runCurrent()
+
+        assertEquals(1, refreshes.size, "three wakes inside the gap are one refresh")
+
+        // Past the gap, a wake is a wake again. The gap is measured on the wall clock -
+        // the one that keeps going through sleep - so it is moved by hand here; virtual
+        // time does not advance a MutableClock.
+        clock.advanceBy(31.seconds.inWholeMilliseconds)
+        device.wake(WakeReason.SCREEN_ON)
+        runCurrent()
+
+        assertEquals(2, refreshes.size, "a wake after the gap refreshes again")
+    }
+
+    @Test
+    fun `waking with no network re-registers nothing`() = runTest {
+        // Screen on in airplane mode. DoD 6 still holds.
+        arrangeRegisteredOnWifi()
+        monitor.lost()
+        settle()
+        engine.simulateNetworkLoss()
+        engine.clearInvocations()
+
+        device.wake(WakeReason.SCREEN_ON)
+        runCurrent()
+
+        assertTrue(refreshes.isEmpty())
+    }
+
+    @Test
+    fun `waking does not retry a wrong password`() = runTest {
+        // Waking is not permission to retry a failure the user has to fix (Task 29).
+        arrangeRegisteredOnWifi()
+        engine.alwaysFail(FakeSipEngine.Operation.REGISTER, SipError.AuthenticationFailed(401))
+        engine.register(account)
+        engine.clearInvocations()
+        settle()
+
+        device.wake(WakeReason.USER_PRESENT)
+        runCurrent()
+
+        assertTrue(refreshes.isEmpty())
+    }
+
     private companion object {
         /** Comfortably past the coordinator's one-second debounce window. */
         val SETTLE: Duration = 3.seconds
+
+        /** Half the test account's 3600s lease: when its keepalive is due. */
+        val KEEPALIVE: Duration = 1_800.seconds
 
         /**
          * A base delay large enough that a retry cannot fire during a [SETTLE].

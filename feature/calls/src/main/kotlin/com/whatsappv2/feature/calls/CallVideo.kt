@@ -13,6 +13,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -329,10 +330,34 @@ internal enum class RemoteVideoScaling {
  * decoded size, and a view sized to zero then grown is a black screen that blinks. Filling
  * is what the screen did before any of this, and it is the right thing to do for exactly
  * as long as the shape is unknown.
+ *
+ * ## `requiredSize`, not `size` — and the difference was every video call
+ *
+ * `Modifier.size` is a *request*: it still honours the constraints coming down from the
+ * parent, so a box wider than the screen comes back clamped to the screen. That silently
+ * undid [VideoLayout.cover], whose entire job is to return something **larger** than the
+ * space and let the overflow fall off the edges. The clamp kept the full height and threw
+ * the width away, and because the GL renderer stretches each frame to whatever bounds it
+ * is given (see this file's header), the picture was then stretched to fill the result.
+ *
+ * Measured on a Galaxy M14, 2026-09-21, both paths of the same bug:
+ *
+ * ```
+ * 1:1   frame 1088x612  cover -> 3924x2208  clamped to 1080x2208  scale x0.99 y3.61
+ * conf  frame  720x1280 cover -> 1242x2208  clamped to 1080x2208  scale x1.50 y1.73
+ * ```
+ *
+ * A *non-uniform* buffer-to-display scale is the stretch, definitionally — SurfaceFlinger
+ * printing two different numbers for x and y is the picture being distorted — and it was
+ * 3.6x vertically on a one-to-one call. Faces came out as columns.
+ *
+ * `requiredSize` ignores the incoming constraints, which is what a deliberately oversized
+ * box needs, and the parent [Box] centres it so the crop is even on both edges. It changes
+ * nothing for [VideoLayout.fit], which never returns more than it was given.
  */
 private fun Modifier.videoBounds(box: VideoSize, available: VideoSize, density: Density): Modifier =
     if (box.isKnown && available.isKnown) {
-        with(density) { this@videoBounds.size(box.width.toDp(), box.height.toDp()) }
+        with(density) { this@videoBounds.requiredSize(box.width.toDp(), box.height.toDp()) }
     } else {
         fillMaxSize()
     }

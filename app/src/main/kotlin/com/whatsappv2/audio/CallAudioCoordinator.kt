@@ -12,6 +12,7 @@ import android.os.Looper
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.di.ApplicationScope
 import com.whatsappv2.domain.call.AudioRoute
+import com.whatsappv2.domain.call.CallControls
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.engine.CallSnapshot
 import com.whatsappv2.domain.engine.SipCallController
@@ -176,11 +177,21 @@ class CallAudioCoordinator @Inject constructor(
         // blanking through the video the user had just accepted.
         val hadVideo = callHasVideo
         callHasVideo = call.hasVideo
-        if (current == lastApplied && callHasVideo == hadVideo) return
 
-        chosenRoute = current
-        lastApplied = current
-        applyProximity(current)
+        if (current != lastApplied) {
+            // A route this coordinator did not ask for is the user's, and it is kept.
+            chosenRoute = current
+            lastApplied = current
+            applyProximity(current)
+            return
+        }
+
+        // The route is still the one this coordinator chose, and video came or went. A
+        // video call belongs on the speaker and a voice call on the earpiece
+        // (AudioRoutePolicy.preferredRoute), so the choice is made again for the call as
+        // it is now — which also settles the proximity lock. A route the user chose is
+        // `chosenRoute` and survives this untouched.
+        if (callHasVideo != hadVideo) applyRoute(arrived = null)
     }
 
     private fun begin(call: CallSnapshot) {
@@ -203,7 +214,13 @@ class CallAudioCoordinator @Inject constructor(
         // controls-only version of this line was a fix that could not work, and the
         // handset showed it: two USER_SWITCH_EARPIECE in Telecom's log at the moment this
         // ran, overriding the press. The request lives on the snapshot until then.
-        chosenRoute = call.chosenAudioRoute
+        //
+        // But the controls' *default* is not a choice. `CallControls.audioRoute` starts as
+        // the earpiece on every call, and reading that as "the user chose the earpiece"
+        // made `routeAfterDeviceChange` keep it on every call — over the Settings
+        // preference, and over the speaker a video call belongs on. Only a route that
+        // differs from the default can have come from somebody.
+        chosenRoute = call.chosenAudioRoute?.takeUnless { it == CallControls().audioRoute }
         lastApplied = null
         // Before `applyRoute`, which reads it to decide the proximity lock.
         callHasVideo = call.hasVideo
@@ -237,7 +254,13 @@ class CallAudioCoordinator @Inject constructor(
 
     private fun applyRoute(arrived: AudioRoute?) {
         val callId = activeCall ?: return
-        val route = AudioRoutePolicy.routeAfterDeviceChange(currentDevices(), chosenRoute, arrived, preference)
+        val route = AudioRoutePolicy.routeAfterDeviceChange(
+            devices = currentDevices(),
+            chosen = chosenRoute,
+            arrived = arrived,
+            preference = preference,
+            hasVideo = callHasVideo,
+        )
         lastApplied = route
 
         scope.launch {

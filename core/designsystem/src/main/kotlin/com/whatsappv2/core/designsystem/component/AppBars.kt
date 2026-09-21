@@ -37,6 +37,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
@@ -207,7 +209,10 @@ fun RowScope.AppNavigationItem(
             unselectedIconColor = bar.navUnselected,
             unselectedTextColor = bar.navUnselected,
         ),
-        modifier = modifier,
+        // The label as the description, so the tab is addressable by name — by a screen
+        // reader and by a UI-automation dump alike, neither of which sees the merged
+        // label text as a description. The item's own `Role.Tab` supplies "tab".
+        modifier = modifier.semantics { contentDescription = label },
     )
 }
 

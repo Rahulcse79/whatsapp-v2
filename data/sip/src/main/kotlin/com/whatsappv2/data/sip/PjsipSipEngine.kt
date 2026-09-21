@@ -20,7 +20,9 @@ import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.TransferEventMapper
 import com.whatsappv2.data.sip.di.SipStackScope
 import com.whatsappv2.data.sip.network.NetworkMonitor
+import com.whatsappv2.data.sip.network.DeviceWakeMonitor
 import com.whatsappv2.data.sip.network.RegistrationRecoveryCoordinator
+import com.whatsappv2.data.sip.network.WakeTimer
 import com.whatsappv2.data.sip.registration.RegistrationStateMapper
 import com.whatsappv2.data.sip.registration.SipCoreGateway
 import com.whatsappv2.data.sip.registration.StackAccount
@@ -36,6 +38,7 @@ import com.whatsappv2.domain.call.TransitionResult
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.CallSnapshot
 import com.whatsappv2.domain.engine.CameraAvailability
+import com.whatsappv2.domain.engine.ConferenceRoom
 import com.whatsappv2.domain.engine.ConferenceSession
 import com.whatsappv2.domain.engine.IncomingCall
 import com.whatsappv2.domain.engine.NoCameraAvailable
@@ -167,6 +170,26 @@ internal class PjsipSipEngine @Inject constructor(
      * should downgrade video calls to audio rather than claim a camera it cannot open.
      */
     private val camera: CameraAvailability = NoCameraAvailable,
+    /**
+     * The bridge's address, so a leg that lands on it can be recognised as a conference.
+     *
+     * Defaulted to [ConferenceRoom.NONE] for the same reason as [camera]: a JVM test that
+     * is not exercising conferences need not supply one, and a graph with nothing bound
+     * should call a conference an ordinary call rather than the reverse. Dagger ignores
+     * the default and injects `:app`'s. See [markConferenceIfRoom].
+     */
+    private val conferenceRoom: ConferenceRoom = ConferenceRoom.NONE,
+    /**
+     * The timer every registration retry and keepalive runs on.
+     *
+     * Defaulted to one that never fires, so a JVM test's `advanceUntilIdle` has an idle
+     * to reach (see [WakeTimer.NONE]); the graph binds the `AlarmManager` one, which is
+     * the only kind that fires while the device sleeps. See [WakeTimer] for the outage
+     * this closes.
+     */
+    private val wakeTimer: WakeTimer = WakeTimer.NONE,
+    /** The device coming back into use, so registrations are checked then and not later. */
+    private val wakeMonitor: DeviceWakeMonitor = DeviceWakeMonitor.NONE,
 ) : SipEngine, RegistrationRetrySchedule {
 
     /**
@@ -195,6 +218,8 @@ internal class PjsipSipEngine @Inject constructor(
         // It already watches the link and already debounces it; a second collector on the
         // same flow would only duplicate that. See RegistrationStateMapper.withoutNetwork.
         onNetworkLost = { states.update(RegistrationStateMapper::withoutNetwork) },
+        timer = wakeTimer,
+        wakeMonitor = wakeMonitor,
     )
 
     /**
@@ -548,15 +573,114 @@ internal class PjsipSipEngine @Inject constructor(
     }
 
     /**
+     * Marks a call that landed on the bridge as a conference — from its address, because
+     * on this deployment nothing else says so.
+     *
+     * ## Every other way was tried on the wire first
+     *
+     * "Is this a conference?" is not something a leg can answer by itself, and it has to
+     * be answered for legs nobody dialled into a room: a participant REFERred in by
+     * somebody else's Merge never pressed anything, so without this their screen calls it
+     * an ordinary call while three other people are plainly in it.
+     *
+     * RFC 4579 §5.1 says a focus advertises `;isfocus` on its Contact, and that would be
+     * the portable answer. Measured against the reference FreeSWITCH on 2026-09-21, it is
+     * not available:
+     *
+     * - the 200 OK's Contact is `<sip:3000@192.168.2.194:5060;transport=udp>` — no
+     *   `isfocus`, and `sip_contact_params=isfocus` in the dialplan does not reach a
+     *   response (it was set, and the Contact was unchanged);
+     * - `mod_sofia` only ever emits `;isfocus` on the **subscription** path — the literal
+     *   is in its `sip_subscriptions` query and nowhere else;
+     * - no conference NOTIFY arrives unsolicited: the only NOTIFY on the wire during a
+     *   join was `Event: message-summary`.
+     *
+     * And the subscription that would fetch the roster is exactly the one that cannot be
+     * sent from here — see `RealPjsipCoreGateway.ROSTER_SUBSCRIBE_ENABLED`, which is off
+     * because `Call.sendRequest("SUBSCRIBE")` SIGSEGVs in `mod_evsub` about thirty
+     * seconds later and takes the process with it.
+     *
+     * So the address is what is left, and it is not a guess: [ConferenceRoom] is the
+     * deployment's own configuration, the same value [com.whatsappv2.domain.usecase.MergeCallsUseCase]
+     * dials to build the conference. A leg whose remote address **is** the room is in the
+     * room, whether this device dialled it or was transferred into it.
+     *
+     * The session is created with no participants and `rosterAvailable = false`, which is
+     * the honest state: the screen can say "conference" — which it could not before —
+     * without inventing a membership list it has no way to know. A real roster still needs
+     * `pjsip_evsub_create_uac` behind SWIG, and when it arrives [collectConferenceEvents]
+     * fills this same session in.
+     */
+    private fun markConferenceIfRoom(id: CallId, call: CallSnapshot) {
+        if (!conferenceRoom.isConfigured) return
+        val room = conferenceRoom.uriOn(call.remote.host.rendered) ?: return
+        // User and host, not the whole URI: the room's own URI carries no transport or
+        // `ob` parameter and the bridge's Contact does, so comparing renderings would
+        // never match. A room with no user part is not an extension and matches nothing —
+        // without this, two null user parts would compare equal and every call to a bare
+        // host would be announced as a conference.
+        val extension = room.user ?: return
+        if (!extension.equals(call.remote.user, ignoreCase = true)) return
+        if (call.remote.host.rendered != room.host.rendered) return
+        if (conferenceSessions.value.any { it.callId == id }) return
+
+        conferenceSessions.update {
+            it + ConferenceSession(
+                callId = id,
+                accountId = call.accountId,
+                conferenceUri = call.remote,
+                participants = emptyList(),
+                rosterAvailable = false,
+            )
+        }
+        updateCalls { live ->
+            live[id]?.let { live + (id to it.copy(isConference = true)) } ?: live
+        }
+        logger.info(TAG, "$id is the conference room: marking it a conference")
+    }
+
+    /**
      * Consumes conference rosters and republishes them (Task 60).
      *
-     * An event for a call that is not a joined conference is dropped rather than creating
-     * one: [joinConference] is the only thing that makes a session, so a roster arriving
-     * for anything else is a bridge talking about a call this app did not join as one.
+     * ## A roster is also the answer to "is this a conference?"
+     *
+     * It used to be that only [joinConference] made a session, and a roster for anything
+     * else was dropped as "a bridge talking about a call this app did not join as one".
+     * That was true of the call this device dialled and false of everybody else's: a
+     * participant the host REFERred into the room never dialled a conference, so their leg
+     * was an ordinary call and their screen said so, while three other people were plainly
+     * in the room with them.
+     *
+     * A roster settles it. Only a conference bridge answers the conference event package,
+     * so a `conference-info` document arriving on a call is the far end stating what that
+     * call is — and a session is created from it. The call is marked
+     * [CallSnapshot.isConference] at the same time, so the screen, the call log and the
+     * controls all agree.
+     *
+     * A roster for a call this engine does not know is still dropped. That is a bridge
+     * talking about a dialog we do not hold.
      */
     private fun CoroutineScope.collectConferenceEvents() = launch {
         callGateway.conferenceEvents.collect { event ->
             val id = CallId(event.callKey)
+            val call = calls.value[id] ?: return@collect
+
+            if (conferenceSessions.value.none { it.callId == id }) {
+                conferenceSessions.update {
+                    it + ConferenceSession(
+                        callId = id,
+                        accountId = call.accountId,
+                        conferenceUri = call.remote,
+                        participants = emptyList(),
+                        rosterAvailable = false,
+                    )
+                }
+                updateCalls { live ->
+                    live[id]?.let { live + (id to it.copy(isConference = true)) } ?: live
+                }
+                logger.info(TAG, "$id is a conference: the far end published a roster")
+            }
+
             conferenceSessions.update { sessions ->
                 sessions.map { if (it.callId == id) ConferenceMapper.apply(it, event) else it }
             }
@@ -611,7 +735,18 @@ internal class PjsipSipEngine @Inject constructor(
         // later is a control the observers have already acted against.
         val settled = withNegotiatedVideo(current, withRequestedRoute(current, next), media)
         reportToPlatform(id, current, settled, justConnected)
+
         store(id, current, settled, media, justConnected)
+
+        // Settled the moment the call is up, and settled from the address, because there
+        // is nothing else to settle it with. See [markConferenceIfRoom].
+        //
+        // After [store], not before: `store` rebuilds the snapshot with `current.copy`,
+        // so a flag written to the live map ahead of it is overwritten by the copy of the
+        // snapshot that predates it. `current` is what is passed because the two fields
+        // read here — the remote address and the account — are the ones a state change
+        // does not touch.
+        if (justConnected) markConferenceIfRoom(id, current)
     }
 
     /**

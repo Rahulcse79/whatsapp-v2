@@ -4,6 +4,7 @@ import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.domain.registration.NetworkStatus
 import com.whatsappv2.domain.registration.NetworkTransport
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
@@ -61,5 +62,16 @@ internal class RecordingLogger : Logger {
 
     private fun record(message: String) {
         lines += message
+    }
+}
+
+/** A device whose wakes a test triggers by hand. */
+internal class FakeDeviceWakeMonitor : DeviceWakeMonitor {
+
+    private val events = MutableSharedFlow<WakeReason>(extraBufferCapacity = 16)
+    override val wakes: Flow<WakeReason> = events
+
+    fun wake(reason: WakeReason = WakeReason.SCREEN_ON) {
+        check(events.tryEmit(reason)) { "wake dropped: nobody collecting and the buffer is full" }
     }
 }

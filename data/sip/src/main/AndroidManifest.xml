@@ -16,4 +16,32 @@
     -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!--
+      AlarmWakeTimer keeps registrations alive through deep sleep with AlarmManager
+      (network/WakeTimer.kt says why nothing else can). Two things it needs:
+
+      SCHEDULE_EXACT_ALARM makes the alarms exact on Android 12+. It is user-grantable
+      ("Alarms & reminders" in the app's settings), and an app the user has excluded from
+      battery optimisation is exempt from needing it at all. When neither holds the timer
+      falls back to an inexact alarm, which still fires through doze, up to 75% late — and
+      the recovery coordinator sizes its keepalive so that "late" is still inside the lease.
+
+      WAKE_LOCK holds the CPU for the ten seconds after an alarm in which the REGISTER is
+      sent and answered. :app declares it too; it is declared here because the call site
+      is here (the same reasoning as ACCESS_NETWORK_STATE above).
+    -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application>
+        <!--
+          The alarm's destination. Manifest-declared so the intent is explicit and the
+          platform delivers it whether or not the process is alive. Not exported: only
+          AlarmManager, acting as this app, ever sends it.
+        -->
+        <receiver
+            android:name=".network.platform.WakeTimerReceiver"
+            android:exported="false" />
+    </application>
+
 </manifest>
