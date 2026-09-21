@@ -5,6 +5,7 @@ import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.engine.CallDirection
+import com.whatsappv2.domain.engine.ConferenceRoom
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.HangupReason
 import com.whatsappv2.domain.model.MediaProfile
@@ -18,7 +19,9 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -36,7 +39,10 @@ class PjsipSipEngineConferenceTest {
     private val fixture = PjsipSipEngineTest()
 
     /** The bridge these merges go to, resolved as a dialled extension would be. */
-    private val room: SipUri = requireNotNull(SipUri.parse("sip:3000@sip.example.com").getOrNull())
+    private val room: SipUri = requireNotNull(SipUri.parse(ROOM).getOrNull())
+
+    /** Somebody added to a conference that is already running. */
+    private val newcomer: SipUri = requireNotNull(SipUri.parse("sip:carol@sip.example.com").getOrNull())
 
     @Test
     fun `a bridge merge resumes, REFERs every leg to the room, and dials it`() = runTest {
@@ -74,6 +80,120 @@ class PjsipSipEngineConferenceTest {
         // The legs are left alone: the REFER travels in the dialog, and ending it here
         // would cut the transfer off before the peer had followed it.
         assertTrue(ids.all { id -> engine.activeCalls.value.any { it.callId == id } })
+        engine.stop()
+    }
+
+    @Test
+    fun `a bridge merge stamps every leg and the room leg with one key, and records who was sent`() = runTest {
+        // The call log writes one row per leg. Without a shared key a bridged conference
+        // reached history as two calls to strangers beside a call to "3000", and nothing
+        // on the screen connected them.
+        val engine = with(fixture) { twoCallsOneHeld() }
+        val legs = engine.activeCalls.value.map { it.callId }.toSet()
+
+        val merging = async { engine.mergeIntoConference(legs, room) }
+        runCurrent()
+        engine.activeCalls.value
+            .filterNot { it.state is CallState.Connected }
+            .forEach { fixture.gateway.emitCall(it.callId.value, StackCallState.STREAMS_RUNNING) }
+        advanceUntilIdle()
+        val joined = assertIs<Outcome.Success<CallId>>(merging.await()).value
+
+        val calls = engine.activeCalls.value
+        val key = assertNotNull(calls.single { it.callId == joined }.conferenceKey, "the room leg carries no key")
+        assertTrue(calls.all { it.isConference && it.conferenceKey == key }, "one conference, one key: $calls")
+
+        // And the room knows whom this device sent into it — the legs' addresses, which is
+        // all the room will ever learn about them once their transfers complete.
+        val session = engine.conferences.value.single { it.callId == joined }
+        assertEquals(legs.map { it.value }.toSet(), session.invited.map { it.id.value }.toSet())
+        assertTrue(session.invited.all { it.uri == PjsipSipEngineFixture.TARGET && !it.isSelf })
+        // Still not a roster: the bridge has said nothing, and the count must stay unknown.
+        assertFalse(session.rosterAvailable)
+        assertEquals(null, session.participantCount)
+        engine.stop()
+    }
+
+    @Test
+    fun `merging a new leg while already in the room REFERs that leg alone and keeps the room leg`() = runTest {
+        // Add, then Merge, from a bridged conference. The room leg was among the calls
+        // being merged, and it used to be REFERred to the room it was already in while a
+        // second call to the room was placed beside it.
+        val engine = with(fixture) { twoCallsOneHeld() }
+        val legs = engine.activeCalls.value.map { it.callId }.toSet()
+        val merging = async { engine.mergeIntoConference(legs, room) }
+        runCurrent()
+        engine.activeCalls.value
+            .filterNot { it.state is CallState.Connected }
+            .forEach { fixture.gateway.emitCall(it.callId.value, StackCallState.STREAMS_RUNNING) }
+        advanceUntilIdle()
+        val roomLeg = assertIs<Outcome.Success<CallId>>(merging.await()).value
+        fixture.gateway.emitCall(roomLeg.value, StackCallState.CONNECTED, remoteUri = room.render())
+        legs.forEach { fixture.gateway.emitCall(it.value, StackCallState.ENDED) }
+        runCurrent()
+        val key = engine.activeCalls.value.single().conferenceKey
+
+        // Telecom holds the conference while the new call is placed and answered.
+        engine.setHold(roomLeg, held = true)
+        fixture.gateway.emitCall(roomLeg.value, StackCallState.PAUSED, remoteUri = room.render())
+        runCurrent()
+        val third = engine.placeCall(fixture.account.id, newcomer, MediaProfile.AUDIO_VIDEO).getOrNull()!!
+        runCurrent()
+        fixture.gateway.emitCall(third.value, StackCallState.CONNECTED, remoteUri = newcomer.render())
+        runCurrent()
+        fixture.gateway.blindTransfers.clear()
+        val placedBefore = fixture.gateway.placedCalls.size
+
+        val adding = async { engine.mergeIntoConference(setOf(roomLeg, third), room) }
+        runCurrent()
+        // The room leg is resumed — a conference leg left on hold is a member the bridge
+        // cannot hear — and nothing goes out until that resume has landed.
+        assertTrue(fixture.gateway.blindTransfers.isEmpty(), "REFERred before the room leg resumed")
+        engine.activeCalls.value
+            .filterNot { it.state is CallState.Connected }
+            .forEach { fixture.gateway.emitCall(it.callId.value, StackCallState.STREAMS_RUNNING, remoteUri = ROOM) }
+        advanceUntilIdle()
+
+        val followed = assertIs<Outcome.Success<CallId>>(adding.await()).value
+        assertEquals(roomLeg, followed, "the leg to follow is the one already in the room")
+        assertEquals(listOf(third.value to room.render()), fixture.gateway.blindTransfers, "only the new leg goes")
+        assertEquals(placedBefore, fixture.gateway.placedCalls.size, "the room must not be dialled a second time")
+
+        // The newcomer joins the conference the room leg is already in, under its key.
+        assertEquals(key, engine.activeCalls.value.single { it.callId == third }.conferenceKey)
+        val session = engine.conferences.value.single { it.callId == roomLeg }
+        assertTrue(session.invited.any { it.uri == newcomer }, "the newcomer is missing from ${session.invited}")
+        assertEquals(legs.size + 1, session.invited.size, "the members merged earlier must still be listed")
+        engine.stop()
+    }
+
+    @Test
+    fun `a REFER into the room ties the new leg to the leg it arrived on`() = runTest {
+        // The transferee's half: it knows only who sent it. That is enough for its history
+        // to read as one conference rather than a transferred call beside a call to 3000,
+        // and for its screen to name the one member it does know.
+        val engine = with(fixture) { connectedCall(room = ConferenceRoom("3000")) }
+        val parent = engine.activeCalls.value.single()
+
+        fixture.gateway.emitCall(
+            callKey = "transferred-leg",
+            state = StackCallState.OUTGOING_TRANSFERRED,
+            remoteUri = room.render(),
+            videoActive = true,
+        )
+        runCurrent()
+
+        val created = engine.activeCalls.value.single { it.callId == CallId("transferred-leg") }
+        val parentNow = engine.activeCalls.value.single { it.callId == parent.callId }
+        val key = assertNotNull(created.conferenceKey, "the transferred leg carries no key")
+        assertEquals(key, parentNow.conferenceKey, "the leg the REFER arrived on must share the key")
+        assertTrue(created.isConference && parentNow.isConference)
+
+        fixture.gateway.emitCall("transferred-leg", StackCallState.CONNECTED, remoteUri = room.render())
+        runCurrent()
+        val session = engine.conferences.value.single { it.callId == created.callId }
+        assertEquals(listOf(parent.remote), session.invited.map { it.uri })
+        assertFalse(session.rosterAvailable)
         engine.stop()
     }
 
@@ -509,5 +629,9 @@ class PjsipSipEngineConferenceTest {
             runCurrent()
         }
         return engine.activeCalls.value.mapTo(mutableSetOf()) { it.callId }
+    }
+
+    private companion object {
+        const val ROOM = "sip:3000@sip.example.com"
     }
 }

@@ -307,8 +307,12 @@ class CallViewModel @Inject constructor(
                     // membership when it is the one mixing — the two never coexist, because
                     // a merge into the bridge tears the local mix down before it transfers
                     // anybody.
-                    conference = state.conference?.toUiState(UNKNOWN_PARTICIPANT)
-                        ?: localMixRoster(state.calls, state.mixed, state.localParticipant(call), state.contacts),
+                    conference = state.conference?.toUiState(
+                        unknownLabel = UNKNOWN_PARTICIPANT,
+                        self = state.localParticipant(call),
+                        isMuted = call.state.controlsOrNull?.isMuted == true,
+                        contacts = state.contacts,
+                    ) ?: localMixRoster(state.calls, state.mixed, state.localParticipant(call), state.contacts),
                     canMerge = state.calls.count { it.state.isEstablished } >= MIN_MERGEABLE,
                     mixedCallCount = state.mixed.size,
                     pendingActions = busy,

@@ -62,7 +62,7 @@ internal fun CallLogEntity.toDomain(): CallLogEntry? {
         reason = reason,
         media = media,
         isConference = isConference,
-    conferenceKey = conferenceKey,
+        conferenceKey = conferenceKey,
     )
 }
 

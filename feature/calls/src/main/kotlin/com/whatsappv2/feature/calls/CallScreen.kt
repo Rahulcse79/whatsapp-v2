@@ -288,17 +288,24 @@ private fun InCallChrome(
     ) {
         CallBanners(state = state, actions = actions)
 
-        // The identity and the roster share whatever the controls leave, centred in it —
-        // and the roster is the part that gives way. It is bounded by that space and
-        // scrolls inside it, because a list that grows with the conference used to grow
-        // the column past the screen: three members were enough to draw the End button
-        // over the third row's labels and clip its own icon (TC15, 2026-09-19). Mute and
-        // End are worth reaching more than the eighth row is worth seeing unscrolled.
+        // The identity and the roster share whatever the controls leave — and the roster
+        // is the part that gives way. It is bounded by that space and scrolls inside it,
+        // because a list that grows with the conference used to grow the column past the
+        // screen: three members were enough to draw the End button over the third row's
+        // labels and clip its own icon (TC15, 2026-09-19). Mute and End are worth
+        // reaching more than the eighth row is worth seeing unscrolled.
+        //
+        // Centred on an audio call, where they are the screen; at the *top* over video,
+        // where they are not. A conference's picture is a grid of faces with the faces in
+        // the middle, and a title, a duration and a participant card centred over it sat
+        // on exactly the people the picture is for (2026-09-21). At the top they cover the
+        // bar the bridge's portrait canvas leaves black on a 9:20 handset, and the faces
+        // are visible whenever the controls are.
         Column(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
-            verticalArrangement = Arrangement.Center,
+            verticalArrangement = if (call.showsRemoteVideo) Arrangement.Top else Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             // The avatar gives way to the keypad rather than being scrolled off it: on a

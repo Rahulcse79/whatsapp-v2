@@ -464,9 +464,13 @@ class FakeSipEngine(
     ): Outcome<CallId, SipError> {
         record(Operation.MERGE_INTO_CONFERENCE, room.render())
 
+        // A leg already in the room is kept and the others are sent to join it, as the
+        // real engine does: one more established leg is then enough.
+        val roomLeg = callIds.firstOrNull { id -> conferenceSessions.value.any { it.callId == id } }
         val established = activeCalls.value
-            .filter { it.callId in callIds && it.state.isEstablished }
-        if (established.size < SipConferenceController.MINIMUM_MIXED) {
+            .filter { it.callId in callIds && it.callId != roomLeg && it.state.isEstablished }
+        val minimum = if (roomLeg != null) 1 else SipConferenceController.MINIMUM_MIXED
+        if (established.size < minimum) {
             return failure(SipError.InvalidState("a conference needs at least two established calls"))
         }
         val accountId = established.first().accountId
@@ -476,9 +480,26 @@ class FakeSipEngine(
             .forEach { setHold(it.callId, held = false) }
 
         bridgeMergeRequests += established.map { it.callId }.toSet() to room
-        established.forEach { transfer(it.callId, room, TransferType.BLIND) }
+        // One key for the legs and the room leg, as the real engine stamps them, so the
+        // rows they write can be folded into one conference by whoever reads the log.
+        val key = roomLeg?.let { id -> activeCalls.value.firstOrNull { it.callId == id }?.conferenceKey }
+            ?: "conference-${++conferencesFormed}"
+        established.forEach {
+            updateCall(it.callId) { leg -> leg.copy(isConference = true, conferenceKey = key) }
+            transfer(it.callId, room, TransferType.BLIND)
+        }
+        val invited = established.map {
+            ConferenceParticipant(id = ParticipantId(it.callId.value), uri = it.remote, displayName = it.remoteDisplayName)
+        }
 
-        return joinConference(accountId, room, MediaProfile.AUDIO_VIDEO)
+        val joined = roomLeg?.let { success(it) } ?: joinConference(accountId, room, MediaProfile.AUDIO_VIDEO)
+        if (joined is Outcome.Success) {
+            updateCall(joined.value) { it.copy(isConference = true, conferenceKey = key) }
+            conferenceSessions.update { sessions ->
+                sessions.map { if (it.callId == joined.value) it.withInvited(invited) else it }
+            }
+        }
+        return joined
     }
 
     override suspend fun shutdown() {

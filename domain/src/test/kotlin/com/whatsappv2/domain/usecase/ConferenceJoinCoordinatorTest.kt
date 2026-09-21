@@ -4,6 +4,7 @@ import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.SecondCallResponse
+import com.whatsappv2.domain.engine.ConferenceRoom
 import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
@@ -14,6 +15,7 @@ import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
+import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -178,6 +180,58 @@ class ConferenceJoinCoordinatorTest {
     }
 
     @Test
+    fun `a video call-back builds the conference in the bridge, one member at a time`() = runTest {
+        // The history screen's left swipe on a conference. Every member is dialled with
+        // video; the first two are sent to the room together and this device follows them
+        // in; each later one is sent to join the leg this device already holds. Nothing is
+        // dialled over a ringing INVITE, because Telecom refuses the second one.
+        val engine = FakeSipEngine().givenRegistered(account)
+        val (joins, job) = running(engine)
+        val dialled = mutableListOf<CallId>()
+        fun member(user: String): suspend () -> CallId? = {
+            engine.placeCall(account.id, uri(user), MediaProfile.AUDIO_VIDEO).getOrNull()?.also { dialled += it }
+        }
+
+        val first = joins.callBack(listOf(member("bob"), member("carol"), member("dave")), video = true)
+        runCurrent()
+        assertEquals(dialled.first(), first, "the screen follows the first leg out")
+        assertEquals(1, dialled.size, "one INVITE at a time")
+
+        engine.simulateRemoteAnswer(dialled[0])
+        runCurrent()
+        assertEquals(2, dialled.size, "the second member is dialled once the first has answered")
+        assertTrue(engine.bridgeMergeRequests.isEmpty(), "one answered leg is a call, not a conference")
+
+        // Telecom parks the first leg when the second connects.
+        engine.setHold(dialled[0], held = true)
+        engine.simulateRemoteAnswer(dialled[1])
+        runCurrent()
+        assertEquals(
+            setOf(dialled[0], dialled[1]),
+            engine.bridgeMergeRequests.single().first,
+            "both legs go to the room",
+        )
+        val roomLeg = engine.conferences.value.single().callId
+        assertEquals(2, dialled.size, "nobody is dialled while this device's own leg to the room is ringing")
+
+        engine.simulateRemoteAnswer(roomLeg)
+        runCurrent()
+        assertEquals(3, dialled.size, "the third member is dialled once this device is in the room")
+
+        engine.setHold(roomLeg, held = true)
+        engine.simulateRemoteAnswer(dialled[2])
+        runCurrent()
+        assertEquals(setOf(dialled[2]), engine.bridgeMergeRequests.last().first, "only the newcomer is sent in")
+        assertEquals(roomLeg, engine.conferences.value.single().callId, "the room is not dialled a second time")
+        val key = engine.activeCalls.value.first().conferenceKey
+        assertTrue(
+            engine.activeCalls.value.all { it.isConference && it.conferenceKey == key },
+            "every leg and the room leg carry the one conference key: ${engine.activeCalls.value}",
+        )
+        job.cancel()
+    }
+
+    @Test
     fun `a call nobody asked to have joined is left as a call`() = runTest {
         val engine = FakeSipEngine().givenRegistered(account)
         val (_, job) = running(engine)
@@ -223,7 +277,8 @@ class ConferenceJoinCoordinatorTest {
     }
 
     private fun TestScope.running(engine: FakeSipEngine): Pair<ConferenceJoinCoordinator, Job> {
-        val joins = ConferenceJoinCoordinator(engine, engine)
+        val merge = MergeCallsUseCase(engine, engine, FakeSipAccountRepository().given(account), ConferenceRoom.DEFAULT)
+        val joins = ConferenceJoinCoordinator(engine, engine, merge)
         val job = launch { joins.run() }
         runCurrent()
         return joins to job

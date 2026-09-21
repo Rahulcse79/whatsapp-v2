@@ -73,6 +73,26 @@ class MergeCallsUseCase @Inject constructor(
         }
     }
 
+    /**
+     * Moves exactly [callIds] into the bridge (ADR-003), for a conference assembled one leg
+     * at a time — a video call-back from history, whose members answer one by one.
+     *
+     * [invoke] decides the topology from every call on the device; this does not decide,
+     * because the caller already has: the legs were dialled with video for the purpose of
+     * being bridged. What it shares with [invoke] is the room — resolved the same way, on
+     * the account the legs are on — so there is one place that knows how a room address is
+     * built. One of [callIds] may already be this device's leg into the room; the engine
+     * keeps that leg and sends the others in.
+     */
+    suspend fun bridge(callIds: Set<CallId>): Outcome<CallId, SipError> {
+        val snapshots = calls.activeCalls.value
+        val account = snapshots.firstOrNull { it.callId in callIds }
+            ?.let { accounts.findById(it.accountId) }
+            ?: accounts.observeDefaultAccount().first()
+        val roomUri = account?.let { room.uriOn(it.domain) } ?: return failure(NO_ROOM)
+        return conferences.mergeIntoConference(callIds, roomUri)
+    }
+
     private fun MergeTopology.Unavailable.Reason.toSipError(): SipError = when (this) {
         MergeTopology.Unavailable.Reason.NOT_ENOUGH_CALLS ->
             SipError.InvalidState("a conference needs at least two established calls")

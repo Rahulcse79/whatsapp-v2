@@ -3,8 +3,10 @@ package com.whatsappv2.feature.history
 import androidx.paging.PagingData
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
+import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.CameraAvailability
+import com.whatsappv2.domain.engine.ConferenceRoom
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.model.CallLogId
@@ -25,12 +27,14 @@ import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
 import com.whatsappv2.domain.usecase.CallLogTitles
 import com.whatsappv2.domain.usecase.ConferenceJoinCoordinator
+import com.whatsappv2.domain.usecase.MergeCallsUseCase
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -71,13 +75,24 @@ class HistoryViewModelTest {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
+    /**
+     * The coordinator the ViewModel hands group call-backs to. Shared so a test can run
+     * its loop — [running] — and watch the members after the first be dialled.
+     */
+    private val joins = ConferenceJoinCoordinator(
+        engine,
+        engine,
+        MergeCallsUseCase(engine, engine, accounts, ConferenceRoom.DEFAULT),
+    )
+
     private fun viewModel(camera: CameraAvailability = CameraPresent) =
         HistoryViewModel(
             repository,
             PlaceCallUseCase(accounts, engine, camera, engine),
             camera,
             CallLogTitles(contacts),
-            ConferenceJoinCoordinator(engine, engine),
+            joins,
+            ConferenceRoom.DEFAULT,
         )
 
     /** The row as the list would have built it, title already resolved. */
@@ -268,28 +283,85 @@ class HistoryViewModelTest {
     @Test
     fun `calling a conference back dials every member once and asks for each to join`() = runTest {
         // Called back as one, the way a group call is anywhere else: one INVITE per
-        // distinct member — 1005 was dialled twice in the original — and each mixed in
-        // as they answer, which is the join coordinator's job from here.
+        // distinct member — 1005 was dialled twice in the original — each dialled as the
+        // one before it answers (Telecom refuses a second INVITE while the first rings),
+        // and each mixed in as they answer, which is the join coordinator's job from here.
         accounts.given(work(domain = "sip.example.com"))
         engine.givenRegistered(work(domain = "sip.example.com"))
-        val legs = listOf("1001", "1005", "1005", "1002").mapIndexed { index, user ->
-            repository.record(
-                entry(remote = "sip:$user@sip.example.com").copy(
-                    isConference = true,
-                    conferenceKey = "k1",
-                    startedAtEpochMillis = STARTED_AT + index,
-                ),
-            )
-        }
-        val conference = groupConferences(legs.reversed().map(::row)).single()
+        val conference = recordedConference(listOf("1001", "1005", "1005", "1002"))
+        val loop = running()
 
         viewModel().onCallBack(conference)
         advanceUntilIdle()
+        assertEquals(listOf("sip:1001@sip.example.com"), engine.activeCalls.value.map { it.remote.render() })
+        assertEquals(MediaProfile.AUDIO, engine.activeCalls.value.single().media)
 
+        answerEveryRingingCall()
         assertEquals(
             listOf("sip:1001@sip.example.com", "sip:1005@sip.example.com", "sip:1002@sip.example.com"),
             engine.activeCalls.value.map { it.remote.render() },
         )
+        assertTrue(engine.bridgeMergeRequests.isEmpty(), "a voice conference is mixed here, not in the bridge")
+        assertEquals(engine.activeCalls.value.map { it.callId }.toSet(), engine.mixedCalls.value)
+        loop.cancel()
+    }
+
+    @Test
+    fun `a video swipe on a conference dials every member with video and builds it in the bridge`() = runTest {
+        // The left swipe. It used to place the members as a voice conference "whatever was
+        // asked", and before that only the leg the row was built on. Now every member is
+        // dialled with video and, as they answer, REFERred into the room (ADR-003).
+        accounts.given(work(domain = "sip.example.com"))
+        engine.givenRegistered(work(domain = "sip.example.com"))
+        val conference = recordedConference(listOf("1004", "1005", "3000"), video = true)
+        assertEquals("1004, 1005", conference.title, "the room is a leg, not a member")
+        val loop = running()
+
+        viewModel().onVideoCallBack(conference)
+        advanceUntilIdle()
+        answerEveryRingingCall()
+
+        val dialled = engine.invocations
+            .filter { it.operation == FakeSipEngine.Operation.PLACE_CALL }
+            .map { it.detail }
+        assertEquals(
+            listOf("sip:1004@sip.example.com", "sip:1005@sip.example.com", "sip:3000@sip.example.com"),
+            dialled,
+            "both members with video, then this device's own leg into the room",
+        )
+        assertEquals(
+            setOf("sip:1004@sip.example.com", "sip:1005@sip.example.com"),
+            engine.bridgeMergeRequests.single().first.mapTo(HashSet()) { id ->
+                engine.activeCalls.value.single { it.callId == id }.remote.render()
+            },
+        )
+        assertTrue(engine.mixedCalls.value.isEmpty(), "a video conference is never mixed on this device")
+        assertTrue(engine.activeCalls.value.all { it.media == MediaProfile.AUDIO_VIDEO }, "every leg carries video")
+        loop.cancel()
+    }
+
+    @Test
+    fun `a video swipe on a conference goes out as voice, and says so, when there is no camera`() = runTest {
+        accounts.given(work(domain = "sip.example.com"))
+        engine.givenRegistered(work(domain = "sip.example.com"))
+        val conference = recordedConference(listOf("1004", "1005", "3000"), video = true)
+        val viewModel = viewModel(
+            camera = object : CameraAvailability {
+                override fun isCameraUsable(): Boolean = false
+            },
+        )
+        val events = mutableListOf<HistoryEvent>()
+        val collector = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.events.collect { events += it }
+        }
+
+        viewModel.onVideoCallBack(conference)
+        advanceUntilIdle()
+
+        assertEquals(MediaProfile.AUDIO, engine.activeCalls.value.single().media)
+        assertTrue(events.any { it is HistoryEvent.CallPlaced }, "the call-back went out: $events")
+        assertTrue(events.any { it is HistoryEvent.Notice }, "the downgrade was not said: $events")
+        collector.cancel()
     }
 
     @Test
@@ -344,6 +416,58 @@ class HistoryViewModelTest {
     /** One leg of the conference "k1", as the recorder would have written it. */
     private fun leg(remote: String) = entry(remote = remote).copy(isConference = true, conferenceKey = "k1")
 
+    /**
+     * A conference of [users] in the log, grouped as the list would group it — with the
+     * room, when one of the users is `3000`, told apart from the people the way the
+     * ViewModel tells it apart.
+     */
+    private suspend fun recordedConference(users: List<String>, video: Boolean = false): HistoryRow.Call {
+        val legs = users.mapIndexed { index, user ->
+            repository.record(
+                entry(remote = "sip:$user@sip.example.com", accountDomain = "sip.example.com").copy(
+                    isConference = true,
+                    conferenceKey = "k1",
+                    startedAtEpochMillis = STARTED_AT + index,
+                    media = if (video) MediaProfile.AUDIO_VIDEO else MediaProfile.AUDIO,
+                ),
+            )
+        }
+        return groupConferences(legs.reversed().map(::row)) { entry ->
+            entry.isConference && ConferenceRoom.DEFAULT.matches(entry.remote, entry.accountDomain)
+        }.single()
+    }
+
+    /**
+     * The coordinator's loop, which dials the members after the first as each answers.
+     *
+     * On the test's own scope rather than `backgroundScope`, and the difference is the
+     * whole test: `advanceUntilIdle` stops once no *foreground* task is queued, and a
+     * loop parked in the background waiting on a call to answer is never resumed by it.
+     * The caller cancels what this returns.
+     */
+    private fun TestScope.running() = launch { joins.run() }
+
+    /**
+     * Answers whatever is ringing until nothing is, one call at a time — the far ends
+     * picking up, and Telecom parking the previous call as each new one connects. A
+     * member of the local mix is not parked: the Telecom bridge declines that hold
+     * (ADR-009), which is what keeps a conference from being held by its own growth.
+     */
+    private suspend fun TestScope.answerEveryRingingCall() {
+        repeat(MAX_RINGING_ROUNDS) {
+            val ringing = engine.activeCalls.value.firstOrNull { it.state is CallState.Outgoing } ?: return
+            engine.activeCalls.value
+                .filter {
+                    it.callId != ringing.callId &&
+                        it.state is CallState.Connected &&
+                        it.callId !in engine.mixedCalls.value
+                }
+                .forEach { engine.setHold(it.callId, held = true) }
+            engine.simulateRemoteAnswer(ringing.callId)
+            advanceUntilIdle()
+        }
+    }
+
     private fun entry(
         remote: String = REMOTE.render(),
         accountDomain: String? = null,
@@ -365,6 +489,9 @@ class HistoryViewModelTest {
     private companion object {
         val REMOTE: SipUri = SipUri.parse("sip:bob@sip.example.com").getOrNull()!!
         const val STARTED_AT = 1_700_000_000_000L
+
+        /** More than any conference here has legs, so the loop always ends. */
+        const val MAX_RINGING_ROUNDS = 8
 
         /** The account every fixture entry is on, with whatever domain it has *now*. */
         fun work(domain: String) = SipAccount(

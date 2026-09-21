@@ -80,6 +80,9 @@ abstract class CallViewModelFixture {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
+    /** The join coordinator, with the same merge the ViewModel is given, so both see one room. */
+    private fun joins() = ConferenceJoinCoordinator(engine, engine, MergeCallsUseCase(engine, engine, accounts, room))
+
     protected fun viewModel() = CallViewModel(
         calls = engine,
         media = engine,
@@ -89,7 +92,7 @@ abstract class CallViewModelFixture {
         // The real use cases over the fake engine, not fakes of their own: the ordering
         // they enforce is the thing worth exercising from here (Tasks 55-57).
         transfers = TransferCallUseCase(engine, accounts),
-        callWaiting = CallWaitingUseCase(engine, NoCameraAvailable, ConferenceJoinCoordinator(engine, engine)),
+        callWaiting = CallWaitingUseCase(engine, NoCameraAvailable, joins()),
         mergeCalls = MergeCallsUseCase(engine, engine, accounts, room),
         surfaces = surfaces,
         clock = clock,

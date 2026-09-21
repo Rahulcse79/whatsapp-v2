@@ -43,6 +43,33 @@ sealed interface HistoryRow {
         /** True when this row stands for a conference with more than one leg. */
         val isConferenceGroup: Boolean get() = legs.size > 1
 
+        /**
+         * The people in the conference: every leg that is not this device's own call to
+         * the bridge (ADR-003).
+         *
+         * A conference built in the bridge is one call per member *and* one call to the
+         * room, all under one key. The room is where the conference happened, not
+         * somebody who was in it — a list of members reading "1004, 1005, 3000" names two
+         * people and a dialplan extension — so it is left out here and kept in [legs],
+         * where the conference's duration and its deletion still need it. Calling the
+         * conference back dials these and only these.
+         */
+        val members: List<Member> get() = legs.filterNot { it.isRoom }
+
+        /**
+         * True when the conference carried video — any leg did.
+         *
+         * The row's mark and its swipe both need one answer for the whole conference, and
+         * the legs give it: a bridged conference always has video on the leg to the room,
+         * because that is the only reason it went to the bridge, and a mix on this device
+         * dropped video from every leg the moment it formed. A single call is its own.
+         */
+        val hasVideo: Boolean
+            get() = if (legs.isEmpty()) entry.media.hasVideo else legs.any { it.entry.media.hasVideo }
+
+        /** True when this row is a conference of any kind — grouped, or a lone leg marked as one. */
+        val isConference: Boolean get() = isConferenceGroup || entry.isConference
+
         /** When the conference started: its first leg. */
         val startedAtEpochMillis: Long
             get() = legs.firstOrNull()?.entry?.startedAtEpochMillis ?: entry.startedAtEpochMillis
@@ -63,8 +90,13 @@ sealed interface HistoryRow {
             }
     }
 
-    /** One leg of a conference, with what to call the person on it. */
-    data class Member(val entry: CallLogEntry, val title: String)
+    /**
+     * One leg of a conference, with what to call the person on it.
+     *
+     * [isRoom] marks the leg that was this device's own call to the conference bridge
+     * rather than to a person — see [Call.members] for why the two are told apart.
+     */
+    data class Member(val entry: CallLogEntry, val title: String, val isRoom: Boolean = false)
 }
 
 private const val MILLIS_PER_SECOND = 1_000L

@@ -19,8 +19,8 @@ import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.TransferEventMapper
 import com.whatsappv2.data.sip.di.SipStackScope
-import com.whatsappv2.data.sip.network.NetworkMonitor
 import com.whatsappv2.data.sip.network.DeviceWakeMonitor
+import com.whatsappv2.data.sip.network.NetworkMonitor
 import com.whatsappv2.data.sip.network.RegistrationRecoveryCoordinator
 import com.whatsappv2.data.sip.network.WakeTimer
 import com.whatsappv2.data.sip.registration.RegistrationStateMapper
@@ -38,10 +38,12 @@ import com.whatsappv2.domain.call.TransitionResult
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.CallSnapshot
 import com.whatsappv2.domain.engine.CameraAvailability
+import com.whatsappv2.domain.engine.ConferenceParticipant
 import com.whatsappv2.domain.engine.ConferenceRoom
 import com.whatsappv2.domain.engine.ConferenceSession
 import com.whatsappv2.domain.engine.IncomingCall
 import com.whatsappv2.domain.engine.NoCameraAvailable
+import com.whatsappv2.domain.engine.ParticipantId
 import com.whatsappv2.domain.engine.PlatformCallRegistry
 import com.whatsappv2.domain.engine.PlatformDecision
 import com.whatsappv2.domain.engine.PushToken
@@ -267,8 +269,8 @@ internal class PjsipSipEngine @Inject constructor(
      * The same calls as a list.
      *
      * Derived on write rather than with `stateIn`, which starts a sharing coroutine in
-     * [scope] at construction and hands back no way to end it. [collectJob] and
-     * [callCollectJob] are held precisely so [stop] can end them; a job that cannot be
+     * [scope] at construction and hands back no way to end it. The [collectors] are held
+     * precisely so [stop] can end them; a job that cannot be
      * ended outlives the stack it reports on, and under `runTest` it is a child that
      * never finishes.
      */
@@ -381,6 +383,7 @@ internal class PjsipSipEngine @Inject constructor(
         pendingVideoRequests -= callId
         pendingHolds -= callId
         transferTypes -= callId
+        transferredInto -= callId
         platform.onEnded(callId, reason)
         ending?.let { ended.emitOrReport(logger, it, "endedCalls") }
     }
@@ -419,24 +422,14 @@ internal class PjsipSipEngine @Inject constructor(
     private var started = false
 
     /**
-     * The event collection job.
+     * The event collectors — registration, calls, transfers, conference rosters and the
+     * trace switch.
      *
-     * Held so [stop] can end it. Without this the collector outlives the stack it is
+     * Held so [stop] can end them. Without this a collector outlives the stack it is
      * listening to, keeping the engine and everything it references alive for the life of
      * the scope - and in a test, keeping `runTest` waiting forever.
      */
-    private var collectJob: Job? = null
-
-    /** The call-event collector. Held for the same reason as [collectJob]. */
-    private var callCollectJob: Job? = null
-
-    /** The transfer-event collector (Task 55). Held for the same reason as [collectJob]. */
-    private var transferCollectJob: Job? = null
-
-    /** The conference-roster collector (Task 60). Held for the same reason. */
-    private var conferenceCollectJob: Job? = null
-
-    private var traceCollectJob: Job? = null
+    private val collectors = mutableListOf<Job>()
 
     /**
      * Begins consuming stack events.
@@ -450,10 +443,10 @@ internal class PjsipSipEngine @Inject constructor(
 
         gateway.start()
         recovery.start()
-        callCollectJob = scope.collectCallEvents()
-        transferCollectJob = scope.collectTransferEvents()
-        conferenceCollectJob = scope.collectConferenceEvents()
-        traceCollectJob = scope.launch {
+        collectors += scope.collectCallEvents()
+        collectors += scope.collectTransferEvents()
+        collectors += scope.collectConferenceEvents()
+        collectors += scope.launch {
             // The switch in Settings, finally connected to something. It was written to
             // DataStore and read by nothing, so the control did nothing while its own
             // description promised it wrote signalling to the device log.
@@ -462,7 +455,7 @@ internal class PjsipSipEngine @Inject constructor(
                 .distinctUntilChanged()
                 .collect { gateway.setTraceEnabled(it) }
         }
-        collectJob = scope.launch {
+        collectors += scope.launch {
             gateway.registrationEvents.collect { event ->
                 val id = AccountId(event.accountKey)
                 val expiry = requestedExpiry[event.accountKey] ?: DEFAULT_EXPIRY_SECONDS
@@ -507,6 +500,7 @@ internal class PjsipSipEngine @Inject constructor(
                 CallStateMapper.isNewOutgoing(event.state) ->
                     onTransferredCall(id, event, clock, logger, callGateway::terminateCall) { new ->
                         updateCalls { it + (id to new) }
+                        linkTransferredRoomLeg(id, new)
                     }
                 // Nothing to move and nothing to create. Logged at debug rather than
                 // warned: a late event for a call the user already hung up is normal.
@@ -612,31 +606,39 @@ internal class PjsipSipEngine @Inject constructor(
      * fills this same session in.
      */
     private fun markConferenceIfRoom(id: CallId, call: CallSnapshot) {
-        if (!conferenceRoom.isConfigured) return
-        val room = conferenceRoom.uriOn(call.remote.host.rendered) ?: return
-        // User and host, not the whole URI: the room's own URI carries no transport or
-        // `ob` parameter and the bridge's Contact does, so comparing renderings would
-        // never match. A room with no user part is not an extension and matches nothing —
-        // without this, two null user parts would compare equal and every call to a bare
-        // host would be announced as a conference.
-        val extension = room.user ?: return
-        if (!extension.equals(call.remote.user, ignoreCase = true)) return
-        if (call.remote.host.rendered != room.host.rendered) return
-        if (conferenceSessions.value.any { it.callId == id }) return
-
-        conferenceSessions.update {
-            it + ConferenceSession(
-                callId = id,
-                accountId = call.accountId,
-                conferenceUri = call.remote,
-                participants = emptyList(),
-                rosterAvailable = false,
-            )
-        }
-        updateCalls { live ->
-            live[id]?.let { live + (id to it.copy(isConference = true)) } ?: live
-        }
+        if (!isConfiguredRoom(call.remote) || conferenceSessions.value.any { it.callId == id }) return
+        // Who sent this device here, when it arrived by REFER — see [linkTransferredRoomLeg].
+        openConferenceSession(id, call.accountId, call.remote, invited = listOfNotNull(transferredInto.remove(id)))
         logger.info(TAG, "$id is the conference room: marking it a conference")
+    }
+
+    /** True when [remote] is the configured conference room on its own server — see [ConferenceRoom.matches]. */
+    private fun isConfiguredRoom(remote: SipUri): Boolean = conferenceRoom.matches(remote)
+
+    /**
+     * The member that REFERred each transferred call into the room, until the call connects
+     * and its [ConferenceSession] is created to carry it. Keyed by the new call.
+     */
+    private val transferredInto = ConcurrentHashMap<CallId, ConferenceParticipant>()
+
+    /**
+     * Ties a call the stack placed by following a REFER to the leg the REFER arrived on,
+     * when the destination is the conference room — the transferee's half of a merge.
+     *
+     * The device that pressed Merge knows whom it sent into the room; the device that was
+     * sent knows who sent it — the far end of the leg the REFER travelled in — and nothing
+     * else. That is still worth two things. The history screen can fold "a video call with
+     * 1001 that ended in a transfer" and "a call to 3000" into one conference entry, which
+     * needs the two rows to share a key. And the conference screen can name the one member
+     * it does know, instead of saying only that the bridge publishes no list. Which leg
+     * the REFER came from is [transferParentOf]'s inference.
+     */
+    private fun linkTransferredRoomLeg(id: CallId, placed: CallSnapshot) {
+        if (!isConfiguredRoom(placed.remote)) return
+        val parent = transferParentOf(id, placed, calls.value.values, ::isConfiguredRoom) ?: return
+        updateCalls { it.markingAsConference(setOf(parent.callId, id), newKey = ::newConferenceKey) }
+        transferredInto[id] = parent.asInvited()
+        logger.info(TAG, "$id was transferred into the conference room by ${parent.callId}")
     }
 
     /**
@@ -666,18 +668,7 @@ internal class PjsipSipEngine @Inject constructor(
             val call = calls.value[id] ?: return@collect
 
             if (conferenceSessions.value.none { it.callId == id }) {
-                conferenceSessions.update {
-                    it + ConferenceSession(
-                        callId = id,
-                        accountId = call.accountId,
-                        conferenceUri = call.remote,
-                        participants = emptyList(),
-                        rosterAvailable = false,
-                    )
-                }
-                updateCalls { live ->
-                    live[id]?.let { live + (id to it.copy(isConference = true)) } ?: live
-                }
+                openConferenceSession(id, call.accountId, call.remote)
                 logger.info(TAG, "$id is a conference: the far end published a roster")
             }
 
@@ -872,32 +863,9 @@ internal class PjsipSipEngine @Inject constructor(
             return
         }
 
-        val media = if (event.videoOffered) MediaProfile.AUDIO_VIDEO else MediaProfile.AUDIO
-        val receivedAt = clock.nowEpochMillis()
-        updateCalls {
-            it + (
-                id to CallSnapshot(
-                    callId = id,
-                    accountId = AccountId(event.accountKey),
-                    remote = from,
-                    remoteDisplayName = event.remoteDisplayName,
-                    direction = CallDirection.INCOMING,
-                    state = CallState.Incoming(from),
-                    media = media,
-                    startedAtEpochMillis = receivedAt,
-                    connectedAtEpochMillis = null,
-                )
-                )
-        }
-
-        val call = IncomingCall(
-            callId = id,
-            accountId = AccountId(event.accountKey),
-            from = from,
-            fromDisplayName = event.remoteDisplayName,
-            offeredMedia = media,
-            receivedAtEpochMillis = receivedAt,
-        )
+        val snapshot = incomingSnapshot(id, event, from, clock.nowEpochMillis())
+        updateCalls { it + (id to snapshot) }
+        val call = snapshot.asIncomingCall()
 
         // Launched rather than awaited inline: registering with Telecom is a round trip
         // through the platform, and the collector must stay free to deliver the next
@@ -940,17 +908,7 @@ internal class PjsipSipEngine @Inject constructor(
         if (registration?.isUsable != true) return failure(SipError.NotRegistered)
 
         val callId = CallId(UUID.randomUUID().toString())
-        val snapshot = CallSnapshot(
-            callId = callId,
-            accountId = accountId,
-            remote = target,
-            remoteDisplayName = null,
-            direction = CallDirection.OUTGOING,
-            state = CallState.Outgoing.Calling,
-            media = media,
-            startedAtEpochMillis = clock.nowEpochMillis(),
-            connectedAtEpochMillis = null,
-        )
+        val snapshot = outgoingSnapshot(callId, accountId, target, media, clock.nowEpochMillis())
         updateCalls { it + (callId to snapshot) }
 
         // Telecom, before the INVITE. It knows about the cellular call this app cannot
@@ -958,11 +916,7 @@ internal class PjsipSipEngine @Inject constructor(
         // snapshot goes back out again on anything but a yes: a call that will never exist
         // must not be left on screen. A refusal and a silence part company only in what
         // the user is told — the first names the other call, the second must not.
-        val notPlaced = when (platform.registerOutgoing(snapshot)) {
-            PlatformDecision.Permitted -> null
-            PlatformDecision.Refused -> SipError.CallNotPermitted
-            PlatformDecision.Unavailable -> SipError.PlatformUnavailable
-        }
+        val notPlaced = platform.registerOutgoing(snapshot).refusal()
         if (notPlaced != null) {
             updateCalls { it - callId }
             when (notPlaced) {
@@ -1372,20 +1326,34 @@ internal class PjsipSipEngine @Inject constructor(
         val placed = placeCall(accountId, conferenceUri, media)
         if (placed !is Outcome.Success) return placed
 
-        val callId = placed.value
-        updateCalls { live ->
-            live[callId]?.let { live + (callId to it.copy(isConference = true)) } ?: live
-        }
-        conferenceSessions.update {
-            it + ConferenceSession(
-                callId = callId,
-                accountId = accountId,
-                conferenceUri = conferenceUri,
-                participants = emptyList(),
-                rosterAvailable = false,
-            )
-        }
+        openConferenceSession(placed.value, accountId, conferenceUri)
         return placed
+    }
+
+    /**
+     * Records that [callId] is this device's leg into the conference at [conferenceUri].
+     *
+     * The one place a [ConferenceSession] is born, whichever way the leg got there —
+     * dialled by [joinConference], recognised by [markConferenceIfRoom], or announced by a
+     * roster in [collectConferenceEvents]. It starts with **no roster**, not an empty one:
+     * a bridge that publishes a participant list will send one along shortly, and one that
+     * does not never will, and the UI has to say which (§13). The call is marked a
+     * conference at the same time, so the screen, the call log and the controls agree.
+     *
+     * @param invited who this device already knows to be in the room — see
+     *   [ConferenceSession.invited]; nothing for a room this device dialled itself.
+     */
+    private fun openConferenceSession(
+        callId: CallId,
+        accountId: AccountId,
+        conferenceUri: SipUri,
+        invited: List<ConferenceParticipant> = emptyList(),
+    ) {
+        if (conferenceSessions.value.any { it.callId == callId }) return
+        conferenceSessions.update {
+            it + ConferenceSession(callId, accountId, conferenceUri, rosterAvailable = false, invited = invited)
+        }
+        updateCalls { live -> live[callId]?.let { live + (callId to it.copy(isConference = true)) } ?: live }
     }
 
     /**
@@ -1467,23 +1435,73 @@ internal class PjsipSipEngine @Inject constructor(
      * than the local mix. A member that joins audio-only is heard and, by the profile's
      * `video-required-for-canvas`, takes no tile on the canvas — which would be this
      * handset missing from everybody's screen.
+     *
+     * ## A leg that is already in the room stays where it is
+     *
+     * Adding somebody to a conference this device is already in — Add, then Merge, from
+     * the conference screen, or the third member of a video call-back from history — puts
+     * the room leg itself among [callIds]. It is not REFERred back into its own room and
+     * the room is not dialled a second time: the *other* legs are sent in, the room leg is
+     * resumed (Telecom held it while the new call was up), and it is the leg returned.
+     * Without this the merge sent the conference leg a REFER to the address it was already
+     * at and then placed a second call to the room beside it.
+     *
+     * ## Every leg and the room leg carry one conference key
+     *
+     * The call log writes one row per leg, and a bridged conference is three rows on the
+     * device that built it — two legs that ended when their transfers completed, and one
+     * call to the room. Stamping them with one `conferenceKey`, exactly as a local mix
+     * stamps its members, is what lets the history screen fold them into one conference
+     * with its members named rather than a call to "3000" beside two calls to strangers.
+     * Only legs whose REFER the stack accepted are stamped; one that refused is still a
+     * call, and its row should read as one.
+     *
+     * The members sent in are also recorded on the room's [ConferenceSession.invited], so
+     * the screen can list them while the bridge publishes nothing — see that field for
+     * what the list does and does not claim.
      */
     override suspend fun mergeIntoConference(
         callIds: Set<CallId>,
         room: SipUri,
-    ): Outcome<CallId, SipError> = when {
-        !started -> failure(SipError.EngineUnavailable)
-
-        else -> referLegsIntoRoom(
+    ): Outcome<CallId, SipError> {
+        if (!started) return failure(SipError.EngineUnavailable)
+        val roomLeg = callIds.firstOrNull { isRoomLeg(it, room) }
+        return mergeIntoRoom(
+            merge = RoomMerge(legs = callIds - setOfNotNull(roomLeg), roomLeg = roomLeg),
             calls = activeCalls,
-            requested = callIds,
             mixed = mixed,
             logger = logger,
+            newKey = ::newConferenceKey,
             clearMix = { conferenceGateway.setConferenceMembers(emptySet()) },
             resume = { holdLeg(it, held = false) },
             refer = { transfer(it, room, TransferType.BLIND, consultationCallId = null) },
-        ).flatMap { joinConference(it, room, MediaProfile.AUDIO_VIDEO) }
+            stamp = ::stampConference,
+            join = { accountId -> joinConference(accountId, room, MediaProfile.AUDIO_VIDEO) },
+            recordInvited = { ourLeg, members ->
+                conferenceSessions.update { all ->
+                    all.map { if (it.callId == ourLeg) it.withInvited(members) else it }
+                }
+            },
+        )
     }
+
+    /**
+     * Marks each of [ids] as a leg of the conference [key] names.
+     *
+     * Unconditionally, unlike `markingAsConference`: a leg that was in some earlier
+     * conference on this device is being merged into *this* one now, and the log wants
+     * the conference it is in, not the one it left.
+     */
+    private fun stampConference(ids: Set<CallId>, key: String) = updateCalls { live ->
+        live + ids.mapNotNull { id -> live[id]?.let { id to it.copy(isConference = true, conferenceKey = key) } }
+    }
+
+    /** True when [id] is this device's leg into [room] — the call the bridge is on the other end of. */
+    private fun isRoomLeg(id: CallId, room: SipUri): Boolean =
+        conferenceSessions.value.any { it.callId == id } ||
+            calls.value[id]?.let { it.isConference && isRoomAddress(it.remote, room) } == true
+
+    private fun newConferenceKey(): String = UUID.randomUUID().toString()
 
     /**
      * Runs a control event through the FSM and, if it is legal, does the thing.
@@ -1611,16 +1629,8 @@ internal class PjsipSipEngine @Inject constructor(
         if (!started) return
         started = false
         recovery.stop()
-        collectJob?.cancel()
-        collectJob = null
-        callCollectJob?.cancel()
-        callCollectJob = null
-        transferCollectJob?.cancel()
-        transferCollectJob = null
-        conferenceCollectJob?.cancel()
-        conferenceCollectJob = null
-        traceCollectJob?.cancel()
-        traceCollectJob = null
+        collectors.forEach { it.cancel() }
+        collectors.clear()
         gateway.stop()
         requestedExpiry.clear()
         mediaPolicy.clear()
@@ -1861,6 +1871,61 @@ private fun onTransferredCall(
     logger.info(PjsipSipEngine.TAG, "A transfer placed a new call to ${snapshot.remote.render()}")
 }
 
+/** The snapshot an outgoing call is published as, before its INVITE goes out (Task 35). */
+private fun outgoingSnapshot(
+    callId: CallId,
+    accountId: AccountId,
+    target: SipUri,
+    media: MediaProfile,
+    startedAtEpochMillis: Long,
+): CallSnapshot = CallSnapshot(
+    callId = callId,
+    accountId = accountId,
+    remote = target,
+    remoteDisplayName = null,
+    direction = CallDirection.OUTGOING,
+    state = CallState.Outgoing.Calling,
+    media = media,
+    startedAtEpochMillis = startedAtEpochMillis,
+    connectedAtEpochMillis = null,
+)
+
+/** The snapshot an inbound INVITE is published as, ringing, from the address it came from (Task 37). */
+private fun incomingSnapshot(
+    id: CallId,
+    event: StackCallEvent,
+    from: SipUri,
+    receivedAtEpochMillis: Long,
+): CallSnapshot =
+    CallSnapshot(
+        callId = id,
+        accountId = AccountId(event.accountKey),
+        remote = from,
+        remoteDisplayName = event.remoteDisplayName,
+        direction = CallDirection.INCOMING,
+        state = CallState.Incoming(from),
+        media = if (event.videoOffered) MediaProfile.AUDIO_VIDEO else MediaProfile.AUDIO,
+        startedAtEpochMillis = receivedAtEpochMillis,
+        connectedAtEpochMillis = null,
+    )
+
+/** The ringing call as the app is told about it. */
+private fun CallSnapshot.asIncomingCall(): IncomingCall = IncomingCall(
+    callId = callId,
+    accountId = accountId,
+    from = remote,
+    fromDisplayName = remoteDisplayName,
+    offeredMedia = media,
+    receivedAtEpochMillis = startedAtEpochMillis,
+)
+
+/** Why Telecom would not take an outgoing call, or null when it did (Task 34). */
+private fun PlatformDecision.refusal(): SipError? = when (this) {
+    PlatformDecision.Permitted -> null
+    PlatformDecision.Refused -> SipError.CallNotPermitted
+    PlatformDecision.Unavailable -> SipError.PlatformUnavailable
+}
+
 /**
  * The snapshot for a call the stack placed by following a REFER.
  *
@@ -1923,6 +1988,65 @@ private fun publishMix(
 }
 
 /**
+ * What a merge into the bridge moves: the legs to REFER, and this device's own leg into
+ * the room when it already has one, which is resumed with them and never REFERred.
+ */
+private data class RoomMerge(val legs: Set<CallId>, val roomLeg: CallId?)
+
+/**
+ * A merge into the bridge, end to end (ADR-003): the REFERs, the join, and the bookkeeping
+ * that lets the history screen and the roster see one conference afterwards.
+ *
+ * At file level for the reason [referLegsIntoRoom] is, and taking the engine's operations
+ * as lambdas for the same reason. Three things happen here that the REFER loop alone did
+ * not:
+ *
+ * - **One key for the whole merge**, chosen before anything moves: the conference the
+ *   room leg is already in, else the local mix these legs are leaving (an audio
+ *   conference that gained video is the same conference), else a new one. Every leg
+ *   whose REFER the stack accepts is stamped with it as it goes, and so is this device's
+ *   own leg, so the rows they write fold into one conference in history.
+ * - **A room leg is kept, not dialled again.** With [RoomMerge.roomLeg] set the others are
+ *   sent to join it and it is the leg returned.
+ * - **The members sent in are recorded** on the room's session, from the snapshots the
+ *   legs still have — they are ending, and the addresses are all the room will ever know
+ *   about them. See `ConferenceSession.invited`.
+ */
+@Suppress("LongParameterList") // Every parameter is one engine operation; bundling them would hide which is which.
+private suspend fun mergeIntoRoom(
+    merge: RoomMerge,
+    calls: StateFlow<List<CallSnapshot>>,
+    mixed: MutableStateFlow<Set<CallId>>,
+    logger: Logger,
+    newKey: () -> String,
+    clearMix: suspend () -> Unit,
+    resume: suspend (CallId) -> Outcome<Unit, SipError>,
+    refer: suspend (CallId) -> Outcome<Unit, SipError>,
+    stamp: (Set<CallId>, String) -> Unit,
+    join: suspend (AccountId) -> Outcome<CallId, SipError>,
+    recordInvited: (CallId, List<ConferenceParticipant>) -> Unit,
+): Outcome<CallId, SipError> {
+    fun snapshot(id: CallId) = calls.value.firstOrNull { it.callId == id }
+    val key = merge.roomLeg?.let { snapshot(it)?.conferenceKey }
+        ?: mixed.value.firstNotNullOfOrNull { snapshot(it)?.conferenceKey }
+        ?: newKey()
+    val referred = LinkedHashSet<CallId>()
+
+    return referLegsIntoRoom(calls, merge, mixed, logger, clearMix, resume) { id ->
+        refer(id).onSuccess {
+            referred += id
+            stamp(setOf(id), key)
+        }
+    }.flatMap { accountId ->
+        merge.roomLeg?.let { success(it) } ?: join(accountId)
+    }.onSuccess { ourLeg ->
+        stamp(setOf(ourLeg), key)
+        val members = referred.mapNotNull { snapshot(it)?.asInvited() }
+        if (members.isNotEmpty()) recordInvited(ourLeg, members)
+    }
+}
+
+/**
  * Steps 1-3 of [PjsipSipEngine.mergeIntoConference]: tear the mix down, resume, and REFER.
  *
  * At file level for the same two reasons as [resumeHeldForMix]: `PjsipSipEngine` is at
@@ -1935,14 +2059,18 @@ private fun publishMix(
  */
 private suspend fun referLegsIntoRoom(
     calls: StateFlow<List<CallSnapshot>>,
-    requested: Set<CallId>,
+    merge: RoomMerge,
     mixed: MutableStateFlow<Set<CallId>>,
     logger: Logger,
     clearMix: suspend () -> Unit,
     resume: suspend (CallId) -> Outcome<Unit, SipError>,
     refer: suspend (CallId) -> Outcome<Unit, SipError>,
 ): Outcome<AccountId, SipError> {
+    val (requested, keep) = merge
     val established = establishedForMix(calls.value, requested)
+    // With a leg already in the room, one more established leg is a conference of three;
+    // without one, two legs are the minimum — this device makes the third.
+    val minimum = if (keep != null) 1 else SipConferenceController.MINIMUM_MIXED
 
     // Every leg belongs to the account that will dial the room: the bridge is reached
     // through the same registrar the calls are on, and there is no second account to
@@ -1950,7 +2078,7 @@ private suspend fun referLegsIntoRoom(
     // because the default may not be the one in use. Absent when there are not enough
     // established calls to be a conference at all, which is the same refusal.
     val accountId = calls.value
-        .takeIf { established.size >= SipConferenceController.MINIMUM_MIXED }
+        .takeIf { established.size >= minimum }
         ?.firstOrNull { it.callId in established }
         ?.accountId
         ?: return failure(SipError.InvalidState("a conference needs at least two established calls"))
@@ -1962,7 +2090,10 @@ private suspend fun referLegsIntoRoom(
         mixed.value = emptySet()
     }
 
-    resumeHeldForMix(calls, established, logger) { resume(it) }
+    // The room leg is resumed with the rest — it was held while the new call was up, and
+    // a conference leg left on hold is a member the bridge cannot hear — but never
+    // REFERred: it is already where the others are going.
+    resumeHeldForMix(calls, established + setOfNotNull(keep), logger) { resume(it) }
 
     liveForMix(calls.value, established).forEach { callId ->
         refer(callId)
@@ -2055,6 +2186,37 @@ private fun Map<CallId, CallSnapshot>.markingAsConference(
             ?.let { id to it.copy(isConference = true, conferenceKey = key) }
     }
 }
+
+/** True when [remote] and [room] name the same extension on the same server. */
+private fun isRoomAddress(remote: SipUri, room: SipUri): Boolean {
+    val extension = room.user ?: return false
+    return extension.equals(remote.user, ignoreCase = true) &&
+        remote.host.rendered.equals(room.host.rendered, ignoreCase = true)
+}
+
+/**
+ * The leg a REFER into the room arrived on, for the call [placed] by following it.
+ *
+ * The stack's event does not say, so it is inferred: the established call on the same
+ * account that is not itself a room leg. When there is more than one — a REFER arriving
+ * on one of two held calls — nothing is inferred, because a wrong link is a wrong history
+ * entry, and a missing one is only the entry this device has always written.
+ */
+private fun transferParentOf(
+    id: CallId,
+    placed: CallSnapshot,
+    calls: Collection<CallSnapshot>,
+    isRoom: (SipUri) -> Boolean,
+): CallSnapshot? = calls.singleOrNull { call ->
+    call.callId != id && call.accountId == placed.accountId && call.state.isEstablished && !isRoom(call.remote)
+}
+
+/** This leg's far end as a member of the room it was sent to, or that sent this device there. */
+private fun CallSnapshot.asInvited(): ConferenceParticipant = ConferenceParticipant(
+    id = ParticipantId(callId.value),
+    uri = remote,
+    displayName = remoteDisplayName?.takeIf { it.isNotBlank() },
+)
 
 /**
  * Turns video off on every call about to be mixed (ADR-009).

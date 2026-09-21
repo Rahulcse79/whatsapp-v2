@@ -128,6 +128,36 @@ class CallScreenTest {
     }
 
     @Test
+    fun `a bridge with no roster still names the people this phone merged, and says where the names came from`() {
+        // The fourth case: no roster from the bridge, but the members this device sent into
+        // the room. Named rather than counted, expandable, and the list says what it is.
+        val state = setContent(display(CallPhase.CONNECTED, durationSeconds = 5))
+        state.value = (state.value as CallUiState.Active).copy(
+            conference = ConferenceUiState(
+                participants = listOf(
+                    ConferenceParticipantRow("self", "1001", isMuted = false, isSpeaking = false, isSelf = true),
+                    ConferenceParticipantRow("a", "1004", isMuted = false, isSpeaking = false, isSelf = false),
+                    ConferenceParticipantRow("b", "1005", isMuted = false, isSpeaking = false, isSelf = false),
+                ),
+                rosterAvailable = false,
+                fromMerge = true,
+            ),
+        )
+
+        compose.onNodeWithTag(TAG_ROSTER_SUMMARY, useUnmergedTree = true).assertTextEquals("You, 1004 and 1005")
+        compose.onNodeWithTag(TAG_CONFERENCE_BADGE).assertDoesNotExist()
+
+        compose.onNodeWithTag(TAG_ROSTER_TOGGLE).performClick()
+
+        compose.onNodeWithTag(TAG_ROSTER_LIST).assertIsDisplayed()
+        compose.onNodeWithText("1004").assertIsDisplayed()
+        // In the list, below the fold of the bounded, scrolling column on this screen size.
+        compose.onNodeWithText("1005").assertExists()
+        compose.onNodeWithText("You").assertIsDisplayed()
+        compose.onNodeWithTag(TAG_MERGED_NOTE, useUnmergedTree = true).assertExists()
+    }
+
+    @Test
     fun `a ringing inbound call offers answer and decline, and nothing else`() {
         var answeredWithVideo: Boolean? = null
         setContent(

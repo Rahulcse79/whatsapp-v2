@@ -8,13 +8,13 @@ import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.failure
 import com.whatsappv2.core.common.result.map
 import com.whatsappv2.core.common.result.success
+import com.whatsappv2.data.sip.call.ConferenceInfoParser
 import com.whatsappv2.data.sip.call.SipCallGateway
 import com.whatsappv2.data.sip.call.SipConferenceGateway
 import com.whatsappv2.data.sip.call.SipRecordingGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
-import com.whatsappv2.data.sip.call.ConferenceInfoParser
 import com.whatsappv2.data.sip.call.StackConferenceEvent
 import com.whatsappv2.data.sip.call.StackTransferEvent
 import com.whatsappv2.data.sip.call.TransferEventMapper
@@ -1839,9 +1839,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
             if (!ROSTER_SUBSCRIBE_ENABLED) return
 
             val headers = SipHeaderVector().apply {
-                add(SipHeader().apply { hName = "Event"; hValue = ROSTER_EVENT })
-                add(SipHeader().apply { hName = "Accept"; hValue = ConferenceInfoParser.CONTENT_TYPE })
-                add(SipHeader().apply { hName = "Expires"; hValue = ROSTER_EXPIRY_SECONDS.toString() })
+                add(header("Event", ROSTER_EVENT))
+                add(header("Accept", ConferenceInfoParser.CONTENT_TYPE))
+                add(header("Expires", ROSTER_EXPIRY_SECONDS.toString()))
             }
             val request = CallSendRequestParam().apply {
                 method = "SUBSCRIBE"
@@ -2534,6 +2534,12 @@ private const val SIP_ERROR_FLOOR = 300
  * `CONNECTING` has no arm of its own and falls into `else`; `PjCall.onCallState` publishes
  * it only for the callee — see the comment there for what each side broke.
  */
+/** One SIP header, named and valued, for a request built by hand. */
+private fun header(name: String, value: String): SipHeader = SipHeader().apply {
+    hName = name
+    hValue = value
+}
+
 private fun callStateOf(info: CallInfo): StackCallState = when (info.state) {
     pjsip_inv_state.PJSIP_INV_STATE_CALLING -> StackCallState.OUTGOING_INIT
     pjsip_inv_state.PJSIP_INV_STATE_INCOMING -> StackCallState.INCOMING_RECEIVED

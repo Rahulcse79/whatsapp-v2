@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.requiredSize
-import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -219,24 +218,37 @@ private fun VideoSurfaces(
             )
         }
 
+        // The self-view's placement lives here rather than inside [SelfPreview], because
+        // the tap that puts a maximised preview away lands *outside* it — on the picture
+        // target below — and that target has to be able to see and change it.
+        val preview = rememberSelfPreviewState()
+        val previewCoversPicture = showsPreview && preview.isMaximised
+
         // Between the picture and the self-view, and that position is the point. Tapping
         // the picture hides the call controls; dragging the self-view moves it. Put this
         // above the preview and every drag becomes a tap; leave it out of this layer
         // altogether — which is where it used to live — and the remote `SurfaceView` takes
         // the pointer before it ever arrives.
         //
+        // While the self-view is maximised the same tap minimises it instead, and does
+        // nothing else: a preview nine tenths of the screen wide is what the user is
+        // looking past, and the controls' visibility is the next tap's business. See
+        // [SelfPreview] for the rule.
+        //
         // It carries a label because it is the only thing on screen once the controls
         // fade: an unlabelled Box leaves a screen-reader user a blank screen and no way
         // back.
-        if (onPictureTap != null) {
+        if (onPictureTap != null || previewCoversPicture) {
             Box(
                 Modifier
                     .fillMaxSize()
                     .clickable(
                         indication = null,
                         interactionSource = remember { MutableInteractionSource() },
-                        onClickLabel = pictureTapLabel,
-                        onClick = onPictureTap,
+                        onClickLabel = if (previewCoversPicture) MINIMISE_PREVIEW_LABEL else pictureTapLabel,
+                        onClick = {
+                            if (showsPreview && preview.isMaximised) preview.minimise() else onPictureTap?.invoke()
+                        },
                     )
                     .testTag(TAG_PICTURE_TAP),
             )
@@ -254,10 +266,13 @@ private fun VideoSurfaces(
             // about and resize itself mid-call. Covering a box the user controls keeps the
             // renderer from stretching a face sideways without letting the frame's shape
             // reach the layout.
-            SelfPreview(previewView = previewView, localFrame = sizes.local)
+            SelfPreview(previewView = previewView, localFrame = sizes.local, state = preview)
         }
     }
 }
+
+/** What a tap on the picture does while the self-view is maximised, for a screen reader. */
+internal const val MINIMISE_PREVIEW_LABEL = "Minimise your camera"
 
 /**
  * A holder callback that reports its surface, or null once it is gone.

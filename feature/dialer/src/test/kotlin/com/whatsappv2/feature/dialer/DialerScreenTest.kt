@@ -12,6 +12,7 @@ import androidx.compose.ui.test.performClick
 import androidx.lifecycle.SavedStateHandle
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
+import com.whatsappv2.domain.engine.ConferenceRoom
 import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CodecPreferences
@@ -23,6 +24,7 @@ import com.whatsappv2.domain.testing.FakeContactRepository
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
 import com.whatsappv2.domain.usecase.ConferenceJoinCoordinator
+import com.whatsappv2.domain.usecase.MergeCallsUseCase
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import org.junit.Rule
 import org.junit.Test
@@ -136,7 +138,11 @@ class DialerScreenTest {
             repository = repository,
             savedState = SavedStateHandle(),
             registrar = engine,
-            joins = ConferenceJoinCoordinator(engine, engine),
+            joins = ConferenceJoinCoordinator(
+                engine,
+                engine,
+                MergeCallsUseCase(engine, engine, repository, ConferenceRoom.DEFAULT),
+            ),
         )
 
         compose.setContent {
