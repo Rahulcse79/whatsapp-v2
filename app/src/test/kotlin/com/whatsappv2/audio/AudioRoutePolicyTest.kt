@@ -38,6 +38,47 @@ class AudioRoutePolicyTest {
     }
 
     @Test
+    fun `a video call starts on the speaker, unless a headset or an explicit preference says otherwise`() {
+        // A video call is held at arm's length, where an earpiece is inaudible. Measured:
+        // every video call went out on the earpiece and "not clear" was the report.
+        assertEquals(AudioRoute.SPEAKER, AudioRoutePolicy.preferredRoute(AudioDevices(), hasVideo = true))
+
+        // A headset is where the user physically put the audio, and it still wins.
+        assertEquals(
+            AudioRoute.WIRED_HEADSET,
+            AudioRoutePolicy.preferredRoute(AudioDevices(hasWiredHeadset = true), hasVideo = true),
+        )
+        assertEquals(
+            AudioRoute.BLUETOOTH,
+            AudioRoutePolicy.preferredRoute(AudioDevices(hasBluetooth = true), hasVideo = true),
+        )
+
+        // An explicit preference is explicit.
+        assertEquals(
+            AudioRoute.EARPIECE,
+            AudioRoutePolicy.preferredRoute(AudioDevices(), PreferredAudioRoute.EARPIECE, hasVideo = true),
+        )
+
+        // And a voice call is untouched by any of this.
+        assertEquals(AudioRoute.EARPIECE, AudioRoutePolicy.preferredRoute(AudioDevices(), hasVideo = false))
+    }
+
+    @Test
+    fun `a route the user chose on a video call survives the speaker rule`() {
+        // Somebody who put a video call to their ear for privacy said so more recently
+        // than any rule about where video calls belong.
+        assertEquals(
+            AudioRoute.EARPIECE,
+            AudioRoutePolicy.routeAfterDeviceChange(AudioDevices(), chosen = AudioRoute.EARPIECE, hasVideo = true),
+        )
+        // With no choice, the rule applies.
+        assertEquals(
+            AudioRoute.SPEAKER,
+            AudioRoutePolicy.routeAfterDeviceChange(AudioDevices(), chosen = null, hasVideo = true),
+        )
+    }
+
+    @Test
     fun `the Settings preference decides where a call starts`() {
         // "Where calls start" — the control that, until this, changed nothing anywhere.
         val headset = AudioDevices(hasWiredHeadset = true)

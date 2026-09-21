@@ -64,16 +64,31 @@ object AudioRoutePolicy {
      * physical act that says more than a preference set last month.
      *
      * Until this parameter existed, the Settings control wrote a value nothing read.
+     *
+     * ## A video call starts on the speaker
+     *
+     * The earpiece is the right automatic answer for a voice call and the wrong one for a
+     * video call, which is held at arm's length in front of a face — where an earpiece is
+     * inaudible. Measured on a Galaxy M14 on 2026-09-21: every video call went out on
+     * `ActiveEarpieceRoute`, with the app itself sending `USER_SWITCH_EARPIECE` the
+     * moment audio started, and "the other person is not clear" was the report. So with
+     * [hasVideo] the automatic choice is the loudspeaker. A headset still wins (it is
+     * where the user put the audio, physically), and an explicit Settings preference for
+     * the earpiece is still honoured — it is explicit.
+     *
+     * @param hasVideo true when the call has a video stream, negotiated or requested.
      */
     fun preferredRoute(
         devices: AudioDevices,
         preference: PreferredAudioRoute = PreferredAudioRoute.AUTOMATIC,
+        hasVideo: Boolean = false,
     ): AudioRoute = when (preference) {
         PreferredAudioRoute.SPEAKER -> AudioRoute.SPEAKER
         PreferredAudioRoute.EARPIECE -> if (devices.hasEarpiece) AudioRoute.EARPIECE else AudioRoute.SPEAKER
         PreferredAudioRoute.AUTOMATIC -> when {
             devices.hasBluetooth -> AudioRoute.BLUETOOTH
             devices.hasWiredHeadset -> AudioRoute.WIRED_HEADSET
+            hasVideo -> AudioRoute.SPEAKER
             devices.hasEarpiece -> AudioRoute.EARPIECE
             else -> AudioRoute.SPEAKER
         }
@@ -94,17 +109,19 @@ object AudioRoutePolicy {
      * @param chosen the route the user last selected, or null if they never did.
      * @param preference the Settings choice for where calls start, used only when there
      *   is no [chosen] route still possible.
+     * @param hasVideo whether the call has video; see [preferredRoute].
      */
     fun routeAfterDeviceChange(
         devices: AudioDevices,
         chosen: AudioRoute?,
         arrived: AudioRoute? = null,
         preference: PreferredAudioRoute = PreferredAudioRoute.AUTOMATIC,
+        hasVideo: Boolean = false,
     ): AudioRoute = when {
         // A headset appearing is a physical act, and it wins.
         arrived == AudioRoute.BLUETOOTH || arrived == AudioRoute.WIRED_HEADSET -> arrived
         chosen != null && chosen in devices.available -> chosen
-        else -> preferredRoute(devices, preference)
+        else -> preferredRoute(devices, preference, hasVideo)
     }
 
     /**
