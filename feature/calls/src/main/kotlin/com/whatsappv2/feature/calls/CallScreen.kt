@@ -44,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -237,9 +238,21 @@ private fun rememberCallChromeVisibility(
         !state.needsAttention &&
         !exploringByTouch
 
-    LaunchedEffect(mayHide, visible.value) {
+    // The platform's "Time to take action" setting (Settings > Accessibility) lengthens
+    // this for people who asked for longer, exactly as it does for a snackbar. Controls,
+    // icons and text: all three, because the chrome is all three.
+    val idleMillis = LocalAccessibilityManager.current
+        ?.calculateRecommendedTimeoutMillis(
+            originalTimeoutMillis = CHROME_IDLE_MILLIS,
+            containsIcons = true,
+            containsText = true,
+            containsControls = true,
+        )
+        ?: CHROME_IDLE_MILLIS
+
+    LaunchedEffect(mayHide, visible.value, idleMillis) {
         if (mayHide && visible.value) {
-            delay(CHROME_IDLE_MILLIS)
+            delay(idleMillis)
             visible.value = false
         }
     }
@@ -891,5 +904,11 @@ private fun previewCall(
  *
  * Long enough to press something you came for, short enough that the picture is not
  * covered for the rest of the call. A tap anywhere brings them back.
+ *
+ * Six seconds, up from four. Four was measured as tight in practice: the chrome was gone
+ * by the time a second control had been found, and every test that drove the screen by
+ * coordinate hit a hidden control and merely revealed it. This is the floor — the
+ * platform's accessibility timeout can only lengthen it (see `rememberCallChromeVisibility`)
+ * and a screen-reader user never has it hidden at all.
  */
-private const val CHROME_IDLE_MILLIS = 4_000L
+private const val CHROME_IDLE_MILLIS = 6_000L
