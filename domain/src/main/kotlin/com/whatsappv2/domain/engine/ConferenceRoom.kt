@@ -46,6 +46,23 @@ data class ConferenceRoom(val extension: String) {
     fun uriOn(domain: String): SipUri? =
         if (isConfigured) DialledTarget.resolve(extension, domain) else null
 
+    /**
+     * True when [remote] is this room, on [domain] — the account's domain at the time —
+     * or on its own host when no domain is known.
+     *
+     * User and host, not the whole URI: the room's own URI carries no transport or `ob`
+     * parameter and a bridge's Contact does, so comparing renderings would never match.
+     * A room with no user part is not an extension and matches nothing — otherwise two
+     * null user parts would compare equal and every call to a bare host would be a
+     * conference.
+     */
+    fun matches(remote: SipUri, domain: String? = null): Boolean {
+        val room = uriOn(domain?.takeIf { it.isNotBlank() } ?: remote.host.rendered) ?: return false
+        val extension = room.user ?: return false
+        return extension.equals(remote.user, ignoreCase = true) &&
+            room.host.rendered.equals(remote.host.rendered, ignoreCase = true)
+    }
+
     companion object {
         /** The reference deployment's video bridge. See the class KDoc for the evidence. */
         val DEFAULT = ConferenceRoom("3000")

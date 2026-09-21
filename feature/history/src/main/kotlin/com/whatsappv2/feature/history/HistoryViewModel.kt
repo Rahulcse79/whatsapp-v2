@@ -11,6 +11,7 @@ import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.domain.call.userMessage
 import com.whatsappv2.domain.engine.CameraAvailability
+import com.whatsappv2.domain.engine.ConferenceRoom
 import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.model.CallLogId
 import com.whatsappv2.domain.model.MediaProfile
@@ -92,6 +93,11 @@ class HistoryViewModel @Inject constructor(
      * user is on the call screen long before the third member picks up.
      */
     private val joins: ConferenceJoinCoordinator,
+    /**
+     * The conference bridge's address, so the row a bridged conference wrote for its own
+     * call to the room can be told from the rows it wrote for the people in it (ADR-003).
+     */
+    private val room: ConferenceRoom,
 ) : ViewModel() {
 
     private val state = MutableStateFlow(HistoryUiState())
@@ -240,38 +246,67 @@ class HistoryViewModel @Inject constructor(
      */
     fun onCallBack(entry: CallLogEntry) = callBack(entry, MediaProfile.AUDIO)
 
-    /** Calls the row back: one person, or the whole conference as one (ADR-009). */
+    /**
+     * Calls the row back as a voice call: one person, or the whole conference as one,
+     * mixed on this device as it answers (ADR-009).
+     *
+     * The swipe's direction is the media, whatever the original was. A right swipe on a
+     * conference that was video is a voice conference now — that is what the gesture
+     * says, and it is the cheaper one, needing no bridge.
+     */
     fun onCallBack(row: HistoryRow.Call) {
-        if (row.isConferenceGroup) callConferenceBack(row) else callBack(row.entry, MediaProfile.AUDIO)
+        if (row.isConferenceGroup) callConferenceBack(row, video = false) else callBack(row.entry, MediaProfile.AUDIO)
     }
 
     /**
-     * Video, for one person. A conference is audio on this device whatever was asked —
-     * the mix drops video the moment a leg joins — so calling one back with video would
-     * be a promise the room cannot keep, and it goes out as the audio conference it was.
+     * Calls the row back with video: one person, or the whole conference in the bridge
+     * (ADR-003).
+     *
+     * It used to go out as audio for a conference "whatever was asked", from the days
+     * when a conference could only be mixed here. A video conference is a real thing now
+     * — the legs are dialled with video and REFERred into the room as they answer, which
+     * is the coordinator's job — so the left swipe means the same on a conference as on a
+     * call. Downgraded to voice, and said so, when the camera cannot be used, exactly as
+     * a single video redial is (Task 75).
      */
     fun onVideoCallBack(row: HistoryRow.Call) {
-        if (row.isConferenceGroup) callConferenceBack(row) else onVideoCallBack(row.entry)
+        if (!row.isConferenceGroup) return onVideoCallBack(row.entry)
+        val usable = camera.isCameraUsable()
+        callConferenceBack(row, video = usable, downgraded = !usable)
     }
 
     /**
      * Every member dialled, each asked to join as they answer.
      *
      * One INVITE per distinct address — a member who was dialled twice in the original
-     * (the roster makes that visible now) is dialled once. The screen is moved to the
-     * first leg that goes out; the coordinator dials the rest one by one from there, for
-     * the reason its `callBack` gives, and a member that cannot be dialled is skipped,
-     * because a conference minus one absent person is still the conference.
+     * (the roster makes that visible now) is dialled once, and the room itself is never
+     * dialled as if it were a person ([HistoryRow.Call.members]). The screen is moved to
+     * the first leg that goes out; the coordinator dials the rest one by one from there,
+     * for the reason its `callBack` gives, and a member that cannot be dialled is
+     * skipped, because a conference minus one absent person is still the conference.
+     *
+     * @param video true to dial with video and assemble the conference in the bridge;
+     *   false for a voice conference mixed here.
+     * @param downgraded true when video was asked for and cannot be given, so the user is told.
      */
-    private fun callConferenceBack(row: HistoryRow.Call) {
+    private fun callConferenceBack(row: HistoryRow.Call, video: Boolean, downgraded: Boolean = false) {
+        val media = if (video) MediaProfile.AUDIO_VIDEO else MediaProfile.AUDIO
         viewModelScope.launch {
-            val members = row.legs.map { it.entry }.distinctBy { it.remote }.map { entry ->
-                suspend { placeCall(input = entry.redialTarget(), accountOverride = entry.accountId).getOrNull() }
+            val members = row.members.map { it.entry }.distinctBy { it.remote }.map { entry ->
+                suspend {
+                    placeCall(
+                        input = entry.redialTarget(),
+                        accountOverride = entry.accountId,
+                        media = media,
+                    ).getOrNull()
+                }
             }
+            val first = joins.callBack(members, video)
             eventChannel.send(
-                joins.callBack(members)?.let { HistoryEvent.CallPlaced(it) }
+                first?.let { HistoryEvent.CallPlaced(it) }
                     ?: HistoryEvent.Refused("Nobody in the conference could be dialled"),
             )
+            if (first != null && downgraded) eventChannel.send(HistoryEvent.Notice(NO_CAMERA))
         }
     }
 
@@ -323,7 +358,7 @@ class HistoryViewModel @Inject constructor(
         Pager(
             config = PagingConfig(pageSize = PAGE_SIZE, enablePlaceholders = false),
             pagingSourceFactory = {
-                CallLogPagingSource(repository, query, titles, PAGE_SIZE).also { liveSource = it }
+                CallLogPagingSource(repository, query, titles, PAGE_SIZE, ::isRoom).also { liveSource = it }
             },
         ).flow.map { page ->
             // The source already emits rows with their names resolved, so all that is left
@@ -334,6 +369,17 @@ class HistoryViewModel @Inject constructor(
                 dayHeaderBetween(before, after, zone)
             }
         }
+
+    /**
+     * Whether [entry] was this device's own call to the conference bridge.
+     *
+     * Marked as a conference by the engine *and* addressed to the room on the domain the
+     * account had at the time — the same two facts the engine used to mark it. A call to
+     * the room's extension on some other server is a call to whatever that number is
+     * there.
+     */
+    private fun isRoom(entry: CallLogEntry): Boolean =
+        entry.isConference && room.matches(entry.remote, entry.accountDomain)
 
     private companion object {
         /**

@@ -3,6 +3,7 @@ package com.whatsappv2.feature.calls
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.contacts.Contact
 import com.whatsappv2.domain.engine.CallSnapshot
+import com.whatsappv2.domain.engine.ConferenceParticipant
 import com.whatsappv2.domain.engine.ConferenceSession
 import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.model.CallId
@@ -146,39 +147,105 @@ enum class ParticipantStatus(val label: String) {
  * that as an empty list would tell the user they are alone in a room they can hear other
  * people in, and inventing entries to fill it would be worse — §13 forbids exactly that,
  * and Task 60's third done-when asks for the screen to say so instead.
+ *
+ * ## What this device did is not an invention
+ *
+ * Between "the bridge told us" and "nothing" there is a third state, and it is the common
+ * one on this deployment: the bridge publishes no roster, but this device built the
+ * conference itself, by merging two calls into the room, or was put into the room by
+ * somebody it was already talking to. Those members are listed too — [fromMerge] says
+ * that this is what the list is — because a user who has just merged 1004 and 1005 and
+ * is told only that the bridge publishes no list has been told less than the app knows.
+ * The screen words it as what it is: the members as merged from this phone, not a count
+ * of who is in the room. [count] stays null for that case, so nothing on screen claims a
+ * number the bridge did not give.
  */
 data class ConferenceUiState(
     val participants: List<ConferenceParticipantRow>,
     val rosterAvailable: Boolean,
+    /** True when [participants] is what this device merged into the room, not what the bridge reports. */
+    val fromMerge: Boolean = false,
 ) {
     /** How many people are in the conference, or null when the bridge does not say. */
     val count: Int? get() = participants.size.takeIf { rosterAvailable }
+
+    /** True when there is a list worth dropping down, from either source. */
+    val hasList: Boolean get() = rosterAvailable || participants.isNotEmpty()
 }
 
-/** Builds the screen's conference model from the engine's (Task 60). */
-internal fun ConferenceSession.toUiState(unknownLabel: String): ConferenceUiState = ConferenceUiState(
-    participants = participants.map { participant ->
-        ConferenceParticipantRow(
-            id = participant.id.value,
-            // Name, then the extension, then the whole address, then a placeholder: a
-            // bridge may know somebody is there without knowing anything about them, and
-            // an empty row is still a person.
-            //
-            // The extension before the address, because `sip:1005@192.168.2.194` is not
-            // what a participant list should read like — it is the same person as "1005"
-            // spelled for a router. The full address stays as the fallback below it for
-            // the addresses that have no user part at all, where it is all there is.
-            label = participant.displayName?.takeIf { it.isNotBlank() }
-                ?: participant.uri?.user?.takeIf { it.isNotBlank() }
-                ?: participant.uri?.render()
-                ?: unknownLabel,
-            isMuted = participant.isMuted,
-            isSpeaking = participant.isSpeaking,
-            isSelf = participant.isSelf,
-        )
-    },
-    rosterAvailable = rosterAvailable,
-)
+/**
+ * Builds the screen's conference model from the engine's (Task 60).
+ *
+ * The bridge's roster when it published one; otherwise the members this device merged
+ * into the room, with the local user first — see [ConferenceUiState.fromMerge] — and
+ * otherwise nothing, which the screen says in words.
+ *
+ * @param self this device's own identity, for its row at the top of a merged list.
+ * @param isMuted this device's microphone, for that same row.
+ * @param contacts the address book's answer for each member's address, where it had one.
+ */
+internal fun ConferenceSession.toUiState(
+    unknownLabel: String,
+    self: LocalParticipant? = null,
+    isMuted: Boolean = false,
+    contacts: Map<SipUri, Contact> = emptyMap(),
+): ConferenceUiState {
+    if (rosterAvailable) {
+        return ConferenceUiState(participants = participants.map { it.toRow(unknownLabel) }, rosterAvailable = true)
+    }
+    if (invited.isEmpty()) return ConferenceUiState(participants = emptyList(), rosterAvailable = false)
+
+    return ConferenceUiState(
+        participants = buildList {
+            self?.let {
+                add(
+                    ConferenceParticipantRow(
+                        id = SELF_ROW_ID,
+                        label = it.label,
+                        isMuted = isMuted,
+                        isSpeaking = false,
+                        isSelf = true,
+                        detail = it.extension?.takeIf { extension -> extension != it.label },
+                    ),
+                )
+            }
+            invited.forEach { member -> add(member.toRow(unknownLabel, contacts[member.uri])) }
+        },
+        rosterAvailable = false,
+        fromMerge = true,
+    )
+}
+
+/**
+ * One participant as a row.
+ *
+ * Name, then the extension, then the whole address, then a placeholder: a bridge may know
+ * somebody is there without knowing anything about them, and an empty row is still a
+ * person. The address book's name comes first when it has one, as it does for the call's
+ * own title, so a person is called the same thing in the list as over it.
+ *
+ * The extension before the address, because `sip:1005@192.168.2.194` is not what a
+ * participant list should read like — it is the same person as "1005" spelled for a
+ * router. The full address stays as the fallback below it for the addresses that have no
+ * user part at all, where it is all there is.
+ */
+private fun ConferenceParticipant.toRow(unknownLabel: String, contact: Contact? = null): ConferenceParticipantRow {
+    val address = uri?.user?.takeIf { it.isNotBlank() } ?: uri?.render()
+    val label = contact?.displayName?.takeIf { it.isNotBlank() }
+        ?: displayName?.takeIf { it.isNotBlank() }
+        ?: address
+        ?: unknownLabel
+    return ConferenceParticipantRow(
+        id = id.value,
+        label = label,
+        isMuted = isMuted,
+        isSpeaking = isSpeaking,
+        isSelf = isSelf,
+        // The address only when the label is something else — a name.
+        detail = address?.takeIf { it != label },
+        photoUri = contact?.photoUri,
+    )
+}
 
 /** Whether this call is being recorded, and therefore whether the indicator is on (Task 58). */
 data class RecordingUiState(

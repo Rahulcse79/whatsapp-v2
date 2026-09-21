@@ -22,6 +22,7 @@ import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.HoldParty
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.CameraAvailability
+import com.whatsappv2.domain.engine.ConferenceRoom
 import com.whatsappv2.domain.engine.PlatformDecision
 import com.whatsappv2.domain.engine.PushToken
 import com.whatsappv2.domain.engine.SipError
@@ -142,7 +143,7 @@ open class PjsipSipEngineFixture {
      */
     private fun engineScope(scope: TestScope) = CoroutineScope(scope.coroutineContext + Job())
 
-    internal fun engine(scope: TestScope) =
+    internal fun engine(scope: TestScope, room: ConferenceRoom = ConferenceRoom.NONE) =
         // The same fake four times: one object implements every half of the seam, exactly
         // as the real gateway does, because one `Core` owns registration, calls, video and
         // the conference bridge alike.
@@ -159,11 +160,17 @@ open class PjsipSipEngineFixture {
             clock,
             platform,
             camera,
+            conferenceRoom = room,
         ).also { repository.given(account) }
 
-    /** Registered and ready to place a call. */
-    internal suspend fun TestScope.registeredEngine(): PjsipSipEngine {
-        val engine = engine(this)
+    /**
+     * Registered and ready to place a call.
+     *
+     * @param room the deployment's conference bridge, when the test is about a leg landing
+     *   on it. None by default, so an ordinary call is never mistaken for a conference.
+     */
+    internal suspend fun TestScope.registeredEngine(room: ConferenceRoom = ConferenceRoom.NONE): PjsipSipEngine {
+        val engine = engine(this, room)
         engine.start()
         engine.register(account)
         // The collector subscribes on its first turn, and the gateway replays nothing —
@@ -177,8 +184,8 @@ open class PjsipSipEngineFixture {
     }
 
     /** A call that has been placed and answered, ready for hold, mute or a DTMF digit. */
-    internal suspend fun TestScope.connectedCall(): PjsipSipEngine {
-        val engine = registeredEngine()
+    internal suspend fun TestScope.connectedCall(room: ConferenceRoom = ConferenceRoom.NONE): PjsipSipEngine {
+        val engine = registeredEngine(room)
         val callId = engine.placeCall(account.id, TARGET, MediaProfile.AUDIO).getOrNull()!!
         runCurrent()
         gateway.emitCall(callId.value, StackCallState.CONNECTED)

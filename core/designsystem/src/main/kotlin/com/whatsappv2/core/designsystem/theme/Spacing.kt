@@ -142,6 +142,25 @@ data class Sizing(
      * camera pointed at something unlit looks like a hole in the picture.
      */
     val videoPreviewBorder: Dp = 2.dp,
+
+    /**
+     * Where a row divider starts in a list whose rows lead with a small avatar: past the
+     * avatar and its gutters, the way Material lists inset theirs. [avatarSmall] plus a
+     * medium gutter each side.
+     */
+    val listDividerInset: Dp = 64.dp,
+
+    /**
+     * The tallest a scrolling list inside a dialog may be — about six rows with their
+     * dividers. More scrolls, so the dialog's buttons stay reachable on a handset.
+     */
+    val dialogListMaxHeight: Dp = 320.dp,
+
+    /**
+     * The ring of surface colour that separates a small badge from the circle it sits on,
+     * so a status dot or a media mark on an avatar reads as two shapes rather than one.
+     */
+    val badgeRing: Dp = 1.5.dp,
 )
 
 val LocalSpacing = staticCompositionLocalOf { Spacing() }

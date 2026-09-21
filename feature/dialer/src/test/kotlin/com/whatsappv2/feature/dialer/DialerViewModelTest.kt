@@ -7,6 +7,7 @@ import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.contacts.Contact
 import com.whatsappv2.domain.contacts.SipContact
 import com.whatsappv2.domain.engine.CameraAvailability
+import com.whatsappv2.domain.engine.ConferenceRoom
 import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
@@ -21,6 +22,7 @@ import com.whatsappv2.domain.testing.FakeContactRepository
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
 import com.whatsappv2.domain.usecase.ConferenceJoinCoordinator
+import com.whatsappv2.domain.usecase.MergeCallsUseCase
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -85,7 +87,11 @@ class DialerViewModelTest {
         repository = repository,
         savedState = savedState,
         registrar = engine,
-        joins = ConferenceJoinCoordinator(engine, engine),
+        joins = ConferenceJoinCoordinator(
+            engine,
+            engine,
+            MergeCallsUseCase(engine, engine, repository, ConferenceRoom.DEFAULT),
+        ),
     )
 
     @Test

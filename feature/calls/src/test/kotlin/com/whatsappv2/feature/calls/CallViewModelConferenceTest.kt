@@ -140,6 +140,46 @@ class CallViewModelConferenceTest : CallViewModelFixture() {
     }
 
     @Test
+    fun `a conference merged into the bridge lists the people merged, and keeps them after their legs end`() = runTest {
+        // The bridge publishes no roster, and the screen used to say only that. The device
+        // that pressed Merge knows exactly whom it sent into the room, so the roster names
+        // them, the user first — and goes on naming them after the merged legs have been
+        // transferred away and ended, which is a second after Merge. It is a list of what
+        // this device merged, said so, and never a count the bridge did not give.
+        engine.givenRegistered(ACCOUNT)
+        accounts.given(ACCOUNT)
+        val first = engine.placeCall(ACCOUNT.id, REMOTE, MediaProfile.AUDIO_VIDEO).getOrNull()!!
+        engine.simulateRemoteAnswer(first)
+        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO_VIDEO).getOrNull()!!
+        engine.simulateRemoteAnswer(second)
+        val viewModel = viewModel().also { it.watch(first) }
+        runCurrent()
+
+        viewModel.uiState.test {
+            awaitActive { it.call.phase == CallPhase.CONNECTED }
+            viewModel.merge()
+            runCurrent()
+
+            val merged = awaitActive { it.conference != null }
+            val roster = merged.conference!!
+            assertTrue(roster.fromMerge, "the list is what this device merged, and says so")
+            assertFalse(roster.rosterAvailable, "the bridge still published nothing")
+            assertNull(roster.count, "no count the bridge did not give")
+            assertEquals(listOf("alice", "bob", "1003"), roster.participants.map { it.label })
+            assertEquals(listOf(true, false, false), roster.participants.map { it.isSelf })
+
+            // The merged legs end as their transfers complete; the list does not change.
+            engine.simulateTransferSucceeded(first)
+            engine.simulateTransferSucceeded(second)
+            engine.simulateRemoteAnswer(merged.call.callId)
+            runCurrent()
+            val settled = awaitActive { it.call.phase == CallPhase.CONNECTED && it.otherCalls.isEmpty() }
+            assertEquals(listOf("alice", "bob", "1003"), settled.conference!!.participants.map { it.label })
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun `a merged conference offers no held banner at all`() = runTest {
         // On the TC15 the bridge had both links open and the button read "2 calls merged",
         // over a banner saying the other member was on hold. The banner is tappable, and

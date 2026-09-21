@@ -45,7 +45,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import com.whatsappv2.core.designsystem.component.Avatar
 import com.whatsappv2.core.designsystem.component.StatusLabel
 import com.whatsappv2.core.designsystem.component.StatusTone
@@ -75,6 +74,15 @@ import com.whatsappv2.core.designsystem.theme.AppTheme
  *   it is different from the line above.
  * - **A roster with other people**: the count, and the list on request.
  *
+ * And a fourth, since 2026-09-21, which is the one this deployment actually produces: **no
+ * roster, but the members this device merged into the room**. Named, not counted — "You,
+ * 1004 and 1005" — because the names are what the device knows and the count is what it
+ * does not; a member who accepted the transfer and never reached the room is in the names
+ * and not in the room. The dropped-down list says where the names came from. See
+ * [ConferenceUiState.fromMerge]. The list is also *stable*: it comes from the merge that
+ * built the conference, not from the legs, which end the moment their transfers complete
+ * — so the people the user merged do not vanish from the screen a second after Merge.
+ *
  * ## Whose microphone the icon reports
  *
  * On the user's own row it is this device's microphone, which the user can fix with the
@@ -98,7 +106,7 @@ internal fun ConferenceRoster(
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     val palette = if (composedVideo) RosterPalette.overVideo() else RosterPalette.plain()
-    val open = expanded && state.rosterAvailable
+    val open = expanded && state.hasList
 
     Column(
         modifier = modifier
@@ -111,7 +119,7 @@ internal fun ConferenceRoster(
             state = state,
             expanded = open,
             palette = palette,
-            onToggle = { expanded = !expanded }.takeIf { state.rosterAvailable },
+            onToggle = { expanded = !expanded }.takeIf { state.hasList },
         )
 
         // Weighted so the list is what yields when the screen is short: the header always
@@ -232,9 +240,21 @@ private fun ParticipantList(
             if (index < state.participants.lastIndex) {
                 HorizontalDivider(
                     color = palette.divider,
-                    modifier = Modifier.padding(start = ROW_DIVIDER_INSET),
+                    modifier = Modifier.padding(start = AppTheme.sizing.listDividerInset),
                 )
             }
+        }
+
+        if (state.fromMerge) {
+            Text(
+                text = "Members as merged from this phone. The bridge does not publish who is in the room.",
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.secondary,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = AppTheme.spacing.medium, vertical = AppTheme.spacing.small)
+                    .testTag(TAG_MERGED_NOTE),
+            )
         }
 
         if (composedVideo) {
@@ -348,12 +368,21 @@ private fun Tag(text: String, palette: RosterPalette) {
  * A count only when there is a roster to count. "This bridge does not publish a
  * participant list" is the honest line for a server that does not say — better than
  * "0 participants", which is a claim, and better than silence, which hides that this is a
- * conference.
+ * conference. The members this device merged are named rather than counted, for the
+ * reason the class comment gives.
  */
 private fun ConferenceUiState.summary(): String = when {
+    fromMerge -> participants.map { if (it.isSelf) "You" else it.label }.spokenList()
     !rosterAvailable -> "This bridge does not publish a participant list"
     participants.size <= 1 -> "Just you so far"
     else -> "${participants.size} in this call"
+}
+
+/** "You", "You and 1004", "You, 1004 and 1005". */
+private fun List<String>.spokenList(): String = when (size) {
+    0 -> ""
+    1 -> single()
+    else -> dropLast(1).joinToString() + " and " + last()
 }
 
 /** The dot beside a member's state: held is deliberately off; the rest are on their way. */
@@ -418,14 +447,12 @@ private const val SCRIM_BADGE = 0.2f
 /** The chevron points down when closed and up when open. */
 private const val CHEVRON_OPEN = 180f
 
-/** Row dividers start after the avatar, the way Material lists inset theirs. */
-private val ROW_DIVIDER_INSET = 64.dp
-
 internal const val TAG_ROSTER = "conference-roster"
 internal const val TAG_ROSTER_TOGGLE = "conference-roster-toggle"
 internal const val TAG_ROSTER_SUMMARY = "conference-roster-summary"
 internal const val TAG_ROSTER_LIST = "conference-roster-list"
 internal const val TAG_MIXED_STREAM_NOTE = "conference-mixed-stream-note"
+internal const val TAG_MERGED_NOTE = "conference-merged-note"
 
 /** The test tag of one member's row, by the row's id. */
 internal fun participantRowTag(id: String): String = "conference-participant-$id"

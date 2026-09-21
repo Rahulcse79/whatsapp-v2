@@ -304,6 +304,34 @@ class SelfPreviewTest {
     }
 
     @Test
+    fun `a tap outside a maximised preview minimises it and leaves the controls alone`() {
+        // Asked for on 2026-09-21: the maximised self-view is nine tenths of the screen and
+        // sits over somebody's tile; a tap on the rest of the screen should put it away.
+        // One gesture, one effect — the controls stay exactly as they were, and the next
+        // tap is theirs again.
+        renderCallScreen()
+        compose.onNodeWithTag(TAG_PREVIEW_TOGGLE).performClick()
+        compose.waitForIdle()
+        val maximised = sizeOf(TAG_PREVIEW)
+        compose.onNodeWithTag(TAG_PREVIEW_GRIP).assertIsDisplayed()
+        compose.onNodeWithTag(TAG_HANG_UP).assertIsDisplayed()
+
+        compose.onNodeWithTag(TAG_PICTURE_TAP).performTouchInput { click(Offset(width * 0.5f, height * 0.1f)) }
+        compose.waitForIdle()
+
+        val minimised = sizeOf(TAG_PREVIEW)
+        assertTrue(minimised.width < maximised.width, "the tap outside did not minimise the preview: $minimised")
+        compose.onNodeWithTag(TAG_PREVIEW_GRIP).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_PREVIEW_PICTURE).assertIsDisplayed()
+        compose.onNodeWithTag(TAG_HANG_UP).assertIsDisplayed()
+
+        // Minimised, the same tap is the chrome's again.
+        compose.onNodeWithTag(TAG_PICTURE_TAP).performTouchInput { click(Offset(width * 0.5f, height * 0.1f)) }
+        compose.waitForIdle()
+        compose.onNodeWithTag(TAG_HANG_UP).assertDoesNotExist()
+    }
+
+    @Test
     fun `the gesture surface covers the whole preview, camera included`() {
         // The defect this pins: the gestures used to live on the box *behind* the camera,
         // and Compose's AndroidView interop takes the pointer for the camera view first.

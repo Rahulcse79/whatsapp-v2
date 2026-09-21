@@ -2,6 +2,7 @@ package com.whatsappv2.feature.history
 
 import androidx.paging.PagingSource
 import androidx.paging.PagingState
+import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.repository.CallLogQuery
 import com.whatsappv2.domain.repository.CallLogRepository
 import com.whatsappv2.domain.usecase.CallLogTitles
@@ -62,6 +63,11 @@ class CallLogPagingSource(
     private val titles: CallLogTitles,
     /** The `PagingConfig.pageSize` this source is paged with; every key is a multiple of it. */
     private val pageSize: Int,
+    /**
+     * Whether a row was this device's own call to the conference bridge (ADR-003), so the
+     * conference it belongs to is titled by its people and not by the room's extension.
+     */
+    private val isRoom: (CallLogEntry) -> Boolean = { false },
 ) : PagingSource<Int, HistoryRow.Call>() {
 
     init {
@@ -75,7 +81,7 @@ class CallLogPagingSource(
         return runCatching {
             val legs = repository.search(query, offset, params.loadSize)
             loaded = legs.size
-            groupConferences(legs.map { HistoryRow.Call(it, titles(it)) })
+            groupConferences(legs.map { HistoryRow.Call(it, titles(it)) }, isRoom)
         }
             .fold(
                 onSuccess = { entries ->

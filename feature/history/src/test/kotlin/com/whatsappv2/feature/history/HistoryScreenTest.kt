@@ -120,19 +120,58 @@ class HistoryScreenTest {
     fun `a conference is marked as one, in the glyph and in words`() {
         // A conference this device mixed writes one row per leg, so a merged three-way
         // arrived in history as two unrelated calls to two people with nothing joining
-        // them up (TC15, 2026-09-15). The group glyph replaces the voice/video one —
-        // "was this the conference" is the question the list could not answer at all,
-        // while voice-versus-video is still in the label and in the swipe actions.
+        // them up (TC15, 2026-09-15). The group glyph takes the circle — "was this the
+        // conference" is the question the list could not answer at all — and the media
+        // is worn as a second, smaller badge on it, because whether the conference was a
+        // video one could not be told from the list either (2026-09-21).
         setContent()
 
         compose.onNodeWithTag(mediaTag(conference), useUnmergedTree = true)
             .assertIsDisplayed()
             .assertContentDescriptionEquals("Video conference")
+        compose.onNodeWithTag(conferenceMediaTag(conference), useUnmergedTree = true).assertIsDisplayed()
         // And in text, for anyone who does not read a group icon as a word.
         compose.onNode(
             hasText("Conference", substring = true) and hasAnyAncestor(hasTestTag(entryTag(conference))),
             useUnmergedTree = true,
         ).assertExists()
+    }
+
+    @Test
+    fun `a conference row wears both marks, and a plain call only one`() {
+        // Both glyphs on the conference, so a reader can tell "conference" and "video"
+        // apart at a glance; the media badge is absent from an ordinary call, whose one
+        // glyph already is the media.
+        setContent()
+
+        compose.onNodeWithTag(conferenceMediaTag(conference), useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithTag(conferenceMediaTag(video), useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithTag(conferenceMediaTag(voice), useUnmergedTree = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun `a conference held in the bridge is named by its people and read as video`() {
+        // Three rows under one key: two people and this device's own call to the room.
+        // The row is "1004, 1005" — the room is where it happened — and it is a video
+        // conference because the leg to the room carried video.
+        val legs = listOf("1004", "1005", "3000").mapIndexed { index, user ->
+            entry(id = 20L + index, media = MediaProfile.AUDIO_VIDEO, conference = true).copy(
+                remote = SipUri.parse("sip:$user@sip.example.com").getOrNull()!!,
+                conferenceKey = "k2",
+                startedAtEpochMillis = STARTED_AT + index,
+            )
+        }
+        val rows = legs.reversed().map { HistoryRow.Call(it, it.remote.user!!) }
+        val row = groupConferences(rows) { it.remote.user == "3000" }.single()
+        setContent(rows = listOf(row))
+
+        compose.onNode(hasText("1004, 1005") and hasAnyAncestor(hasTestTag(entryTag(row.entry)))).assertIsDisplayed()
+        compose.onNode(
+            hasText("2 people", substring = true) and hasAnyAncestor(hasTestTag(entryTag(row.entry))),
+            useUnmergedTree = true,
+        ).assertExists()
+        compose.onNodeWithTag(mediaTag(row.entry), useUnmergedTree = true)
+            .assertContentDescriptionEquals("Video conference")
     }
 
     @Test
@@ -363,6 +402,30 @@ class HistoryScreenTest {
 
         compose.onNodeWithTag(TAG_DETAIL_DELETE).performClick()
         assertEquals(row, deleted, "deleting the conference deletes the conference, not one leg")
+    }
+
+    @Test
+    fun `the conference detail offers the conference back as voice or as video`() {
+        val legs = listOf("1004", "1005").mapIndexed { index, user ->
+            entry(id = 30L + index, media = MediaProfile.AUDIO_VIDEO, conference = true).copy(
+                remote = SipUri.parse("sip:$user@sip.example.com").getOrNull()!!,
+                conferenceKey = "k3",
+                startedAtEpochMillis = STARTED_AT + index,
+            )
+        }
+        val row = groupConferences(legs.reversed().map { HistoryRow.Call(it, it.remote.user!!) }).single()
+        var voice: HistoryRow.Call? = null
+        var video: HistoryRow.Call? = null
+        setContent(
+            state = HistoryUiState(openEntry = row),
+            rows = listOf(row),
+            actions = HistoryActions(onCallBack = { voice = it }, onVideoCallBack = { video = it }),
+        )
+
+        compose.onNodeWithTag(TAG_DETAIL_CALL_AGAIN).performClick()
+        assertEquals(row, voice)
+        compose.onNodeWithTag(TAG_DETAIL_VIDEO_CALL_AGAIN).performClick()
+        assertEquals(row, video)
     }
 
     private companion object {

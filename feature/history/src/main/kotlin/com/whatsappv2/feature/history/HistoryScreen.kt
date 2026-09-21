@@ -755,7 +755,7 @@ private fun CallRowContent(row: HistoryRow.Call, actions: HistoryActions, zone: 
         // row, past the text people scan. Rahul asked for the two to swap (2026-09-14).
         // Both kinds get a glyph: video is not the exception being flagged, it is one of
         // two things a call can be. The direction stays beside the time it belongs to.
-        MediaBadge(entry)
+        MediaBadge(row)
 
         CallRowText(row = row, zone = zone, modifier = Modifier.weight(1f))
     }
@@ -768,41 +768,71 @@ private fun CallRowContent(row: HistoryRow.Call, actions: HistoryActions, zone: 
  * at half the diameter as `Avatar` draws its own placeholder — so the text column starts
  * where it always did and a row of calls keeps its rhythm.
  *
- * ## A conference takes the group glyph, and it outranks voice/video
+ * ## A conference takes the group glyph, and wears the media as a second, smaller one
  *
- * There is one mark and three things it could say, so they are ranked by what somebody
- * scanning the list is actually looking for. "Was this the conference?" is the question
- * the list could not answer at all until now: a conference this device mixed writes one
- * row per leg (see [CallLogEntry.isConference]), so a three-way call appeared as two
- * unrelated calls to two people, and nothing on the screen connected them. Voice versus
- * video, by contrast, is also in the subtitle's reach and in the swipe actions.
+ * "Was this the conference?" is the question the list could not answer at all until the
+ * group glyph: a conference this device mixed writes one row per leg (see
+ * [CallLogEntry.isConference]), so a three-way call appeared as two unrelated calls to two
+ * people, and nothing on the screen connected them. So the conference takes the circle.
  *
- * The media is not lost — it moves into the label, so "Video conference" and "Voice
- * conference" are still distinguishable to a screen reader, which is the reader that
- * cannot see the glyph in the first place.
+ * It used to take it *instead of* the media, on the reasoning that voice-versus-video was
+ * also in the subtitle's reach. It was not, in practice: the subtitle says "Conference"
+ * and the time, and whether the conference was a video one — which is what a left swipe
+ * on the row would give back — could not be told from the list at all (asked for on
+ * 2026-09-21). Both marks are shown now: the group glyph in the circle, and the camera or
+ * handset as a small badge on its lower corner, the way a status dot sits on an avatar.
+ * A screen reader hears the two as one phrase, "Video conference".
  */
 @Composable
-private fun MediaBadge(entry: CallLogEntry) {
-    val media = if (entry.media.hasVideo) "Video" else "Voice"
-    Box(
-        modifier = Modifier
-            .size(AppTheme.sizing.avatarSmall)
-            .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.secondaryContainer),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = when {
-                entry.isConference -> Icons.Filled.Groups
-                entry.media.hasVideo -> Icons.Filled.Videocam
-                else -> Icons.Filled.Call
-            },
-            contentDescription = if (entry.isConference) "$media conference" else "$media call",
-            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+private fun MediaBadge(row: HistoryRow.Call) {
+    val entry = row.entry
+    val media = if (row.hasVideo) "Video" else "Voice"
+    val mediaIcon = if (row.hasVideo) Icons.Filled.Videocam else Icons.Filled.Call
+    Box(modifier = Modifier.size(AppTheme.sizing.avatarSmall)) {
+        Box(
             modifier = Modifier
-                .size(AppTheme.sizing.avatarSmall / 2)
-                .testTag(mediaTag(entry)),
-        )
+                .matchParentSize()
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.secondaryContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = if (row.isConference) Icons.Filled.Groups else mediaIcon,
+                contentDescription = if (row.isConference) "$media conference" else "$media call",
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier
+                    .size(AppTheme.sizing.avatarSmall / 2)
+                    .testTag(mediaTag(entry)),
+            )
+        }
+        if (row.isConference) {
+            // On the circle's edge rather than inside it, so the group glyph keeps its
+            // size and the second mark reads as a badge on it. Outlined in the surface
+            // colour so the two do not merge into one shape at list size.
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .size(AppTheme.sizing.avatarSmall * CONFERENCE_MEDIA_BADGE_SHARE)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(AppTheme.sizing.badgeRing)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = mediaIcon,
+                    // Said once, above: the circle's description already names the media,
+                    // and a second announcement of the same word would be noise.
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(AppTheme.spacing.extraSmall)
+                        .testTag(conferenceMediaTag(entry)),
+                )
+            }
+        }
     }
 }
 
@@ -984,12 +1014,19 @@ private fun CallLogEntry.subtitle(zone: ZoneId): String {
     return if (isConference) "Conference · $stamp" else stamp
 }
 
-/** The row's line: the conference's own start and span when it is one, the call's otherwise. */
+/**
+ * The row's line: the conference's own start and span when it is one, the call's otherwise.
+ *
+ * The count is of people — the room this device dialled to hold a bridged conference is a
+ * leg, not a person — and is left out for a conference of which this device knows only
+ * one other member, where "1 people" would be both wrong and odd.
+ */
 private fun HistoryRow.Call.subtitle(zone: ZoneId): String {
     if (!isConferenceGroup) return entry.subtitle(zone)
     val at = Instant.ofEpochMilli(startedAtEpochMillis).atZone(zone).format(TIME_FORMAT)
     val stamp = if (wasAnswered) "$at · ${formatDuration(durationSeconds)}" else at
-    return "Conference · ${legs.size} people · $stamp"
+    val people = members.size
+    return if (people > 1) "Conference · $people people · $stamp" else "Conference · $stamp"
 }
 
 /** `m:ss`, or `h:mm:ss` past the hour. A 75-minute call is not 75:00. */
@@ -1005,6 +1042,9 @@ internal fun formatDuration(seconds: Long): String {
 }
 
 private fun Long.padded(): String = toString().padStart(2, '0')
+
+/** The media badge's diameter as a share of the group circle: big enough to read, small enough to be a badge. */
+private const val CONFERENCE_MEDIA_BADGE_SHARE = 0.55f
 
 private val DAY_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEEE d MMMM")
 private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
@@ -1042,6 +1082,9 @@ internal const val TAG_DIALER = "history-dialer"
 
 /** The audio/video glyph on one row, so a test can ask which kind the row says it was. */
 internal fun mediaTag(entry: CallLogEntry) = "history-media-${entry.id.value}"
+
+/** The small voice/video badge on a conference row's group glyph. */
+internal fun conferenceMediaTag(entry: CallLogEntry) = "history-conference-media-${entry.id.value}"
 
 internal fun filterTag(filter: CallLogFilter) = "history-filter-${filter.name.lowercase()}"
 internal fun dayHeadingTag(epochDay: Long) = "history-day-$epochDay"

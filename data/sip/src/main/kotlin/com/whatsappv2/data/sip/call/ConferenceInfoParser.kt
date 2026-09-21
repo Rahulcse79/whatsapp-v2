@@ -64,19 +64,7 @@ internal object ConferenceInfoParser {
      */
     fun parse(rawMessage: String, selfUri: String?, logger: Logger? = null): Roster? {
         val xml = bodyOf(rawMessage) ?: return null
-
-        val root = runCatching {
-            DocumentBuilderFactory.newInstance()
-                .apply { isNamespaceAware = false; isExpandEntityReferences = false }
-                .newDocumentBuilder()
-                .parse(ByteArrayInputStream(xml.toByteArray()))
-                .documentElement
-        }.getOrElse {
-            logger?.warn(TAG, "conference-info did not parse: ${it.message}")
-            return null
-        } ?: return null
-
-        if (root.tagName != "conference-info") return null
+        val root = documentElementOf(xml, logger)?.takeIf { it.tagName == "conference-info" } ?: return null
 
         // See the class note: a partial is a delta against state this does not hold.
         val state = root.getAttribute("state")
@@ -91,6 +79,21 @@ internal object ConferenceInfoParser {
                 .flatMap { it.childrenNamed("user") }
                 .mapNotNull { it.toParticipant(selfUri) },
         )
+    }
+
+    /** The document's root element, or null — logged — when [xml] will not parse. */
+    private fun documentElementOf(xml: String, logger: Logger?): Element? = runCatching {
+        DocumentBuilderFactory.newInstance()
+            .apply {
+                isNamespaceAware = false
+                isExpandEntityReferences = false
+            }
+            .newDocumentBuilder()
+            .parse(ByteArrayInputStream(xml.toByteArray()))
+            .documentElement
+    }.getOrElse {
+        logger?.warn(TAG, "conference-info did not parse: ${it.message}")
+        null
     }
 
     /**

@@ -7,6 +7,7 @@ import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.HoldParty
 import com.whatsappv2.domain.call.SecondCallResponse
 import com.whatsappv2.domain.engine.CameraAvailability
+import com.whatsappv2.domain.engine.ConferenceRoom
 import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
@@ -18,6 +19,7 @@ import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
+import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -65,7 +67,15 @@ class CallWaitingUseCaseTest {
     }
 
     private fun useCase(engine: FakeSipEngine, camera: CameraAvailability = NoCameraAvailable) =
-        CallWaitingUseCase(engine, camera, ConferenceJoinCoordinator(engine, engine))
+        CallWaitingUseCase(
+            engine,
+            camera,
+            ConferenceJoinCoordinator(
+                engine,
+                engine,
+                MergeCallsUseCase(engine, engine, FakeSipAccountRepository(), ConferenceRoom.DEFAULT),
+            ),
+        )
 
     /** A connected first call, and a second one ringing. */
     private suspend fun twoCalls(engine: FakeSipEngine): Pair<CallId, CallId> {

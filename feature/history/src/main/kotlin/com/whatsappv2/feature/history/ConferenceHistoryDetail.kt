@@ -22,7 +22,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import com.whatsappv2.core.designsystem.component.Avatar
 import com.whatsappv2.core.designsystem.theme.AppTheme
 import com.whatsappv2.domain.model.CallLogEntry
@@ -55,8 +54,14 @@ internal fun ConferenceHistoryDetail(
         onDismissRequest = actions.onDetailDismissed,
         modifier = modifier.testTag(TAG_DETAIL),
         icon = { Icon(imageVector = Icons.Filled.Groups, contentDescription = null) },
-        title = { Text("Conference call") },
+        // Video or voice, in the title, because the two "Call again" buttons below give
+        // the conference back in either form and the user should know which it was.
+        title = { Text(if (row.hasVideo) "Video conference" else "Voice conference") },
         text = {
+            // The people, not the legs: a conference held in the bridge has one leg more
+            // than it has members — this device's own call to the room — and the room is
+            // not somebody who attended.
+            val members = row.members
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
                     text = row.summary(zone),
@@ -64,7 +69,7 @@ internal fun ConferenceHistoryDetail(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    text = "${row.legs.size} members",
+                    text = if (members.size == 1) "1 member" else "${members.size} members",
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(top = AppTheme.spacing.medium, bottom = AppTheme.spacing.extraSmall),
@@ -73,13 +78,13 @@ internal fun ConferenceHistoryDetail(
                 // fit a handset otherwise, and the buttons must stay reachable.
                 Column(
                     modifier = Modifier
-                        .heightIn(max = MEMBER_LIST_MAX_HEIGHT)
+                        .heightIn(max = AppTheme.sizing.dialogListMaxHeight)
                         .verticalScroll(rememberScrollState())
                         .testTag(TAG_DETAIL_MEMBERS),
                 ) {
-                    row.legs.forEachIndexed { index, member ->
+                    members.forEachIndexed { index, member ->
                         MemberRow(member)
-                        if (index < row.legs.lastIndex) {
+                        if (index < members.lastIndex) {
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         }
                     }
@@ -87,8 +92,18 @@ internal fun ConferenceHistoryDetail(
             }
         },
         confirmButton = {
-            TextButton(onClick = { actions.onCallBack(row) }, modifier = Modifier.testTag(TAG_DETAIL_CALL_AGAIN)) {
-                Text("Call again")
+            // Both forms, as the row's two swipes offer them: voice is mixed here, video
+            // is built in the bridge (ADR-003, ADR-009).
+            Row {
+                TextButton(onClick = { actions.onCallBack(row) }, modifier = Modifier.testTag(TAG_DETAIL_CALL_AGAIN)) {
+                    Text("Voice call")
+                }
+                TextButton(
+                    onClick = { actions.onVideoCallBack(row) },
+                    modifier = Modifier.testTag(TAG_DETAIL_VIDEO_CALL_AGAIN),
+                ) {
+                    Text("Video call")
+                }
             }
         },
         dismissButton = {
@@ -160,11 +175,9 @@ private fun HistoryRow.Call.summary(zone: ZoneId): String {
 
 private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
-/** Six rows with their dividers; more scrolls. */
-private val MEMBER_LIST_MAX_HEIGHT = 320.dp
-
 internal const val TAG_DETAIL_MEMBERS = "history-detail-members"
 internal const val TAG_DETAIL_CALL_AGAIN = "history-detail-call-again"
+internal const val TAG_DETAIL_VIDEO_CALL_AGAIN = "history-detail-video-call-again"
 internal const val TAG_DETAIL_DELETE = "history-detail-delete"
 
 /** The test tag of one member's row in the conference detail. */

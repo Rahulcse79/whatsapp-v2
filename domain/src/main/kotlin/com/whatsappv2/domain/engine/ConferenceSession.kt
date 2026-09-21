@@ -77,6 +77,32 @@ data class ConferenceSession(
      * [participants] can be told apart from "nobody has joined yet".
      */
     val rosterAvailable: Boolean = false,
+
+    /**
+     * The members this device itself put in the room, or the member that put it there.
+     *
+     * ## Known from this device's own actions, not from the bridge
+     *
+     * A merge REFERs every leg into the room and this device follows them in — so the
+     * device that pressed Merge knows exactly whom it sent, and a device that arrived by
+     * REFER knows who sent it. That is real knowledge and it is worth showing: without it
+     * the screen said only "this bridge does not publish a participant list" over a
+     * conference the user had just assembled by hand, and the people they had merged
+     * vanished from the screen the moment their legs were transferred away.
+     *
+     * It is a different claim from [participants], and the two are kept apart so neither
+     * can be mistaken for the other. [participants] is who the bridge says is *there*;
+     * this is who this device *asked* to be there. A member who accepted the REFER and
+     * then failed to reach the room is in this list and not in the room, and a member who
+     * dialled the room independently is in the room and not in this list. Readers that
+     * need a count that cannot be wrong must use [participantCount], which stays null
+     * until the bridge publishes one (§13).
+     *
+     * Never [ConferenceParticipant.isSelf]: the local user is added by the reader that
+     * lists them, in the position it wants them in. Empty for a room this device dialled
+     * on its own, which knows nothing about who else is inside.
+     */
+    val invited: List<ConferenceParticipant> = emptyList(),
 ) {
     /** Participants other than the local user. */
     val others: List<ConferenceParticipant> get() = participants.filterNot { it.isSelf }
@@ -153,6 +179,19 @@ data class ConferenceSession(
 
     /** Records that this bridge publishes no roster at all, which the UI must say (Task 60). */
     fun withoutRoster(): ConferenceSession = copy(participants = emptyList(), rosterAvailable = false)
+
+    /**
+     * The same conference with [members] recorded as sent into the room by this device.
+     *
+     * Added to, never replaced: a participant merged in later joins the ones merged
+     * earlier. A member re-sent under the same [ParticipantId] — the same leg REFERred
+     * twice, which a retried merge can do — replaces its earlier entry rather than
+     * appearing twice, for the reason [withParticipantJoined] gives.
+     */
+    fun withInvited(members: List<ConferenceParticipant>): ConferenceSession {
+        val replaced = members.mapTo(HashSet()) { it.id }
+        return copy(invited = invited.filterNot { it.id in replaced } + members)
+    }
 
     private fun mapParticipant(
         id: ParticipantId,

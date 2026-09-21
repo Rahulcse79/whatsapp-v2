@@ -91,12 +91,26 @@ import kotlin.math.roundToInt
  * `surfaceTextureListener` in [CallVideo]). The discrete commit stays because it is the
  * better gesture regardless: the picture holds still while the outline shows where it will
  * go, and the size the user gets is the one they let go at.
+ *
+ * ## A tap anywhere else puts a maximised preview away
+ *
+ * Maximised, the self-view is nine tenths of the screen's shorter edge — on a conference
+ * it sits over somebody's tile. The way out used to be the small glyph in its corner, or
+ * a double tap on the picture itself; a tap on the *rest* of the screen only hid the call
+ * controls. It minimises the preview now (asked for on 2026-09-21), the way a tap outside
+ * any sheet dismisses it, and does nothing else on that tap: one gesture, one effect. The
+ * next tap is the chrome's again. The tap lands on `CallVideo`'s picture-tap target, which
+ * is why [state] is hoisted there rather than kept here.
+ *
+ * @param state the preview's placement, owned by the caller so a tap outside the preview
+ *   can reach it. [rememberSelfPreviewState] is the one way to make one.
  */
 @Composable
 internal fun SelfPreview(
     previewView: TextureView,
     localFrame: VideoSize,
     modifier: Modifier = Modifier,
+    state: SelfPreviewState = rememberSelfPreviewState(),
 ) {
     // Insets applied here rather than to the offsets, so the corner arithmetic below works
     // in a coordinate space that already excludes the status and navigation bars. A corner
@@ -109,7 +123,6 @@ internal fun SelfPreview(
         )
         if (!area.isKnown) return@BoxWithConstraints
 
-        val state = rememberSaveable(saver = SelfPreviewState.Saver) { SelfPreviewState() }
         val placement = state.placement
 
         val margin = with(density) { AppTheme.spacing.large.toPx() }
@@ -140,6 +153,11 @@ internal fun SelfPreview(
     }
 }
 
+/** The self-view's state, remembered across rotation and process death. */
+@Composable
+internal fun rememberSelfPreviewState(): SelfPreviewState =
+    rememberSaveable(saver = SelfPreviewState.Saver) { SelfPreviewState() }
+
 /**
  * The self-view's live state: the part that is saved, and the part that lasts one gesture.
  *
@@ -148,12 +166,24 @@ internal fun SelfPreview(
  * is what the user chose and survives a rotation, while [drag] and [proposedWidth] describe
  * a finger that is still down and are meaningless the moment it lifts — which is why a
  * cancelled gesture can simply clear them and leave the preview in a corner.
+ *
+ * Internal rather than private since the tap-outside rule: `CallVideo` owns the target
+ * that tap lands on, and it has to be able to ask whether the preview is maximised and to
+ * put it away.
  */
 @Stable
-private class SelfPreviewState(placement: SelfPreviewPlacement = SelfPreviewPlacement()) {
+internal class SelfPreviewState(placement: SelfPreviewPlacement = SelfPreviewPlacement()) {
 
     /** Corner, size and minimised state. Saved. */
     var placement: SelfPreviewPlacement by mutableStateOf(placement)
+
+    /** True while the preview is at the size the user chose rather than the small card. */
+    val isMaximised: Boolean get() = !placement.isMinimised
+
+    /** Puts the preview away as the small card; the size the user chose is kept for restoring. */
+    fun minimise() {
+        if (isMaximised) placement = placement.toggledMinimised()
+    }
 
     /** How far the finger has moved since it went down, and nothing more. */
     var drag: Offset by mutableStateOf(Offset.Zero)

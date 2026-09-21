@@ -98,6 +98,51 @@ class ConferenceGroupingTest {
         assertEquals((500_000L - 260L) / 1_000L, conference.durationSeconds)
     }
 
+    @Test
+    fun `a conference held in the bridge is titled by its people, and the room is a leg`() {
+        // The device that pressed Merge writes three rows: two legs that ended when their
+        // transfers completed, and its own call to the room, which lasted the conference.
+        val page = listOf(
+            leg(id = 3, user = "3000", startedAt = 300, endedAt = 90_000, key = "k1", media = MediaProfile.AUDIO_VIDEO),
+            leg(id = 2, user = "1005", startedAt = 200, endedAt = 400, key = "k1", media = MediaProfile.AUDIO_VIDEO),
+            leg(id = 1, user = "1004", startedAt = 100, endedAt = 400, key = "k1", media = MediaProfile.AUDIO_VIDEO),
+        )
+
+        val conference = groupConferences(page) { it.remote.user == "3000" }.single()
+
+        assertEquals("1004, 1005", conference.title, "the room is where it happened, not somebody who was there")
+        assertEquals(listOf("1004", "1005"), conference.members.map { it.title })
+        assertEquals(listOf("1004", "1005", "3000"), conference.legs.map { it.title }, "the room stays a leg")
+        assertTrue(conference.legs.last().isRoom)
+        assertTrue(conference.hasVideo)
+        // Its duration runs to the room leg's ending — the conference outlived the transfers.
+        assertEquals((90_000L - 101L) / 1_000L, conference.durationSeconds)
+    }
+
+    @Test
+    fun `a page holding only the room leg of a conference reads as the room`() {
+        // A page boundary can strand the room's row from its legs; an empty title would be
+        // worse than the extension.
+        val page = listOf(
+            leg(id = 3, user = "3000", startedAt = 300, key = "k1"),
+            leg(id = 4, user = "3000", startedAt = 310, key = "k1"),
+        )
+
+        val conference = groupConferences(page) { it.remote.user == "3000" }.single()
+
+        assertEquals("3000, 3000", conference.title)
+        assertTrue(conference.members.isEmpty())
+    }
+
+    @Test
+    fun `a voice conference mixed on this device carries no video`() {
+        val page = listOf(
+            leg(id = 2, user = "1002", startedAt = 200, key = "k1"),
+            leg(id = 1, user = "1001", startedAt = 100, key = "k1"),
+        )
+        assertFalse(groupConferences(page).single().hasVideo)
+    }
+
     private fun leg(
         id: Long,
         user: String,
@@ -105,6 +150,7 @@ class ConferenceGroupingTest {
         key: String?,
         answeredAt: Long? = startedAt + 1,
         endedAt: Long = startedAt + 10,
+        media: MediaProfile = MediaProfile.AUDIO,
     ) = HistoryRow.Call(
         entry = CallLogEntry(
             id = CallLogId(id),
@@ -118,7 +164,7 @@ class ConferenceGroupingTest {
             answeredAtEpochMillis = answeredAt,
             endedAtEpochMillis = endedAt,
             reason = HangupReason.LOCAL_HANGUP,
-            media = MediaProfile.AUDIO,
+            media = media,
             isConference = key != null,
             conferenceKey = key,
         ),

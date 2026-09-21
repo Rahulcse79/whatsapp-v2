@@ -28,6 +28,10 @@ complexity:
   TooManyFunctions:
     thresholdInFiles: 20
     thresholdInClasses: 20
+    # The stack seams (`SipCallGateway` and its siblings) are one interface per half of
+    # the SDK, and a half of a SIP stack has more than eleven operations. The same number
+    # as classes and files, for the same reason.
+    thresholdInInterfaces: 20
     ignorePrivate: true
     ignoreOverridden: true
     # A Room DAO is a generated-implementation boundary, not a class doing too much: its
