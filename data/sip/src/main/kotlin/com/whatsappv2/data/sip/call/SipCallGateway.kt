@@ -151,4 +151,15 @@ internal interface SipCallGateway {
      * than an address: the address alone cannot identify the dialog to replace.
      */
     fun transferCallToCall(callKey: String, consultationCallKey: String)
+
+    /**
+     * Asks the bridge on the far end of [callKey] for the conference's participant list.
+     *
+     * Only meaningful on a leg into a conference room, and only that leg: a bridge asked
+     * about an ordinary call answers `489 Bad Event` and nothing is lost.
+     *
+     * Fire and forget. The roster does not arrive as a return value — it arrives, and
+     * keeps arriving, on [conferenceEvents] for as long as the call lives.
+     */
+    fun subscribeToConferenceRoster(callKey: String)
 }

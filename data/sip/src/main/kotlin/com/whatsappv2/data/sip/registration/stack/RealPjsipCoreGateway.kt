@@ -14,6 +14,7 @@ import com.whatsappv2.data.sip.call.SipRecordingGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
+import com.whatsappv2.data.sip.call.ConferenceInfoParser
 import com.whatsappv2.data.sip.call.StackConferenceEvent
 import com.whatsappv2.data.sip.call.StackTransferEvent
 import com.whatsappv2.data.sip.call.TransferEventMapper
@@ -48,11 +49,13 @@ import org.pjsip.pjsua2.Call
 import org.pjsip.pjsua2.CallInfo
 import org.pjsip.pjsua2.CallOpParam
 import org.pjsip.pjsua2.CallSendDtmfParam
+import org.pjsip.pjsua2.CallSendRequestParam
 import org.pjsip.pjsua2.CallSetting
 import org.pjsip.pjsua2.CallVidSetStreamParam
 import org.pjsip.pjsua2.Endpoint
 import org.pjsip.pjsua2.EpConfig
 import org.pjsip.pjsua2.IpChangeParam
+import org.pjsip.pjsua2.MediaFormatVideo
 import org.pjsip.pjsua2.OnCallMediaEventParam
 import org.pjsip.pjsua2.OnCallMediaStateParam
 import org.pjsip.pjsua2.OnCallRxReinviteParam
@@ -63,8 +66,12 @@ import org.pjsip.pjsua2.OnCallTsxStateParam
 import org.pjsip.pjsua2.OnIncomingCallParam
 import org.pjsip.pjsua2.OnIpChangeProgressParam
 import org.pjsip.pjsua2.OnRegStateParam
+import org.pjsip.pjsua2.SipHeader
+import org.pjsip.pjsua2.SipHeaderVector
+import org.pjsip.pjsua2.SipTxOption
 import org.pjsip.pjsua2.TlsConfig
 import org.pjsip.pjsua2.TransportConfig
+import org.pjsip.pjsua2.TsxStateEvent
 import org.pjsip.pjsua2.VidDevManager
 import org.pjsip.pjsua2.VideoWindowHandle
 import org.pjsip.pjsua2.pj_ssl_sock_proto
@@ -74,6 +81,7 @@ import org.pjsip.pjsua2.pjmedia_orient
 import org.pjsip.pjsua2.pjmedia_tp_proto
 import org.pjsip.pjsua2.pjmedia_type
 import org.pjsip.pjsua2.pjmedia_vid_dev_std_index
+import org.pjsip.pjsua2.pjsip_event_id_e
 import org.pjsip.pjsua2.pjsip_inv_state
 import org.pjsip.pjsua2.pjsip_role_e
 import org.pjsip.pjsua2.pjsip_ssl_method
@@ -1021,13 +1029,15 @@ internal class RealPjsipCoreGateway @Inject constructor(
             alsoRequired = otherAudio,
         ) { id, priority -> codecSetPriority(id, priority) }
 
+        val videoRegistry = videoCodecEnum2().map { it.codecId }
         applyPriorities(
             kind = "Video",
             accountKey = account.key,
-            available = videoCodecEnum2().map { it.codecId }.softwareVp8First(),
+            available = videoRegistry.withoutMediaCodecVp8(),
             preferred = account.videoCodecs,
             alsoRequired = otherVideo,
         ) { id, priority -> videoCodecSetPriority(id, priority) }
+        disableMediaCodecVp8(videoRegistry)
 
         logger.info(
             TAG,
@@ -1035,6 +1045,24 @@ internal class RealPjsipCoreGateway @Inject constructor(
         )
 
         audit.value = auditCodecs(logger, lyraModelProblem)
+    }
+
+    /**
+     * Switches MediaCodec's VP8 off outright, so it can never be answered.
+     *
+     * Both halves of [withoutMediaCodecVp8] are needed and this is the second. Leaving the
+     * codec out of the ranking only means nothing re-ranks it: pjmedia registered it with a
+     * priority of its own, and a codec with a non-zero priority is in the offer. This is
+     * what takes it out.
+     *
+     * Looked up in [registry] rather than written blind, because a build without MediaCodec's
+     * VP8 has nothing to disable and `videoCodecSetPriority` on an unregistered id is an
+     * error worth not raising.
+     */
+    private fun Endpoint.disableMediaCodecVp8(registry: List<String>) {
+        val id = registry.firstOrNull { it.equals(MEDIACODEC_VP8_ID, ignoreCase = true) } ?: return
+        runCatching { videoCodecSetPriority(id, CodecPriorities.DISABLED) }
+            .onFailure { logger.warn(TAG, "Could not disable $id: ${it.message}") }
     }
 
     /** What every account except [exceptKey] needs kept enabled. See [applyCodecs]. */
@@ -1154,7 +1182,12 @@ internal class RealPjsipCoreGateway @Inject constructor(
         onPjsip("terminateCall") {
             // Idempotent per the gateway contract: a call PJSIP has already released is
             // one the caller wanted gone.
-            calls[callKey]?.let { runCatching { it.hangup(CallOpParam(true)) } }
+            calls[callKey]?.let {
+                // The last look at the media before it goes: pjsua tears the streams
+                // down inside `hangup`, before any callback. See [PjCall.snapshotMediaStatistics].
+                it.snapshotMediaStatistics()
+                runCatching { it.hangup(CallOpParam(true)) }
+            }
         }
     }
 
@@ -1346,6 +1379,19 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * produces the same observable behaviour — the camera is released when `CameraPolicy`
      * says nobody should hold it.
      */
+    /**
+     * Subscribes to the conference roster on one call (RFC 4575).
+     *
+     * On the PJSIP thread like every other stack operation, and silent about a call that
+     * has already gone: a conference this device left between asking and arriving here is
+     * not an error, it is the ordinary race of a short conference.
+     */
+    override fun subscribeToConferenceRoster(callKey: String) {
+        onPjsip("subscribeToConferenceRoster") {
+            calls[callKey]?.subscribeToConferenceRoster()
+        }
+    }
+
     override fun setCameraCapturing(capturing: Boolean) {
         onPjsip("setCameraCapturing") {
             cameraWanted = capturing
@@ -1648,6 +1694,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             publish(callStateOf(info), info)
 
             if (info.state == pjsip_inv_state.PJSIP_INV_STATE_DISCONNECTED) {
+                logMediaStatistics()
                 pendingResume.cancel()
                 stopPreview()
                 // Only now. The native peer is finished with this director, and holding it
@@ -1683,6 +1730,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
         override fun onCallMediaState(prm: OnCallMediaStateParam) {
             val running = endpoint ?: return
             val info = infoOrNull() ?: return
+            if (!statisticsScheduled) {
+                statisticsScheduled = true
+                scheduleMediaStatistics()
+            }
 
             info.media.forEachIndexed { index, media ->
                 when {
@@ -1741,8 +1792,17 @@ internal class RealPjsipCoreGateway @Inject constructor(
          * a status of 0, and [PendingResume.refusedBy] does not match either.
          */
         override fun onCallTsxState(prm: OnCallTsxStateParam) {
+            val tsxState = runCatching { prm.e.body.tsxState }.getOrNull() ?: return
+
+            // The roster arrives here and nowhere else. pjsua2 exposes no API for the
+            // conference event package, but it does expose every transaction on the
+            // dialog and the raw bytes of the message that drove it — which is enough,
+            // because a NOTIFY for a subscription made in this dialog *is* a transaction
+            // on this call. See [subscribeToConferenceRoster].
+            if (readRosterFrom(tsxState)) return
+
             if (!pendingResume.isOutstanding) return
-            val tsx = runCatching { prm.e.body.tsxState.tsx }.getOrNull() ?: return
+            val tsx = runCatching { tsxState.tsx }.getOrNull() ?: return
             val refused = pendingResume.refusedBy(
                 isClient = tsx.role == pjsip_role_e.PJSIP_ROLE_UAC,
                 method = tsx.method,
@@ -1753,6 +1813,81 @@ internal class RealPjsipCoreGateway @Inject constructor(
             logger.warn(TAG, "Resume refused on $callKey with ${tsx.statusCode}; the call is still held")
             publish(StackCallState.RESUME_FAILED)
         }
+
+        /**
+         * Asks the bridge to keep this device told who is in the room (RFC 4575).
+         *
+         * ## Why the request is built by hand
+         *
+         * pjsua2 wraps exactly two event packages — presence and message-summary — and the
+         * conference package is neither. What it does expose is [Call.sendRequest], which
+         * puts an arbitrary method into **this call's own dialog**, and RFC 4575 §3.2
+         * allows precisely that: a subscription to the conference may be carried in the
+         * INVITE dialog the member already has. So there is no second dialog to
+         * authenticate, no second registration, and nothing to tear down — the
+         * subscription ends when the call does, which is exactly when the roster stops
+         * being any of our business.
+         *
+         * The reply and every NOTIFY after it come back through [onCallTsxState], because
+         * they are transactions on this dialog.
+         *
+         * Failure is logged and not reported: a bridge that will not serve the roster is a
+         * conference with no participant list, which `rosterAvailable` already says out
+         * loud, and it is not a reason to fail the call the user is in.
+         */
+        fun subscribeToConferenceRoster() {
+            if (!ROSTER_SUBSCRIBE_ENABLED) return
+
+            val headers = SipHeaderVector().apply {
+                add(SipHeader().apply { hName = "Event"; hValue = ROSTER_EVENT })
+                add(SipHeader().apply { hName = "Accept"; hValue = ConferenceInfoParser.CONTENT_TYPE })
+                add(SipHeader().apply { hName = "Expires"; hValue = ROSTER_EXPIRY_SECONDS.toString() })
+            }
+            val request = CallSendRequestParam().apply {
+                method = "SUBSCRIBE"
+                txOption = SipTxOption().apply { this.headers = headers }
+            }
+            runCatching { sendRequest(request) }
+                .onSuccess { logger.info(TAG, "Asked $callKey's bridge for the conference roster") }
+                .onFailure { logger.warn(TAG, "No roster on $callKey: ${it.message}") }
+        }
+
+        /**
+         * Publishes the roster carried by [tsxState], and says whether there was one.
+         *
+         * Cheap first, expensive last. Every transaction on every call reaches
+         * [onCallTsxState] — re-INVITEs, session refreshes, OPTIONS — and `wholeMsg`
+         * copies an entire SIP message across the JNI boundary, so the method and the
+         * event type are checked before anything is read.
+         */
+        private fun readRosterFrom(tsxState: TsxStateEvent): Boolean {
+            // `src` is a union: `rdata` is only a message when a message is what changed
+            // the transaction's state. Reading it on a timer event is reading whatever
+            // else was in that memory.
+            if (runCatching { tsxState.type }.getOrNull() != pjsip_event_id_e.PJSIP_EVENT_RX_MSG) return false
+            val tsx = runCatching { tsxState.tsx }.getOrNull() ?: return false
+            if (!tsx.method.equals("NOTIFY", ignoreCase = true)) return false
+
+            val message = runCatching { tsxState.src.rdata.wholeMsg }.getOrNull()
+            if (message.isNullOrEmpty()) return false
+
+            val roster = ConferenceInfoParser.parse(message, selfUri = selfUri(), logger = logger)
+                ?: return false
+
+            logger.info(TAG, "Conference roster on $callKey: ${roster.participants.size} in the room")
+            conferenceEventFlow.tryEmit(
+                StackConferenceEvent(
+                    callKey = callKey,
+                    participants = roster.participants,
+                    rosterAvailable = true,
+                ),
+            )
+            return true
+        }
+
+        /** This device's address on this call's account, for spotting ourselves in the room. */
+        private fun selfUri(): String? =
+            accountConfigs[accountKey]?.let { "sip:${it.username}@${it.domain}" }
 
         /**
          * Notices the far end offering video, and asks the user — **without making the
@@ -1887,6 +2022,12 @@ internal class RealPjsipCoreGateway @Inject constructor(
             val type = runCatching { prm.ev.type }.getOrNull() ?: return
             if (type != pjmedia_event_type.PJMEDIA_EVENT_FMT_CHANGED) return
             publishVideoSizes()
+            // Once more, shortly after. The decoder's format is read synchronously
+            // (see `decodedVideoSize`), but the *preview* half still comes from the
+            // capture window, which applies its format change lazily on the next frame
+            // — and a second read a moment later costs one JNI round trip and publishes
+            // nothing when nothing moved.
+            pjsip.schedule({ publishVideoSizes() }, FMT_CHANGE_REREAD_MILLIS, TimeUnit.MILLISECONDS)
         }
 
         /**
@@ -1903,7 +2044,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
          */
         fun publishVideoSizes() {
             if (remoteSurface == null && previewSurface == null) return
-            videoSizeFlow.publishVideoSizes(infoOrNull(), localPreview.size(), callKey, logger)
+            videoSizeFlow.publishVideoSizes(
+                info = infoOrNull(),
+                decodedFormat = { index -> runCatching { getStreamInfo(index).vidCodecParam.decFmt }.getOrNull() },
+                previewSize = localPreview.size(),
+                callKey = callKey,
+                logger = logger,
+            )
         }
 
         /**
@@ -2062,6 +2209,59 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
 
         /**
+         * The most recent media statistics, kept so they can be logged once the call is
+         * over — see [snapshotMediaStatistics].
+         */
+        private var mediaStatistics: String? = null
+
+        /** Whether the periodic snapshot is running; armed on the first media-state callback. */
+        private var statisticsScheduled = false
+
+        /**
+         * Reads the call's media statistics from PJSIP and keeps them.
+         *
+         * Taken every [MEDIA_STATISTICS_INTERVAL_MILLIS] while the call has media, and
+         * once more immediately before a local hangup. Not at DISCONNECTED: pjsua
+         * destroys the streams **before** it delivers that callback — on both the local
+         * hangup and the remote BYE path (`pjsua_call.c`: `pjsua_media_channel_deinit`
+         * precedes `on_call_state` in each) — so a dump taken there reads
+         * "audio deactivated" and nothing else. Measured on 2026-09-21, which is how this
+         * ended up a snapshot rather than a dump at the end.
+         *
+         * What it carries is what a complaint about audio needs and nothing else
+         * records: the jitter buffer's state, packets lost and discarded in each
+         * direction, jitter, and the RTCP round trip, for every stream. It is logged by
+         * [logMediaStatistics] once the call is down, so the log has the last picture of
+         * the media — at most one interval old, and exact for a hangup from this side.
+         */
+        fun snapshotMediaStatistics() {
+            runCatching { dump(true, "  ") }.getOrNull()?.takeIf { it.isNotBlank() }?.let { mediaStatistics = it }
+        }
+
+        /** Re-arms the periodic snapshot for as long as this call is still the stack's. */
+        private fun scheduleMediaStatistics() {
+            pjsip.schedule(
+                {
+                    if (calls[callKey] !== this) return@schedule
+                    snapshotMediaStatistics()
+                    scheduleMediaStatistics()
+                },
+                MEDIA_STATISTICS_INTERVAL_MILLIS,
+                TimeUnit.MILLISECONDS,
+            )
+        }
+
+        /** Writes the last [snapshotMediaStatistics] to the log, line by line. */
+        private fun logMediaStatistics() {
+            val dump = mediaStatistics ?: run {
+                logger.debug(TAG, "No media statistics for $callKey")
+                return
+            }
+            logger.info(TAG, "Media statistics for $callKey (last snapshot):")
+            dump.lineSequence().filter { it.isNotBlank() }.forEach { logger.info(TAG, it) }
+        }
+
+        /**
          * The call's info, or null once PJSIP has released it.
          *
          * `getInfo` throws on a call the library has finished with, and that happens on
@@ -2133,6 +2333,51 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     internal companion object {
         const val TAG = "PjsipGateway"
+
+        /**
+         * OFF, because sending the SUBSCRIBE this way crashes the stack.
+         *
+         * `Call.sendRequest` puts a bare `SUBSCRIBE` into the INVITE dialog. PJSIP's own
+         * event-subscription module is watching that dialog and treats the transaction as
+         * one of its own — but nothing created a `pjsip_evsub`, so there is no subscription
+         * behind it. When the transaction's timer fires, `mod_evsub_on_tsx_state` reaches
+         * through a pointer that was never set:
+         *
+         * ```
+         * signal 11 (SIGSEGV), fault addr 0x746e657640 in tid 28807 (pjsip-main)
+         *   tsx_timer_callback → tsx_set_state → pjsip_dlg_on_tsx_state
+         *     → mod_evsub_on_tsx_state → on_new_transaction → pj_log → __strnlen_aarch64
+         * ```
+         *
+         * Measured on a Galaxy M14, 2026-09-20. The fault address is ASCII being read as a
+         * pointer, which is what a garbage `pj_str_t` looks like on its way into a log line.
+         * It takes the whole process with it, so a conference loses legs until one or two
+         * are left — the symptom that found this.
+         *
+         * The roster itself is real and the bridge serves it: a `SUBSCRIBE` with
+         * `Event: conference` is answered `202` and a full `conference-info` document, which
+         * [ConferenceInfoParser] reads and its tests cover. What is missing is a *legitimate*
+         * subscription to hang it on, and pjsua2 wraps only presence and message-summary. So
+         * the request has to be made by `pjsip_evsub_create_uac` with the conference package
+         * registered — native work behind SWIG — rather than smuggled through an INVITE
+         * dialog. Everything downstream of the NOTIFY is already written and stays.
+         */
+        private const val ROSTER_SUBSCRIBE_ENABLED = false
+
+        /** The event package that carries a conference's participant list (RFC 4575). */
+        private const val ROSTER_EVENT = "conference"
+
+        /**
+         * How long the bridge should keep sending the roster, in seconds.
+         *
+         * An hour, and long on purpose: the subscription lives inside the call's dialog
+         * and dies with it, so the only thing a short expiry would buy is a refresh timer
+         * to get wrong. A conference that outlasts this is a conference whose roster stops
+         * updating, which `rosterAvailable` does not currently distinguish — the one real
+         * limit of carrying the subscription in-dialog, and the reason this is not five
+         * minutes.
+         */
+        private const val ROSTER_EXPIRY_SECONDS = 3600
 
         /**
          * PJSIP's trace level, and what it costs.
@@ -2241,6 +2486,22 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
         /** `PJSUA_DTMF_METHOD_SIP_INFO`; RFC 2833 is method 0 and is `dialDtmf`'s default. */
         const val DTMF_METHOD_SIP_INFO = 1
+
+        /**
+         * How long after `FMT_CHANGED` the video sizes are read a second time.
+         *
+         * A few frames at the lowest rate anything here runs at, so the capture window
+         * (which applies a format change on its next frame — see `decodedVideoSize`) has
+         * had one.
+         */
+        const val FMT_CHANGE_REREAD_MILLIS = 250L
+
+        /**
+         * How often a live call's media statistics are snapshotted for the end-of-call
+         * log. See `PjCall.snapshotMediaStatistics`. One JNI read of RTCP counters; a
+         * quarter of a minute keeps the last picture recent without making a habit of it.
+         */
+        const val MEDIA_STATISTICS_INTERVAL_MILLIS = 15_000L
 
         /** Whatever `AccountConfig.videoConfig.defaultCaptureDevice` resolved to. */
         const val CAPTURE_DEVICE_DEFAULT = -1
@@ -2421,13 +2682,14 @@ private fun transmitOp(capturing: Boolean): Int = if (capturing) {
  */
 private fun MutableStateFlow<VideoSizes>.publishVideoSizes(
     info: CallInfo?,
+    decodedFormat: (Long) -> MediaFormatVideo?,
     previewSize: VideoSize?,
     callKey: String,
     logger: Logger,
 ) {
     val current = value
     val updated = VideoSizes(
-        remote = info?.decodedVideoSize() ?: current.remote,
+        remote = info?.decodedVideoSize(decodedFormat) ?: current.remote,
         local = previewSize ?: current.local,
     )
     if (updated == current) return
@@ -2441,24 +2703,53 @@ private fun MutableStateFlow<VideoSizes>.publishVideoSizes(
 }
 
 /**
- * The decoded remote picture's size, read from PJSIP's own video window.
+ * The decoded remote picture's size — from the **decoder**, and only then from the window.
  *
  * Only a stream that is **decoding**: a send-only stream's window is this device's camera,
  * and sizing the remote view to it is the stretching bug wearing a different hat. Null
  * when no such stream is up, which is the ordinary state before the first frame arrives.
  *
+ * ## Why the decoder's format and not the window's size
+ *
+ * This used to read `videoWindow.info.size`, which is the renderer's `disp_size` — and
+ * that is applied **lazily**. When libvpx decodes a frame of a new size it publishes
+ * `FMT_CHANGED`; the stream copies the new format into its own info *before* re-publishing
+ * the event (`vid_stream.c`, "Update stream info and decoding channel port info"), but the
+ * renderer's `vid_port` only *records* the event and applies it on its next `put_frame`
+ * (`vid_port.c: handle_format_change`). The app's callback runs in between, read the old
+ * window size, saw no change, and published nothing. Then the renderer re-published the
+ * same event, the callback ran again — still before the next frame — and read the old
+ * size a second time. Two callbacks, both too early, and the last size the screen ever
+ * heard of was the codec's CIF default.
+ *
+ * Measured on a 1001→1004 call, 2026-09-21: the app logged `352x288` once at call start,
+ * while SurfaceFlinger showed the buffer actually rendering as `1280x720` (scale
+ * x=2.1078 y=3.0667 — a 1.46x squash for the rest of the call). The *renderer* had the
+ * right size; the app had asked a moment too soon.
+ *
+ * `StreamInfo.vidCodecParam.decFmt` is `codec_param->dec_fmt`, which is exactly the field
+ * the stream updated before publishing, so it is correct at the instant the event
+ * arrives. It is also unambiguously the decoding direction, which the event's own
+ * payload is not. The window stays as the fallback for a stream whose info cannot be
+ * read.
+ *
  * A top-level function rather than a method so the gateway class stays under detekt's size
- * ceiling — and it reads no state beyond the `CallInfo` it is given, so it belongs here.
+ * ceiling — the stream lookup arrives as a lambda for the same reason.
  */
-private fun CallInfo.decodedVideoSize(): VideoSize? = media.firstNotNullOfOrNull { media ->
-    if (media.type != pjmedia_type.PJMEDIA_TYPE_VIDEO) return@firstNotNullOfOrNull null
-    if (media.status != pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE) return@firstNotNullOfOrNull null
-    if (media.dir and pjmedia_dir.PJMEDIA_DIR_DECODING == 0) return@firstNotNullOfOrNull null
-    runCatching {
-        val window = media.videoWindow.info.size
-        VideoSize(window.w.toInt(), window.h.toInt())
-    }.getOrNull()?.takeIf { it.isKnown }
-}
+private fun CallInfo.decodedVideoSize(decodedFormat: (Long) -> MediaFormatVideo?): VideoSize? =
+    media.firstNotNullOfOrNull { media ->
+        if (media.type != pjmedia_type.PJMEDIA_TYPE_VIDEO) return@firstNotNullOfOrNull null
+        if (media.status != pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE) return@firstNotNullOfOrNull null
+        if (media.dir and pjmedia_dir.PJMEDIA_DIR_DECODING == 0) return@firstNotNullOfOrNull null
+
+        val decoded = decodedFormat(media.index)
+            ?.let { VideoSize(it.width.toInt(), it.height.toInt()) }
+            ?.takeIf { it.isKnown }
+        decoded ?: runCatching {
+            val window = media.videoWindow.info.size
+            VideoSize(window.w.toInt(), window.h.toInt())
+        }.getOrNull()?.takeIf { it.isKnown }
+    }
 
 /** True when a video stream is negotiated and running on this call, in either direction. */
 private fun CallInfo.hasActiveVideo(): Boolean = media.any {
@@ -2592,18 +2883,32 @@ private fun cameraAfter(manager: VidDevManager, current: Int): Int? {
 }
 
 /**
- * The video registry with libvpx's VP8 ahead of Android MediaCodec's.
+ * The video registry without Android MediaCodec's VP8, which cannot decode on this hardware.
  *
- * Both register as `VP8`, and `CodecPriorities` offers same-name codecs in the order it is
- * given — so this is the one place that decides which VP8 the offer leads with. Software:
- * on the TC15 the MediaCodec decoder never produced a picture (`and_vid_mediacodec.cpp:
- * Decoder failed to get input Buffer`, every frame `PJ_ETOOSMALL`), while libvpx decoded
- * the same echoed stream at 1088×612 without a dropped frame (2026-09-11). MediaCodec's
- * VP8 stays registered, one step below, so a far end that only speaks to it still gets an
- * answer. Stable, so nothing else in the registry moves.
+ * libvpx registers `VP8/102` and MediaCodec registers `VP8/103` — the same payload name
+ * twice — and on the TC15 the MediaCodec decoder never produced a picture
+ * (`and_vid_mediacodec.cpp: Decoder failed to get input Buffer`, every frame
+ * `PJ_ETOOSMALL`), while libvpx decoded the same stream at 1088×612 without a dropped
+ * frame (2026-09-11).
+ *
+ * ## Why ranking it second was not enough
+ *
+ * It used to be sorted below libvpx and left enabled, on the reasoning that a far end
+ * which "only speaks to it" should still get an answer. That reasoning was wrong twice
+ * over. A payload type is not a codec identity — every VP8 endpoint speaks VP8 whatever
+ * number the offer puts on it — so no peer needs `103` to be present. And the offer's
+ * order does not bind the answerer: on 2026-09-20 the handset offered
+ * `m=video 4002 RTP/AVP 102 103 99` and FreeSWITCH answered `m=video 26960 RTP/AVP 103`,
+ * picking MediaCodec. The call then had VP8 sendrecv, RTP flowing both ways and three
+ * busy `pjsip-main` threads, the far end rendered this handset perfectly — and this
+ * handset showed a black rectangle where the other person should have been.
+ *
+ * So the codec is switched off rather than ranked. Offering a decoder that is known to
+ * produce nothing is offering the far end a black screen, and the only thing the ordering
+ * bought was the hope that nobody would take it.
  */
-private fun List<String>.softwareVp8First(): List<String> =
-    sortedBy { if (it.equals(MEDIACODEC_VP8_ID, ignoreCase = true)) 1 else 0 }
+private fun List<String>.withoutMediaCodecVp8(): List<String> =
+    filterNot { it.equals(MEDIACODEC_VP8_ID, ignoreCase = true) }
 
 /** `VP8/<PJMEDIA_RTP_PT_VP8_RSV1>`: the id `and_vid_mediacodec.cpp:76` registers its VP8 under. */
 private const val MEDIACODEC_VP8_ID = "VP8/103"

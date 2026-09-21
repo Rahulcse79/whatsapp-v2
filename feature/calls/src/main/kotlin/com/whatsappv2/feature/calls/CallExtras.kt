@@ -160,9 +160,16 @@ internal fun ConferenceSession.toUiState(unknownLabel: String): ConferenceUiStat
     participants = participants.map { participant ->
         ConferenceParticipantRow(
             id = participant.id.value,
-            // Name, then address, then a placeholder: a bridge may know somebody is there
-            // without knowing anything about them, and an empty row is still a person.
+            // Name, then the extension, then the whole address, then a placeholder: a
+            // bridge may know somebody is there without knowing anything about them, and
+            // an empty row is still a person.
+            //
+            // The extension before the address, because `sip:1005@192.168.2.194` is not
+            // what a participant list should read like — it is the same person as "1005"
+            // spelled for a router. The full address stays as the fallback below it for
+            // the addresses that have no user part at all, where it is all there is.
             label = participant.displayName?.takeIf { it.isNotBlank() }
+                ?: participant.uri?.user?.takeIf { it.isNotBlank() }
                 ?: participant.uri?.render()
                 ?: unknownLabel,
             isMuted = participant.isMuted,

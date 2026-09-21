@@ -315,6 +315,13 @@ internal class FakeSipCoreGateway :
         attendedTransfers += callKey to consultationCallKey
     }
 
+    /** Calls whose bridge was asked for a participant list, in order (Task 60). */
+    val rosterSubscriptions: MutableList<String> = mutableListOf()
+
+    override fun subscribeToConferenceRoster(callKey: String) {
+        rosterSubscriptions += callKey
+    }
+
     /** Every membership the stack was asked to mix, in order (ADR-009). */
     val conferenceMemberships: MutableList<Set<String>> = mutableListOf()
 
