@@ -108,14 +108,16 @@ class RegistrationRecoveryPolicyTest {
     @Test
     fun `the attempt count really is fed through to the backoff`() {
         // Pinned with a Random that always takes the top of the window, so these are
-        // values rather than ranges: 2s for the first failure, 512s by the ninth. A policy
-        // that quietly always asked for attempt zero would pass a range-based assertion
-        // and fail this one.
+        // values rather than ranges: 2s for the first failure, 256s by the eighth, and
+        // the five-minute ceiling from the ninth on. A policy that quietly always asked
+        // for attempt zero would pass a range-based assertion and fail this one.
         val early = policy.decide(wifi, transientFailure, wifi.networkId, attempt = 0, random = WidestSample)
-        val late = policy.decide(wifi, transientFailure, wifi.networkId, attempt = 8, random = WidestSample)
+        val late = policy.decide(wifi, transientFailure, wifi.networkId, attempt = 7, random = WidestSample)
+        val capped = policy.decide(wifi, transientFailure, wifi.networkId, attempt = 8, random = WidestSample)
 
         assertEquals(2.seconds, assertIs<RecoveryAction.RetryAfter>(early).delay)
-        assertEquals(512.seconds, assertIs<RecoveryAction.RetryAfter>(late).delay)
+        assertEquals(256.seconds, assertIs<RecoveryAction.RetryAfter>(late).delay)
+        assertEquals(RegistrationBackoff.DEFAULT_CEILING, assertIs<RecoveryAction.RetryAfter>(capped).delay)
     }
 
     // ---------------------------------------------------------------- never retried

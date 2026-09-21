@@ -20,7 +20,9 @@ import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.TransferEventMapper
 import com.whatsappv2.data.sip.di.SipStackScope
 import com.whatsappv2.data.sip.network.NetworkMonitor
+import com.whatsappv2.data.sip.network.DeviceWakeMonitor
 import com.whatsappv2.data.sip.network.RegistrationRecoveryCoordinator
+import com.whatsappv2.data.sip.network.WakeTimer
 import com.whatsappv2.data.sip.registration.RegistrationStateMapper
 import com.whatsappv2.data.sip.registration.SipCoreGateway
 import com.whatsappv2.data.sip.registration.StackAccount
@@ -167,6 +169,17 @@ internal class PjsipSipEngine @Inject constructor(
      * should downgrade video calls to audio rather than claim a camera it cannot open.
      */
     private val camera: CameraAvailability = NoCameraAvailable,
+    /**
+     * The timer every registration retry and keepalive runs on.
+     *
+     * Defaulted to one that never fires, so a JVM test's `advanceUntilIdle` has an idle
+     * to reach (see [WakeTimer.NONE]); the graph binds the `AlarmManager` one, which is
+     * the only kind that fires while the device sleeps. See [WakeTimer] for the outage
+     * this closes.
+     */
+    private val wakeTimer: WakeTimer = WakeTimer.NONE,
+    /** The device coming back into use, so registrations are checked then and not later. */
+    private val wakeMonitor: DeviceWakeMonitor = DeviceWakeMonitor.NONE,
 ) : SipEngine, RegistrationRetrySchedule {
 
     /**
@@ -195,6 +208,8 @@ internal class PjsipSipEngine @Inject constructor(
         // It already watches the link and already debounces it; a second collector on the
         // same flow would only duplicate that. See RegistrationStateMapper.withoutNetwork.
         onNetworkLost = { states.update(RegistrationStateMapper::withoutNetwork) },
+        timer = wakeTimer,
+        wakeMonitor = wakeMonitor,
     )
 
     /**

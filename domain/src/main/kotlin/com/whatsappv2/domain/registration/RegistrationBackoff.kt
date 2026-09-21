@@ -47,7 +47,8 @@ class RegistrationBackoff(
      * Longest the window may grow to.
      *
      * A ceiling exists so a device that has been offline overnight still retries within
-     * minutes of the network returning, rather than in hours.
+     * minutes of the network returning, rather than in hours. See [DEFAULT_CEILING] for
+     * why "minutes" has to be taken literally.
      */
     private val ceiling: Duration = DEFAULT_CEILING,
 
@@ -100,8 +101,25 @@ class RegistrationBackoff(
     companion object {
         val DEFAULT_BASE_DELAY: Duration = 2.seconds
 
-        /** Half an hour. Long enough to stop hammering, short enough to recover. */
-        val DEFAULT_CEILING: Duration = 1_800.seconds
+        /**
+         * Five minutes.
+         *
+         * This was half an hour, and half an hour is a missed-call window: an account
+         * whose registrar came back a second after the last attempt could sit
+         * unregistered — with calls to it failing — for up to thirty minutes more before
+         * anything tried again. Measured on a Galaxy M14 on 2026-09-21: after ~2.5 h of
+         * deep sleep the extension was gone from the registrar and the retry was still
+         * minutes away, because the window had grown to the full thirty minutes and the
+         * timer it was waiting on does not even run while the device sleeps (see
+         * `RegistrationRecoveryCoordinator`).
+         *
+         * Five minutes keeps the thundering-herd protection §2.1 asks for — 5,000 clients
+         * still spread across a window, and the window is still the whole thing rather
+         * than a fixed delay with noise on it — while bounding the worst case at something
+         * a person will not notice as "the phone is broken". One REGISTER per five minutes
+         * per client is not a load a registrar notices.
+         */
+        val DEFAULT_CEILING: Duration = 300.seconds
 
         val DEFAULT_SERVER_JITTER: Duration = 10.seconds
 
