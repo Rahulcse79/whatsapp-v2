@@ -55,7 +55,7 @@ across sessions**; the Wi-Fi address has changed four times in ten days.
 | Others | 9197 bridged echo (a transferable leg), 9198 tone (480+620 Hz), 9199 unrouted (a clean failure) |
 | Conference | **3000** → `whatsapp-video` profile: `video-mode=mux`, layout `group:wa-portrait`, canvas **720x1280**, 15 fps, 1 Mb, **`max-members=4`**, `rfc-4579` flag. A conference of one is a legal test |
 | Codecs | App offers `m=video … RTP/AVP 102 99` (VP8/102 libvpx, H264/99 MediaCodec); VP8/103 (MediaCodec) is priority 0 because its decoder renders black. Server `global_codec_prefs=PCMU,PCMA,VP8` — **video-call audio is G.711/8 kHz by deployment**, not a defect |
-| Audio | A video call starts on the **speaker**; an audio-only call on the earpiece (`CallAudioCoordinator.preferredRoute`) |
+| Audio | Every call starts on the **earpiece** (a headset wins; Settings → Audio route → Speaker forces the loudspeaker). The "video calls start on the speaker" rule was reversed on 2026-09-22 |
 
 **A third-party client is the control** where one exists. When a video call fails, ask
 whether Zoiper/Linphone fails the same way against the same extension on the same
@@ -100,7 +100,11 @@ recorded with its evidence in `docs/HANDOFF.md`. Do not re-fix it; do re-verify 
 | A mid-call resolution change re-sizes the view: `decodedVideoSize` reads `vidCodecParam.decFmt`, re-read 250 ms later for the preview half | HANDOFF #5 |
 | A call to 3000 is marked a conference (`markConferenceIfRoom`, after `store()`); UI shows the room, a duration and a Participants row; scaling is Fit | HANDOFF "earlier" #2 |
 | VP8/103 is priority 0; FS picks 102 | HANDOFF "earlier" #3 |
-| A video call starts on the speaker; the Settings route preference is honoured | HANDOFF #6 / memory |
+| A video call starts on the earpiece, and the Speaker button and Settings preference both still reach the loudspeaker | 2026-09-22, Galaxy E23 |
+| Returning to a video call from the launcher does not kill the process (`SelfPreview`'s shared `TextureView` is re-parented, not re-added) | 2026-09-22 |
+| A held video call is dimmed, labelled, keeps its controls and drops the self-view whose camera is released | 2026-09-22 |
+| The self-view parks above the in-call controls while they are on screen | 2026-09-22 |
+| A failed call says why before the screen closes | 2026-09-22 |
 | Self-view: 9:16 card, opens minimised, drag-to-corner, resize grip, tap-outside minimises a maximised preview, `TextureView` so the crop is real | `SelfPreview.kt`, `VideoLayout.kt`, `SelfPreviewTest` |
 | In-call chrome auto-hides after **6 s** over video (`CHROME_IDLE_MILLIS`), never with touch exploration on, never while a prompt is up | `CallScreen.kt` |
 | The bridge publishes no roster to this client (RFC 4575 needs an in-dialog SUBSCRIBE that SIGSEGVs in `mod_evsub`); the roster card says so honestly | HANDOFF item D |
