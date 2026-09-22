@@ -5,6 +5,7 @@ import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.model.TransferType
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -50,5 +51,22 @@ class VideoAndTransferTypesTest {
         NoVideoSurfaces.attach(remoteView = Any(), localPreview = null)
         NoVideoSurfaces.detach()
         NoVideoSurfaces.detach()
+        NoVideoSurfaces.setDisplayRotation(90)
+        assertEquals(VideoSizes.UNKNOWN, NoVideoSurfaces.videoSizes.value, "no renderer, no frames to measure")
+    }
+
+    @Test
+    fun `a frame's size is known only with both axes, and its aspect follows`() {
+        // What the call screen sizes the remote view by: an unknown frame must not
+        // produce a 0-by-something box or a division by zero.
+        assertFalse(VideoSize.UNKNOWN.isKnown)
+        assertEquals(0f, VideoSize.UNKNOWN.aspectRatio)
+        assertFalse(VideoSize(640, 0).isKnown)
+
+        val landscape = VideoSize(1280, 720)
+        assertTrue(landscape.isKnown)
+        assertEquals(1280f / 720f, landscape.aspectRatio)
+        assertEquals(VideoSize(720, 1280), landscape.transposed(), "a quarter turn swaps the axes")
+        assertEquals(landscape, landscape.transposed().transposed())
     }
 }
