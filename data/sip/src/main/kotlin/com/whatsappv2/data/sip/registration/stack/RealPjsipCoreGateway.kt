@@ -18,7 +18,10 @@ import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.StackConferenceEvent
 import com.whatsappv2.data.sip.call.StackTransferEvent
 import com.whatsappv2.data.sip.call.TransferEventMapper
+import com.whatsappv2.data.sip.call.VideoMix
 import com.whatsappv2.data.sip.call.VideoOfferClassifier
+import com.whatsappv2.data.sip.call.VideoPortRef
+import com.whatsappv2.data.sip.call.VideoRole
 import com.whatsappv2.data.sip.registration.NameAddr
 import com.whatsappv2.data.sip.registration.SipCoreGateway
 import com.whatsappv2.data.sip.registration.StackAccount
@@ -65,6 +68,7 @@ import org.pjsip.pjsua2.OnCallTransferStatusParam
 import org.pjsip.pjsua2.OnCallTsxStateParam
 import org.pjsip.pjsua2.OnIncomingCallParam
 import org.pjsip.pjsua2.OnIpChangeProgressParam
+import org.pjsip.pjsua2.OnVideoMediaOpCompletedParam
 import org.pjsip.pjsua2.OnRegStateParam
 import org.pjsip.pjsua2.SipHeader
 import org.pjsip.pjsua2.SipHeaderVector
@@ -73,6 +77,9 @@ import org.pjsip.pjsua2.TlsConfig
 import org.pjsip.pjsua2.TransportConfig
 import org.pjsip.pjsua2.TsxStateEvent
 import org.pjsip.pjsua2.VidDevManager
+import org.pjsip.pjsua2.VideoMedia
+import org.pjsip.pjsua2.VideoMediaTransmitParam
+import org.pjsip.pjsua2.VideoPreview
 import org.pjsip.pjsua2.VideoWindowHandle
 import org.pjsip.pjsua2.pj_ssl_sock_proto
 import org.pjsip.pjsua2.pjmedia_dir
@@ -390,6 +397,58 @@ internal class RealPjsipCoreGateway @Inject constructor(
     private val conference = ConferenceBridge(logger) { key -> calls[key]?.currentAudioPort() }
 
     /**
+     * The conference *picture*, composed here rather than by a bridge.
+     *
+     * Its own object beside the audio one because the two are genuinely different
+     * arrangements — see [VideoMix] — and because keeping them apart is what lets the
+     * audio conference, which works, be left alone while this one is built.
+     */
+    private val videoConference = VideoConferenceBridge(logger) { ref -> videoPortFor(ref) }
+
+    /**
+     * The port [VideoConferenceBridge] means by [ref], or null while it does not exist.
+     *
+     * The camera and the renderer are the device's own; a decoder and an encoder belong to
+     * a call and are absent until its video stream is up, which is the ordinary state of a
+     * leg that is still ringing.
+     *
+     * The renderer is the window of the call whose surface the screen is actually showing
+     * — [canvasCallKey] — because a conference draws every peer into **one** window. Each
+     * call has a window of its own and pjsua connects that call's decoder to it; left
+     * alone, three calls would draw three pictures into the one Android `Surface` the call
+     * screen supplies and the last writer would win. See [applyVideoWindows].
+     */
+    private fun videoPortFor(ref: VideoPortRef): VideoPort? = when (ref.role) {
+        VideoRole.CAMERA -> localCameraPort()
+        VideoRole.RENDERER -> canvasCallKey()?.let { calls[it]?.rendererPort() }
+        VideoRole.DECODER -> calls[ref.callKey]?.decoderPort()
+        VideoRole.ENCODER -> calls[ref.callKey]?.encoderPort()
+    }
+
+    /**
+     * The call whose window the composed picture is drawn into: the first member, by key.
+     *
+     * Stable rather than arbitrary — a set's iteration order is not something to hang a
+     * surface on, and a canvas that moved between windows on every remix would make the
+     * screen flicker between two half-composed pictures.
+     */
+    private fun canvasCallKey(): String? = videoConference.currentMembers.minOrNull()
+
+    /**
+     * This device's camera as a bridge source.
+     *
+     * `VideoPreview` is per capture device and pjsua keeps one preview window per device,
+     * so asking for the device currently in use gives the port the encoder is already fed
+     * from. Null before capture has started, which is why every caller goes through
+     * [VideoConferenceBridge.remix] rather than assuming.
+     */
+    private fun localCameraPort(): VideoPort? = runCatching {
+        val device = calls.values.firstOrNull { it.isTransmittingVideo() }?.captureDevice
+            ?: CAPTURE_DEVICE_DEFAULT
+        PjVideoPort(VideoPreview(device).getVideoMedia())
+    }.getOrNull()
+
+    /**
      * Whether a `setNetworkReachable(false)` has arrived since the last IP change was
      * handled. Read and written only on the [pjsip] executor thread, so it needs no
      * synchronisation of its own.
@@ -472,6 +531,25 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     ipChangeInProgress = false
                     logger.info(TAG, "IP change handled by PJSIP (status ${prm.status})")
                 }
+            }
+
+            /**
+             * A video-bridge operation finishing (2026-09-22).
+             *
+             * `pjsua_vid_conf_connect` queues the work and executes it inside the video
+             * clock tick, so `startTransmit` returning means *accepted*, not *open*. This
+             * is the only place that says which, and a failure here is the one that
+             * matters: a link the bridge believes is open and the mixer never made is a
+             * participant in the roster and in nobody's picture.
+             *
+             * Nothing is retried from here. [VideoConferenceBridge.remix] runs on every
+             * media event and re-plans from what exists, so a link that failed is opened
+             * again by the next one; retrying inside the callback would be a second,
+             * competing schedule on the same ports.
+             */
+            override fun onVideoMediaOpCompleted(prm: OnVideoMediaOpCompletedParam) {
+                if (prm.status == PJSIP_STATUS_OK) return
+                logger.warn(TAG, "Video bridge op ${prm.opType} failed with status ${prm.status}")
             }
         }
         logger.info(TAG, "start: Endpoint constructed (JNI bindings loaded)")
@@ -1526,6 +1604,37 @@ internal class RealPjsipCoreGateway @Inject constructor(
             ?: failure("the stack did not answer in $CONFERENCE_MIX_TIMEOUT_MILLIS ms")
     }
 
+    /**
+     * Composes the conference picture here, from [callKeys], with no bridge involved.
+     *
+     * Separate from [setConferenceMembers] rather than folded into it because the two
+     * memberships are genuinely different: a member with no camera belongs in the audio
+     * mix and not in the picture, and the audio conference — which works — is not to be
+     * disturbed by video's arithmetic.
+     *
+     * Refuses rather than truncates past [VideoMix.MAX_PARTICIPANTS]. `pjmedia`'s mixer
+     * composes four sources onto a sink and simply does not draw a fifth, so a silent
+     * ceiling here would be a participant who is in the call, in the roster, and in
+     * nobody's picture.
+     */
+    override suspend fun setVideoConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String> {
+        if (callKeys.size > VideoMix.MAX_MEMBERS) {
+            return failure(
+                "a video conference holds ${VideoMix.MAX_PARTICIPANTS} people including this device, " +
+                    "and ${callKeys.size + 1} were asked for",
+            )
+        }
+        val answer = CompletableDeferred<Set<String>>()
+        onPjsip("setVideoConferenceMembers") {
+            answer.complete(videoConference.set(callKeys))
+            // The canvas may have moved to a different call, so the surfaces are
+            // re-applied: exactly one window may hold the screen's `Surface`.
+            calls.values.forEach { it.applyVideoWindows() }
+        }
+        return withTimeoutOrNull(CONFERENCE_MIX_TIMEOUT_MILLIS) { success(answer.await()) }
+            ?: failure("the stack did not answer in $CONFERENCE_MIX_TIMEOUT_MILLIS ms")
+    }
+
     override fun stopRecording(callKey: String) {
         onPjsip("stopRecording") {
             val running = endpoint ?: return@onPjsip
@@ -1704,6 +1813,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 // Before the media goes: a conference link into a released port is a
                 // use-after-free in a native bridge, not a stale entry in a map.
                 conference.remove(callKey)
+                // Before the ports go, and for a sharper reason than audio's: a video
+                // connect is queued and runs on a later clock tick, so a link requested a
+                // moment ago could otherwise land on a port freed in between.
+                videoConference.remove(callKey)
                 audioMedia = null
                 // And freed on the PJSIP thread, after this callback has returned — not
                 // from inside it, where the native frame is still this object's, and not
@@ -1771,6 +1884,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // can take it. Idempotent, so calling it on every media change costs nothing
             // when there is no conference or when nothing moved (ADR-009).
             if (conference.isActive) conference.remix()
+            // The same, for the picture. Separate call rather than folded into the line
+            // above: the two conferences can be active independently — an audio-only
+            // member of a video conference is an ordinary case.
+            if (videoConference.isActive) videoConference.remix()
 
             val state = callStateOf(info)
             // Media running again is our resume landing; anything else, LOCAL_HOLD
@@ -1991,10 +2108,19 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
                 // Incoming video draws into the remote surface; an outgoing-only stream is
                 // this device's own picture and draws into the preview.
-                val surface = if (media.dir and pjmedia_dir.PJMEDIA_DIR_DECODING != 0) {
-                    remoteSurface
-                } else {
-                    previewSurface
+                //
+                // While a video conference is mixing there is one composed picture and it
+                // belongs to ONE window — the canvas. Every call still has a window of its
+                // own and pjsua still connects that call's decoder to it, so handing the
+                // screen's single `Surface` to all of them would have three windows
+                // drawing three different pictures into it and the last writer winning.
+                // The others are given null: their window keeps rendering, into nothing.
+                val decoding = media.dir and pjmedia_dir.PJMEDIA_DIR_DECODING != 0
+                val isCanvas = !videoConference.isActive || callKey == canvasCallKey()
+                val surface = when {
+                    decoding && isCanvas -> remoteSurface
+                    decoding -> null
+                    else -> previewSurface
                 }
 
                 runCatching {
@@ -2127,6 +2253,45 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 ?.audioConfSlot ?: return null
             return if (slot == media.portId) PjConferencePort(media) else null
         }
+
+        /**
+         * The index of this call's active video stream, or null while it has none.
+         *
+         * Every video port accessor needs it and pjsua indexes its media list, not its
+         * streams, so the video stream is rarely at index 0 — on a call with audio it is
+         * at 1, and after a re-INVITE that removed and re-added video it can be higher.
+         */
+        private fun videoMediaIndex(): Int? = infoOrNull()?.media
+            ?.firstOrNull {
+                it.type == pjmedia_type.PJMEDIA_TYPE_VIDEO &&
+                    it.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE
+            }
+            ?.index?.toInt()
+
+        /** What the far end is sending us, as a bridge source. Null until video is running. */
+        fun decoderPort(): VideoPort? = runCatching {
+            val index = videoMediaIndex() ?: return null
+            PjVideoPort(getDecodingVideoMedia(index))
+        }.getOrNull()
+
+        /** What we send to this peer, as a bridge sink. Null until video is running. */
+        fun encoderPort(): VideoPort? = runCatching {
+            val index = videoMediaIndex() ?: return null
+            PjVideoPort(getEncodingVideoMedia(index))
+        }.getOrNull()
+
+        /**
+         * This call's on-screen window, as a bridge sink.
+         *
+         * Only the call chosen as the canvas is asked for one — see
+         * [RealPjsipCoreGateway.videoPortFor] — because a conference draws everybody into
+         * one window.
+         */
+        fun rendererPort(): VideoPort? = runCatching {
+            val index = videoMediaIndex() ?: return null
+            val info = infoOrNull()?.media?.getOrNull(index) ?: return null
+            PjVideoPort(info.videoWindow.getVideoMedia())
+        }.getOrNull()
 
         fun isTransmittingVideo(): Boolean {
             val info = infoOrNull() ?: return false
@@ -2950,6 +3115,9 @@ private fun captureOrientFor(degrees: Int): Int? = when (degrees) {
     else -> null
 }
 
+/** `PJ_SUCCESS`, which the bindings do not expose as a constant. */
+private const val PJSIP_STATUS_OK = 0
+
 private const val QUARTER_TURN_DEGREES = 90
 private const val HALF_TURN_DEGREES = 180
 private const val THREE_QUARTER_TURN_DEGREES = 270
@@ -3017,4 +3185,21 @@ private class PjConferencePort(private val media: AudioMedia) : ConferencePort {
     override fun transmitTo(other: ConferencePort) = media.startTransmit((other as PjConferencePort).media)
 
     override fun stopTransmitTo(other: ConferencePort) = media.stopTransmit((other as PjConferencePort).media)
+}
+
+/**
+ * [VideoPort] over a live `VideoMedia`.
+ *
+ * `startTransmit` takes a parameter object that is currently empty (`VideoMediaTransmitParam`
+ * has no fields) and is constructed per call rather than shared: it crosses into native
+ * code, and a single instance handed to concurrent calls would be one object two threads
+ * could be reading. Cheap enough not to be worth the risk.
+ */
+private class PjVideoPort(private val media: VideoMedia) : VideoPort {
+    override val id: Int get() = media.portId
+
+    override fun transmitTo(other: VideoPort) =
+        media.startTransmit((other as PjVideoPort).media, VideoMediaTransmitParam())
+
+    override fun stopTransmitTo(other: VideoPort) = media.stopTransmit((other as PjVideoPort).media)
 }

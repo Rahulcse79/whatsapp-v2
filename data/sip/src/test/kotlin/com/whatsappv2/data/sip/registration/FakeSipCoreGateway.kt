@@ -330,6 +330,14 @@ internal class FakeSipCoreGateway :
         return success(callKeys)
     }
 
+    /** Every membership the stack was asked to compose a picture for (2026-09-22). */
+    val videoConferenceMemberships: MutableList<Set<String>> = mutableListOf()
+
+    override suspend fun setVideoConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String> {
+        videoConferenceMemberships += callKeys
+        return success(callKeys)
+    }
+
     override suspend fun startRecording(callKey: String, filePath: String): Outcome<Unit, String> {
         recordingRefusal?.let { return failure(it) }
         startedRecordings += callKey to filePath
