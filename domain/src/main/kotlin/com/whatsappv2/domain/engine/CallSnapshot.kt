@@ -67,6 +67,19 @@ data class CallSnapshot(
     val conferenceKey: String? = null,
 
     /**
+     * True when the platform — Telecom — knows about this call.
+     *
+     * False for a member leg of a group call placed while another leg was already
+     * dialling, which the platform would have refused and was therefore not asked about
+     * (see [CallPlacement]). Such a leg has audio, controls and a place in the mix like
+     * any other; what it lacks is a Telecom connection of its own, so the platform's
+     * hold, route and end reports go to the leg that has one. The engine registers a
+     * survivor when the registered leg ends first, so this can turn from false to true
+     * during a call, never the other way.
+     */
+    val platformManaged: Boolean = true,
+
+    /**
      * A route the user asked for before the call had controls to hold it, or null.
      *
      * The audio route is the one control that exists before media does: the platform

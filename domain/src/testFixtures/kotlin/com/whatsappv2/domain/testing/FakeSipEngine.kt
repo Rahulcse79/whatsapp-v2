@@ -11,6 +11,7 @@ import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.CallStateMachine
 import com.whatsappv2.domain.call.TransitionResult
 import com.whatsappv2.domain.engine.CallDirection
+import com.whatsappv2.domain.engine.CallPlacement
 import com.whatsappv2.domain.engine.CallSnapshot
 import com.whatsappv2.domain.engine.ConferenceParticipant
 import com.whatsappv2.domain.engine.ConferenceSession
@@ -253,6 +254,7 @@ class FakeSipEngine(
         accountId: AccountId,
         target: SipUri,
         media: MediaProfile,
+        placement: CallPlacement,
     ): Outcome<CallId, SipError> {
         record(Operation.PLACE_CALL, target.render())
         if (accountId !in knownAccounts) return failure(SipError.UnknownAccount)
@@ -260,6 +262,10 @@ class FakeSipEngine(
 
         return guard(Operation.PLACE_CALL) {
             val callId = nextCallId()
+            // The real engine's rule (see CallPlacement): a member placed while a
+            // registered leg is still dialling is not registered with the platform.
+            val managed = placement == CallPlacement.STANDALONE ||
+                calls.value.none { it.platformManaged && it.state is CallState.Outgoing }
             calls.update {
                 it + CallSnapshot(
                     callId = callId,
@@ -271,6 +277,7 @@ class FakeSipEngine(
                     media = media,
                     startedAtEpochMillis = clock.nowEpochMillis(),
                     connectedAtEpochMillis = null,
+                    platformManaged = managed,
                 )
             }
             success(callId)
@@ -391,9 +398,10 @@ class FakeSipEngine(
         accountId: AccountId,
         conferenceUri: SipUri,
         media: MediaProfile,
+        placement: CallPlacement,
     ): Outcome<CallId, SipError> {
         record(Operation.JOIN_CONFERENCE, conferenceUri.render())
-        return when (val placed = placeCall(accountId, conferenceUri, media)) {
+        return when (val placed = placeCall(accountId, conferenceUri, media, placement)) {
             is Outcome.Failure -> placed
             is Outcome.Success -> guard(Operation.JOIN_CONFERENCE) {
                 updateCall(placed.value) { it.copy(isConference = true) }
@@ -492,7 +500,8 @@ class FakeSipEngine(
             ConferenceParticipant(id = ParticipantId(it.callId.value), uri = it.remote, displayName = it.remoteDisplayName)
         }
 
-        val joined = roomLeg?.let { success(it) } ?: joinConference(accountId, room, MediaProfile.AUDIO_VIDEO)
+        val joined = roomLeg?.let { success(it) }
+            ?: joinConference(accountId, room, MediaProfile.AUDIO_VIDEO, CallPlacement.CONFERENCE_MEMBER)
         if (joined is Outcome.Success) {
             updateCall(joined.value) { it.copy(isConference = true, conferenceKey = key) }
             conferenceSessions.update { sessions ->
@@ -790,12 +799,21 @@ class FakeSipEngine(
                     endings.tryEmit(updated)
                     calls.update { list -> list.filterNot { it.callId == callId } }
                     conferenceSessions.update { list -> list.filterNot { it.callId == callId } }
+                    // The real engine registers a survivor when the registered leg goes
+                    // (see CallPlacement); the fake does the same, at once.
+                    if (updated.platformManaged) promoteSurvivor()
                 } else {
                     calls.update { list -> list.map { if (it.callId == callId) updated else it } }
                 }
                 success(Unit)
             }
         }
+    }
+
+    private fun promoteSurvivor() {
+        if (calls.value.any { it.platformManaged }) return
+        val survivor = calls.value.firstOrNull { it.state.isEstablished } ?: calls.value.firstOrNull() ?: return
+        updateCall(survivor.callId) { it.copy(platformManaged = true) }
     }
 
     private companion object {

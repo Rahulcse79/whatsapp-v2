@@ -36,6 +36,7 @@ import com.whatsappv2.domain.call.CallStateMachine
 import com.whatsappv2.domain.call.CameraPolicy
 import com.whatsappv2.domain.call.TransitionResult
 import com.whatsappv2.domain.engine.CallDirection
+import com.whatsappv2.domain.engine.CallPlacement
 import com.whatsappv2.domain.engine.CallSnapshot
 import com.whatsappv2.domain.engine.CameraAvailability
 import com.whatsappv2.domain.engine.ConferenceParticipant
@@ -353,6 +354,9 @@ internal class PjsipSipEngine @Inject constructor(
      */
     private val pendingHolds: MutableSet<CallId> = ConcurrentHashMap.newKeySet()
 
+    /** Legs being registered with the platform after the fact ([promote]); one at a time each. */
+    private val promoting: MutableSet<CallId> = ConcurrentHashMap.newKeySet()
+
     private val conferenceSessions = MutableStateFlow<List<ConferenceSession>>(emptyList())
     override val conferences: StateFlow<List<ConferenceSession>> = conferenceSessions.asStateFlow()
 
@@ -384,8 +388,19 @@ internal class PjsipSipEngine @Inject constructor(
         pendingHolds -= callId
         transferTypes -= callId
         transferredInto -= callId
-        platform.onEnded(callId, reason)
+        if (ending?.platformManaged != false) platform.onEnded(callId, reason)
         ending?.let { ended.emitOrReport(logger, it, "endedCalls") }
+        // Launched rather than awaited: this runs from the event collector, and Telecom
+        // answers a registration through a callback the collector must stay free to deliver.
+        if (ending?.platformManaged == true) {
+            survivorToPromote(calls.value.values)?.let { scope.launch { promote(it) } }
+        }
+    }
+
+    /** [promoteToPlatform], with this engine's pieces; the lambda marks the call managed and reads it back. */
+    private suspend fun promote(callId: CallId) = promoteToPlatform(calls.value[callId], platform, logger, promoting) {
+        updateCalls { live -> live[callId]?.let { live + (callId to it.copy(platformManaged = true)) } ?: live }
+        calls.value[callId]
     }
 
     /**
@@ -740,32 +755,11 @@ internal class PjsipSipEngine @Inject constructor(
         if (justConnected) markConferenceIfRoom(id, current)
     }
 
-    /**
-     * Tells Telecom what this event changed.
-     *
-     * The platform does not learn about a re-INVITE by itself, and a held call on a car
-     * display or a lock screen must show a resume button rather than a hold one. Reported
-     * only on a change, because setting the same state again is a no-op the platform still
-     * has to process (Task 41).
-     *
-     * `Resuming` counts as held here. The media is still paused while the re-INVITE is in
-     * flight, and the far end can refuse it — in which case the call returns to `Held`
-     * and, if Telecom had been told "active" on the way out, would now have to be told
-     * "held" again for a call that never moved. Telecom learns the call is active when
-     * media is, which is the same rule the state machine applies for `Connected`.
-     */
-    private fun reportToPlatform(
-        id: CallId,
-        current: CallSnapshot,
-        next: CallState?,
-        justConnected: Boolean,
-    ) {
-        if (justConnected) platform.onConnected(id)
-
-        val wasHeld = current.state.isHeldForPlatform
-        val isHeld = next?.isHeldForPlatform == true
-        if (next != null && wasHeld != isHeld) platform.onHoldChanged(id, isHeld)
-    }
+    /** [reportTransition], with the promotion an unmanaged leg earns by connecting alone. */
+    private fun reportToPlatform(id: CallId, current: CallSnapshot, next: CallState?, justConnected: Boolean) =
+        reportTransition(current, next, justConnected, platform) {
+            if (calls.value.values.none { it.platformManaged }) scope.launch { promote(id) }
+        }
 
     /** The call as it now is, with the media the stack actually negotiated. */
     private fun store(
@@ -893,11 +887,22 @@ internal class PjsipSipEngine @Inject constructor(
      * Returns as soon as the INVITE is handed to the stack. Everything after that arrives
      * on [activeCalls] — the contract says explicitly not to wait on this for the call to
      * connect.
+     *
+     * ## A member of a group call is not registered while another leg is dialling
+     *
+     * Telecom permits one outgoing call in progress, so the legs of a conference placed
+     * together cannot all have a connection; [CallPlacement] says which do. A
+     * [CallPlacement.CONFERENCE_MEMBER] placed while a registered leg is still dialling
+     * is placed without asking — asking would be refused, and the whole point is that it
+     * goes out now. When nothing is dialling it is registered like any other call, so
+     * the first leg of a group carries the platform's side of it and every leg placed
+     * while that one rings is carried by it.
      */
     override suspend fun placeCall(
         accountId: AccountId,
         target: SipUri,
         media: MediaProfile,
+        placement: CallPlacement,
     ): Outcome<CallId, SipError> {
         if (!started) return failure(SipError.EngineUnavailable)
 
@@ -908,7 +913,8 @@ internal class PjsipSipEngine @Inject constructor(
         if (registration?.isUsable != true) return failure(SipError.NotRegistered)
 
         val callId = CallId(UUID.randomUUID().toString())
-        val snapshot = outgoingSnapshot(callId, accountId, target, media, clock.nowEpochMillis())
+        val register = placement.registersWithPlatform(calls.value.values)
+        val snapshot = outgoingSnapshot(callId, accountId, target, media, clock.nowEpochMillis(), register)
         updateCalls { it + (callId to snapshot) }
 
         // Telecom, before the INVITE. It knows about the cellular call this app cannot
@@ -916,7 +922,7 @@ internal class PjsipSipEngine @Inject constructor(
         // snapshot goes back out again on anything but a yes: a call that will never exist
         // must not be left on screen. A refusal and a silence part company only in what
         // the user is told — the first names the other call, the second must not.
-        val notPlaced = platform.registerOutgoing(snapshot).refusal()
+        val notPlaced = if (register) platform.registerOutgoing(snapshot).refusal() else null
         if (notPlaced != null) {
             updateCalls { it - callId }
             when (notPlaced) {
@@ -925,7 +931,7 @@ internal class PjsipSipEngine @Inject constructor(
             }
             return failure(notPlaced)
         }
-
+        if (!register) logger.info(TAG, "Placing $callId beside a dialling call; the platform is not told")
         callGateway.placeCall(
             callKey = callId.value,
             accountKey = accountId.value,
@@ -1169,7 +1175,12 @@ internal class PjsipSipEngine @Inject constructor(
         val call = calls.value[callId] ?: return failure(SipError.UnknownCall)
         if (!call.state.isActive) return failure(SipError.InvalidState("call is ${call.state}"))
 
-        if (!platform.requestAudioRoute(callId, route)) {
+        // The device has one audio path, and the platform routes it through whichever leg
+        // it knows about — for a member leg it was not told of, that is the registered
+        // leg beside it (see [CallPlacement]). With none, the route is recorded on the
+        // call and applied when a leg is registered ([promote]).
+        val carrier = call.platformCarrier(calls.value.values)
+        if (carrier != null && !platform.requestAudioRoute(carrier, route)) {
             return failure(SipError.InvalidState("$route is not available"))
         }
         if (call.state.controlsOrNull == null) {
@@ -1322,8 +1333,9 @@ internal class PjsipSipEngine @Inject constructor(
         accountId: AccountId,
         conferenceUri: SipUri,
         media: MediaProfile,
+        placement: CallPlacement,
     ): Outcome<CallId, SipError> {
-        val placed = placeCall(accountId, conferenceUri, media)
+        val placed = placeCall(accountId, conferenceUri, media, placement)
         if (placed !is Outcome.Success) return placed
 
         openConferenceSession(placed.value, accountId, conferenceUri)
@@ -1476,7 +1488,9 @@ internal class PjsipSipEngine @Inject constructor(
             resume = { holdLeg(it, held = false) },
             refer = { transfer(it, room, TransferType.BLIND, consultationCallId = null) },
             stamp = ::stampConference,
-            join = { accountId -> joinConference(accountId, room, MediaProfile.AUDIO_VIDEO) },
+            // As a member: a group call-back merges while its first leg may still be
+            // ringing, and a registered join would be refused then (see [CallPlacement]).
+            join = { joinConference(it, room, MediaProfile.AUDIO_VIDEO, CallPlacement.CONFERENCE_MEMBER) },
             recordInvited = { ourLeg, members ->
                 conferenceSessions.update { all ->
                     all.map { if (it.callId == ourLeg) it.withInvited(members) else it }
@@ -1878,6 +1892,7 @@ private fun outgoingSnapshot(
     target: SipUri,
     media: MediaProfile,
     startedAtEpochMillis: Long,
+    platformManaged: Boolean,
 ): CallSnapshot = CallSnapshot(
     callId = callId,
     accountId = accountId,
@@ -1888,7 +1903,24 @@ private fun outgoingSnapshot(
     media = media,
     startedAtEpochMillis = startedAtEpochMillis,
     connectedAtEpochMillis = null,
+    platformManaged = platformManaged,
 )
+
+/**
+ * Whether a call placed this way is registered with the platform (see [CallPlacement]).
+ *
+ * A standalone call always; a member of a group only when no registered call is still
+ * being placed, because the platform refuses a second outgoing call while one dials.
+ */
+private fun CallPlacement.registersWithPlatform(live: Collection<CallSnapshot>): Boolean =
+    this == CallPlacement.STANDALONE || live.none { it.platformManaged && it.state is CallState.Outgoing }
+
+/**
+ * The call the platform routes this call's audio through: itself when registered,
+ * otherwise the registered leg beside it, or null with none (see [CallPlacement]).
+ */
+private fun CallSnapshot.platformCarrier(live: Collection<CallSnapshot>): CallId? =
+    if (platformManaged) callId else live.firstOrNull { it.platformManaged }?.callId
 
 /** The snapshot an inbound INVITE is published as, ringing, from the address it came from (Task 37). */
 private fun incomingSnapshot(
@@ -2104,6 +2136,119 @@ private suspend fun referLegsIntoRoom(
             .onSuccess { logger.info(PjsipSipEngine.TAG, "Transferred $callId into the conference") }
     }
     return success(accountId)
+}
+
+/**
+ * Tells Telecom what this event changed.
+ *
+ * The platform does not learn about a re-INVITE by itself, and a held call on a car
+ * display or a lock screen must show a resume button rather than a hold one. Reported
+ * only on a change, because setting the same state again is a no-op the platform still
+ * has to process (Task 41).
+ *
+ * `Resuming` counts as held here. The media is still paused while the re-INVITE is in
+ * flight, and the far end can refuse it — in which case the call returns to `Held`
+ * and, if Telecom had been told "active" on the way out, would now have to be told
+ * "held" again for a call that never moved. Telecom learns the call is active when
+ * media is, which is the same rule the state machine applies for `Connected`.
+ *
+ * A leg the platform was never told about has nothing to report to it — except that,
+ * connected with no registered leg beside it, it should become the one the platform
+ * knows, which is [onConnectedUnmanaged]'s call to make (see [CallPlacement]).
+ *
+ * At file level because `PjsipSipEngine` is at detekt's `LargeClass` bound, and because
+ * this needs nothing of the engine but the registry and the two snapshots.
+ */
+private fun reportTransition(
+    current: CallSnapshot,
+    next: CallState?,
+    justConnected: Boolean,
+    platform: PlatformCallRegistry,
+    onConnectedUnmanaged: () -> Unit,
+) {
+    if (!current.platformManaged) {
+        if (justConnected) onConnectedUnmanaged()
+        return
+    }
+    if (justConnected) platform.onConnected(current.callId)
+
+    val wasHeld = current.state.isHeldForPlatform
+    val isHeld = next?.isHeldForPlatform == true
+    if (next != null && wasHeld != isHeld) platform.onHoldChanged(current.callId, isHeld)
+}
+
+/**
+ * The leg to register with the platform now that the one it knew has gone, or null.
+ *
+ * A group call whose registered leg ends first — the first member hangs up, or was busy
+ * while the others rang — would otherwise be a live call the platform believes is over:
+ * audio focus abandoned, the route reset, nothing on the lock screen (see
+ * [CallPlacement]). So a survivor takes the connection, established ones first, because
+ * a connection for a call already in progress is worth more than one for a call that may
+ * never be answered. Null while a registered call remains, or with nothing left.
+ *
+ * At file level because `PjsipSipEngine` is at detekt's `LargeClass` bound, and because
+ * the choice is pure: a list in, a call id out.
+ */
+private fun survivorToPromote(live: Collection<CallSnapshot>): CallId? {
+    if (live.any { it.platformManaged }) return null
+    return (live.firstOrNull { it.state.isEstablished } ?: live.firstOrNull())?.callId
+}
+
+/**
+ * Registers [call] with the platform and brings its new connection up to date.
+ *
+ * Told active if it is, held if it is, and given the route the call is on, which a
+ * fresh connection does not inherit. A platform that will not take it — a cellular call
+ * began meanwhile — leaves the call as it was: live, and unmanaged, which is still a
+ * call the user can hear and end.
+ *
+ * The call is read again after the platform has answered, not before: registration
+ * waits on Telecom, and the call can connect, be held or end in that time. What the
+ * connection is told is the call as it is *then*. A call that ended meanwhile has the
+ * platform told so at once, so the connection it just made does not outlive the call.
+ *
+ * Guarded by [inFlight], because the two things that ask for a promotion — the
+ * registered leg ending, and an unmanaged leg connecting alone — can ask for the same
+ * leg within one event, and two registrations would give the platform two connections
+ * for one call.
+ *
+ * @param call the call as it was when the promotion was decided, or null if it has
+ *   ended since — nothing to do then.
+ * @param inFlight the legs whose registration is under way; this one is added for the
+ *   duration and skipped if already there.
+ * @param markManaged records the call as the platform's and returns it as it now is,
+ *   or null if it has ended; the engine's own call map.
+ */
+private suspend fun promoteToPlatform(
+    call: CallSnapshot?,
+    platform: PlatformCallRegistry,
+    logger: Logger,
+    inFlight: MutableSet<CallId>,
+    markManaged: (CallId) -> CallSnapshot?,
+) {
+    if (call == null || call.platformManaged || !inFlight.add(call.callId)) return
+    val callId = call.callId
+    try {
+        when (platform.registerOutgoing(call)) {
+            PlatformDecision.Permitted -> Unit
+            PlatformDecision.Refused, PlatformDecision.Unavailable -> {
+                logger.warn(PjsipSipEngine.TAG, "The platform would not take $callId; the call goes on without it")
+                return
+            }
+        }
+        val live = markManaged(callId)
+        if (live == null) {
+            platform.onEnded(callId, HangupReason.LOCAL_HANGUP)
+            return
+        }
+        if (live.state.isEstablished) platform.onConnected(callId)
+        if (live.state.isHeldForPlatform) platform.onHoldChanged(callId, true)
+        live.state.controlsOrNull?.audioRoute?.let { platform.requestAudioRoute(callId, it) }
+        logger.info(PjsipSipEngine.TAG, "$callId now carries the platform's side of the call")
+    } finally {
+        inFlight -= callId
+    }
 }
 
 /**

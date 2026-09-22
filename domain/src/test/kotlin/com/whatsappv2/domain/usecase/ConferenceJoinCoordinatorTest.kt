@@ -4,6 +4,7 @@ import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.SecondCallResponse
+import com.whatsappv2.domain.engine.CallPlacement
 import com.whatsappv2.domain.engine.ConferenceRoom
 import com.whatsappv2.domain.engine.NoCameraAvailable
 import com.whatsappv2.domain.model.AccountId
@@ -124,82 +125,144 @@ class ConferenceJoinCoordinatorTest {
     }
 
     @Test
-    fun `a conference called back is dialled one member at a time, and forms as they answer`() = runTest {
-        // Telecom permits one outgoing call in progress: the second member is dialled
-        // only once the first has been answered (or has given up), from the
-        // coordinator's own scope — the screen that asked is gone by then.
+    fun `a call-back dials every member at the same time and mixes them as they answer`() = runTest {
+        // The history screen's swipe on a conference row. Every member's phone rings at
+        // once; each is mixed in as they answer. The joins happen in the coordinator's
+        // own scope — the screen that asked is gone by then.
         val engine = FakeSipEngine().givenRegistered(account)
         val (joins, job) = running(engine)
-        val dialled = mutableListOf<String>()
-        val members = listOf("bob", "carol", "dave").map { user ->
-            suspend {
-                dialled += user
-                engine.placeCall(account.id, uri(user), MediaProfile.AUDIO).getOrNull()
-            }
+        val dialled = mutableListOf<Pair<String, CallPlacement>>()
+        fun member(user: String): suspend (CallPlacement) -> CallId? = { placement ->
+            dialled += user to placement
+            engine.placeCall(account.id, uri(user), MediaProfile.AUDIO, placement).getOrNull()
         }
+        val members = listOf(member("bob"), member("carol"), member("dave"))
 
-        val first = joins.callBack(members)
+        val first = joins.callBack(members)!!
         runCurrent()
-        assertEquals(listOf("bob"), dialled, "the rest wait for the first to be answered")
+        assertEquals(
+            listOf("bob", "carol", "dave"),
+            dialled.map { it.first },
+            "everyone is dialled before anyone answers",
+        )
+        assertEquals(
+            listOf(CallPlacement.STANDALONE, CallPlacement.CONFERENCE_MEMBER, CallPlacement.CONFERENCE_MEMBER),
+            dialled.map { it.second },
+            "the first leg is the platform's; the rest are placed beside it",
+        )
+        assertEquals(3, engine.activeCalls.value.size, "three INVITEs are out")
+        assertEquals(
+            listOf(true, false, false),
+            engine.activeCalls.value.map { it.platformManaged },
+            "only the first leg is registered with the platform",
+        )
 
-        engine.simulateRemoteAnswer(first!!)
-        runCurrent()
-        assertEquals(listOf("bob", "carol"), dialled)
         val second = engine.activeCalls.value.single { it.remote == uri("carol") }.callId
-        engine.simulateRemoteAnswer(second)
-        runCurrent()
-
-        assertEquals(setOf(first, second), engine.mixedCalls.value, "two answered members are a conference")
-        assertEquals(listOf("bob", "carol", "dave"), dialled, "and the third goes out once the second settled")
         val third = engine.activeCalls.value.single { it.remote == uri("dave") }.callId
         engine.simulateRemoteAnswer(third)
+        runCurrent()
+        assertTrue(engine.mixedCalls.value.isEmpty(), "one answered member is a call, not a conference")
+
+        engine.simulateRemoteAnswer(first)
+        runCurrent()
+        assertEquals(
+            setOf(first, third),
+            engine.mixedCalls.value,
+            "two answered members are a conference, whichever answered first",
+        )
+
+        engine.simulateRemoteAnswer(second)
         runCurrent()
         assertEquals(setOf(first, second, third), engine.mixedCalls.value)
         job.cancel()
     }
 
     @Test
-    fun `a member who does not answer does not hold the others up for good`() = runTest {
+    fun `the platform's leg ending first hands its connection to a survivor`() = runTest {
+        // The first member is busy and the INVITE fails while the others still ring. The
+        // platform must not think the call is over: a survivor takes the registration.
         val engine = FakeSipEngine().givenRegistered(account)
         val (joins, job) = running(engine)
-        val dialled = mutableListOf<String>()
-        val members = listOf("bob", "carol").map { user ->
-            suspend {
-                dialled += user
-                engine.placeCall(account.id, uri(user), MediaProfile.AUDIO).getOrNull()
-            }
+        fun member(user: String): suspend (CallPlacement) -> CallId? = { placement ->
+            engine.placeCall(account.id, uri(user), MediaProfile.AUDIO, placement).getOrNull()
         }
+        val members = listOf(member("bob"), member("carol"))
 
         val first = joins.callBack(members)!!
         runCurrent()
+        val second = engine.activeCalls.value.single { it.remote == uri("carol") }
+        assertFalse(second.platformManaged)
+
         engine.simulateRemoteHangup(first)
         runCurrent()
-
-        assertEquals(listOf("bob", "carol"), dialled, "a leg that ended is settled, and the next goes out")
+        assertTrue(
+            engine.activeCalls.value.single().platformManaged,
+            "the surviving leg now carries the platform's side of the call",
+        )
         job.cancel()
     }
 
     @Test
-    fun `a video call-back builds the conference in the bridge, one member at a time`() = runTest {
+    fun `a first member who cannot be dialled is skipped and the next leads`() = runTest {
+        val engine = FakeSipEngine().givenRegistered(account)
+        val (joins, job) = running(engine)
+        val dialled = mutableListOf<Pair<String, CallPlacement>>()
+        fun member(user: String, dialable: Boolean): suspend (CallPlacement) -> CallId? = { placement ->
+            dialled += user to placement
+            if (dialable) engine.placeCall(account.id, uri(user), MediaProfile.AUDIO, placement).getOrNull() else null
+        }
+        val members = listOf(
+            member("bob", dialable = false),
+            member("carol", dialable = true),
+            member("dave", dialable = true),
+        )
+
+        val first = joins.callBack(members)
+        runCurrent()
+        assertEquals(engine.activeCalls.value.first { it.remote == uri("carol") }.callId, first)
+        assertEquals(
+            listOf(
+                "bob" to CallPlacement.STANDALONE,
+                "carol" to CallPlacement.STANDALONE,
+                "dave" to CallPlacement.CONFERENCE_MEMBER,
+            ),
+            dialled,
+            "the lead is tried standalone until one goes out; the rest follow beside it",
+        )
+        job.cancel()
+    }
+
+    @Test
+    fun `a call-back with nobody dialable places nothing`() = runTest {
+        val engine = FakeSipEngine().givenRegistered(account)
+        val (joins, job) = running(engine)
+        val none = List<suspend (CallPlacement) -> CallId?>(2) { { _ -> null } }
+        assertEquals(null, joins.callBack(none))
+        assertTrue(engine.activeCalls.value.isEmpty())
+        job.cancel()
+    }
+
+    @Test
+    fun `a video call-back dials everyone at once and builds the conference in the bridge`() = runTest {
         // The history screen's left swipe on a conference. Every member is dialled with
-        // video; the first two are sent to the room together and this device follows them
-        // in; each later one is sent to join the leg this device already holds. Nothing is
-        // dialled over a ringing INVITE, because Telecom refuses the second one.
+        // video at the same moment; the first two to answer are sent to the room together
+        // and this device follows them in; each later one is sent to join the leg this
+        // device already holds.
         val engine = FakeSipEngine().givenRegistered(account)
         val (joins, job) = running(engine)
         val dialled = mutableListOf<CallId>()
-        fun member(user: String): suspend () -> CallId? = {
-            engine.placeCall(account.id, uri(user), MediaProfile.AUDIO_VIDEO).getOrNull()?.also { dialled += it }
+        fun member(user: String): suspend (CallPlacement) -> CallId? = { placement ->
+            engine.placeCall(account.id, uri(user), MediaProfile.AUDIO_VIDEO, placement).getOrNull()
+                ?.also { dialled += it }
         }
 
         val first = joins.callBack(listOf(member("bob"), member("carol"), member("dave")), video = true)
         runCurrent()
         assertEquals(dialled.first(), first, "the screen follows the first leg out")
-        assertEquals(1, dialled.size, "one INVITE at a time")
+        assertEquals(3, dialled.size, "every member rings at once")
 
         engine.simulateRemoteAnswer(dialled[0])
         runCurrent()
-        assertEquals(2, dialled.size, "the second member is dialled once the first has answered")
         assertTrue(engine.bridgeMergeRequests.isEmpty(), "one answered leg is a call, not a conference")
 
         // Telecom parks the first leg when the second connects.
@@ -212,12 +275,12 @@ class ConferenceJoinCoordinatorTest {
             "both legs go to the room",
         )
         val roomLeg = engine.conferences.value.single().callId
-        assertEquals(2, dialled.size, "nobody is dialled while this device's own leg to the room is ringing")
+        assertTrue(
+            engine.activeCalls.value.single { it.callId == roomLeg }.platformManaged,
+            "nothing registered is dialling — the lead is held — so the room leg is registered like any call",
+        )
 
         engine.simulateRemoteAnswer(roomLeg)
-        runCurrent()
-        assertEquals(3, dialled.size, "the third member is dialled once this device is in the room")
-
         engine.setHold(roomLeg, held = true)
         engine.simulateRemoteAnswer(dialled[2])
         runCurrent()
@@ -227,6 +290,42 @@ class ConferenceJoinCoordinatorTest {
         assertTrue(
             engine.activeCalls.value.all { it.isConference && it.conferenceKey == key },
             "every leg and the room leg carry the one conference key: ${engine.activeCalls.value}",
+        )
+        job.cancel()
+    }
+
+    @Test
+    fun `the room is joined beside a still-ringing lead without asking the platform`() = runTest {
+        // The two members who answered first were not the lead. The lead's INVITE is
+        // the platform's, still ringing, and a registered join would be refused — so
+        // the room is joined as a member, and takes the registration when the lead goes.
+        val engine = FakeSipEngine().givenRegistered(account)
+        val (joins, job) = running(engine)
+        val dialled = mutableListOf<CallId>()
+        fun member(user: String): suspend (CallPlacement) -> CallId? = { placement ->
+            engine.placeCall(account.id, uri(user), MediaProfile.AUDIO_VIDEO, placement).getOrNull()
+                ?.also { dialled += it }
+        }
+        joins.callBack(listOf(member("bob"), member("carol"), member("dave")), video = true)
+        runCurrent()
+
+        engine.simulateRemoteAnswer(dialled[1])
+        engine.simulateRemoteAnswer(dialled[2])
+        runCurrent()
+
+        val roomLeg = engine.conferences.value.single().callId
+        assertFalse(
+            engine.activeCalls.value.single { it.callId == roomLeg }.platformManaged,
+            "joined beside the ringing lead",
+        )
+        assertEquals(setOf(dialled[1], dialled[2]), engine.bridgeMergeRequests.single().first)
+
+        engine.simulateRemoteHangup(dialled[0])
+        runCurrent()
+        assertEquals(
+            1,
+            engine.activeCalls.value.count { it.platformManaged },
+            "one leg carries the platform's side once the lead is gone: ${engine.activeCalls.value}",
         )
         job.cancel()
     }

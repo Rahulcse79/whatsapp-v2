@@ -3,6 +3,7 @@ package com.whatsappv2.data.sip
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.failure
 import com.whatsappv2.domain.call.AudioRoute
+import com.whatsappv2.domain.engine.CallPlacement
 import com.whatsappv2.domain.engine.CallSnapshot
 import com.whatsappv2.domain.engine.ConferenceSession
 import com.whatsappv2.domain.engine.IncomingCall
@@ -76,6 +77,7 @@ class UnavailableSipEngine @Inject constructor() : SipEngine {
         accountId: AccountId,
         target: SipUri,
         media: MediaProfile,
+        placement: CallPlacement,
     ): Outcome<CallId, SipError> = failure(SipError.EngineUnavailable)
 
     override suspend fun answer(callId: CallId, media: MediaProfile) = unavailable()
@@ -109,6 +111,7 @@ class UnavailableSipEngine @Inject constructor() : SipEngine {
         accountId: AccountId,
         conferenceUri: SipUri,
         media: MediaProfile,
+        placement: CallPlacement,
     ): Outcome<CallId, SipError> = failure(SipError.EngineUnavailable)
 
     /** ADR-009's local mixing needs a running stack just as much as a call does. */

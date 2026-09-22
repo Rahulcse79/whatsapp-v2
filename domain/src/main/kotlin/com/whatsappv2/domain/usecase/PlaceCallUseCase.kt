@@ -2,6 +2,7 @@ package com.whatsappv2.domain.usecase
 
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.failure
+import com.whatsappv2.domain.engine.CallPlacement
 import com.whatsappv2.domain.engine.CameraAvailability
 import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.engine.SipError
@@ -91,11 +92,14 @@ class PlaceCallUseCase @Inject constructor(
      * @param accountOverride the per-call account, or null to use the default.
      * @param media what to offer. A video profile is downgraded to audio when the camera
      *   cannot be used, so the call is placed either way.
+     * @param placement standalone, or one leg of a group being placed together — see
+     *   [CallPlacement] for what the platform is told in each case.
      */
     suspend operator fun invoke(
         input: String,
         accountOverride: AccountId? = null,
         media: MediaProfile = MediaProfile.AUDIO,
+        placement: CallPlacement = CallPlacement.STANDALONE,
     ): Outcome<CallId, PlaceCallError> {
         val account = when (accountOverride) {
             null -> accounts.observeDefaultAccount().first()
@@ -115,7 +119,7 @@ class PlaceCallUseCase @Inject constructor(
 
         val offered = media.downgradedWhenCameraUnavailable(camera.isCameraUsable())
 
-        return when (val result = calls.placeCall(account.id, target, offered)) {
+        return when (val result = calls.placeCall(account.id, target, offered, placement)) {
             is Outcome.Success -> result
             is Outcome.Failure -> failure(PlaceCallError.Rejected(result.error))
         }
