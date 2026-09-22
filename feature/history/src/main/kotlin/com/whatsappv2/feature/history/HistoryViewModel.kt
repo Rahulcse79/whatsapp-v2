@@ -10,8 +10,10 @@ import androidx.paging.insertSeparators
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.domain.call.userMessage
+import com.whatsappv2.domain.engine.CallPlacement
 import com.whatsappv2.domain.engine.CameraAvailability
 import com.whatsappv2.domain.engine.ConferenceRoom
+import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.CallLogEntry
 import com.whatsappv2.domain.model.CallLogId
 import com.whatsappv2.domain.model.MediaProfile
@@ -276,14 +278,15 @@ class HistoryViewModel @Inject constructor(
     }
 
     /**
-     * Every member dialled, each asked to join as they answer.
+     * Every member dialled at once, each asked to join as they answer.
      *
      * One INVITE per distinct address — a member who was dialled twice in the original
      * (the roster makes that visible now) is dialled once, and the room itself is never
      * dialled as if it were a person ([HistoryRow.Call.members]). The screen is moved to
-     * the first leg that goes out; the coordinator dials the rest one by one from there,
-     * for the reason its `callBack` gives, and a member that cannot be dialled is
-     * skipped, because a conference minus one absent person is still the conference.
+     * the first leg that goes out; the coordinator places the rest together beside it,
+     * with the placement it decides ([CallPlacement]), and a member that cannot be
+     * dialled is skipped, because a conference minus one absent person is still the
+     * conference.
      *
      * @param video true to dial with video and assemble the conference in the bridge;
      *   false for a voice conference mixed here.
@@ -293,13 +296,15 @@ class HistoryViewModel @Inject constructor(
         val media = if (video) MediaProfile.AUDIO_VIDEO else MediaProfile.AUDIO
         viewModelScope.launch {
             val members = row.members.map { it.entry }.distinctBy { it.remote }.map { entry ->
-                suspend {
+                val dial: suspend (CallPlacement) -> CallId? = { placement ->
                     placeCall(
                         input = entry.redialTarget(),
                         accountOverride = entry.accountId,
                         media = media,
+                        placement = placement,
                     ).getOrNull()
                 }
+                dial
             }
             val first = joins.callBack(members, video)
             eventChannel.send(

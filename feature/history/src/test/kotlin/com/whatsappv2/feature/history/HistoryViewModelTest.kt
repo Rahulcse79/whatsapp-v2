@@ -283,9 +283,9 @@ class HistoryViewModelTest {
     @Test
     fun `calling a conference back dials every member once and asks for each to join`() = runTest {
         // Called back as one, the way a group call is anywhere else: one INVITE per
-        // distinct member — 1005 was dialled twice in the original — each dialled as the
-        // one before it answers (Telecom refuses a second INVITE while the first rings),
-        // and each mixed in as they answer, which is the join coordinator's job from here.
+        // distinct member — 1005 was dialled twice in the original — every one of them
+        // placed at the same moment so everybody's phone rings together, and each mixed
+        // in as they answer, which is the join coordinator's job from here.
         accounts.given(work(domain = "sip.example.com"))
         engine.givenRegistered(work(domain = "sip.example.com"))
         val conference = recordedConference(listOf("1001", "1005", "1005", "1002"))
@@ -293,14 +293,19 @@ class HistoryViewModelTest {
 
         viewModel().onCallBack(conference)
         advanceUntilIdle()
-        assertEquals(listOf("sip:1001@sip.example.com"), engine.activeCalls.value.map { it.remote.render() })
-        assertEquals(MediaProfile.AUDIO, engine.activeCalls.value.single().media)
-
-        answerEveryRingingCall()
         assertEquals(
             listOf("sip:1001@sip.example.com", "sip:1005@sip.example.com", "sip:1002@sip.example.com"),
             engine.activeCalls.value.map { it.remote.render() },
+            "everyone is dialled before anyone has answered",
         )
+        assertTrue(engine.activeCalls.value.all { it.media == MediaProfile.AUDIO })
+        assertEquals(
+            listOf(true, false, false),
+            engine.activeCalls.value.map { it.platformManaged },
+            "the first leg is the platform's; the rest go out beside it",
+        )
+
+        answerEveryRingingCall()
         assertTrue(engine.bridgeMergeRequests.isEmpty(), "a voice conference is mixed here, not in the bridge")
         assertEquals(engine.activeCalls.value.map { it.callId }.toSet(), engine.mixedCalls.value)
         loop.cancel()
@@ -358,7 +363,8 @@ class HistoryViewModelTest {
         viewModel.onVideoCallBack(conference)
         advanceUntilIdle()
 
-        assertEquals(MediaProfile.AUDIO, engine.activeCalls.value.single().media)
+        assertEquals(2, engine.activeCalls.value.size, "both members are dialled")
+        assertTrue(engine.activeCalls.value.all { it.media == MediaProfile.AUDIO })
         assertTrue(events.any { it is HistoryEvent.CallPlaced }, "the call-back went out: $events")
         assertTrue(events.any { it is HistoryEvent.Notice }, "the downgrade was not said: $events")
         collector.cancel()

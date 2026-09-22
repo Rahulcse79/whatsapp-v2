@@ -210,11 +210,16 @@ interface SipCallController {
      * Fails with [SipError.NotRegistered] if the account is not registered, and with
      * [SipError.MediaNegotiationFailed] when the account requires SRTP and the peer
      * cannot provide it (§7, DoD 13).
+     *
+     * @param placement whether this call stands alone or is one leg of a group being
+     *   placed together, which decides whether the platform is told about it — see
+     *   [CallPlacement].
      */
     suspend fun placeCall(
         accountId: AccountId,
         target: SipUri,
         media: MediaProfile,
+        placement: CallPlacement = CallPlacement.STANDALONE,
     ): Outcome<CallId, SipError>
 
     /** Answers a ringing call with the given media. */
@@ -359,11 +364,16 @@ interface SipConferenceController {
      *
      * Returns the underlying [CallId]; leaving the conference is [SipCallController.hangup]
      * on it.
+     *
+     * @param placement [CallPlacement.CONFERENCE_MEMBER] when the room is being joined
+     *   beside legs this device is still placing — a merge in the middle of a group
+     *   call-back — so the platform's one-outgoing-call limit cannot refuse the join.
      */
     suspend fun joinConference(
         accountId: AccountId,
         conferenceUri: SipUri,
         media: MediaProfile,
+        placement: CallPlacement = CallPlacement.STANDALONE,
     ): Outcome<CallId, SipError>
 
     /**
