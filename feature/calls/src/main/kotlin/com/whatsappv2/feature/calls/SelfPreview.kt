@@ -2,6 +2,8 @@ package com.whatsappv2.feature.calls
 
 import android.view.Gravity
 import android.view.TextureView
+import android.view.View
+import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.animation.core.animateIntOffsetAsState
 import androidx.compose.foundation.background
@@ -102,8 +104,24 @@ import kotlin.math.roundToInt
  * next tap is the chrome's again. The tap lands on `CallVideo`'s picture-tap target, which
  * is why [state] is hoisted there rather than kept here.
  *
+ * ## It steps aside for the controls
+ *
+ * The bottom corners are inset by `Sizing.videoPreviewControlsInset`, which clears the
+ * End button and nothing else — and the in-call chrome is three rows of controls above
+ * that button. While the chrome was up, a preview parked in a bottom corner sat behind
+ * Add and Transfer, with the Transfer button drawn across the middle of the camera
+ * (TC15, 2026-09-22). The buttons win the touch, deliberately, so nothing was unreachable;
+ * it just looked broken, and the picture it exists to show was covered. So the screen
+ * tells the preview how tall its controls are ([bottomClearance]) while they are
+ * visible, and the bottom corners park above them; when the chrome fades the clearance
+ * goes back to the token and the card glides down. Only when it fits: a maximised card is
+ * taller than the space above the controls, and pushing it up against the title would
+ * cover the name of the person the call is with, so that one stays where it was.
+ *
  * @param state the preview's placement, owned by the caller so a tap outside the preview
  *   can reach it. [rememberSelfPreviewState] is the one way to make one.
+ * @param bottomClearance how much of the bottom edge, in pixels, the in-call controls
+ *   currently occupy — zero while they are hidden. See above.
  */
 @Composable
 internal fun SelfPreview(
@@ -111,6 +129,7 @@ internal fun SelfPreview(
     localFrame: VideoSize,
     modifier: Modifier = Modifier,
     state: SelfPreviewState = rememberSelfPreviewState(),
+    bottomClearance: Int = 0,
 ) {
     // Insets applied here rather than to the offsets, so the corner arithmetic below works
     // in a coordinate space that already excludes the status and navigation bars. A corner
@@ -126,9 +145,14 @@ internal fun SelfPreview(
         val placement = state.placement
 
         val margin = with(density) { AppTheme.spacing.large.toPx() }
-        val controlsInset = with(density) { AppTheme.sizing.videoPreviewControlsInset.toPx() }
-
         val box = VideoLayout.previewBox(area, placement.scale, placement.isMinimised)
+        val controlsInset = controlsInsetFor(
+            box = box,
+            area = area,
+            margin = margin,
+            token = with(density) { AppTheme.sizing.videoPreviewControlsInset.toPx() },
+            clearance = bottomClearance.toFloat(),
+        )
         val parked = placement.corner.offsetIn(area, box, margin, controlsInset)
 
         // Animated only when parked: following the finger through a spring would lag the
@@ -255,15 +279,27 @@ private fun BoxScope.PreviewContents(
     // the *view* is still sized in the camera's own proportion. It is only the visible
     // window onto it that is 9:16.
     val picture = VideoLayout.previewPicture(localFrame, box)
+    //
+    // The `TextureView` outlives this container. It is remembered by `CallVideo` so the
+    // camera's texture survives the preview being resized, moved or put away, and this
+    // composable — everything below the outer `BoxWithConstraints` — is thrown away and
+    // built again whenever that layout re-subcomposes: a window that measures at zero for
+    // a frame while the call screen is brought back from behind the launcher, a preview
+    // hidden and shown again. Compose disposes the old `FrameLayout` without taking the
+    // child out of it, so the next factory found a `TextureView` that still had a parent
+    // and the process died in `addView` — "The specified child already has a parent",
+    // TC15, 2026-09-22 14:03, the call with it. [adopt] takes the view from wherever it
+    // was, and [onRelease] hands it back so the next container starts clean.
     AndroidView(
         factory = { context ->
             FrameLayout(context).apply {
                 clipChildren = true
                 clipToPadding = true
-                addView(previewView)
+                adopt(previewView)
             }
         },
         update = { frame ->
+            frame.adopt(previewView)
             val params = previewView.layoutParams as FrameLayout.LayoutParams
             // Centred, so a 16:9 frame loses the same amount from each side rather than
             // being cropped entirely off one of them.
@@ -273,6 +309,7 @@ private fun BoxScope.PreviewContents(
             previewView.layoutParams = params
             frame.requestLayout()
         },
+        onRelease = { frame -> frame.removeView(previewView) },
         modifier = Modifier
             .previewSize(box, density)
             .testTag(TAG_PREVIEW_PICTURE),
@@ -569,6 +606,33 @@ private fun PreviewCorner.offsetIn(
         PreviewCorner.BottomEnd -> IntOffset(end, bottom)
     }
 }
+
+/**
+ * Makes [child] this group's, taking it from whatever group had it.
+ *
+ * A view can have one parent, and `addView` on one that already has a parent is a crash
+ * rather than a move. The preview's `TextureView` is shared across every container this
+ * file ever builds for it — see the comment at the `AndroidView` — so the container that
+ * wants it detaches it first. A no-op when it is already here, which is the ordinary
+ * `update` pass.
+ */
+internal fun ViewGroup.adopt(child: View) {
+    if (child.parent === this) return
+    (child.parent as? ViewGroup)?.removeView(child)
+    addView(child)
+}
+
+/**
+ * How far above the bottom edge the lower corners park: the controls' height while the
+ * chrome is up, else the design token that clears the End button alone.
+ *
+ * The clearance is used only when a card of this [box] still fits between it and the top
+ * [margin]; otherwise the token, so a maximised preview is not shoved up over the
+ * caller's name to make room for buttons it is going to sit behind anyway. Pure, so the
+ * rule has a test rather than a screenshot.
+ */
+internal fun controlsInsetFor(box: VideoSize, area: VideoSize, margin: Float, token: Float, clearance: Float): Float =
+    if (clearance > token && area.height - box.height - clearance >= margin) clearance else token
 
 /** [size] in dp, or nothing at all while the shape is unknown. */
 private fun Modifier.previewSize(box: VideoSize, density: Density): Modifier =

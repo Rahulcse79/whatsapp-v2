@@ -4,6 +4,7 @@ import android.view.TextureView
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -63,6 +64,98 @@ class SelfPreviewTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun `the same camera view survives the preview leaving and coming back`() {
+        // The `TextureView` is remembered above the preview and reused by every container
+        // built for it. Disposing a container does not take the child out of it, so the
+        // next `addView` met a view that still had a parent and the process died —
+        // "The specified child already has a parent", TC15, 2026-09-22 14:03, on the
+        // way back to a call from the launcher. A hold does the same to the preview
+        // deliberately now, so this has to be routine.
+        val shown = mutableStateOf(true)
+        lateinit var camera: TextureView
+        compose.setContent {
+            WhatsAppV2Theme {
+                val context = LocalContext.current
+                val previewView = remember { TextureView(context).also { camera = it } }
+                Box(modifier = Modifier.fillMaxSize()) {
+                    if (shown.value) SelfPreview(previewView = previewView, localFrame = VideoSize(720, 1280))
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithTag(TAG_PREVIEW_PICTURE).assertIsDisplayed()
+
+        repeat(3) {
+            shown.value = false
+            compose.waitForIdle()
+            compose.onNodeWithTag(TAG_PREVIEW_PICTURE).assertDoesNotExist()
+
+            shown.value = true
+            compose.waitForIdle()
+            compose.onNodeWithTag(TAG_PREVIEW_PICTURE).assertIsDisplayed()
+        }
+        assertTrue(camera.parent != null, "the camera is inside the container that is on screen")
+    }
+
+    @Test
+    fun `it parks above the call controls while they are up, and where it was when they go`() {
+        val clearance = mutableStateOf(0)
+        compose.setContent {
+            WhatsAppV2Theme {
+                val context = LocalContext.current
+                val previewView = remember { TextureView(context) }
+                Box(modifier = Modifier.fillMaxSize()) {
+                    SelfPreview(
+                        previewView = previewView,
+                        localFrame = VideoSize(720, 1280),
+                        bottomClearance = clearance.value,
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+        val parked = compose.onNodeWithTag(TAG_PREVIEW).getBoundsInRoot()
+        val root = compose.onRoot().getBoundsInRoot()
+
+        // The chrome is up: the buttons occupy the bottom third of the screen. A
+        // minimised card fits above them, so that is where it goes.
+        val controls = root.height * CONTROLS_SHARE
+        clearance.value = with(compose.density) { controls.roundToPx() }
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(SNAP_ANIMATION_MS)
+        compose.waitForIdle()
+        val raised = compose.onNodeWithTag(TAG_PREVIEW).getBoundsInRoot()
+        val controlsTop = root.bottom - controls
+        assertTrue(raised.bottom <= controlsTop, "raised to ${raised.bottom}, controls start at $controlsTop")
+        assertTrue(raised.bottom < parked.bottom)
+
+        // The chrome fades: back to the corner it was in.
+        clearance.value = 0
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(SNAP_ANIMATION_MS)
+        compose.waitForIdle()
+        assertEquals(parked, compose.onNodeWithTag(TAG_PREVIEW).getBoundsInRoot())
+    }
+
+    @Test
+    fun `the clearance is used only when a card still fits above it`() {
+        val area = VideoSize(720, 1408)
+        val token = 256f
+        val margin = 32f
+        val minimised = VideoSize(198, 352)
+        val maximised = VideoSize(396, 704)
+
+        // Nothing to clear: the token.
+        assertEquals(token, controlsInsetFor(minimised, area, margin, token, clearance = 0f))
+        // Controls 876px tall: a minimised card (352) fits in the 1408 - 876 = 532 above them.
+        assertEquals(876f, controlsInsetFor(minimised, area, margin, token, clearance = 876f))
+        // A maximised card (704) does not, and stays on the token rather than covering the title.
+        assertEquals(token, controlsInsetFor(maximised, area, margin, token, clearance = 876f))
+        // A clearance smaller than the token is not a reason to come closer to the End button.
+        assertEquals(token, controlsInsetFor(minimised, area, margin, token, clearance = 100f))
     }
 
     private fun sizeOf(tag: String): DpSize =
@@ -356,5 +449,8 @@ class SelfPreviewTest {
 
         /** Comfortably past the corner-snap spring, so bounds are the settled ones. */
         const val SNAP_ANIMATION_MS = 2_000L
+
+        /** How much of the screen's height the in-call controls take, near enough for this test. */
+        const val CONTROLS_SHARE = 0.36f
     }
 }

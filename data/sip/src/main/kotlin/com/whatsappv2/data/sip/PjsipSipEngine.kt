@@ -376,8 +376,8 @@ internal class PjsipSipEngine @Inject constructor(
      * Telecom is told because it did not cause this: without it the platform keeps audio
      * focus for a call that is over (Task 34).
      */
-    private fun endCall(callId: CallId, reason: HangupReason) {
-        val ending = calls.value[callId]?.copy(state = CallState.Terminated(reason))
+    private fun endCall(callId: CallId, reason: HangupReason, statusCode: Int? = null) {
+        val ending = calls.value[callId]?.copy(state = CallState.Terminated(reason, statusCode))
         updateCalls { it - callId }
         // The conference leg and the conference are the same thing under a dial-in MCU
         // (ADR-003), so one ending is the other's (Task 60).
@@ -710,7 +710,7 @@ internal class PjsipSipEngine @Inject constructor(
             // "the codecs did not agree" from "nothing reached the server", and it costs
             // one line to keep. Never the peer's address (§7).
             logger.info(TAG, "Call $id ended: $reason (status ${event.statusCode ?: "none"})")
-            endCall(id, reason)
+            endCall(id, reason, event.statusCode)
             return
         }
 
@@ -1174,6 +1174,7 @@ internal class PjsipSipEngine @Inject constructor(
         if (!started) return failure(SipError.EngineUnavailable)
         val call = calls.value[callId] ?: return failure(SipError.UnknownCall)
         if (!call.state.isActive) return failure(SipError.InvalidState("call is ${call.state}"))
+        logger.debug(TAG, "Audio route $route requested for $callId in ${call.state::class.simpleName}")
 
         // The device has one audio path, and the platform routes it through whichever leg
         // it knows about — for a member leg it was not told of, that is the registered

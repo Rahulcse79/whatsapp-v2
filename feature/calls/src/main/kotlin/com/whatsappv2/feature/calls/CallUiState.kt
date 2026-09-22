@@ -162,9 +162,22 @@ data class CallControlAvailability(
          * and offering it on an audio call is a control that cannot work.
          */
         fun of(phase: CallPhase, videoEnabled: Boolean): CallControlAvailability =
-            of(phase).copy(canSwitchCamera = phase.hasMedia && videoEnabled)
+            // Not while held: the camera is released on hold (`CameraPolicy`), so there
+            // is nothing running to switch.
+            of(phase).copy(canSwitchCamera = phase.hasMedia && !phase.isHeld && videoEnabled)
     }
 }
+
+/**
+ * True while either party is holding: media is paused, and the camera has been released.
+ *
+ * `CameraPolicy` lets a held call go of the camera whoever holds it, so a screen that kept
+ * drawing the self-view through a hold was showing a frozen frame from a camera that was
+ * off — and the far end's last frame beside it, with the controls fading out over both.
+ * Two still pictures and no buttons reads as a hung call (TC15, 2026-09-22 13:03).
+ */
+val CallPhase.isHeld: Boolean
+    get() = this == CallPhase.ON_HOLD || this == CallPhase.HELD_BY_REMOTE || this == CallPhase.HELD_BY_BOTH
 
 /** True once media has been negotiated, which is what mute and routing act on. */
 val CallPhase.hasMedia: Boolean
@@ -242,6 +255,18 @@ data class CallDisplay(
     /** True when there is a remote picture to draw — the far end is sending (Task 52). */
     val showsRemoteVideo: Boolean get() = videoActive && phase.hasMedia
 
+    /** True while the call is held by either side; see [CallPhase.isHeld]. */
+    val isHeld: Boolean get() = phase.isHeld
+
+    /**
+     * True when the remote picture is actually moving: video negotiated, and nobody holding.
+     *
+     * What the in-call chrome's auto-hide waits for. Hidden controls trade buttons for a
+     * picture worth watching, and a held call has no such picture — only the frame it
+     * froze on — so its Resume button stays where the user can see it.
+     */
+    val videoIsLive: Boolean get() = showsRemoteVideo && !isHeld
+
     /**
      * True when the local preview should be on screen: **this** device's camera is running.
      *
@@ -253,9 +278,11 @@ data class CallDisplay(
      * whose far end is slow to send, and on one whose peer has muted their camera.
      *
      * The self-view answers "is my camera working and am I in frame", which is a question
-     * about this handset. Nothing the far end does changes the answer.
+     * about this handset. Nothing the far end does changes the answer — except a hold,
+     * which releases the camera on both sides of the question ([CallPhase.isHeld]): a
+     * preview drawn then is a frozen frame pretending to be a live one.
      */
-    val showsLocalPreview: Boolean get() = controls.isVideoEnabled && phase.hasMedia
+    val showsLocalPreview: Boolean get() = controls.isVideoEnabled && phase.hasMedia && !phase.isHeld
 
     /**
      * True when a video surface should exist at all — either picture is reason enough.
@@ -371,9 +398,13 @@ sealed interface CallUiState {
      * The call is over and the screen should close.
      *
      * Not an error state: this is the normal end of every call, and the screen's whole
-     * lifetime is the call's.
+     * lifetime is the call's. [reason] is the one thing worth reading on the way out —
+     * why a call that never connected did not, in the words `HangupReason.userMessage`
+     * gives it — and null for an ordinary hang-up, when the screen simply closes. A call
+     * to a number that did not exist used to close the screen and say nothing at all
+     * (TC15, 2026-09-22, `404` → the dialler, no message).
      */
-    data object Finished : CallUiState
+    data class Finished(val reason: String? = null) : CallUiState
 }
 
 /** A one-shot thing the screen must react to, as opposed to state it renders. */

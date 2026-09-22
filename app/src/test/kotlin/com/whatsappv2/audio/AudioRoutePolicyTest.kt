@@ -38,10 +38,18 @@ class AudioRoutePolicyTest {
     }
 
     @Test
-    fun `a video call starts on the speaker, unless a headset or an explicit preference says otherwise`() {
-        // A video call is held at arm's length, where an earpiece is inaudible. Measured:
-        // every video call went out on the earpiece and "not clear" was the report.
-        assertEquals(AudioRoute.SPEAKER, AudioRoutePolicy.preferredRoute(AudioDevices(), hasVideo = true))
+    fun `a video call starts on the earpiece, unless a headset or a preference says otherwise`() {
+        // Reversed on 2026-09-22: the loudspeaker is never switched on by itself. The
+        // Speaker button and the Settings preference are the two explicit ways to it.
+        assertEquals(
+            AudioRoute.EARPIECE,
+            AudioRoutePolicy.preferredRoute(AudioDevices(hasEarpiece = true), hasVideo = true),
+        )
+        // A handset with no earpiece at all has nowhere else to go.
+        assertEquals(
+            AudioRoute.SPEAKER,
+            AudioRoutePolicy.preferredRoute(AudioDevices(hasEarpiece = false), hasVideo = true),
+        )
 
         // A headset is where the user physically put the audio, and it still wins.
         assertEquals(
@@ -53,28 +61,37 @@ class AudioRoutePolicyTest {
             AudioRoutePolicy.preferredRoute(AudioDevices(hasBluetooth = true), hasVideo = true),
         )
 
-        // An explicit preference is explicit.
+        // An explicit preference is explicit, in either direction.
+        val handset = AudioDevices(hasEarpiece = true)
+        assertEquals(
+            AudioRoute.SPEAKER,
+            AudioRoutePolicy.preferredRoute(handset, PreferredAudioRoute.SPEAKER, hasVideo = true),
+        )
         assertEquals(
             AudioRoute.EARPIECE,
-            AudioRoutePolicy.preferredRoute(AudioDevices(), PreferredAudioRoute.EARPIECE, hasVideo = true),
+            AudioRoutePolicy.preferredRoute(handset, PreferredAudioRoute.EARPIECE, hasVideo = true),
         )
 
-        // And a voice call is untouched by any of this.
-        assertEquals(AudioRoute.EARPIECE, AudioRoutePolicy.preferredRoute(AudioDevices(), hasVideo = false))
+        // And a voice call is the same.
+        assertEquals(AudioRoute.EARPIECE, AudioRoutePolicy.preferredRoute(handset, hasVideo = false))
     }
 
     @Test
-    fun `a route the user chose on a video call survives the speaker rule`() {
-        // Somebody who put a video call to their ear for privacy said so more recently
-        // than any rule about where video calls belong.
-        assertEquals(
-            AudioRoute.EARPIECE,
-            AudioRoutePolicy.routeAfterDeviceChange(AudioDevices(), chosen = AudioRoute.EARPIECE, hasVideo = true),
-        )
-        // With no choice, the rule applies.
+    fun `a route the user chose on a video call survives a device change`() {
+        // Somebody who put a video call on the speaker said so more recently than any
+        // rule about where calls belong, and a device change does not undo it.
         assertEquals(
             AudioRoute.SPEAKER,
-            AudioRoutePolicy.routeAfterDeviceChange(AudioDevices(), chosen = null, hasVideo = true),
+            AudioRoutePolicy.routeAfterDeviceChange(
+                AudioDevices(hasEarpiece = true),
+                chosen = AudioRoute.SPEAKER,
+                hasVideo = true,
+            ),
+        )
+        // With no choice, the automatic route applies: the earpiece.
+        assertEquals(
+            AudioRoute.EARPIECE,
+            AudioRoutePolicy.routeAfterDeviceChange(AudioDevices(hasEarpiece = true), chosen = null, hasVideo = true),
         )
     }
 

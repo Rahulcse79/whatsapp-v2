@@ -98,8 +98,16 @@ sealed interface CallState {
         val heldBy: HoldParty? = null,
     ) : CallState
 
-    /** The call is over. Absorbing: no event moves it anywhere. */
-    data class Terminated(val reason: HangupReason) : CallState
+    /**
+     * The call is over. Absorbing: no event moves it anywhere.
+     *
+     * [statusCode] is the SIP response that ended a call which failed, when there was
+     * one — a 404, a 486, a 480. [reason] is what the log records and is deliberately
+     * coarse (`SERVER_ERROR` covers every 4xx the enum has no name for); the code is what
+     * lets the screen say *"That address does not exist"* rather than *"The server ended
+     * the call"* on the way out. Null for a hang-up, a rejection or a transport loss.
+     */
+    data class Terminated(val reason: HangupReason, val statusCode: Int? = null) : CallState
 
     /** True when media is or has been negotiated, so [controlsOrNull] is meaningful. */
     val isEstablished: Boolean

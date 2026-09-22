@@ -158,4 +158,36 @@ class CallMessagesTest {
         val sentences = HangupReason.entries.map { it.userMessage() }
         assertEquals(sentences.size, sentences.toSet().size, "duplicate sentences: $sentences")
     }
+
+    @Test
+    fun `a failed ending is explained by its SIP code first, and by its reason otherwise`() {
+        // The reason is the log's coarse bucket: a 404 is SERVER_ERROR there. The screen
+        // has the code and says the more useful thing.
+        assertEquals(
+            "That address does not exist",
+            CallState.Terminated(HangupReason.SERVER_ERROR, statusCode = 404).failureMessage(),
+        )
+        assertEquals("That line is busy", CallState.Terminated(HangupReason.BUSY, statusCode = 486).failureMessage())
+        // No code — a transport loss, a local media failure — falls back to the reason's own sentence.
+        assertEquals("The connection was lost", CallState.Terminated(HangupReason.NETWORK_FAILURE).failureMessage())
+        assertEquals("That line was busy", CallState.Terminated(HangupReason.BUSY).failureMessage())
+        // A success code on a failure reason is not a failure code; the reason speaks.
+        assertEquals("Nobody answered", CallState.Terminated(HangupReason.NO_ANSWER, statusCode = 200).failureMessage())
+    }
+
+    @Test
+    fun `an ending somebody chose is not explained`() {
+        for (reason in listOf(
+            HangupReason.LOCAL_HANGUP,
+            HangupReason.REMOTE_HANGUP,
+            HangupReason.LOCAL_REJECTED,
+            HangupReason.CANCELLED,
+        )) {
+            assertFalse(reason.isFailure, "$reason")
+            assertEquals(null, CallState.Terminated(reason, statusCode = 200).failureMessage(), "$reason")
+        }
+        for (reason in HangupReason.entries) {
+            assertEquals(reason.isFailure, CallState.Terminated(reason).failureMessage() != null, "$reason")
+        }
+    }
 }

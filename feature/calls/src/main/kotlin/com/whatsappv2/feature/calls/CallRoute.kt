@@ -9,6 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.whatsappv2.domain.model.CallId
+import kotlinx.coroutines.delay
 
 /**
  * The call screen, wired to the engine (Tasks 37, 39, 52-60).
@@ -46,7 +47,14 @@ fun CallRoute(
     }
 
     LaunchedEffect(state) {
-        if (state is CallUiState.Finished) onCallFinished()
+        val finished = state as? CallUiState.Finished ?: return@LaunchedEffect
+        // The engine drops the call from its list before it says why the call ended, so
+        // `Finished` arrives twice: once bare, and a beat later with the reason, which
+        // restarts this effect. The bare one waits that beat so the reason can land; the
+        // one with a reason stays long enough for it to be read. An ordinary hang-up has
+        // no reason and closes in the time the first wait takes.
+        delay(if (finished.reason == null) FINISHED_REASON_GRACE_MILLIS else FINISHED_REASON_SHOW_MILLIS)
+        onCallFinished()
     }
 
     CallScreen(
@@ -91,3 +99,9 @@ fun CallRoute(
         modifier = modifier,
     )
 }
+
+/** How long a bare `Finished` waits for its reason before the screen closes. */
+private const val FINISHED_REASON_GRACE_MILLIS = 250L
+
+/** How long "That line was busy" stays on screen. Long enough to read, short enough not to trap. */
+private const val FINISHED_REASON_SHOW_MILLIS = 2_000L

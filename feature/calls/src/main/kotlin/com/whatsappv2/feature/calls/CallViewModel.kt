@@ -7,6 +7,7 @@ import com.whatsappv2.core.common.time.Clock
 import com.whatsappv2.domain.call.AudioRoute
 import com.whatsappv2.domain.call.CallState
 import com.whatsappv2.domain.call.SecondCallResponse
+import com.whatsappv2.domain.call.failureMessage
 import com.whatsappv2.domain.call.userMessage
 import com.whatsappv2.domain.contacts.Contact
 import com.whatsappv2.domain.contacts.ContactRepository
@@ -162,10 +163,30 @@ class CallViewModel @Inject constructor(
         eventChannel.send(CallEvent.ActionFailed(CallAction.RECORD, message))
     }
 
+    /**
+     * Why each call this screen may be showing ended, once it has (Task 44).
+     *
+     * The engine drops a call from `activeCalls` first and publishes its ending a beat
+     * later, so the screen has to remember the ending for the call it has already lost
+     * sight of. Only failures are kept — see `HangupReason.isFailure` — because those are
+     * the endings worth a sentence; a hang-up closes the screen with nothing to say.
+     */
+    private val endedReasons = MutableStateFlow<Map<CallId, String>>(emptyMap())
+
     init {
         watchVideoRequests()
         watchTransfers()
+        watchEndings()
         followRemainingCall()
+    }
+
+    private fun watchEndings() {
+        viewModelScope.launch {
+            calls.endedCalls.collect { ended ->
+                val message = (ended.state as? CallState.Terminated)?.failureMessage() ?: return@collect
+                endedReasons.update { it + (ended.callId to message) }
+            }
+        }
     }
 
     /** Calls this screen has shown at least once, so a gone call is told apart from one not yet published. */
@@ -240,6 +261,8 @@ class CallViewModel @Inject constructor(
         val accounts: List<SipAccount> = emptyList(),
         /** The address book's name for each call's address, where it has one. */
         val contacts: Map<SipUri, Contact> = emptyMap(),
+        /** The sentence for this call's failed ending, once it has one. */
+        val endedReason: String? = null,
     )
 
     private fun stateFor(callId: CallId): Flow<CallUiState> {
@@ -275,6 +298,7 @@ class CallViewModel @Inject constructor(
             .combine(mixed) { state, mixedNow -> state.copy(mixed = mixedNow) }
             .combine(accounts.observeAccounts()) { state, all -> state.copy(accounts = all) }
             .combine(memberContacts()) { state, known -> state.copy(contacts = known) }
+            .combine(endedReasons) { state, ended -> state.copy(endedReason = ended[callId]) }
 
         // The frame shape is a fifth source rather than something read inside the block,
         // for the reason the comment above gives: a value only read during a combine does
@@ -322,7 +346,7 @@ class CallViewModel @Inject constructor(
                 // ever present means the engine has not published it yet, which happens
                 // for a frame when the screen is opened from a notification. Telling the
                 // two apart is the whole reason this flag exists.
-                seen -> CallUiState.Finished
+                seen -> CallUiState.Finished(reason = state.endedReason)
                 else -> CallUiState.Loading
             }
         }

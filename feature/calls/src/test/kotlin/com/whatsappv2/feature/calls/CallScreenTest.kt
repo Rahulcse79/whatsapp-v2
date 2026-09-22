@@ -3,11 +3,14 @@ package com.whatsappv2.feature.calls
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -23,6 +26,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * The call screen, rendered (Tasks 37 and 39).
@@ -313,11 +317,80 @@ class CallScreenTest {
     fun `a call that has ended says so instead of showing controls`() {
         val state = setContent(display(CallPhase.CONNECTED))
 
-        state.value = CallUiState.Finished
+        state.value = CallUiState.Finished()
         compose.waitForIdle()
 
         compose.onNodeWithTag(TAG_ENDED).assertIsDisplayed()
+        compose.onNodeWithTag(TAG_ENDED_REASON).assertDoesNotExist()
         compose.onNodeWithTag(TAG_HANG_UP).assertDoesNotExist()
+    }
+
+    @Test
+    fun `a call that failed says why on the way out`() {
+        // A 404 used to close the screen and say nothing; the dialler came back with no
+        // hint that anything had gone wrong (TC15, 2026-09-22).
+        val state = setContent(display(CallPhase.CALLING))
+
+        state.value = CallUiState.Finished(reason = "That address does not exist")
+        compose.waitForIdle()
+
+        compose.onNodeWithTag(TAG_ENDED).assertIsDisplayed()
+        compose.onNodeWithTag(TAG_ENDED_REASON).assertIsDisplayed().assertTextEquals("That address does not exist")
+    }
+
+    @Test
+    fun `the keypad takes the second row of controls with it, so End stays on screen`() {
+        // Five keypad rows plus two rows of controls plus End did not fit a 360 x 800
+        // handset: End was clipped under the navigation bar and gone from the
+        // accessibility tree (TC15, 2026-09-22 13:11).
+        setContent(display(CallPhase.CONNECTED))
+        compose.onNodeWithTag(TAG_VIDEO_TOGGLE).assertIsDisplayed()
+
+        compose.onNodeWithTag(TAG_KEYPAD_TOGGLE).performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithTag(TAG_KEYPAD).assertIsDisplayed()
+        compose.onNodeWithTag(TAG_VIDEO_TOGGLE).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_TRANSFER).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_MUTE).assertIsDisplayed()
+        compose.onNodeWithTag(TAG_HANG_UP).assertIsDisplayed()
+        // One above the other, not one over the other: a Box around the action area
+        // once drew the digits across the End button (TC15, 2026-09-22 15:58).
+        val keypad = compose.onNodeWithTag(TAG_KEYPAD).getBoundsInRoot()
+        val mute = compose.onNodeWithTag(TAG_MUTE).getBoundsInRoot()
+        val end = compose.onNodeWithTag(TAG_HANG_UP).getBoundsInRoot()
+        assertTrue(keypad.bottom <= mute.top, "keypad \$keypad overlaps the controls at \$mute")
+        assertTrue(mute.bottom <= end.top, "controls \$mute overlap End at \$end")
+
+        compose.onNodeWithTag(TAG_KEYPAD_TOGGLE).performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag(TAG_VIDEO_TOGGLE).assertIsDisplayed()
+    }
+
+    @Test
+    fun `a held video call is dimmed and says it is on hold, and keeps its controls`() {
+        val video = CallControls.DEFAULT.copy(isVideoEnabled = true)
+        val state = setContent(display(CallPhase.CONNECTED, controls = video, videoActive = true))
+        compose.onNodeWithTag(TAG_HELD_SCRIM).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_PREVIEW).assertIsDisplayed()
+
+        state.value = CallUiState.Active(display(CallPhase.HELD_BY_REMOTE, controls = video, videoActive = true))
+        compose.waitForIdle()
+
+        // The frozen frame is dimmed and labelled; the camera is off (CameraPolicy), so the
+        // self-view that would only have shown a stale frame is gone with it; and the
+        // controls do not fade, because there is no live picture to make way for.
+        compose.onNodeWithTag(TAG_HELD_SCRIM).assertIsDisplayed()
+        // Said twice: once on the status line, once on the dimmed picture itself.
+        compose.onAllNodesWithText("On hold by the other party").assertCountEquals(2)
+        compose.onNodeWithTag(TAG_PREVIEW).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_HANG_UP).assertIsDisplayed()
+        compose.onNodeWithTag(TAG_SWITCH_CAMERA).assertIsNotEnabled()
+
+        state.value = CallUiState.Active(display(CallPhase.CONNECTED, controls = video, videoActive = true))
+        compose.waitForIdle()
+        compose.onNodeWithTag(TAG_HELD_SCRIM).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_PREVIEW).assertIsDisplayed()
     }
 
     // ---------------------------------------------------------------- helpers
@@ -355,6 +428,7 @@ class CallScreenTest {
         durationSeconds: Long? = null,
         controls: CallControls = CallControls.DEFAULT,
         videoOffered: Boolean = false,
+        videoActive: Boolean = false,
     ) = CallDisplay(
         callId = CallId("call-1"),
         title = "Carol",
@@ -364,5 +438,6 @@ class CallScreenTest {
         controls = controls,
         durationSeconds = durationSeconds,
         videoOffered = videoOffered,
+        videoActive = videoActive,
     )
 }

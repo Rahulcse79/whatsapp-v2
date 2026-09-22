@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -37,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -44,8 +46,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.style.TextAlign
@@ -107,11 +113,27 @@ internal fun CallScreen(
                     modifier = Modifier.testTag(TAG_CONNECTING),
                 )
 
-                is CallUiState.Finished -> Text(
-                    text = "Call ended",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.testTag(TAG_ENDED),
-                )
+                is CallUiState.Finished -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "Call ended",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.testTag(TAG_ENDED),
+                    )
+                    // Why, when there is a why worth reading: "That line was busy" is the
+                    // difference between trying again and giving up. Nothing for an
+                    // ordinary hang-up, which needs no explaining.
+                    state.reason?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .padding(top = AppTheme.spacing.small)
+                                .testTag(TAG_ENDED_REASON),
+                        )
+                    }
+                }
 
                 is CallUiState.Active -> ActiveCall(state = state, actions = actions)
             }
@@ -144,6 +166,13 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
     // until the far end sent a frame — the whole of a conference join, on every handset.
     val chrome = rememberCallChromeVisibility(state, keypadShown)
 
+    // How tall the controls are, so the self-view can park above them while they are up
+    // — see `SelfPreview`. Measured, not derived: the block is one, two or four rows
+    // depending on the call, and the keypad adds five more.
+    var actionAreaHeight by remember { mutableIntStateOf(0) }
+    val chromeBottomPadding = with(LocalDensity.current) { AppTheme.spacing.large.roundToPx() }
+    val previewClearance = if (chrome.value) actionAreaHeight + chromeBottomPadding else 0
+
     if (call.showsAnyVideo) {
         // The picture, and the tap that hides the controls, are ONE layer — and they have
         // to be, because the order inside it is the whole of the problem.
@@ -172,6 +201,7 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
                 onPictureTap = toggleChrome,
                 pictureTapLabel = toggleLabel,
                 modifier = videoLayer,
+                previewClearance = previewClearance,
             )
         } else {
             // Cover, the default: a one-to-one call fills the screen and loses its edges,
@@ -184,8 +214,17 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
                 onPictureTap = toggleChrome,
                 pictureTapLabel = toggleLabel,
                 modifier = videoLayer,
+                previewClearance = previewClearance,
             )
         }
+
+        // A held call is a still: the far end has stopped sending and the renderer keeps
+        // its last frame, which on a handset reads as a call that has hung — and the
+        // frame is often the half-decoded one the stream was cut off on (TC15,
+        // 2026-09-22 13:03). So the picture is dimmed and says what it is. Between the
+        // video and the chrome, and with no pointer handling of its own, so the tap that
+        // brings the controls back still reaches the picture underneath.
+        if (call.isHeld) HeldVideoScrim(call = call, modifier = Modifier.zIndex(Z_HELD))
     }
 
     AnimatedVisibility(
@@ -203,6 +242,7 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
             dialled = dialled,
             onDialled = { dialled += it },
             onToggleKeypad = { keypadOpen = it },
+            onActionAreaHeight = { actionAreaHeight = it },
         )
     }
 
@@ -210,10 +250,50 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
 }
 
 /**
+ * The dimmed picture of a held video call, with the reason it is standing still.
+ *
+ * [CallPhase.label] says which side is holding, which is what decides whether Resume
+ * will do anything — "On hold by the other party" is not this user's to lift.
+ */
+@Composable
+private fun HeldVideoScrim(call: CallDisplay, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = HELD_SCRIM_ALPHA))
+            .testTag(TAG_HELD_SCRIM),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        // In the upper third, not the middle: the middle of the screen is where the
+        // controls start, and the label sat across the Add button (TC15, 2026-09-22).
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.fillMaxHeight(HELD_LABEL_HEIGHT_FRACTION),
+            verticalArrangement = Arrangement.Bottom,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Pause,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(AppTheme.sizing.avatarLarge / 2),
+            )
+            Text(
+                text = call.phase.label(),
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White,
+                modifier = Modifier.padding(top = AppTheme.spacing.small),
+            )
+        }
+    }
+}
+
+/**
  * Whether the in-call controls are on screen, and when they get out of the way.
  *
- * Only ever hidden over video: an audio call has nothing underneath to reveal, so hiding
- * its buttons would be a puzzle rather than a feature. Anything waiting on the user — a
+ * Only ever hidden over *live* video: an audio call has nothing underneath to reveal, so
+ * hiding its buttons would be a puzzle rather than a feature, and a held call has only the
+ * frame it stopped on — fading the Resume button over that left a still picture and no
+ * way back that anyone could see (TC15, 2026-09-22). Anything waiting on the user — a
  * second call ringing, an escalation the far end has asked for, a transfer in flight, the
  * recording consent — pins them open, because a prompt nobody can see is worse than no
  * prompt at all.
@@ -233,7 +313,7 @@ private fun rememberCallChromeVisibility(
         .getSystemService(AccessibilityManager::class.java)
         ?.isTouchExplorationEnabled == true
 
-    val mayHide = state.call.showsRemoteVideo &&
+    val mayHide = state.call.videoIsLive &&
         !keypadShown &&
         !state.needsAttention &&
         !exploringByTouch
@@ -259,6 +339,12 @@ private fun rememberCallChromeVisibility(
     LaunchedEffect(state.needsAttention) {
         if (state.needsAttention) visible.value = true
     }
+    // A hold brings them back as well as keeping them: the controls may have faded a
+    // moment before the far end's 200 landed, and a held picture with no Resume on it is
+    // the screen this exists to prevent (TC15, 2026-09-22 15:57).
+    LaunchedEffect(state.call.isHeld) {
+        if (state.call.isHeld) visible.value = true
+    }
     return visible
 }
 
@@ -277,11 +363,18 @@ private fun InCallChrome(
     dialled: String,
     onDialled: (Char) -> Unit,
     onToggleKeypad: (Boolean) -> Unit,
+    onActionAreaHeight: (Int) -> Unit = {},
 ) {
     val call = state.call
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // Over a picture the text has no surface to sit on. A name in the theme's
+            // dark-on-light ink over a dark room, or over the black bar a conference
+            // canvas leaves at the top of a 9:20 screen, is not there at all — "3000"
+            // was unreadable over the bridge's picture (TC15, 2026-09-22 13:20). So the
+            // chrome darkens the edges it draws on, top and bottom, and writes in white.
+            .videoScrim(call.showsAnyVideo)
             .systemBarsPadding()
             .padding(AppTheme.spacing.large),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -316,6 +409,7 @@ private fun InCallChrome(
             CallIdentity(
                 call = call,
                 showAvatar = !keypadShown && !call.showsRemoteVideo && state.conference == null,
+                overVideo = call.showsAnyVideo,
             )
 
             // The roster stays even with video on: under a mixing bridge the composed
@@ -335,15 +429,42 @@ private fun InCallChrome(
             }
         }
 
-        CallActionArea(
-            state = state,
-            actions = actions,
-            keypadShown = keypadShown,
-            dialled = dialled,
-            onDialled = onDialled,
-            onToggleKeypad = onToggleKeypad,
-        )
+        // A Column, because the action area is two things one above the other — the
+        // keypad and the controls — and a Box drew the keys straight over the End button.
+        Column(
+            modifier = Modifier.onSizeChanged { onActionAreaHeight(it.height) },
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            CallActionArea(
+                state = state,
+                actions = actions,
+                keypadShown = keypadShown,
+                dialled = dialled,
+                onDialled = onDialled,
+                onToggleKeypad = onToggleKeypad,
+                overVideo = call.showsAnyVideo,
+            )
+        }
     }
+}
+
+/**
+ * A dark gradient at the top and the bottom of the chrome, only over video.
+ *
+ * Thin enough to see the picture through, dark enough for white text to read over a
+ * bright ceiling — the two extremes a handset held at arm's length actually points at.
+ */
+private fun Modifier.videoScrim(overVideo: Boolean): Modifier = if (overVideo) {
+    background(
+        Brush.verticalGradient(
+            0f to Color.Black.copy(alpha = EDGE_SCRIM_ALPHA),
+            SCRIM_FADE_FRACTION to Color.Transparent,
+            1f - SCRIM_FADE_FRACTION to Color.Transparent,
+            1f to Color.Black.copy(alpha = EDGE_SCRIM_ALPHA),
+        ),
+    )
+} else {
+    this
 }
 
 /**
@@ -360,6 +481,7 @@ private fun CallActionArea(
     dialled: String,
     onDialled: (Char) -> Unit,
     onToggleKeypad: (Boolean) -> Unit,
+    overVideo: Boolean = false,
 ) {
     val call = state.call
     if (call.availability.canAnswer) {
@@ -375,6 +497,7 @@ private fun CallActionArea(
                 actions.onDtmf(it)
             },
             onHide = { onToggleKeypad(false) },
+            overVideo = overVideo,
             modifier = Modifier.padding(bottom = AppTheme.spacing.large),
         )
     }
@@ -465,7 +588,10 @@ private fun CallDialogs(state: CallUiState.Active, actions: CallActions) {
  * does — only the line underneath it does, and that line is [CallDisplay.statusLine].
  */
 @Composable
-private fun CallIdentity(call: CallDisplay, showAvatar: Boolean) {
+private fun CallIdentity(call: CallDisplay, showAvatar: Boolean, overVideo: Boolean = false) {
+    // White on the video scrim, the theme's ink everywhere else — see `videoScrim`.
+    val titleColour = if (overVideo) Color.White else MaterialTheme.colorScheme.onSurface
+    val detailColour = if (overVideo) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
     if (showAvatar) {
         if (call.isMixed) {
             // A conference has no face, and initials of "Conference call" would be "CC".
@@ -482,6 +608,7 @@ private fun CallIdentity(call: CallDisplay, showAvatar: Boolean) {
     Text(
         text = call.title,
         style = MaterialTheme.typography.headlineSmall,
+        color = titleColour,
         textAlign = TextAlign.Center,
         modifier = Modifier
             .padding(top = AppTheme.spacing.large)
@@ -491,7 +618,7 @@ private fun CallIdentity(call: CallDisplay, showAvatar: Boolean) {
         Text(
             text = it,
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = detailColour,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = AppTheme.spacing.extraSmall),
         )
@@ -500,7 +627,7 @@ private fun CallIdentity(call: CallDisplay, showAvatar: Boolean) {
     Text(
         text = call.statusLine(),
         style = MaterialTheme.typography.bodyLarge,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        color = detailColour,
         modifier = Modifier
             .padding(top = AppTheme.spacing.small)
             .testTag(TAG_STATUS),
@@ -605,7 +732,14 @@ private fun InCallActions(
 
         // Passed in rather than called directly so this stays a layout: the second row
         // needs the recording state, which is not a property of the call.
-        secondaryControls()
+        //
+        // Not while the keypad is up. Five keypad rows, four controls, a second row of
+        // controls and the End button are more than a 360 x 800 handset is tall, and the
+        // thing that fell off the bottom was End — clipped under the navigation bar, and
+        // gone from the accessibility tree with it (TC15, 2026-09-22 13:11). Somebody
+        // typing into an IVR wants digits, Mute and the way out; Video, Add and Transfer
+        // come back the moment the keypad goes.
+        if (!keypadOpen) secondaryControls()
 
         CallActionButton(
             icon = Icons.Filled.CallEnd,
@@ -828,6 +962,19 @@ private const val SECONDS_PER_HOUR = 3_600L
 private const val Z_VIDEO = 1f
 private const val Z_CHROME = 2f
 
+/** Between the picture and the buttons: dims the former, never covers the latter. */
+private const val Z_HELD = 1.5f
+
+/** Dark enough that a frozen frame reads as paused, light enough to still see what it was. */
+private const val HELD_SCRIM_ALPHA = 0.6f
+
+/** The held label's baseline: a third of the way down, above the controls and below the name. */
+private const val HELD_LABEL_HEIGHT_FRACTION = 0.36f
+
+/** The video scrim's darkness at the very edge, fading to nothing by [SCRIM_FADE_FRACTION]. */
+private const val EDGE_SCRIM_ALPHA = 0.55f
+private const val SCRIM_FADE_FRACTION = 0.28f
+
 internal const val TAG_TITLE = "call-title"
 internal const val TAG_CONFERENCE_AVATAR = "call-conference-avatar"
 internal const val TAG_STATUS = "call-status"
@@ -841,6 +988,8 @@ internal const val TAG_HOLD = "call-hold"
 internal const val TAG_KEYPAD_TOGGLE = "call-keypad-toggle"
 internal const val TAG_CONNECTING = "call-connecting"
 internal const val TAG_ENDED = "call-ended"
+internal const val TAG_ENDED_REASON = "call-ended-reason"
+internal const val TAG_HELD_SCRIM = "call-held-scrim"
 
 // ---------------------------------------------------------------- previews
 //
