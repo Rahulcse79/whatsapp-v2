@@ -3,13 +3,14 @@ package com.whatsappv2.feature.dialer
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
-import androidx.lifecycle.SavedStateHandle
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
 import com.whatsappv2.domain.engine.ConferenceRoom
@@ -26,6 +27,8 @@ import com.whatsappv2.domain.testing.FakeSipEngine
 import com.whatsappv2.domain.usecase.ConferenceJoinCoordinator
 import com.whatsappv2.domain.usecase.MergeCallsUseCase
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runTest
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -99,8 +102,8 @@ class DialerScreenTest {
 
     @Test
     fun `choosing another account sends the call out on it`() {
-        // Task 36's second done-when: the override is honoured, and it decides the domain
-        // a bare extension is completed against.
+        // Task 36's second done-when: the chosen account is honoured, and it decides the
+        // domain a bare extension is completed against.
         given(work, home)
         setContent()
 
@@ -127,6 +130,71 @@ class DialerScreenTest {
         compose.onNodeWithTag(recentTag("1001")).assertIsDisplayed()
     }
 
+    @Test
+    fun `every row in the picker says whether that account is registered`() {
+        // The state is the reason somebody opens this menu — an unregistered account
+        // cannot place a call. It used to be the *absence* of a "· offline" suffix in a
+        // quieter colour at the end of an address, so "registered" was something to infer.
+        given(work)
+        givenUnregistered(home)
+        setContent()
+
+        compose.onNodeWithTag(TAG_ACCOUNT).performClick()
+        compose.waitForIdle()
+
+        // Asserted through the merged semantics, which is what a screen reader reads out:
+        // the row is one sentence, and the state is part of it.
+        compose.onNodeWithTag(accountTag(work.id)).assertTextContains("Registered")
+        compose.onNodeWithTag(accountTag(home.id)).assertTextContains("Unregistered")
+    }
+
+    @Test
+    fun `the picker marks the account that is currently the default`() {
+        // Picking a row sets the default, so without this the menu offers a choice and
+        // never says what the current answer is.
+        given(work, home)
+        setContent()
+
+        compose.onNodeWithTag(TAG_ACCOUNT).performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithTag(accountTag(work.id)).assertContentDescriptionEquals("Selected")
+        compose.onNodeWithTag(accountTag(home.id)).assertContentDescriptionEquals()
+    }
+
+    @Test
+    fun `choosing an account updates the card's status to that account's`() {
+        // The card and the rows read from one place, so picking the unregistered account
+        // cannot leave the card showing the registered one's state.
+        given(work)
+        givenUnregistered(home)
+        setContent()
+
+        compose.onNodeWithTag(TAG_ACCOUNT).assertTextContains("Registered")
+
+        compose.onNodeWithTag(TAG_ACCOUNT).performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag(accountTag(home.id)).performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithTag(TAG_ACCOUNT).assertTextContains("Unregistered")
+    }
+
+    @Test
+    fun `the account chosen here becomes the default the rest of the app reads`() = runTest {
+        // The reported defect, from the screen: the dialler kept the choice to itself, so
+        // the Chats indicator went on showing the account the user had not picked.
+        given(work, home)
+        setContent()
+
+        compose.onNodeWithTag(TAG_ACCOUNT).performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag(accountTag(home.id)).performClick()
+        compose.waitForIdle()
+
+        assertEquals(home.id, repository.observeAccounts().first().single { it.isDefault }.id)
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private fun setContent() {
@@ -136,7 +204,6 @@ class DialerScreenTest {
             contacts = contacts,
             camera = NoCameraAvailable,
             repository = repository,
-            savedState = SavedStateHandle(),
             registrar = engine,
             joins = ConferenceJoinCoordinator(
                 engine,
@@ -176,6 +243,18 @@ class DialerScreenTest {
             repository.given(it)
             engine.givenRegistered(it)
         }
+    }
+
+    /**
+     * An account the stack holds and has **not** registered.
+     *
+     * Known to the engine either way: the app hands every account to it at startup, so
+     * "not registered" is a state the engine holds for an account it has.
+     */
+    private fun givenUnregistered(account: SipAccount) {
+        repository.given(account)
+        engine.givenRegistered(account)
+        engine.simulateRegistrationExpiry(account.id)
     }
 
     private companion object {

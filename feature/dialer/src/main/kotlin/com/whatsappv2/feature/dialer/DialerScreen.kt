@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.Videocam
@@ -339,8 +340,8 @@ private fun AccountHeader(
             }
             selected?.let {
                 StatusLabel(
-                    tone = if (it.isRegistered) StatusTone.ONLINE else StatusTone.FAILED,
-                    text = if (it.isRegistered) "Registered" else "Unregistered",
+                    tone = it.statusTone,
+                    text = it.statusText,
                     modifier = Modifier.testTag(TAG_ACCOUNT_STATUS),
                 )
             }
@@ -365,7 +366,25 @@ private fun AccountHeader(
     }
 }
 
-/** The accounts to choose from, dropped down from the card. */
+/**
+ * The accounts to choose from, dropped down from the card.
+ *
+ * ## Every row says its state, in the same two words as the card
+ *
+ * It used to read `1001@10.62.196.214 · offline`, or the bare identity when the account
+ * was up — so "registered" was the *absence* of a suffix, in a quieter colour, at the end
+ * of an address. The state is the reason somebody opens this menu (an unregistered account
+ * cannot place a call, and the refusal is easier to understand before it arrives), so it
+ * is written down on every row with the dot beside it, from [DialerAccount.statusText] and
+ * [DialerAccount.statusTone] — the same values the card above uses, so the menu and the
+ * card cannot describe one account two ways.
+ *
+ * ## And which one is selected
+ *
+ * A tick on the default, as the Chats indicator's menu has. Picking a row sets the default
+ * (`DialerViewModel.onAccountSelected`), so without it the menu offers a choice and then
+ * never says what the current answer is.
+ */
 @Composable
 private fun AccountMenu(
     accounts: List<DialerAccount>,
@@ -380,14 +399,24 @@ private fun AccountMenu(
                     Column {
                         Text(account.label)
                         Text(
-                            // The status is here because it changes what will happen: an
-                            // unregistered account cannot place a call, and the refusal
-                            // is easier to understand before it arrives.
-                            text = if (account.isRegistered) account.identity else "${account.identity} · offline",
+                            text = account.identity,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                },
+                leadingIcon = {
+                    // Space is reserved either way, so the rows line up and the list does
+                    // not jump as the default moves between them.
+                    Icon(
+                        imageVector = Icons.Filled.Check,
+                        contentDescription = if (account.isDefault) "Selected" else null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.alpha(if (account.isDefault) 1f else 0f),
+                    )
+                },
+                trailingIcon = {
+                    StatusLabel(tone = account.statusTone, text = account.statusText)
                 },
                 onClick = { onAccountSelected(account.id) },
                 modifier = Modifier.testTag(accountTag(account.id)),
@@ -395,6 +424,10 @@ private fun AccountMenu(
         }
     }
 }
+
+/** The tone for [DialerAccount.statusText]. Beside it, so the word and the colour cannot drift. */
+private val DialerAccount.statusTone: StatusTone
+    get() = if (isRegistered) StatusTone.ONLINE else StatusTone.FAILED
 
 /** The card as a button when there is a choice to make, and plain when there is not. */
 private fun accountChooser(choosable: Boolean, onOpen: () -> Unit): Modifier {
@@ -688,6 +721,7 @@ private val PREVIEW_WORK = DialerAccount(
     label = "Work",
     identity = "alice@sip.example.com",
     isRegistered = true,
+    isDefault = true,
 )
 
 private val PREVIEW_HOME = DialerAccount(

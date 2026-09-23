@@ -1,6 +1,5 @@
 package com.whatsappv2.feature.dialer
 
-import androidx.lifecycle.SavedStateHandle
 import app.cash.turbine.test
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
@@ -18,6 +17,7 @@ import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SipUri
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
+import com.whatsappv2.domain.repository.AccountRepositoryError
 import com.whatsappv2.domain.testing.FakeContactRepository
 import com.whatsappv2.domain.testing.FakeSipAccountRepository
 import com.whatsappv2.domain.testing.FakeSipEngine
@@ -26,6 +26,7 @@ import com.whatsappv2.domain.usecase.MergeCallsUseCase
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -70,22 +71,19 @@ class DialerViewModelTest {
     fun tearDown() = Dispatchers.resetMain()
 
     /**
-     * The destination's saved state.
+     * A second ViewModel over the same repository is "leave the dialer and come back",
+     * with no navigation library in the test.
      *
-     * Held by the test rather than created per ViewModel, because that is what Compose
-     * Navigation does: the handle belongs to the back-stack entry and outlives the
-     * ViewModel scoped to it. Building a second [DialerViewModel] over the same handle is
-     * exactly "leave the dialer and come back", with no navigation library in the test.
+     * There is nothing else to carry across: the selected account lives in the store now,
+     * which is the whole point of the change — a `SavedStateHandle` was what the per-call
+     * override needed to survive that round trip, and the override is gone.
      */
-    private var savedState = SavedStateHandle()
-
     private fun viewModel(camera: CameraAvailability = CameraPresent) = DialerViewModel(
         placeCall = PlaceCallUseCase(repository, engine, camera, engine),
         recentDials = recents,
         contacts = contacts,
         camera = camera,
         repository = repository,
-        savedState = savedState,
         registrar = engine,
         joins = ConferenceJoinCoordinator(
             engine,
@@ -163,7 +161,7 @@ class DialerViewModelTest {
     }
 
     @Test
-    fun `the per-call override decides which account places the call`() = runTest {
+    fun `the chosen account decides which one places the call`() = runTest {
         // Task 36's second done-when. It also decides the domain a bare extension is
         // completed against, which is the part that is easy to get wrong.
         given(work, home)
@@ -178,25 +176,117 @@ class DialerViewModelTest {
         assertEquals("sip:1001@home.example.com", lastDialled())
     }
 
+    // ------------------------------------------------- choosing an account
+
     @Test
-    fun `the override is shown while it applies and cleared once the call is placed`() = runTest {
-        // Per call, not a setting: a one-off call from the work account must not silently
-        // become every later call's account too.
+    fun `choosing an account here makes it the default, as choosing one in the bar does`() =
+        runTest {
+            // The reported defect. The dialler kept a per-call override of its own, so the
+            // extension picked here was invisible to the rest of the app: the Chats
+            // indicator went on showing the account the user had not chosen, and the two
+            // screens disagreed about which extension the phone was on.
+            given(work, home)
+            val viewModel = ready(viewModel())
+
+            viewModel.onAccountSelected(home.id)
+            runCurrent()
+
+            assertEquals(
+                home.id,
+                repository.observeAccounts().first().single { it.isDefault }.id,
+                "the store is what every other screen reads",
+            )
+            assertEquals(home.id, viewModel.uiState.value.selectedAccount?.id)
+            assertTrue(viewModel.uiState.value.selectionIsDefault)
+        }
+
+    @Test
+    fun `the previous default is cleared, so there is never more than one`() = runTest {
+        // One call rather than two, because the repository does both halves in a single
+        // transaction — an instant with two defaults is an instant where "which account
+        // does this call leave on" has two answers.
         given(work, home)
         val viewModel = ready(viewModel())
 
         viewModel.onAccountSelected(home.id)
         runCurrent()
-        assertTrue(viewModel.uiState.value.isOverridden)
-        assertEquals(home.id, viewModel.uiState.value.selectedAccount?.id)
 
+        assertEquals(
+            listOf(home.id),
+            repository.observeAccounts().first().filter { it.isDefault }.map { it.id },
+        )
+    }
+
+    @Test
+    fun `the choice survives a placed call`() = runTest {
+        // The behaviour that was deliberately the other way round, and is the bug the user
+        // reported: the override was cleared on success, so a call placed from the home
+        // account silently put the dialler back on work.
+        given(work, home)
+        val viewModel = ready(viewModel())
+
+        viewModel.onAccountSelected(home.id)
         viewModel.onInputChanged("1001")
         runCurrent()
         viewModel.onCall()
         runCurrent()
 
-        assertTrue(!viewModel.uiState.value.isOverridden)
-        assertEquals(work.id, viewModel.uiState.value.selectedAccount?.id, "back to the default")
+        assertEquals(home.id, viewModel.uiState.value.selectedAccount?.id)
+        assertEquals("", viewModel.uiState.value.input, "the input is cleared; the account is not")
+    }
+
+    @Test
+    fun `the choice survives leaving the screen and coming back`() = runTest {
+        // It used to need a SavedStateHandle to manage this, and managed it only as far as
+        // the next placed call. Living in the store, it survives navigation, a call, and
+        // process death without this ViewModel holding anything.
+        given(work, home)
+        val first = ready(viewModel())
+
+        first.onAccountSelected(home.id)
+        runCurrent()
+
+        val second = ready(viewModel())
+        runCurrent()
+
+        assertEquals(home.id, second.uiState.value.selectedAccount?.id)
+    }
+
+    @Test
+    fun `an account that is gone by the time it is picked says so and is not shown as chosen`() =
+        runTest {
+            // Deleted under the open menu. The echo must not stand over a default that
+            // never changed: a card naming one account while calls leave on another is the
+            // §6 lie in the most expensive place to tell it.
+            given(work, home)
+            val viewModel = ready(viewModel())
+            repository.nextFailure = AccountRepositoryError.NotFound
+
+            viewModel.events.test {
+                viewModel.onAccountSelected(home.id)
+                runCurrent()
+
+                assertEquals(DialerViewModel.ACCOUNT_GONE, (awaitItem() as DialerEvent.Refused).message)
+            }
+
+            assertEquals(work.id, viewModel.uiState.value.selectedAccount?.id, "still the real default")
+        }
+
+    @Test
+    fun `every account in the picker carries its own registration state`() = runTest {
+        // The picker is where somebody looks before placing a call, and an unregistered
+        // account cannot place one. The rows must therefore be individually honest rather
+        // than inheriting the selected account's state.
+        given(work)
+        given(home, registered = false)
+        val viewModel = ready(viewModel())
+
+        val rows = viewModel.uiState.value.accounts.associateBy { it.id }
+
+        assertTrue(rows.getValue(work.id).isRegistered)
+        assertTrue(!rows.getValue(home.id).isRegistered)
+        assertTrue(rows.getValue(work.id).isDefault, "and which one is selected")
+        assertTrue(!rows.getValue(home.id).isDefault)
     }
 
     @Test
@@ -346,55 +436,9 @@ class DialerViewModelTest {
         }
 
     @Test
-    fun `the selected account survives leaving the dialler and coming back`() = runTest {
-        // The reported defect. Compose Navigation scopes a ViewModel to its destination, so
-        // walking to the call screen and back destroyed the override and the selection
-        // reverted to the default account after the user had deliberately picked another.
-        given(work, home)
-        val first = ready(viewModel())
-
-        first.onAccountSelected(home.id)
-        runCurrent()
-        assertEquals(home.id, first.uiState.value.selectedAccount?.id)
-
-        // A new ViewModel over the same back-stack entry: the screen, left and re-entered.
-        val second = ready(viewModel())
-
-        assertEquals(home.id, second.uiState.value.selectedAccount?.id, "still the chosen one")
-        assertTrue(second.uiState.value.isOverridden)
-    }
-
-    @Test
-    fun `the selection does NOT survive a placed call, so a per-call override stays per call`() =
-        runTest {
-            // The trap in the fix. Two lifetimes are being conflated: surviving navigation is
-            // what was asked for, surviving a placed call is what the design deliberately
-            // refuses. Persisting it somewhere `place` does not clear would turn a one-off
-            // call from the work account into every later call's account — a worse bug than
-            // the one being fixed.
-            given(work, home)
-            val first = ready(viewModel())
-
-            first.onAccountSelected(home.id)
-            first.onInputChanged("1001")
-            runCurrent()
-            first.onCall()
-            runCurrent()
-
-            assertTrue(!first.uiState.value.isOverridden)
-
-            val second = ready(viewModel())
-            assertEquals(
-                work.id,
-                second.uiState.value.selectedAccount?.id,
-                "back to the default, on the screen as well as in the handle",
-            )
-        }
-
-    @Test
     fun `a refused call keeps the selection, because the user is about to try again`() = runTest {
-        // The override is cleared on success only, and the saved handle has to agree with
-        // that rather than having a rule of its own.
+        // Nothing about a call that failed changes which extension the phone is on, and the
+        // user is about to press the button again.
         given(work, home)
         engine.failNext(FakeSipEngine.Operation.PLACE_CALL, SipError.Busy(BUSY_HERE))
         val first = ready(viewModel())

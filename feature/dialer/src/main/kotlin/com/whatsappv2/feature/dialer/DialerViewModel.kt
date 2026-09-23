@@ -1,6 +1,5 @@
 package com.whatsappv2.feature.dialer
 
-import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.whatsappv2.core.common.result.Outcome
@@ -28,6 +27,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.receiveAsFlow
@@ -47,8 +47,24 @@ import javax.inject.Inject
  * copy that will drift the first time another screen places a call.
  *
  * What it does decide is which account a call goes out on, because that is a choice the
- * user makes on this screen: the per-call override if they set one, and the default
- * account otherwise.
+ * user makes on this screen.
+ *
+ * ## Choosing an account here changes the default, as it does everywhere else
+ *
+ * It used to be a **per-call override**: chosen here, cleared by the next placed call,
+ * and invisible to the rest of the app. That was one screen with a private idea of which
+ * extension the phone is on. Choosing an extension in the Chats bar sets the default
+ * (`RegistrationStatusViewModel.setDefault`), so the two screens disagreed the moment
+ * either was used — the dialler showed the account the user had picked, the bar showed the
+ * one they had not, and placing a call quietly put the dialler back to the bar's answer.
+ *
+ * So the choice goes to the same place from both screens: [SipAccountRepository.setDefault],
+ * which clears the previous default in the same transaction. The selection then survives
+ * navigation, a placed call and process death for free, because it lives in the database
+ * rather than in this object — which is also why the `SavedStateHandle` this class used to
+ * carry is gone. The only thing held here is [Entry.pendingDefault], an echo that lasts
+ * until the store's own flow reports the write, so the card does not sit on the old
+ * account for the width of a database round trip.
  */
 @HiltViewModel
 class DialerViewModel @Inject constructor(
@@ -63,23 +79,14 @@ class DialerViewModel @Inject constructor(
      * copies of the decision would be one that drifts.
      */
     private val camera: CameraAvailability,
-    repository: SipAccountRepository,
-
     /**
-     * Where the chosen account survives leaving the screen.
+     * Read for the account list, and written when the user picks one of them.
      *
-     * The override used to live only in [entry], a plain `MutableStateFlow` in this
-     * ViewModel. Compose Navigation scopes a ViewModel to its destination, so walking to
-     * the call screen and back destroyed it and the selection silently reverted to the
-     * default account — after the user had deliberately picked another one.
-     *
-     * A `SavedStateHandle` is scoped to the destination's back-stack entry, so it survives
-     * both that round trip and process death. It holds an account id and nothing else;
-     * architecture rule 10 forbids reconstructing *call* state this way, and that
-     * reasoning does not extend to which account is selected — a call may have ended while
-     * the process was dead, an account cannot have.
+     * A `val` rather than a constructor-only parameter because choosing an account is now
+     * a write: see the class documentation for why the dialler sets the default rather
+     * than keeping an override of its own.
      */
-    private val savedState: SavedStateHandle,
+    private val repository: SipAccountRepository,
     registrar: SipRegistrar,
     /**
      * How a call placed from a live conference becomes a participant of it: the dialler
@@ -98,13 +105,20 @@ class DialerViewModel @Inject constructor(
      */
     private data class Entry(
         val input: String = "",
-        val override: AccountId? = null,
+        /**
+         * The account just chosen on this screen, until the store confirms it.
+         *
+         * Not where the selection lives — that is the account's `isDefault` column. This
+         * is only so the card changes on the tap rather than a database round trip later,
+         * and it is dropped the moment [SipAccountRepository.observeAccounts] reports the
+         * write. Keeping it any longer would let a stale choice here outrank a default
+         * changed from the Chats bar.
+         */
+        val pendingDefault: AccountId? = null,
         val placing: Boolean = false,
     )
 
-    private val entry = MutableStateFlow(
-        Entry(override = savedState.get<String>(KEY_ACCOUNT_OVERRIDE)?.let(::AccountId)),
-    )
+    private val entry = MutableStateFlow(Entry())
 
     private val eventChannel = Channel<DialerEvent>(Channel.BUFFERED)
     val events: Flow<DialerEvent> = eventChannel.receiveAsFlow()
@@ -156,20 +170,21 @@ class DialerViewModel @Inject constructor(
                 label = account.label,
                 identity = "${account.username}@${account.domain}",
                 isRegistered = registrations[account.id]?.isUsable == true,
+                isDefault = account.isDefault,
             )
         }
-        // The override if there is one, the default account otherwise, and the first
-        // account if nothing is marked default - which is what the use case would pick.
-        val selected = rows.firstOrNull { it.id == current.override }
-            ?: accounts.firstOrNull { it.isDefault }?.let { default -> rows.first { it.id == default.id } }
+        // The tap that has not reached the store yet, the default account once it has, and
+        // the first account if nothing is marked default - which is what the use case
+        // would pick.
+        val selected = rows.firstOrNull { it.id == current.pendingDefault }
+            ?: rows.firstOrNull { it.isDefault }
             ?: rows.firstOrNull()
 
         return DialerUiState(
             input = current.input,
             accounts = rows,
             selectedAccount = selected,
-            isOverridden = current.override != null,
-            selectionIsDefault = accounts.firstOrNull { it.id == selected?.id }?.isDefault == true,
+            selectionIsDefault = selected?.isDefault == true,
             recent = recent,
             contacts = matches,
             isPlacing = current.placing,
@@ -198,24 +213,37 @@ class DialerViewModel @Inject constructor(
     }
 
     /**
-     * Chooses the account for the next call.
+     * Makes [id] the default account — the one outgoing calls leave on, here and
+     * everywhere else in the app.
      *
-     * Per call, not a setting: it is cleared once the call is placed, so a one-off call
-     * from the work account does not silently become every later call's account too.
+     * The same single call the Chats indicator makes, for the same reason: the repository
+     * clears the previous default in the same transaction, so there is never an instant
+     * with two defaults or none. See the class documentation for why this is a setting
+     * rather than the per-call override it used to be.
      *
-     * It does, however, survive **leaving the screen**. Those are different lifetimes and
-     * conflating them was the bug: the choice used to live only in [entry], which Compose
-     * Navigation discards when the destination leaves the back stack, so walking to the
-     * call screen and back reverted to the default account after the user had deliberately
-     * picked another. [savedState] carries it across that round trip and no further —
-     * `place` clears both.
+     * The echo is shown immediately and dropped once the store's own flow reports the
+     * write, so the card follows the tap without ever outliving the fact it is echoing.
      */
     fun onAccountSelected(id: AccountId) {
-        // Written through, not just held: the handle is what makes the choice outlive
-        // this ViewModel. Storing the raw String keeps it to a type SavedStateHandle can
-        // put in a Bundle without AccountId needing to be Parcelable.
-        savedState[KEY_ACCOUNT_OVERRIDE] = id.value
-        entry.update { it.copy(override = id) }
+        entry.update { it.copy(pendingDefault = id) }
+        viewModelScope.launch {
+            val written = repository.setDefault(id) is Outcome.Success
+            if (written) {
+                // Suspends until the row the write produced comes back round — or until
+                // the account disappears, which is the only other way this can end and
+                // would otherwise leave a coroutine waiting for a row that is gone.
+                repository.observeAccounts().first { accounts ->
+                    accounts.none { it.id == id } || accounts.any { it.id == id && it.isDefault }
+                }
+            } else {
+                // Refused: the account was deleted under the open menu, most likely. The
+                // echo goes rather than standing over a default that never changed — a
+                // card naming one account while calls leave on another is the §6 lie in
+                // the most expensive place to tell it.
+                eventChannel.send(DialerEvent.Refused(ACCOUNT_GONE))
+            }
+            entry.update { if (it.pendingDefault == id) it.copy(pendingDefault = null) else it }
+        }
     }
 
     /** Fills the input from a recent target. Tapping does not dial: a misplaced tap should
@@ -292,15 +320,11 @@ class DialerViewModel @Inject constructor(
                 // Cleared only on success: a call that was refused leaves what was typed
                 // on screen, because the user is about to correct it or try again.
                 //
-                // The saved handle is cleared with it, and it MUST be: this override is
-                // documented as per-call, not a setting, and persisting it across
-                // navigation (which is what the handle is for) would otherwise turn it
-                // into one — the next call would silently go out on an account chosen for
-                // the last one. Two places hold this value, so both are cleared here.
-                if (result is Outcome.Success) {
-                    savedState[KEY_ACCOUNT_OVERRIDE] = null
-                    entry.value = Entry()
-                }
+                // The *input* only. The account is not cleared any more and must not be:
+                // it is the default now, chosen deliberately, and putting it back after
+                // every call is precisely the behaviour that made the dialler and the
+                // Chats bar disagree about which extension the phone is on.
+                if (result is Outcome.Success) entry.update { it.copy(input = "") }
             } finally {
                 entry.update { it.copy(placing = false) }
             }
@@ -311,7 +335,7 @@ class DialerViewModel @Inject constructor(
         is Outcome.Success -> DialerEvent.CallPlaced(value)
         is Outcome.Failure -> when (val reason = error) {
             is PlaceCallError.NoAccountAvailable -> DialerEvent.NoAccount
-            is PlaceCallError.UnknownAccount -> DialerEvent.Refused("That account is no longer configured")
+            is PlaceCallError.UnknownAccount -> DialerEvent.Refused(ACCOUNT_GONE)
             is PlaceCallError.InvalidTarget -> DialerEvent.InvalidTarget(target)
             // The account was not registered, the app tried to register it, and the server
             // did not answer inside PlaceCallUseCase's bound. Worded as what happened rather
@@ -335,8 +359,8 @@ class DialerViewModel @Inject constructor(
     internal companion object {
         const val SUBSCRIPTION_TIMEOUT_MILLIS = 5_000L
 
-        /** Where the chosen account id lives in the destination's saved state. */
-        private const val KEY_ACCOUNT_OVERRIDE = "dialer.accountOverride"
+        /** Worded exactly as the refusal for a call on a vanished account, so one fact reads one way. */
+        const val ACCOUNT_GONE = "That account is no longer configured"
 
         /**
          * How many contacts the picker offers.
