@@ -883,7 +883,23 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 }.onSuccess { existing.registerAfterModify(account.key, ipChangeInProgress, logger) }
             } else {
                 val created = PjAccount(account.key)
-                created.create(config, accounts.isEmpty())
+                // Caught here rather than by `onPjsip`, which logs and returns. That
+                // swallow is the last of the paths that could leave the engine's
+                // `Registering` with nothing to answer it: the account was never added, so
+                // no callback of its own could ever fire, and the account sat on the
+                // spinner until somebody pressed "Register now". A FAILED event with no
+                // status code reads as a transport failure, which is honest — nothing
+                // reached a registrar — and hands the account to the retry chain.
+                val stood = runCatching { created.create(config, accounts.isEmpty()) }
+                    .onFailure { failure ->
+                        logger.error(TAG, "Could not create ${account.key}", failure)
+                        events.reportRegistrationFailure(
+                            account.key,
+                            failure.message ?: "the account could not be created",
+                        )
+                    }
+                    .isSuccess
+                if (!stood) return@onPjsip
                 accounts[account.key] = created
             }
 
@@ -915,14 +931,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             ?: "the SIP stack was never started"
 
         logger.error(TAG, "$operation refused - $reason", startFailure)
-        events.tryEmit(
-            StackRegistrationEvent(
-                accountKey = accountKey,
-                state = StackRegistrationState.FAILED,
-                statusCode = null,
-                message = reason,
-            ),
-        )
+        events.reportRegistrationFailure(accountKey, reason)
     }
 
     /**
@@ -948,13 +957,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
             accounts[accountKey] = rebuilt
         }.onFailure { failure ->
             logger.error(TAG, "Could not rebuild $accountKey", failure)
-            events.tryEmit(
-                StackRegistrationEvent(
-                    accountKey = accountKey,
-                    state = StackRegistrationState.FAILED,
-                    statusCode = null,
-                    message = failure.message ?: "the account could not be rebuilt",
-                ),
+            events.reportRegistrationFailure(
+                accountKey,
+                failure.message ?: "the account could not be rebuilt",
             )
         }
     }
@@ -1031,13 +1036,59 @@ internal class RealPjsipCoreGateway @Inject constructor(
         logger.info(TAG, "SIP trace ${if (enabled) "enabled" else "disabled"}")
     }
 
+    /**
+     * Re-registers an account the stack already holds — and stands one back up when it does
+     * not.
+     *
+     * ## Why the missing case is not a no-op
+     *
+     * `accounts[accountKey]?.setRegistration(true)` is what this was, and the `?.` was the
+     * defect. The engine returns success for a refresh whenever it knows the account, and
+     * the recovery coordinator clears the pending retry *before* it issues one — so a
+     * refresh that fell through this elvis was a request reported as sent, no REGISTER on
+     * the wire, no event to follow, and a retry chain that ended there. The account stayed
+     * on "Reconnecting…" until somebody pressed "Register now", which worked because it
+     * goes through [addAccount] and builds the account again.
+     *
+     * The stack loses an account for real reasons: a `create` that threw, a rebuild that
+     * failed, a removal that raced a re-login. [accountConfigs] still holds what it was
+     * asked to stand up, so it is stood up again rather than reported and abandoned —
+     * automatically doing what the user had to do by hand.
+     *
+     * A `setRegistration` that throws is the one case that is left alone: `PJSIP_EBUSY`
+     * means a REGISTER is already on the wire and its answer will move the state, which is
+     * exactly what [registerAfterModify] documents. The coordinator's watchdog is what
+     * covers the answer that never comes.
+     */
     override fun refreshAccount(accountKey: String) {
         onPjsip("refreshAccount") {
             if (ipChangeInProgress) {
                 logger.info(TAG, "Refresh of $accountKey folded into the IP change PJSIP is handling")
                 return@onPjsip
             }
-            accounts[accountKey]?.setRegistration(true)
+
+            val account = accounts[accountKey]
+            if (account == null) {
+                val stored = accountConfigs[accountKey]
+                if (stored == null) {
+                    logger.error(TAG, "Refresh of $accountKey, which this stack has never held")
+                    events.reportRegistrationFailure(accountKey, "the stack does not hold this account")
+                    return@onPjsip
+                }
+                logger.warn(TAG, "Refresh of $accountKey with no account behind it; standing it back up")
+                rebuildAccount(
+                    accountKey,
+                    stored.toAccountConfig(
+                        transportParam = transportUriParameter(stored.transport),
+                        pushParameters = pushParameters,
+                    ),
+                )
+                return@onPjsip
+            }
+
+            runCatching { account.setRegistration(true) }.onFailure {
+                logger.debug(TAG, "REGISTER for $accountKey not sent: ${it.message}")
+            }
         }
     }
 
@@ -3153,6 +3204,31 @@ private fun openRecorder(
             logger.error(RealPjsipCoreGateway.TAG, "startRecording failed: ${thrown.message}", thrown)
             failure(thrown.message ?: thrown.javaClass.simpleName)
         },
+    )
+}
+
+/**
+ * Reports that a registration request got nowhere, so the caller is not left waiting.
+ *
+ * Every path that abandons a registration request goes through here, and that is the point:
+ * `PjsipSipEngine.register` publishes `Registering` before it calls in, so a request the
+ * gateway drops without a word leaves the account on that spinner with nothing left to move
+ * it. A FAILED event carrying no status code maps to a transport failure — the honest
+ * reading, since nothing reached a registrar — and hands the account to the retry chain.
+ *
+ * File level because the gateway is at detekt's `LargeClass` bound.
+ */
+private fun MutableSharedFlow<StackRegistrationEvent>.reportRegistrationFailure(
+    accountKey: String,
+    reason: String,
+) {
+    tryEmit(
+        StackRegistrationEvent(
+            accountKey = accountKey,
+            state = StackRegistrationState.FAILED,
+            statusCode = null,
+            message = reason,
+        ),
     )
 }
 

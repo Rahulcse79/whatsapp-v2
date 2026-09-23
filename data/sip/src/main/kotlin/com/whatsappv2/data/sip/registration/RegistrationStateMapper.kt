@@ -101,6 +101,35 @@ internal object RegistrationStateMapper {
         }
     }
 
+    /**
+     * [current] with [id]'s unanswered REGISTER reported as the timeout it was.
+     *
+     * The engine publishes [RegistrationState.Registering] the moment a REGISTER is handed
+     * to the stack, and moves off it only when the stack reports an answer. When no answer
+     * ever comes — the request lost on a link that was changing, PJSIP's transaction timer
+     * stalled through a suspend, an account the stack failed to stand up — that state was
+     * where the account stayed, and "Registering…" is the one thing the screen must not say
+     * indefinitely: it promises the user that waiting is enough when it is not.
+     *
+     * [com.whatsappv2.data.sip.network.RegistrationRecoveryCoordinator] owns the timing and
+     * calls this when its watchdog expires. `retryScheduled` is true because the same
+     * watchdog hands the account straight to the retry chain, so the screen can honestly
+     * offer a countdown rather than a failure to act on.
+     *
+     * Only `Registering` is rewritten, for the reason [withoutNetwork] gives: a `Failed`
+     * account already carries a more specific reason, `Registered` means the answer beat
+     * the timer, and `Unregistered` is a deliberate logout that nothing here may undo.
+     */
+    fun withStalledAttempt(
+        current: Map<AccountId, RegistrationState>,
+        id: AccountId,
+    ): Map<AccountId, RegistrationState> =
+        if (current[id] == RegistrationState.Registering) {
+            current + (id to RegistrationState.Failed(RegistrationFailure.TIMEOUT, retryScheduled = true))
+        } else {
+            current
+        }
+
     /** True when the state means the account can currently place and receive calls. */
     fun isUsable(state: StackRegistrationState): Boolean =
         state == StackRegistrationState.OK || state == StackRegistrationState.REFRESHING

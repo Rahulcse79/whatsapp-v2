@@ -224,6 +224,12 @@ internal class PjsipSipEngine @Inject constructor(
         onNetworkLost = { states.update(RegistrationStateMapper::withoutNetwork) },
         timer = wakeTimer,
         wakeMonitor = wakeMonitor,
+        // Beside it, and for the same division of labour: the coordinator owns the timers,
+        // so it is the only thing that can know a REGISTER was never answered; this class
+        // owns the state, so it is the only thing that may say so. Without this the account
+        // stayed on `Registering` for the life of the process — see the coordinator's
+        // watchdog, and `RegistrationStateMapper.withStalledAttempt`.
+        onAttemptStalled = { id -> states.update { RegistrationStateMapper.withStalledAttempt(it, id) } },
     )
 
     /**

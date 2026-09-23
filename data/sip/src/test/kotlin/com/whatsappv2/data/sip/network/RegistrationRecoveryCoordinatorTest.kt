@@ -7,6 +7,7 @@ import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CodecPreferences
 import com.whatsappv2.domain.model.NatPolicy
+import com.whatsappv2.domain.model.RegistrationFailure
 import com.whatsappv2.domain.model.SipAccount
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.Transport
@@ -75,6 +76,9 @@ class RegistrationRecoveryCoordinatorTest {
         isDefault = true,
     )
 
+    /** Accounts the coordinator reported as having an unanswered REGISTER, in order. */
+    private val stalled = mutableListOf<AccountId>()
+
     private fun coordinator(
         scope: CoroutineScope,
         clock: Clock = MutableClock(),
@@ -88,6 +92,12 @@ class RegistrationRecoveryCoordinatorTest {
         random = WidestSample,
         clock = clock,
         wakeMonitor = device,
+        onAttemptStalled = { id ->
+            stalled += id
+            // What the engine does with it, so the fake's state moves the way the real
+            // one's does and the chain that follows is the real chain.
+            engine.givenRegistrationFailed(account, RegistrationFailure.TIMEOUT)
+        },
     )
 
     /** Registered on Wi-Fi, watched, and past the first debounce. */
@@ -556,6 +566,144 @@ class RegistrationRecoveryCoordinatorTest {
         assertTrue(refreshes.isEmpty())
     }
 
+    // ---------------------------------------------------------------- unanswered REGISTERs
+
+    @Test
+    fun `a REGISTER nothing ever answers is retried instead of stranding the account`() = runTest {
+        // The defect this class was missing. `Registering` was an absorbing state: the
+        // policy answers Idle for it, a device wake skipped it, and `withoutNetwork` leaves
+        // it alone - so a request that was lost left the account on that spinner for the
+        // life of the process, and only "Register now" got it out, because that path
+        // rebuilds the PJSIP account rather than asking the existing one to try again.
+        monitor.onWifi()
+        val recovery = coordinator(backgroundScope)
+        recovery.start()
+        settle()
+
+        engine.givenRegistering(account)
+        settle()
+        engine.clearInvocations()
+
+        // Nothing yet: the stack is allowed the time SIP's own transaction timeout takes.
+        settle(RegistrationRecoveryCoordinator.ATTEMPT_TIMEOUT - SETTLE - 1.seconds)
+        assertTrue(refreshes.isEmpty(), "a REGISTER in flight must be left alone while it is young")
+
+        settle(2.seconds)
+
+        assertEquals(listOf(account.id), stalled, "the engine is told, so the screen stops saying Registering")
+        assertEquals(listOf(account.id.value), refreshes, "and the account is registered again")
+    }
+
+    @Test
+    fun `an answer that arrives in time leaves the watchdog with nothing to do`() = runTest {
+        // The watchdog must not become a second REGISTER generator on a healthy account.
+        monitor.onWifi()
+        val recovery = coordinator(backgroundScope)
+        recovery.start()
+        settle()
+
+        engine.givenRegistering(account)
+        settle()
+        engine.givenRegistered(account)
+        settle()
+        engine.clearInvocations()
+
+        settle(RegistrationRecoveryCoordinator.ATTEMPT_TIMEOUT * 2)
+
+        assertTrue(stalled.isEmpty())
+        assertTrue(refreshes.isEmpty(), "the answer arrived; nothing is owed")
+    }
+
+    @Test
+    fun `a refresh the stack accepted and never sent does not end the retry chain`() = runTest {
+        // The second half of the same defect, and the one that made an account go quiet
+        // after a single retry. `reRegister` clears the pending retry before it issues, and
+        // only reschedules when the refresh *returns* a failure - so a refresh the stack
+        // quietly dropped reported success, produced no state change, and the chain ended
+        // there with nothing armed and nothing on the wire.
+        arrangeRegisteredOnWifi()
+        givenRegistrarUnreachable()
+        engine.swallowRefreshes()
+        runCurrent()
+
+        // Retry 1 fires, is accepted, and goes nowhere.
+        settle(BASE_DELAY)
+        assertEquals(1, refreshes.size, "arrange: one attempt was made and answered by nothing")
+
+        settle(RegistrationRecoveryCoordinator.ATTEMPT_TIMEOUT)
+        // The watchdog turns the silence into a timeout, which the backoff escalates.
+        settle(BASE_DELAY * 2)
+
+        assertTrue(refreshes.size >= 2, "a dropped refresh must not be the end of it, was ${refreshes.size}")
+    }
+
+    @Test
+    fun `a logged-out account is not dragged back by the watchdog`() = runTest {
+        // Recovery is for connections that broke. A logout while a REGISTER was in flight
+        // is a decision, and the watchdog firing afterwards must not undo it.
+        monitor.onWifi()
+        val recovery = coordinator(backgroundScope)
+        recovery.start()
+        settle()
+
+        engine.givenRegistering(account)
+        settle()
+        engine.unregister(account.id)
+        settle()
+        engine.clearInvocations()
+
+        settle(RegistrationRecoveryCoordinator.ATTEMPT_TIMEOUT * 2)
+
+        assertTrue(stalled.isEmpty())
+        assertTrue(refreshes.isEmpty())
+    }
+
+    @Test
+    fun `picking the phone up does not mean waiting out the watchdog`() = runTest {
+        // A person holding a handset that says "Registering" should not have to wait for a
+        // timer sized for SIP's transaction timeout. An attempt older than the wake gap is
+        // treated as the stalled one it is, immediately.
+        val clock = MutableClock()
+        monitor.onWifi()
+        val recovery = coordinator(backgroundScope, clock)
+        recovery.start()
+        settle()
+
+        engine.givenRegistering(account)
+        settle()
+        engine.clearInvocations()
+        // Wall-clock, which is what the gap is measured in: the device was asleep, so
+        // virtual time standing still is exactly the situation.
+        clock.advanceBy(WAKE_GAP.inWholeMilliseconds)
+
+        device.wake(WakeReason.SCREEN_ON)
+        runCurrent()
+
+        assertEquals(listOf(account.id), stalled)
+        assertEquals(listOf(account.id.value), refreshes)
+    }
+
+    @Test
+    fun `a REGISTER that has only just gone out survives a device wake`() = runTest {
+        // The other side of the same rule. Waking must not fire a second REGISTER on top
+        // of one that is a second old, or a screen turned on during a normal registration
+        // would double every attempt.
+        monitor.onWifi()
+        val recovery = coordinator(backgroundScope, MutableClock())
+        recovery.start()
+        settle()
+
+        engine.givenRegistering(account)
+        settle()
+        engine.clearInvocations()
+
+        device.wake(WakeReason.SCREEN_ON)
+        runCurrent()
+
+        assertTrue(stalled.isEmpty())
+        assertTrue(refreshes.isEmpty())
+    }
+
     private companion object {
         /** Comfortably past the coordinator's one-second debounce window. */
         val SETTLE: Duration = 3.seconds
@@ -570,6 +718,9 @@ class RegistrationRecoveryCoordinatorTest {
          * same observation.
          */
         val BASE_DELAY: Duration = 60.seconds
+
+        /** Past the coordinator's WAKE_REFRESH_GAP, so a wake treats an attempt as stale. */
+        val WAKE_GAP: Duration = 31.seconds
 
         /** Shorter than the debounce window, so the status never settles. */
         val FLAP_INTERVAL: Duration = 200.milliseconds

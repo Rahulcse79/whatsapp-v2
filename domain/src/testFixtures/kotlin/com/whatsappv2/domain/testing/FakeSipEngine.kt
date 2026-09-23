@@ -229,10 +229,17 @@ class FakeSipEngine(
         }
     }
 
+    /** See [swallowRefreshes]. */
+    private var refreshesGoNowhere = false
+
     override suspend fun refreshRegistration(accountId: AccountId): Outcome<Unit, SipError> {
         record(Operation.REFRESH_REGISTRATION, accountId.value)
         val account = knownAccounts[accountId] ?: return failure(SipError.UnknownAccount)
         return guard(Operation.REFRESH_REGISTRATION) {
+            // Accepted and sent nowhere. The state is left exactly as it was, which is
+            // what makes this indistinguishable from success to anybody who only looks at
+            // the return value.
+            if (refreshesGoNowhere) return@guard success(Unit)
             registrations.update {
                 it + (accountId to RegistrationState.Registered(account.registrationExpirySeconds))
             }
@@ -532,6 +539,34 @@ class FakeSipEngine(
         registrations.update {
             it + (account.id to RegistrationState.Registered(account.registrationExpirySeconds))
         }
+    }
+
+    /**
+     * An account with a REGISTER on the wire that nothing ever answers.
+     *
+     * The state a real handset gets into when the request is lost — a link that was coming
+     * up, a transaction timer that stopped with the CPU, an account the stack failed to
+     * stand up. Distinct from [givenRegistered] and [givenRegistrationFailed] because it is
+     * the one state with no outcome in it: nothing further will arrive unless something
+     * goes looking, which is exactly what
+     * `RegistrationRecoveryCoordinator`'s watchdog is for.
+     */
+    fun givenRegistering(account: SipAccount): FakeSipEngine = apply {
+        knownAccounts[account.id] = account
+        registrations.update { it + (account.id to RegistrationState.Registering) }
+    }
+
+    /**
+     * Makes [refreshRegistration] accept every request and send nothing.
+     *
+     * Not a failure: it returns success, exactly as the real engine does when the stack
+     * takes the call and quietly drops it (an account PJSIP no longer holds, a
+     * `setRegistration` that threw and was logged). A caller that trusts the success and
+     * waits for an event waits for ever, and proving that it no longer does needs a fake
+     * that can lie in the same way.
+     */
+    fun swallowRefreshes(enabled: Boolean = true): FakeSipEngine = apply {
+        refreshesGoNowhere = enabled
     }
 
     /**
