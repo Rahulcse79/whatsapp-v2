@@ -112,7 +112,13 @@ internal fun CallVideo(
     LaunchedEffect(configuration) {
         actions.onDisplayRotation(context.displayRotationDegrees())
     }
-    val remoteView = remember { SurfaceView(context) }
+    // `keepScreenOn` on the view rather than a window flag on the activity: the screen has
+    // to stay awake for exactly as long as there is a picture to look at, and a view holds
+    // the wake state only while it is attached and visible — so it is released on its own
+    // when video ends, when the call screen goes away, and when a hold takes the video
+    // down. An activity flag would have to be cleared by hand on every one of those paths,
+    // and the one that gets missed is a phone that never sleeps again.
+    val remoteView = remember { SurfaceView(context).apply { keepScreenOn = true } }
     // A `TextureView`, not a second `SurfaceView` — see the class comment. It is an
     // ordinary view, so it is drawn over the remote picture by being later in the tree and
     // cropped to its box by an ordinary parent; the `setZOrderMediaOverlay` dance a second

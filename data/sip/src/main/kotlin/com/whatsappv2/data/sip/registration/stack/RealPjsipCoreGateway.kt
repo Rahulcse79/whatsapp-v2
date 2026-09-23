@@ -82,6 +82,7 @@ import org.pjsip.pjsua2.VideoMediaTransmitParam
 import org.pjsip.pjsua2.VideoPreview
 import org.pjsip.pjsua2.VideoWindowHandle
 import org.pjsip.pjsua2.pj_ssl_sock_proto
+import org.pjsip.pjsua2.StreamStat
 import org.pjsip.pjsua2.pjmedia_dir
 import org.pjsip.pjsua2.pjmedia_event_type
 import org.pjsip.pjsua2.pjmedia_orient
@@ -106,6 +107,7 @@ import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.roundToLong
 
 /**
  * The real SIP stack, behind the gateway seam (ADR-006).
@@ -1868,6 +1870,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 // connect is queued and runs on a later clock tick, so a link requested a
                 // moment ago could otherwise land on a port freed in between.
                 videoConference.remove(callKey)
+                // And the surfaces with them. The canvas is the lowest member key, so a
+                // conference whose canvas just hung up has moved it to another call — and
+                // that call's window is not holding the screen's `Surface` yet. Relinking
+                // the bridge alone would compose the picture into a window nobody can see.
+                if (videoConference.isActive) calls.values.forEach { it.applyVideoWindows() }
                 audioMedia = null
                 // And freed on the PJSIP thread, after this callback has returned — not
                 // from inside it, where the native frame is still this object's, and not
@@ -2454,12 +2461,50 @@ internal class RealPjsipCoreGateway @Inject constructor(
             runCatching { dump(true, "  ") }.getOrNull()?.takeIf { it.isNotBlank() }?.let { mediaStatistics = it }
         }
 
+        /** The counters each stream last reported, so the next read can be stated as a rate. */
+        private val rtpCounters = mutableMapOf<Long, RtpCounters>()
+
+        /**
+         * One line per live stream, every [MEDIA_STATISTICS_INTERVAL_MILLIS], carrying the
+         * rate since the previous line.
+         *
+         * [snapshotMediaStatistics] keeps the whole dump for the end of the call, which
+         * answers "what did this call look like" and cannot answer "when did it stop" —
+         * the totals of an eight-minute call read exactly the same whether the far end's
+         * video ran for fifty-five seconds or trickled throughout, and a picture that
+         * freezes is entirely that second question. So each sample is also reduced to a
+         * rate and written out as it is taken.
+         *
+         * The peer's RTP address rides along because it is the cheapest possible proof
+         * that media is going phone-to-phone rather than through the bridge (ADR-009).
+         */
+        private fun traceMedia() {
+            val info = infoOrNull() ?: return
+            val now = System.currentTimeMillis()
+            info.media.forEach { media ->
+                val kind = TRACED_MEDIA[media.type] ?: return@forEach
+                if (media.status != pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE) return@forEach
+                val current = runCatching { getStreamStat(media.index).counters(now) }.getOrNull() ?: return@forEach
+                val previous = rtpCounters.put(media.index, current) ?: return@forEach
+                val stream = runCatching { getStreamInfo(media.index) }.getOrNull()
+                val line = rtpTraceLine(
+                    kind = kind,
+                    codec = stream?.codecName.orEmpty(),
+                    peer = stream?.remoteRtpAddress.orEmpty(),
+                    previous = previous,
+                    current = current,
+                ) ?: return@forEach
+                logger.info(TAG, "Media trace $callKey $line")
+            }
+        }
+
         /** Re-arms the periodic snapshot for as long as this call is still the stack's. */
         private fun scheduleMediaStatistics() {
             pjsip.schedule(
                 {
                     if (calls[callKey] !== this) return@schedule
                     snapshotMediaStatistics()
+                    traceMedia()
                     scheduleMediaStatistics()
                 },
                 MEDIA_STATISTICS_INTERVAL_MILLIS,
@@ -2972,6 +3017,77 @@ private fun CallInfo.decodedVideoSize(decodedFormat: (Long) -> MediaFormatVideo?
             VideoSize(window.w.toInt(), window.h.toInt())
         }.getOrNull()?.takeIf { it.isKnown }
     }
+
+/** The stream kinds the media trace reports, and the word it uses for each. */
+private val TRACED_MEDIA = mapOf(
+    pjmedia_type.PJMEDIA_TYPE_AUDIO to "audio",
+    pjmedia_type.PJMEDIA_TYPE_VIDEO to "video",
+)
+
+/** One stream's cumulative RTP counters at an instant, so that two reads make a rate. */
+private data class RtpCounters(
+    val atMillis: Long,
+    val rxPkt: Long,
+    val rxBytes: Long,
+    val rxLoss: Long,
+    val txPkt: Long,
+    val txBytes: Long,
+    val txLoss: Long,
+)
+
+/** Everything the trace needs from one stream, read in a single pass over the native object. */
+private fun StreamStat.counters(atMillis: Long) = RtpCounters(
+    atMillis = atMillis,
+    rxPkt = rtcp.rxStat.pkt,
+    rxBytes = rtcp.rxStat.bytes,
+    rxLoss = rtcp.rxStat.loss,
+    txPkt = rtcp.txStat.pkt,
+    txBytes = rtcp.txStat.bytes,
+    txLoss = rtcp.txStat.loss,
+)
+
+/**
+ * `video H264 - rx 88 pkt/s 812 kbps loss 0 - tx 88 pkt/s 819 kbps loss 0 - peer 1.2.3.4:4002`
+ *
+ * Rates rather than totals, because the question a frozen picture asks is *when* a stream
+ * stopped and a total cannot answer it. Loss is the loss over the interval for the same
+ * reason: a call that lost thirty packets in its first second reads as lossless for ever
+ * after, which is true and useless.
+ *
+ * Null when both reads share a timestamp, or when a counter went backwards — a stream the
+ * stack rebuilt under us starts a fresh set at zero, and differencing across that boundary
+ * reports a large negative rate, which measures nothing.
+ */
+private fun rtpTraceLine(
+    kind: String,
+    codec: String,
+    peer: String,
+    previous: RtpCounters,
+    current: RtpCounters,
+): String? {
+    val seconds = (current.atMillis - previous.atMillis) / MILLIS_PER_SECOND
+    if (seconds <= 0.0) return null
+    if (current.rxPkt < previous.rxPkt || current.txPkt < previous.txPkt) return null
+
+    fun perSecond(delta: Long) = (delta / seconds).roundToLong()
+    fun kbps(deltaBytes: Long) = (deltaBytes * BITS_PER_BYTE / (BITS_PER_KILOBIT * seconds)).roundToLong()
+
+    return buildString {
+        append(kind)
+        if (codec.isNotBlank()) append(' ').append(codec)
+        append(" - rx ").append(perSecond(current.rxPkt - previous.rxPkt)).append(" pkt/s ")
+        append(kbps(current.rxBytes - previous.rxBytes)).append(" kbps loss ")
+        append(current.rxLoss - previous.rxLoss)
+        append(" - tx ").append(perSecond(current.txPkt - previous.txPkt)).append(" pkt/s ")
+        append(kbps(current.txBytes - previous.txBytes)).append(" kbps loss ")
+        append(current.txLoss - previous.txLoss)
+        if (peer.isNotBlank()) append(" - peer ").append(peer)
+    }
+}
+
+private const val MILLIS_PER_SECOND = 1_000.0
+private const val BITS_PER_BYTE = 8.0
+private const val BITS_PER_KILOBIT = 1_000.0
 
 /** True when a video stream is negotiated and running on this call, in either direction. */
 private fun CallInfo.hasActiveVideo(): Boolean = media.any {

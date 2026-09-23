@@ -152,7 +152,16 @@ internal class VideoConferenceBridge(
             // manage again, and anything this class opened must not outlive the mix.
             closeEverything()
             logger.info(TAG, "Video conference ended; ${members.size} member(s) left")
+            return
         }
+
+        // The canvas is the lowest member key, so the leg that just left may be the one
+        // whose window held the composed picture — and that window goes with its call.
+        // Everyone still here is linked to it, [links] records those links as open, and
+        // nothing above re-points them, so every remaining tile would sit frozen on its
+        // last frame until some unrelated media event happened to remix. [remix] reads
+        // the renderer's slot, sees it has moved, and relinks against the new canvas.
+        remix()
     }
 
     /** Closes every link this bridge opened and forgets the conference. */

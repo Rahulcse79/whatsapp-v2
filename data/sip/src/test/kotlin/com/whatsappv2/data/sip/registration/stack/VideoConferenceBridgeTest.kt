@@ -46,6 +46,43 @@ class VideoConferenceBridgeTest {
 
     private fun bridge() = VideoConferenceBridge(NoOpLogger) { ports[it] }
 
+    /**
+     * The window each call owns, which is not the same thing as "the renderer".
+     *
+     * Production has one per call and hands the bridge whichever belongs to the canvas —
+     * `RealPjsipCoreGateway.videoPortFor`, `canvasCallKey`. [bridge] above collapses that
+     * to a single fixed port, which is enough for every arrangement question and cannot
+     * express the one thing that moves: a canvas leaving.
+     */
+    private val windows = mutableMapOf<String, FakePort>()
+
+    private fun givenWindow(key: String): FakePort = FakePort(nextId++).also { windows[key] = it }
+
+    /** A bridge that resolves the renderer through the canvas, exactly as the gateway does. */
+    private fun canvasBridge(): VideoConferenceBridge {
+        lateinit var bridge: VideoConferenceBridge
+        bridge = VideoConferenceBridge(NoOpLogger) { ref ->
+            if (ref.role == VideoRole.RENDERER) {
+                bridge.currentMembers.minOrNull()?.let(windows::get)
+            } else {
+                ports[ref]
+            }
+        }
+        return bridge
+    }
+
+    /** Which port ids are feeding [sink], windows included. */
+    private fun feedingPort(sink: FakePort): Set<Int> =
+        (ports.values + windows.values)
+            .filterTo(mutableSetOf()) { sink.id in it.sentTo }
+            .mapTo(mutableSetOf()) { it.id }
+
+    /** Drops [key]'s ports the way pjsua does: with the call, and before the bridge is told. */
+    private fun givenCallReleased(key: String) {
+        ports.keys.filterTo(mutableSetOf()) { it.callKey == key }.forEach(ports::remove)
+        windows -= key
+    }
+
     /** Which port ids are feeding [ref] right now, read back off the fakes. */
     private fun feeding(ref: VideoPortRef): Set<Int> {
         val sink = ports[ref]?.id ?: return emptySet()
@@ -227,6 +264,35 @@ class VideoConferenceBridgeTest {
         bridge.set(setOf(a, b))
 
         assertEquals(opened, ports.values.sumOf { it.sentTo.size }, "remix is not idempotent")
+    }
+
+    @Test
+    fun `the canvas leaving re-points every remaining tile at the new canvas window`() {
+        // The picture is composed into ONE call's window. When that call is the one that
+        // hangs up, its window goes with it and every survivor is still linked to it —
+        // links this class believes are open, so nothing would re-point them. On a
+        // handset that is two people still in the conference watching a frozen frame.
+        val c = "call-c"
+        givenPort(VideoPortRef.camera)
+        listOf(a, b, c).forEach(::givenMember)
+        listOf(a, b, c).forEach(::givenWindow)
+        val bridge = canvasBridge()
+        bridge.set(setOf(a, b, c))
+
+        // `call-a` is the lowest key, so its window is the canvas and holds all three.
+        assertEquals(
+            setOf(a, b, c).mapTo(mutableSetOf()) { ports[VideoPortRef.decoder(it)]!!.id },
+            feedingPort(windows.getValue(a)),
+        )
+
+        givenCallReleased(a)
+        bridge.remove(a)
+
+        assertEquals(
+            setOf(b, c).mapTo(mutableSetOf()) { ports[VideoPortRef.decoder(it)]!!.id },
+            feedingPort(windows.getValue(b)),
+            "the survivors are still drawing into the window that left with its call",
+        )
     }
 
     @Test
