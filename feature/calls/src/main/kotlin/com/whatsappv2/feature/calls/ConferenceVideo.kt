@@ -69,6 +69,8 @@ internal fun ConferenceVideo(
     onPictureTap: (() -> Unit)? = null,
     pictureTapLabel: String? = null,
     modifier: Modifier = Modifier,
+    /** Passed through to [CallVideo]; see [SelfPreview]. */
+    previewClearance: Int = 0,
 ) {
     // Measured from the space this composable actually has, not from the screen. A
     // `LocalConfiguration` read would describe the display even when the video sits in half
@@ -110,6 +112,7 @@ internal fun ConferenceVideo(
                     scaling = RemoteVideoScaling.Fit,
                     onPictureTap = onPictureTap,
                     pictureTapLabel = pictureTapLabel,
+                    previewClearance = previewClearance,
                 )
                 ConferenceBadge(
                     conference = conference,

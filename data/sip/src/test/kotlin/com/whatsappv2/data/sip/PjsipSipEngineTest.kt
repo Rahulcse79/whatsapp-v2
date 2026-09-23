@@ -1375,6 +1375,101 @@ class RegistrationStateMapperTest {
         )
         assertTrue(assertIs<RegistrationState.Failed>(retrying).retryScheduled)
     }
+
+    // ------------------------------------------------- the whole-map rewrites
+    //
+    // Both exist because the stack says nothing at all in the situation they cover: a link
+    // that went away has no outstanding transaction to fail, and a REGISTER that was lost
+    // has no answer to report. The honest state has to be written by whatever noticed, and
+    // these are pure so that "what the screen says when nothing happened" is a test rather
+    // than a handset and a stopwatch.
+
+    @Test
+    fun `an unanswered REGISTER stops being reported as one in progress`() {
+        // The defect: "Registering…" for the life of the process, escapable only by
+        // pressing Register now. It promises the user that waiting is enough, which is the
+        // one thing it must not say when nothing is going to arrive.
+        val after = RegistrationStateMapper.withStalledAttempt(
+            mapOf(ACCOUNT to RegistrationState.Registering),
+            ACCOUNT,
+        )
+
+        assertEquals(
+            RegistrationState.Failed(RegistrationFailure.TIMEOUT, retryScheduled = true),
+            after[ACCOUNT],
+        )
+    }
+
+    @Test
+    fun `the stalled attempt promises a retry, because the watchdog schedules one`() {
+        // `retryScheduled` drives the countdown on the account screen, so it is a claim
+        // about what happens next rather than decoration: the same watchdog that calls
+        // this hands the account straight to the retry chain.
+        val after = RegistrationStateMapper.withStalledAttempt(
+            mapOf(ACCOUNT to RegistrationState.Registering),
+            ACCOUNT,
+        )
+
+        assertEquals(true, (after[ACCOUNT] as RegistrationState.Failed).retryScheduled)
+    }
+
+    @Test
+    fun `an answer that beat the timer is left alone`() {
+        val registered = mapOf(ACCOUNT to RegistrationState.Registered(grantedExpirySeconds = 300))
+
+        assertEquals(registered, RegistrationStateMapper.withStalledAttempt(registered, ACCOUNT))
+    }
+
+    @Test
+    fun `a failure keeps its own reason, which is more specific than a timeout`() {
+        val failed = mapOf(
+            ACCOUNT to RegistrationState.Failed(RegistrationFailure.AUTHENTICATION_FAILED, retryScheduled = false),
+        )
+
+        assertEquals(failed, RegistrationStateMapper.withStalledAttempt(failed, ACCOUNT))
+    }
+
+    @Test
+    fun `a deliberate logout is not undone by a timer`() {
+        val out = mapOf(ACCOUNT to RegistrationState.Unregistered)
+
+        assertEquals(out, RegistrationStateMapper.withStalledAttempt(out, ACCOUNT))
+    }
+
+    @Test
+    fun `one account's timer does not rewrite another's state`() {
+        // They register independently and fail independently.
+        val before = mapOf(
+            ACCOUNT to RegistrationState.Registering,
+            OTHER_ACCOUNT to RegistrationState.Registering,
+        )
+
+        val after = RegistrationStateMapper.withStalledAttempt(before, ACCOUNT)
+
+        assertEquals(RegistrationState.Registering, after[OTHER_ACCOUNT])
+    }
+
+    @Test
+    fun `an account the engine has never seen adds nothing`() {
+        assertEquals(emptyMap(), RegistrationStateMapper.withStalledAttempt(emptyMap(), ACCOUNT))
+    }
+
+    @Test
+    fun `losing the link stops an account claiming it is registered`() {
+        val after = RegistrationStateMapper.withoutNetwork(
+            mapOf(ACCOUNT to RegistrationState.Registered(grantedExpirySeconds = 300)),
+        )
+
+        assertEquals(
+            RegistrationState.Failed(RegistrationFailure.NETWORK_UNAVAILABLE, retryScheduled = false),
+            after[ACCOUNT],
+        )
+    }
+
+    private companion object {
+        val ACCOUNT = AccountId("acct-1")
+        val OTHER_ACCOUNT = AccountId("acct-2")
+    }
 }
 
 /**

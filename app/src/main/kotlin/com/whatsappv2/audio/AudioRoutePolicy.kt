@@ -65,19 +65,22 @@ object AudioRoutePolicy {
      *
      * Until this parameter existed, the Settings control wrote a value nothing read.
      *
-     * ## A video call starts on the speaker
+     * ## A video call starts on the earpiece, like any other call
      *
-     * The earpiece is the right automatic answer for a voice call and the wrong one for a
-     * video call, which is held at arm's length in front of a face — where an earpiece is
-     * inaudible. Measured on a Galaxy M14 on 2026-09-21: every video call went out on
-     * `ActiveEarpieceRoute`, with the app itself sending `USER_SWITCH_EARPIECE` the
-     * moment audio started, and "the other person is not clear" was the report. So with
-     * [hasVideo] the automatic choice is the loudspeaker. A headset still wins (it is
-     * where the user put the audio, physically), and an explicit Settings preference for
-     * the earpiece is still honoured — it is explicit.
+     * Between 2026-09-21 and 2026-09-22 it started on the loudspeaker: a video call is
+     * held at arm's length, and a Galaxy M14 had every video call go out on the earpiece
+     * with "the other person is not clear" as the report. That was reversed at Rahul's
+     * request on 2026-09-22 — the speaker is not to come on by itself. The automatic
+     * route is therefore the same for both kinds of call: a headset if one is connected,
+     * else the earpiece; the Speaker button and Settings → Audio route → Speaker are the
+     * two ways to have the loudspeaker, and both are explicit. [hasVideo] no longer
+     * changes the answer here; it still vetoes the proximity blank in [screenMayBlank],
+     * because a video call on the earpiece is watched, not held to a cheek.
      *
      * @param hasVideo true when the call has a video stream, negotiated or requested.
+     *   Kept for [screenMayBlank]'s callers, who pass the same value to both.
      */
+    @Suppress("UNUSED_PARAMETER", "UnusedParameter")
     fun preferredRoute(
         devices: AudioDevices,
         preference: PreferredAudioRoute = PreferredAudioRoute.AUTOMATIC,
@@ -88,7 +91,6 @@ object AudioRoutePolicy {
         PreferredAudioRoute.AUTOMATIC -> when {
             devices.hasBluetooth -> AudioRoute.BLUETOOTH
             devices.hasWiredHeadset -> AudioRoute.WIRED_HEADSET
-            hasVideo -> AudioRoute.SPEAKER
             devices.hasEarpiece -> AudioRoute.EARPIECE
             else -> AudioRoute.SPEAKER
         }

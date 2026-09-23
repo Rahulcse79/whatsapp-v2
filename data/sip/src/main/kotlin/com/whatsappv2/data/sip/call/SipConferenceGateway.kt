@@ -40,4 +40,29 @@ internal interface SipConferenceGateway {
      *   not available. A caller that needs to know the conference is whole compares them.
      */
     suspend fun setConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String>
+
+    /**
+     * Composes the conference **picture** from [callKeys], on this device.
+     *
+     * The video counterpart of [setConferenceMembers], and deliberately a second call
+     * rather than a flag on the first: the two memberships differ in practice — a member
+     * who has not turned their camera on belongs in the audio mix and not in the picture —
+     * and the audio conference works, so nothing here may change how it behaves.
+     *
+     * No server mixes anything. `pjmedia`'s video bridge composes a canvas for each peer
+     * out of this device's camera and every *other* peer's stream, and one for this
+     * device's own screen; video RTP is phone-to-phone.
+     *
+     * Idempotent, like its audio counterpart, and safe on every media-state change:
+     * members whose video is not up yet are skipped and join by themselves when it is.
+     * Fewer than two tears the mix down.
+     *
+     * **Refuses** a membership larger than the mixer can draw rather than truncating it.
+     * `vid_conf` composes at most four sources onto one sink and does not draw a fifth —
+     * no error, no log — so the ceiling is enforced where it can be reported.
+     *
+     * @return the members actually in the picture, which is [callKeys] minus any whose
+     *   video was not up yet.
+     */
+    suspend fun setVideoConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String>
 }

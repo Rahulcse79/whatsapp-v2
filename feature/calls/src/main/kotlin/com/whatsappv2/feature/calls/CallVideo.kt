@@ -7,6 +7,7 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.TextureView
+import android.view.ViewGroup
 import android.view.WindowManager
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -100,6 +101,8 @@ internal fun CallVideo(
     onPictureTap: (() -> Unit)? = null,
     pictureTapLabel: String? = null,
     modifier: Modifier = Modifier,
+    /** How tall the in-call controls are while they are on screen, in pixels; 0 while hidden. See [SelfPreview]. */
+    previewClearance: Int = 0,
 ) {
     val context = LocalContext.current
     // Re-read on every configuration change: rotating the device recreates the activity
@@ -148,6 +151,15 @@ internal fun CallVideo(
         val previewListener = surfaceTextureListener(::attachPreview, ::detachPreview)
 
         remoteView.holder.addCallback(remoteCallback)
+        // The same for the remote surface, and for the same reason: this effect restarts
+        // when the self-view comes or goes — a hold takes it away and a resume brings it
+        // back — and `onDispose` has just told the stack to let go of *both* windows. A
+        // `SurfaceView` whose surface already exists does not call `surfaceCreated` again,
+        // so without this the far end's picture stayed black from the resume onwards.
+        remoteView.holder.surface?.takeIf { it.isValid }?.let { existing ->
+            remote = existing
+            publish()
+        }
         if (call.showsLocalPreview) {
             previewView.surfaceTextureListener = previewListener
             // A texture that was already there when this effect (re)started is not
@@ -172,11 +184,19 @@ internal fun CallVideo(
         showsPreview = call.showsLocalPreview,
         sizes = sizes,
         scaling = scaling,
-        onPictureTap = onPictureTap,
-        pictureTapLabel = pictureTapLabel,
+        pictureTap = onPictureTap?.let { PictureTap(it, pictureTapLabel) },
+        previewClearance = previewClearance,
         modifier = modifier,
     )
 }
+
+/**
+ * What a tap on the picture does, and what a screen reader is told it does.
+ *
+ * One value rather than two parameters because they are one thing: a label with no action
+ * is a lie, and an action with no label leaves a screen-reader user a blank screen.
+ */
+private data class PictureTap(val onTap: () -> Unit, val label: String?)
 
 /**
  * The two surfaces, each laid out at the shape of the picture going into it.
@@ -193,8 +213,8 @@ private fun VideoSurfaces(
     showsPreview: Boolean,
     sizes: VideoSizes,
     scaling: RemoteVideoScaling,
-    onPictureTap: (() -> Unit)?,
-    pictureTapLabel: String?,
+    pictureTap: PictureTap?,
+    previewClearance: Int,
     modifier: Modifier = Modifier,
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxSize().testTag(TAG_VIDEO)) {
@@ -212,8 +232,13 @@ private fun VideoSurfaces(
         }
 
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            // The view is remembered above this layout and outlives it; if this
+            // `BoxWithConstraints` re-subcomposes before the previous holder has let go,
+            // Compose's own `addView` would meet a view that still has a parent. The
+            // self-view's container had exactly that crash (see `SelfPreview`); the same
+            // guard here, before it has the chance.
             AndroidView(
-                factory = { remoteView },
+                factory = { remoteView.also { (it.parent as? ViewGroup)?.removeView(it) } },
                 modifier = Modifier.videoBounds(remoteBox, available, density).testTag(TAG_REMOTE),
             )
         }
@@ -238,16 +263,16 @@ private fun VideoSurfaces(
         // It carries a label because it is the only thing on screen once the controls
         // fade: an unlabelled Box leaves a screen-reader user a blank screen and no way
         // back.
-        if (onPictureTap != null || previewCoversPicture) {
+        if (pictureTap != null || previewCoversPicture) {
             Box(
                 Modifier
                     .fillMaxSize()
                     .clickable(
                         indication = null,
                         interactionSource = remember { MutableInteractionSource() },
-                        onClickLabel = if (previewCoversPicture) MINIMISE_PREVIEW_LABEL else pictureTapLabel,
+                        onClickLabel = if (previewCoversPicture) MINIMISE_PREVIEW_LABEL else pictureTap?.label,
                         onClick = {
-                            if (showsPreview && preview.isMaximised) preview.minimise() else onPictureTap?.invoke()
+                            if (showsPreview && preview.isMaximised) preview.minimise() else pictureTap?.onTap?.invoke()
                         },
                     )
                     .testTag(TAG_PICTURE_TAP),
@@ -266,7 +291,12 @@ private fun VideoSurfaces(
             // about and resize itself mid-call. Covering a box the user controls keeps the
             // renderer from stretching a face sideways without letting the frame's shape
             // reach the layout.
-            SelfPreview(previewView = previewView, localFrame = sizes.local, state = preview)
+            SelfPreview(
+                previewView = previewView,
+                localFrame = sizes.local,
+                state = preview,
+                bottomClearance = previewClearance,
+            )
         }
     }
 }

@@ -96,6 +96,24 @@ fun SipError.userMessage(): String = when (this) {
  * These are the sentences Task 47's call log will list, which is why they read as
  * outcomes rather than as errors.
  */
+/**
+ * The sentence a screen shows for a call that ended in failure, or null for one that
+ * simply ended.
+ *
+ * The SIP code first, when there is one, because it is the more specific of the two: a
+ * `404` is [SipError.NotFound]'s "That address does not exist", where its [HangupReason]
+ * is the catch-all `SERVER_ERROR`. The reason's own sentence is the fallback for endings
+ * with no code — a lost transport, a media set-up that failed locally.
+ */
+fun CallState.Terminated.failureMessage(): String? {
+    if (!reason.isFailure) return null
+    val code = statusCode?.takeIf { it >= FIRST_FAILURE_CLASS } ?: return reason.userMessage()
+    return SipError.fromResponseCode(code).userMessage()
+}
+
+/** 3xx and up: the first response class that is not progress or success. */
+private const val FIRST_FAILURE_CLASS = 300
+
 fun HangupReason.userMessage(): String = when (this) {
     HangupReason.LOCAL_HANGUP -> "Call ended"
     HangupReason.REMOTE_HANGUP -> "They hung up"

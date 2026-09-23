@@ -70,4 +70,28 @@ class CallDisplayVideoTest {
         assertFalse(ringing.showsRemoteVideo)
         assertFalse(ringing.showsAnyVideo)
     }
+
+    @Test
+    fun `a held call keeps the far end's frame but drops the self-view, and its video is not live`() {
+        // The camera is released on hold (CameraPolicy), so a preview would be a frozen
+        // frame; the remote surface stays so the resume has something to draw into, but
+        // nothing about it is moving — which is what the chrome's auto-hide waits for.
+        for (phase in listOf(CallPhase.ON_HOLD, CallPhase.HELD_BY_REMOTE, CallPhase.HELD_BY_BOTH)) {
+            val held = display(phase = phase, videoActive = true, cameraOn = true)
+
+            assertTrue(held.isHeld, "$phase")
+            assertFalse(held.showsLocalPreview, "$phase must not show a camera that is off")
+            assertTrue(held.showsRemoteVideo, "$phase keeps the surface for the resume")
+            assertFalse(held.videoIsLive, "$phase has no moving picture")
+            assertFalse(held.availability.canSwitchCamera, "$phase has no camera to switch")
+        }
+
+        val live = display(phase = CallPhase.CONNECTED, videoActive = true, cameraOn = true)
+        assertTrue(live.videoIsLive)
+        assertTrue(live.showsLocalPreview)
+        assertTrue(live.availability.canSwitchCamera)
+
+        // Resuming wants the camera back (CameraPolicy), and the preview with it.
+        assertTrue(display(phase = CallPhase.RESUMING, videoActive = true, cameraOn = true).showsLocalPreview)
+    }
 }

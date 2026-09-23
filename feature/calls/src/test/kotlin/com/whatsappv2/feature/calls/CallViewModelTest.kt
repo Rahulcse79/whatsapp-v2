@@ -128,6 +128,24 @@ class CallViewModelTest : CallViewModelFixture() {
     }
 
     @Test
+    fun `a call that fails finishes the screen with the reason`() = runTest {
+        // A busy line, a number that does not exist: the screen used to close on these
+        // exactly as on a hang-up, and the dialler came back with nothing to say.
+        val callId = placeCall()
+        val viewModel = viewModel().also { it.watch(callId) }
+
+        viewModel.uiState.test {
+            skipItems(1)
+            awaitDisplay { it.phase == CallPhase.CALLING }
+            engine.simulateRemoteRejection(callId, SipError.Busy(BUSY_HERE))
+
+            val finished = awaitFinished()
+            assertEquals("That line was busy", finished.reason)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun `an inbound call is answered with what was offered, not with more`() = runTest {
         // Answering an audio offer with video is an escalation the peer never asked for.
         engine.givenRegistered(ACCOUNT)
@@ -697,3 +715,6 @@ class CallViewModelTest : CallViewModelFixture() {
         }
     }
 }
+
+/** 486, the response the fake turns into `HangupReason.BUSY`. */
+private const val BUSY_HERE = 486

@@ -42,4 +42,16 @@ enum class HangupReason {
     /** True when the call never reached an established state. */
     val endedBeforeAnswer: Boolean
         get() = this in setOf(BUSY, DECLINED, NO_ANSWER, CANCELLED, LOCAL_REJECTED)
+
+    /**
+     * True when the call ended for a reason the user did not choose and cannot see.
+     *
+     * The screen closes on every ending; these are the ones it explains first. A hang-up
+     * from either side, a rejection or a cancellation was somebody's decision and needs
+     * no sentence — a busy line, an unanswered ring, a lost connection or a refusal from
+     * the server does, because the alternative is a screen that flashes shut and a user
+     * who dials again wondering what happened.
+     */
+    val isFailure: Boolean
+        get() = this in setOf(BUSY, DECLINED, NO_ANSWER, NETWORK_FAILURE, MEDIA_FAILURE, SERVER_ERROR)
 }

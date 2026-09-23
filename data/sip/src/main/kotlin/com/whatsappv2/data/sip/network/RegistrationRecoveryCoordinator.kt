@@ -6,6 +6,7 @@ import com.whatsappv2.core.common.time.Clock
 import com.whatsappv2.core.common.time.SystemClock
 import com.whatsappv2.domain.engine.SipRegistrar
 import com.whatsappv2.domain.model.AccountId
+import com.whatsappv2.domain.model.RegistrationFailure
 import com.whatsappv2.domain.model.RegistrationState
 import com.whatsappv2.domain.registration.NetworkStatus
 import com.whatsappv2.domain.registration.RecoveryAction
@@ -94,6 +95,28 @@ import kotlin.time.Duration.Companion.seconds
  * from the failure itself. The keepalive re-arms itself for the same reason: a refresh
  * that succeeds produces an equal `Registered`, which is no emission at all.
  *
+ * ## The watchdog, and why `Registering` needed one
+ *
+ * Everything above reacts to a state **changing**. Nothing reacted to one that never
+ * changed at all, and `RegistrationState.Registering` was therefore an absorbing state:
+ * [RegistrationRecoveryPolicy] answers `Idle` for it — correctly, since a second REGISTER
+ * on top of one genuinely in flight fights over the same binding — [onDeviceWoke] skips
+ * it, and `RegistrationStateMapper.withoutNetwork` deliberately leaves it alone. So a
+ * REGISTER that was never answered left the account on that spinner for the life of the
+ * process. The causes are all real and none of them produces an event: a request lost on a
+ * link that was coming up, PJSIP's own transaction timer stalled in deep sleep (see
+ * [WakeTimer]), an account the stack failed to create, a refresh the stack dropped. Every
+ * one of them was recoverable only by pressing *Register now*, because that path rebuilds
+ * the PJSIP account rather than asking the existing one to try again.
+ *
+ * So every attempt is now watched. Arming happens in two places — when this class issues a
+ * REGISTER, and when it observes one the engine says is in flight — and if the account has
+ * not reached [RegistrationState.Registered] by [ATTEMPT_TIMEOUT], the attempt is treated
+ * as the timeout it evidently was: the engine is told, so the screen stops claiming
+ * something is happening, and the ordinary retry chain takes over with its backoff. The
+ * window is longer than SIP's own 32-second transaction timeout on purpose, so in every
+ * normal case the stack's answer arrives first and the watchdog is simply cancelled.
+ *
  * ## Lifetime
  *
  * Owned by [com.whatsappv2.data.sip.PjsipSipEngine] and started and stopped with it,
@@ -152,6 +175,18 @@ internal class RegistrationRecoveryCoordinator(
     private val timer: WakeTimer = CoroutineWakeTimer(scope),
     /** The device coming back into use. See [DeviceWakeMonitor]. */
     private val wakeMonitor: DeviceWakeMonitor = DeviceWakeMonitor.NONE,
+    /**
+     * Called when a REGISTER this class was waiting on was never answered, so the engine
+     * can stop publishing `Registering` for an attempt that is over.
+     *
+     * Here rather than in the engine for the same reason [onNetworkLost] is: this class
+     * owns the timers, so it is the only thing that knows the attempt has run out of
+     * time. The engine owns the state, so it supplies the action.
+     *
+     * Defaulted, like [clock] and [onNetworkLost], because the tests of this class
+     * construct it without one.
+     */
+    private val onAttemptStalled: (AccountId) -> Unit = {},
 ) : RegistrationRetrySchedule {
 
     /** Serialises every path that touches the maps below. See the class documentation. */
@@ -168,6 +203,20 @@ internal class RegistrationRecoveryCoordinator(
 
     /** Accounts with a keepalive timer armed. */
     private val keepalives = mutableSetOf<AccountId>()
+
+    /**
+     * Accounts with a REGISTER outstanding and a watchdog armed against it.
+     *
+     * Distinct from [pendingRetries], which is the opposite situation: this one is
+     * "something is on the wire and we are waiting for the answer", that one is "nothing
+     * is on the wire and we will send something at a known time". Confusing them is how
+     * an account ends up with two REGISTERs in flight, or with none and no timer.
+     *
+     * Keyed to when the watch was armed, epoch millis, so [onDeviceWoke] can tell a
+     * REGISTER that is merely in progress from one that has been in flight since before
+     * the device went to sleep.
+     */
+    private val inFlight = mutableMapOf<AccountId, Long>()
 
     /** When each account was last re-registered from here, epoch millis, for [WAKE_REFRESH_GAP]. */
     private val lastRegisterAt = mutableMapOf<AccountId, Long>()
@@ -222,6 +271,7 @@ internal class RegistrationRecoveryCoordinator(
         wakeJob = null
         cancelAllRetries()
         keepalives.toList().forEach(::disarmKeepalive)
+        inFlight.keys.toList().forEach(::stopWatchingAttempt)
         attempts.clear()
         boundNetwork.clear()
         lastRegisterAt.clear()
@@ -240,8 +290,9 @@ internal class RegistrationRecoveryCoordinator(
         states.forEach { (id, state) -> evaluate(id, state, network) }
 
         // An account that vanished from the map was removed; its lease is not ours to
-        // keep any more.
+        // keep any more, and nor is the answer we were waiting on.
         keepalives.filterNot { it in states }.forEach(::disarmKeepalive)
+        inFlight.keys.filterNot { it in states }.forEach(::stopWatchingAttempt)
     }
 
     private fun onNetworkChanged(from: NetworkStatus?, to: NetworkStatus) {
@@ -285,6 +336,12 @@ internal class RegistrationRecoveryCoordinator(
             // what stops a link that connects and drops repeatedly from holding the client
             // at the shortest delay for ever.
             attempts.remove(id)
+            // The answer arrived, so there is nothing left to watch for — and nothing left
+            // to retry. A retry armed before the account came back (by a push wake, or by
+            // the attempt this one answers) would otherwise fire into a healthy
+            // registration and send a REGISTER nobody asked for.
+            stopWatchingAttempt(id)
+            cancelRetry(id)
 
             // An account already registered the first time we look at it was registered
             // over the network we can see now - there is nothing else it could have been.
@@ -297,6 +354,26 @@ internal class RegistrationRecoveryCoordinator(
             // The lease is not held, so there is nothing to keep. The retry chain owns a
             // failed account; a logged-out one is nobody's.
             disarmKeepalive(id)
+
+            when (state) {
+                // A REGISTER the engine says is on the wire. Watched from here rather than
+                // trusted, because the whole defect was that nothing ever looked at it
+                // again - see the class documentation. Nothing is armed with no network:
+                // the attempt cannot succeed and the platform's callback is what restarts
+                // things, so a watchdog would only wake the radio to say so.
+                RegistrationState.Registering ->
+                    if (network is NetworkStatus.Available) watchAttempt(id)
+
+                // Logged out. Whatever was in flight is no longer wanted.
+                RegistrationState.Unregistered -> stopWatchingAttempt(id)
+
+                // A failure is an answer, and the retry chain below owns what happens
+                // next. The watchdog is deliberately left armed: `reRegister` clears
+                // `pendingRetries` before it issues, so this same `Failed` value is what
+                // an unanswered re-registration still looks like, and cancelling here
+                // would disarm the one thing watching it.
+                else -> Unit
+            }
         }
 
         when (val action = policy.decide(network, state, boundNetwork[id], attempts[id] ?: 0, random)) {
@@ -404,7 +481,18 @@ internal class RegistrationRecoveryCoordinator(
                     reRegister(id, network, reason = "device woke ($reason)")
                 }
 
-                RegistrationState.Registering, RegistrationState.Unregistered -> Unit
+                // A REGISTER that was in flight when the device went away. Left alone
+                // while it is young, because it may simply be in progress; treated as the
+                // stalled attempt it is once it is older than the gap, rather than making
+                // a person holding the phone wait out the rest of [ATTEMPT_TIMEOUT] for a
+                // request that was almost certainly lost to the suspend.
+                RegistrationState.Registering -> {
+                    val since = now - (inFlight[id] ?: now)
+                    if (since < WAKE_REFRESH_GAP.inWholeMilliseconds) return@forEach
+                    onAttemptOverdue(id)
+                }
+
+                RegistrationState.Unregistered -> Unit
             }
         }
     }
@@ -423,7 +511,11 @@ internal class RegistrationRecoveryCoordinator(
         logger.info(TAG, "Re-registering $id ($reason)")
 
         when (val result = registrar.refreshRegistration(id)) {
-            is Outcome.Success -> Unit
+            // Accepted for sending, which is not the same as answered. A refresh the stack
+            // quietly dropped returns exactly this, and used to end the chain here: the
+            // pending retry had just been cleared, and the next step was to wait for an
+            // event that could not arrive.
+            is Outcome.Success -> watchAttempt(id, restart = true)
             is Outcome.Failure -> {
                 // The account id only - never its identity or a credential (§7, DoD 12).
                 logger.warn(TAG, "Re-register of $id refused: ${result.error}")
@@ -432,6 +524,72 @@ internal class RegistrationRecoveryCoordinator(
                 // event that will not arrive.
                 registrar.registrationState.value[id]?.let { evaluate(id, it, network) }
             }
+        }
+    }
+
+    /**
+     * Watches the REGISTER outstanding for [id], so an answer that never comes is still an
+     * outcome.
+     *
+     * @param restart true when this class has just issued a fresh REGISTER, which deserves
+     *   a fresh deadline. False when it is merely observing one the engine reports as in
+     *   flight: `evaluate` runs for every account on every network emission, and re-arming
+     *   there would push the deadline out for as long as the observations kept coming —
+     *   which is the stall this exists to end, reimplemented.
+     */
+    private fun watchAttempt(id: AccountId, restart: Boolean = false) {
+        if (!restart && id in inFlight) return
+        inFlight[id] = clock.nowEpochMillis()
+        logger.debug(TAG, "Watching the REGISTER for $id for ${ATTEMPT_TIMEOUT.inWholeSeconds}s")
+        timer.schedule(attemptKey(id), ATTEMPT_TIMEOUT) {
+            scope.launch { lock.withLock { onAttemptOverdue(id) } }
+        }
+    }
+
+    private fun stopWatchingAttempt(id: AccountId) {
+        if (inFlight.remove(id) != null) timer.cancel(attemptKey(id))
+    }
+
+    /**
+     * The REGISTER for [id] has run out of time.
+     *
+     * Treated as [RegistrationFailure.TIMEOUT] and handed to the ordinary decision path,
+     * because that is what it is: a request went out and nothing answered it. Running it
+     * through [evaluate] rather than re-registering directly is what keeps one set of
+     * rules — the backoff escalates, a network that moved underneath is retried at once,
+     * and an account the user logged out while this timer was in the air is left alone.
+     */
+    private suspend fun onAttemptOverdue(id: AccountId) {
+        // Cancelled between firing and running, fired twice, or already dealt with by a
+        // device wake that got there first.
+        if (id !in inFlight) return
+        stopWatchingAttempt(id)
+
+        val network = lastNetwork as? NetworkStatus.Available ?: return
+        if (!isStillWaitingOn(id)) return
+
+        logger.warn(
+            TAG,
+            "No answer to the REGISTER for $id in ${ATTEMPT_TIMEOUT.inWholeSeconds}s; treating it as a timeout",
+        )
+        // The screen must stop saying something is happening. The engine owns the state,
+        // so it is told; this class only knows that the attempt is over.
+        onAttemptStalled(id)
+        evaluate(id, STALLED, network)
+    }
+
+    /**
+     * True when [id] still has nothing to show for its REGISTER and nothing else on the way.
+     *
+     * The three ways a watchdog arrives too late: the answer came while the timer was in
+     * the air, the user logged the account out under it, or the chain is already alive with
+     * a retry queued — in which case a second attempt now would only race it.
+     */
+    private fun isStillWaitingOn(id: AccountId): Boolean = when {
+        id in pendingRetries -> false
+        else -> when (registrar.registrationState.value[id]) {
+            null, is RegistrationState.Registered, RegistrationState.Unregistered -> false
+            else -> true
         }
     }
 
@@ -450,12 +608,14 @@ internal class RegistrationRecoveryCoordinator(
 
     private fun keepaliveKey(id: AccountId) = "keepalive/${id.value}"
 
+    private fun attemptKey(id: AccountId) = "attempt/${id.value}"
+
     private fun NetworkStatus.describe(): String = when (this) {
         NetworkStatus.Unavailable -> "unavailable"
         is NetworkStatus.Available -> "$transport#$networkId"
     }
 
-    private companion object {
+    internal companion object {
         const val TAG = "SipNetworkRecovery"
 
         /**
@@ -469,6 +629,27 @@ internal class RegistrationRecoveryCoordinator(
 
         /** The shortest keepalive interval, whatever the registrar grants. */
         val KEEPALIVE_FLOOR: Duration = 30.seconds
+
+        /**
+         * How long a REGISTER may go unanswered before it is treated as a timeout.
+         *
+         * Longer than SIP's own transaction timeout — Timer F and Timer B are 64×T1, which
+         * is 32 seconds at the default T1 — so in every normal case PJSIP reports the
+         * failure first and this timer is cancelled without firing. It exists for the
+         * cases where the stack says nothing at all, which are the ones that used to strand
+         * an account on "Registering" for the life of the process.
+         */
+        val ATTEMPT_TIMEOUT: Duration = 45.seconds
+
+        /**
+         * What an unanswered REGISTER is treated as.
+         *
+         * `TIMEOUT` rather than a reason of its own: it is precisely the same fact a 408
+         * carries — the request was sent and no usable answer came back — and
+         * `requiresUserAction` is false for it, so the retry chain takes the account
+         * rather than parking it for the user to fix.
+         */
+        val STALLED = RegistrationState.Failed(RegistrationFailure.TIMEOUT, retryScheduled = false)
 
         /**
          * The least time between two wake-driven refreshes of one account.

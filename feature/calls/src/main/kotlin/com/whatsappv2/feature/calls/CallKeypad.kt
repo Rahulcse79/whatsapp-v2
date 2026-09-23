@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.ButtonColors
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -16,6 +18,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
@@ -53,8 +56,18 @@ internal fun CallKeypad(
     onDigit: (DtmfDigit) -> Unit,
     onHide: () -> Unit,
     modifier: Modifier = Modifier,
+    /** True over a video call, where the keys are drawn on the chrome's dark scrim and read in white. */
+    overVideo: Boolean = false,
 ) {
     var lettersShown by rememberSaveable { mutableStateOf(false) }
+    // Green keys on a bright ceiling were not keys at all (TC15, 2026-09-22 13:11); on
+    // the scrim the call screen lays under them over video, white is what reads.
+    val keyColours = if (overVideo) {
+        ButtonDefaults.textButtonColors(contentColor = Color.White)
+    } else {
+        ButtonDefaults.textButtonColors()
+    }
+    val sentColour = if (overVideo) Color.White else Color.Unspecified
 
     Column(
         modifier = modifier
@@ -68,21 +81,23 @@ internal fun CallKeypad(
             // do not jump down the screen on the first keypress.
             text = dialled.ifEmpty { " " },
             style = MaterialTheme.typography.titleLarge,
+            color = sentColour,
             textAlign = TextAlign.Center,
             modifier = Modifier.testTag(TAG_KEYPAD_SENT),
         )
 
-        KEYPAD_ROWS.forEach { row -> KeypadRow(row, onDigit) }
-        if (lettersShown) KeypadRow(LETTER_KEYS, onDigit)
+        KEYPAD_ROWS.forEach { row -> KeypadRow(row, onDigit, keyColours) }
+        if (lettersShown) KeypadRow(LETTER_KEYS, onDigit, keyColours)
 
         Row(horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.large)) {
             TextButton(
                 onClick = { lettersShown = !lettersShown },
+                colors = keyColours,
                 modifier = Modifier.testTag(TAG_KEYPAD_LETTERS),
             ) {
                 Text(if (lettersShown) "Hide A-D" else "A-D")
             }
-            TextButton(onClick = onHide, modifier = Modifier.testTag(TAG_KEYPAD_HIDE)) {
+            TextButton(onClick = onHide, colors = keyColours, modifier = Modifier.testTag(TAG_KEYPAD_HIDE)) {
                 Text("Hide keypad")
             }
         }
@@ -90,11 +105,12 @@ internal fun CallKeypad(
 }
 
 @Composable
-private fun KeypadRow(digits: List<DtmfDigit>, onDigit: (DtmfDigit) -> Unit) {
+private fun KeypadRow(digits: List<DtmfDigit>, onDigit: (DtmfDigit) -> Unit, colours: ButtonColors) {
     Row(horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraLarge)) {
         digits.forEach { digit ->
             TextButton(
                 onClick = { onDigit(digit) },
+                colors = colours,
                 modifier = Modifier
                     .size(AppTheme.sizing.callActionButton)
                     .testTag(keypadKeyTag(digit)),

@@ -12,7 +12,19 @@ data class DialerAccount(
     val identity: String,
     /** True when the account can actually place a call right now. */
     val isRegistered: Boolean,
+    /**
+     * True for the account outgoing calls leave on.
+     *
+     * Rendered as a tick in the picker, so the menu says which one is selected rather than
+     * leaving the user to infer it from the card behind it — and read here to decide
+     * whether the call needs to name its account. Picking a row in that menu is what sets
+     * this: see [DialerViewModel.onAccountSelected].
+     */
+    val isDefault: Boolean = false,
 )
+
+/** The registration status in the two words the picker shows. */
+internal val DialerAccount.statusText: String get() = if (isRegistered) "Registered" else "Unregistered"
 
 /**
  * What the dialer is showing (Task 36).
@@ -24,27 +36,25 @@ data class DialerUiState(
     /** What has been typed or tapped, exactly as entered. */
     val input: String = "",
 
-    /** Every configured account, for the per-call override. */
+    /** Every configured account, for the picker. */
     val accounts: List<DialerAccount> = emptyList(),
 
     /**
      * The account this call would use.
      *
-     * Null before accounts have loaded. Otherwise the user's override if they made one,
-     * and the default account if they did not — resolved here so the screen shows the
-     * account the call will actually go out on rather than a guess.
+     * Null before accounts have loaded. Otherwise the default account — which is what
+     * picking one in the menu sets — resolved here so the screen shows the account the
+     * call will actually go out on rather than a guess.
      */
     val selectedAccount: DialerAccount? = null,
-
-    /** True when the user chose an account rather than inheriting the default. */
-    val isOverridden: Boolean = false,
 
     /**
      * True when [selectedAccount] is the account marked default.
      *
-     * The dialler passes an explicit account to the use case whenever this is false — for
-     * a deliberate override, and also for the case where nothing is marked default at all,
-     * where the screen shows an account and the use case would otherwise find none.
+     * The dialler passes an explicit account to the use case whenever this is false, which
+     * covers the two moments it can be: a tap whose write has not come back round yet, and
+     * an installation where nothing is marked default at all — where the screen shows an
+     * account and the use case would otherwise find none.
      */
     val selectionIsDefault: Boolean = false,
 

@@ -51,17 +51,35 @@ class CallNotifications @Inject constructor(
 
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "Calls",
+            "Incoming calls",
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
-            description = "Incoming and ongoing calls."
+            description = "A call that is ringing."
             // Silent: the app rings for itself, and two ringtones is worse than none.
             setSound(null, null)
             enableVibration(false)
             setShowBadge(false)
             lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
-        notificationManager().createNotificationChannel(channel)
+        // The call in progress lives on its own channel, and a quiet one. On the HIGH
+        // channel every post of the ongoing notification was a heads-up banner across
+        // the top of the call screen — and it is re-posted on every change to the call,
+        // so a hold, a mute, a camera toggle and the connect itself each dropped a
+        // "9196 · Ongoing call · HANG UP" card over the picture for five seconds (TC15,
+        // 2026-09-22 13:03, 13:06, 13:18). LOW shows in the shade and the status bar and
+        // never pops; the answer buttons the HIGH channel exists for are not on this one.
+        val ongoing = NotificationChannel(
+            ONGOING_CHANNEL_ID,
+            "Ongoing calls",
+            NotificationManager.IMPORTANCE_LOW,
+        ).apply {
+            description = "The call in progress."
+            setSound(null, null)
+            enableVibration(false)
+            setShowBadge(false)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        }
+        notificationManager().createNotificationChannels(listOf(channel, ongoing))
     }
 
     /**
@@ -90,8 +108,11 @@ class CallNotifications @Inject constructor(
 
     /** A call in progress, with the one action that matters: end it. */
     fun buildOngoing(call: CallSnapshot): Notification =
-        base(call)
+        base(call, ONGOING_CHANNEL_ID)
             .setCategory(NotificationCompat.CATEGORY_CALL)
+            // Re-posted on every state change of the call; the first post is the only
+            // one that may alert, and on the ongoing channel not even that one does.
+            .setOnlyAlertOnce(true)
             .setStyle(
                 NotificationCompat.CallStyle.forOngoingCall(
                     callerOf(call),
@@ -102,8 +123,8 @@ class CallNotifications @Inject constructor(
             .setContentIntent(fullScreenIntent(call.callId))
             .build()
 
-    private fun base(call: CallSnapshot) =
-        NotificationCompat.Builder(context, CHANNEL_ID)
+    private fun base(call: CallSnapshot, channelId: String = CHANNEL_ID) =
+        NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_notification_call)
             .setOngoing(true)
             // The app rings; the notification does not — and that is the CHANNEL's doing
@@ -169,5 +190,8 @@ class CallNotifications @Inject constructor(
          * must not thereby turn off their incoming calls.
          */
         const val CHANNEL_ID = "sip-calls"
+
+        /** The call in progress. Quiet by construction; see [createChannel]. */
+        const val ONGOING_CHANNEL_ID = "sip-calls-ongoing"
     }
 }

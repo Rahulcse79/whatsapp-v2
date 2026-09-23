@@ -108,11 +108,13 @@ class CallAudioCoordinator @Inject constructor(
             // The arriving device wins: plugging in mid-call is a clearer instruction than
             // any button pressed earlier (Task 40's second and third done-whens).
             val arrived = addedDevices?.firstNotNullOfOrNull { it.toRoute() }
+            logger.info(TAG, "Audio devices added: ${addedDevices.describe()}")
             applyRoute(arrived)
         }
 
         override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
             // Unplugging falls back to whatever is left, which must never be nothing.
+            logger.info(TAG, "Audio devices removed: ${removedDevices.describe()}")
             applyRoute(arrived = null)
         }
     }
@@ -186,11 +188,11 @@ class CallAudioCoordinator @Inject constructor(
             return
         }
 
-        // The route is still the one this coordinator chose, and video came or went. A
-        // video call belongs on the speaker and a voice call on the earpiece
-        // (AudioRoutePolicy.preferredRoute), so the choice is made again for the call as
-        // it is now — which also settles the proximity lock. A route the user chose is
-        // `chosenRoute` and survives this untouched.
+        // The route is still the one this coordinator chose, and video came or went. The
+        // choice is made again for the call as it is now — since 2026-09-22 the automatic
+        // route is the same with or without video, so what this settles is the proximity
+        // lock, which video vetoes (AudioRoutePolicy.screenMayBlank). A route the user
+        // chose is `chosenRoute` and survives this untouched.
         if (callHasVideo != hadVideo) applyRoute(arrived = null)
     }
 
@@ -260,6 +262,15 @@ class CallAudioCoordinator @Inject constructor(
             arrived = arrived,
             preference = preference,
             hasVideo = callHasVideo,
+        )
+        // Every automatic route decision, with its inputs. A video call that landed on
+        // the earpiece two seconds after it was put on the speaker was untraceable
+        // without this: Telecom logged the request and nothing said who made it or why
+        // (TC15, 2026-09-22 13:51).
+        logger.info(
+            TAG,
+            "Audio route $route for $callId (chosen=$chosenRoute, arrived=$arrived, " +
+                "preference=$preference, video=$callHasVideo)",
         )
         lastApplied = route
 
@@ -405,6 +416,10 @@ class CallAudioCoordinator @Inject constructor(
         AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> AudioRoute.EARPIECE
         else -> bleRouteOrNull()
     }
+
+    /** The device types, for the log. */
+    private fun Array<out AudioDeviceInfo>?.describe(): String =
+        this?.joinToString { "${it.type}${it.toRoute()?.let { r -> "=$r" } ?: ""}" } ?: "none"
 
     private fun AudioDeviceInfo.bleRouteOrNull(): AudioRoute? =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && type == AudioDeviceInfo.TYPE_BLE_HEADSET) {

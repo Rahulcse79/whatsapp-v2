@@ -16,6 +16,7 @@ import com.whatsappv2.data.sip.call.SipCallGateway
 import com.whatsappv2.data.sip.call.SipConferenceGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
+import com.whatsappv2.data.sip.call.VideoMix
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.TransferEventMapper
 import com.whatsappv2.data.sip.di.SipStackScope
@@ -223,6 +224,12 @@ internal class PjsipSipEngine @Inject constructor(
         onNetworkLost = { states.update(RegistrationStateMapper::withoutNetwork) },
         timer = wakeTimer,
         wakeMonitor = wakeMonitor,
+        // Beside it, and for the same division of labour: the coordinator owns the timers,
+        // so it is the only thing that can know a REGISTER was never answered; this class
+        // owns the state, so it is the only thing that may say so. Without this the account
+        // stayed on `Registering` for the life of the process — see the coordinator's
+        // watchdog, and `RegistrationStateMapper.withStalledAttempt`.
+        onAttemptStalled = { id -> states.update { RegistrationStateMapper.withStalledAttempt(it, id) } },
     )
 
     /**
@@ -376,8 +383,8 @@ internal class PjsipSipEngine @Inject constructor(
      * Telecom is told because it did not cause this: without it the platform keeps audio
      * focus for a call that is over (Task 34).
      */
-    private fun endCall(callId: CallId, reason: HangupReason) {
-        val ending = calls.value[callId]?.copy(state = CallState.Terminated(reason))
+    private fun endCall(callId: CallId, reason: HangupReason, statusCode: Int? = null) {
+        val ending = calls.value[callId]?.copy(state = CallState.Terminated(reason, statusCode))
         updateCalls { it - callId }
         // The conference leg and the conference are the same thing under a dial-in MCU
         // (ADR-003), so one ending is the other's (Task 60).
@@ -710,7 +717,7 @@ internal class PjsipSipEngine @Inject constructor(
             // "the codecs did not agree" from "nothing reached the server", and it costs
             // one line to keep. Never the peer's address (§7).
             logger.info(TAG, "Call $id ended: $reason (status ${event.statusCode ?: "none"})")
-            endCall(id, reason)
+            endCall(id, reason, event.statusCode)
             return
         }
 
@@ -1174,6 +1181,7 @@ internal class PjsipSipEngine @Inject constructor(
         if (!started) return failure(SipError.EngineUnavailable)
         val call = calls.value[callId] ?: return failure(SipError.UnknownCall)
         if (!call.state.isActive) return failure(SipError.InvalidState("call is ${call.state}"))
+        logger.debug(TAG, "Audio route $route requested for $callId in ${call.state::class.simpleName}")
 
         // The device has one audio path, and the platform routes it through whichever leg
         // it knows about — for a member leg it was not told of, that is the registered
@@ -1409,13 +1417,38 @@ internal class PjsipSipEngine @Inject constructor(
         // here is one re-INVITE per member, sent once, at the moment the user asks for a
         // conference.
         //
-        // A video conference is ADR-003's bridge: dial the room, one composed stream
-        // down, one camera up, and the handset pays for a single video stream.
-        dropVideoForMix(live, logger) { videoGateway.setVideoEnabled(it.value, false) }
+        // ...unless the picture is composed HERE (2026-09-22). `pjmedia`'s video bridge
+        // makes each peer a canvas of this device's camera and every other peer, and the
+        // dialplan bypasses media for video offers, so video RTP is phone-to-phone and
+        // room 3000 carries no picture at all. [videoMixable] is the whole of the
+        // decision, and it is deliberately narrow: within the mixer's four-source
+        // ceiling, and every member actually carrying video. Anything else drops video
+        // and gets the audio mix exactly as before.
+        val withVideo = videoMixable(activeCalls.value, live)
+        if (withVideo.isEmpty()) {
+            dropVideoForMix(live, logger) { videoGateway.setVideoEnabled(it.value, false) }
+        }
 
-        return publishMix(conferenceGateway.setConferenceMembers(live.map { it.value }.toSet()), mixed, logger) {
+        val mixedAudio = publishMix(
+            conferenceGateway.setConferenceMembers(live.map { it.value }.toSet()),
+            mixed,
+            logger,
+        ) {
             updateCalls { calls -> calls.markingAsConference(it, newKey = { UUID.randomUUID().toString() }) }
         }
+
+        // After the audio mix, not before: the picture is worth nothing without the
+        // conversation, and a video mix that failed must not take the audio one with it.
+        // A refusal is logged and the conference carries on with sound.
+        if (withVideo.isNotEmpty()) {
+            when (val picture = conferenceGateway.setVideoConferenceMembers(withVideo.map { it.value }.toSet())) {
+                is Outcome.Success ->
+                    logger.info(TAG, "Composing the conference picture here: ${picture.value.size} member(s)")
+                is Outcome.Failure ->
+                    logger.warn(TAG, "The conference picture could not be composed: ${picture.error}")
+            }
+        }
+        return mixedAudio
     }
 
     /**
@@ -2387,6 +2420,28 @@ internal inline fun dropVideoForMix(
             )
         }
     }
+}
+
+/**
+ * The members whose picture this device can compose, or empty for an audio-only mix.
+ *
+ * Two conditions, and both are refusals rather than adjustments:
+ *
+ *  - **Everybody must be carrying video.** A mix of two video legs and one audio leg is a
+ *    canvas with a hole in it; the audio conference already handles that case perfectly
+ *    well and the honest thing is to use it.
+ *  - **It must fit the mixer.** `vid_conf` composes four sources onto a sink and silently
+ *    does not draw a fifth, so a conference past [VideoMix.MAX_PARTICIPANTS] would be a
+ *    participant in the roster and in nobody's picture.
+ *
+ * Pure, so the rule is testable without a stack — which is the point, because both
+ * branches are expensive to reach on hardware.
+ */
+internal fun videoMixable(calls: List<CallSnapshot>, live: Set<CallId>): Set<CallId> {
+    if (live.size < VideoMix.MINIMUM_MEMBERS || live.size > VideoMix.MAX_MEMBERS) return emptySet()
+    val carrying = calls.filterTo(mutableSetOf()) { it.callId in live && it.media.hasVideo }
+        .mapTo(mutableSetOf()) { it.callId }
+    return if (carrying.size == live.size) carrying else emptySet()
 }
 
 private fun liveForMix(calls: List<CallSnapshot>, requested: Set<CallId>): Set<CallId> =
