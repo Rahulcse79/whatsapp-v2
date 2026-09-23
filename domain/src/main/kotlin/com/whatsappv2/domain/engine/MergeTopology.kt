@@ -23,9 +23,13 @@ sealed interface MergeTopology {
     /**
      * Move every leg into the conference bridge (ADR-003).
      *
-     * The answer whenever video is involved — see [SipConferenceController.mergeIntoConference]
-     * for why a device-hosted star cannot show peers to each other at any implementation
-     * quality.
+     * No longer the answer whenever video is involved. A device-hosted star could not show
+     * peers to each other while this handset only ever sent its own camera — which is what
+     * sent every video merge here. `pjmedia`'s video bridge removes that limit by giving
+     * each peer's encoder a canvas composed of this camera and every other peer's decoder
+     * (ADR-009's video half), so an all-video merge within the ceiling is now mixed on the
+     * device and this case is what is left: a merge with both video and audio-only legs,
+     * where a canvas cannot be composed for a member who sends no picture.
      */
     data class Bridge(val callIds: Set<CallId>) : MergeTopology
 
@@ -102,16 +106,35 @@ sealed interface MergeTopology {
             }
 
             val anyVideo = established.any { it.media.hasVideo }
+            val allVideo = anyVideo && established.all { it.media.hasVideo }
+            // The legs plus this handset: a merge of three others is a conference of
+            // four, which is the ceiling. Video's limit is about how small a face can be
+            // and still be a face; audio's is CPU, and they are different numbers for
+            // different reasons.
+            val withinVideoCeiling = ids.size + 1 <= SipConferenceController.MAX_VIDEO_CONFERENCE
+
             return when {
                 !anyVideo -> LocalMix(ids)
-                !bridgeConfigured -> Unavailable(Unavailable.Reason.NO_BRIDGE_CONFIGURED)
-                // The legs plus this handset: a merge of three others is a conference of
-                // four, which is the ceiling. Checked here rather than against
-                // [maxParticipants] because video's limit is about the picture and audio's
-                // is about the CPU, and they are different numbers for different reasons.
-                ids.size + 1 > SipConferenceController.MAX_VIDEO_CONFERENCE ->
-                    Unavailable(Unavailable.Reason.TOO_MANY_CALLS)
 
+                // Composed here, by `pjmedia`'s video bridge: every peer's encoder is
+                // given this camera and every *other* peer's decoder, so each participant
+                // receives a canvas of everyone else and the room carries no picture at
+                // all. That is what makes a device-hosted video conference possible, and
+                // it is why this case now precedes the bridge rather than being folded
+                // into it. Only when the mix is composable: every leg has to be carrying
+                // video, because a canvas with a hole in it is worse than the bridge, and
+                // it has to fit the mixer's four-source ceiling.
+                allVideo && withinVideoCeiling -> LocalMix(ids)
+
+                // The ceiling first: "too many people for a video conference" is true
+                // whether or not a bridge exists, and is the more useful thing to be told.
+                !withinVideoCeiling -> Unavailable(Unavailable.Reason.TOO_MANY_CALLS)
+                !bridgeConfigured -> Unavailable(Unavailable.Reason.NO_BRIDGE_CONFIGURED)
+
+                // A mixed merge — some legs with video, some without. The canvas cannot
+                // be composed for a member that sends nothing, so the bridge takes it,
+                // which leaves audio-only members off the canvas and everyone still in
+                // one conference.
                 else -> Bridge(ids)
             }
         }

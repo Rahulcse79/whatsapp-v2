@@ -656,18 +656,21 @@ class CallViewModelTest : CallViewModelFixture() {
     }
 
     @Test
-    fun `merging video calls moves the screen to the conference leg`() = runTest {
+    fun `merging into the bridge moves the screen to the conference leg`() = runTest {
         // The defect this pins: a bridged merge replaces every leg with one call to the
         // room, so a screen still watching a merged leg would show it being transferred
         // away and then ending — the conference the user just built, apparently hanging up
         // on them.
+        //
+        // Mixed media, because that is what still reaches the bridge: an all-video merge
+        // is composed on the device and never goes near the room.
         engine.givenRegistered(ACCOUNT)
         // The room is resolved against the account's domain, so the repository has to
         // know the account — `givenRegistered` is the engine's business, not its.
         accounts.given(ACCOUNT)
         val first = engine.placeCall(ACCOUNT.id, REMOTE, MediaProfile.AUDIO_VIDEO).getOrNull()!!
         engine.simulateRemoteAnswer(first)
-        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO_VIDEO).getOrNull()!!
+        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO).getOrNull()!!
         engine.simulateRemoteAnswer(second)
 
         val viewModel = viewModel().also { it.watch(first) }

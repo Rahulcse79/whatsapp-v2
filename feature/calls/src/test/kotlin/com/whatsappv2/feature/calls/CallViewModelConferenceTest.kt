@@ -146,11 +146,14 @@ class CallViewModelConferenceTest : CallViewModelFixture() {
         // them, the user first — and goes on naming them after the merged legs have been
         // transferred away and ended, which is a second after Merge. It is a list of what
         // this device merged, said so, and never a count the bridge did not give.
+        //
+        // Mixed media, because that is what still reaches the bridge: an all-video merge
+        // is composed on the device and never goes near the room.
         engine.givenRegistered(ACCOUNT)
         accounts.given(ACCOUNT)
         val first = engine.placeCall(ACCOUNT.id, REMOTE, MediaProfile.AUDIO_VIDEO).getOrNull()!!
         engine.simulateRemoteAnswer(first)
-        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO_VIDEO).getOrNull()!!
+        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO).getOrNull()!!
         engine.simulateRemoteAnswer(second)
         val viewModel = viewModel().also { it.watch(first) }
         runCurrent()

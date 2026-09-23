@@ -52,18 +52,21 @@ class MergeTopologyTest {
     }
 
     @Test
-    fun `two video calls go to the bridge`() {
+    fun `an all-video merge is composed on the device, not sent to the bridge`() {
         val topology = MergeTopology.of(
             calls = listOf(call("1002", video = true), call("1003", video = true)),
             bridgeConfigured = true,
         )
 
-        val bridge = assertIs<MergeTopology.Bridge>(topology)
-        assertEquals(setOf(CallId("1002"), CallId("1003")), bridge.callIds)
+        // Configured bridge and all. `pjmedia`'s video bridge gives each peer a canvas of
+        // this camera and every other peer, so the room is not needed for the picture and
+        // the video RTP stays handset-to-handset.
+        val mix = assertIs<MergeTopology.LocalMix>(topology)
+        assertEquals(setOf(CallId("1002"), CallId("1003")), mix.callIds)
     }
 
     @Test
-    fun `one video leg is enough to send the whole conference to the bridge`() {
+    fun `a merge of video and audio-only legs still goes to the bridge`() {
         // The defect this prevents: mixing here and bridging there would be two
         // conferences that cannot hear each other. The bridge takes the audio-only member
         // happily and leaves them off the canvas.
@@ -77,16 +80,29 @@ class MergeTopologyTest {
     }
 
     @Test
-    fun `a video merge with no bridge configured is declined, not downgraded`() {
+    fun `a mixed merge with no bridge configured is declined, not downgraded`() {
+        val topology = MergeTopology.of(
+            calls = listOf(call("1002", video = true), call("1003")),
+            bridgeConfigured = false,
+        )
+
+        // Declining says what is wrong. Silently dropping to audio would take the camera
+        // off somebody who asked for a video conference and tell them nothing. An
+        // all-video merge no longer reaches this case at all — it is mixed here.
+        val unavailable = assertIs<MergeTopology.Unavailable>(topology)
+        assertEquals(MergeTopology.Unavailable.Reason.NO_BRIDGE_CONFIGURED, unavailable.reason)
+    }
+
+    @Test
+    fun `an all-video merge needs no bridge at all`() {
         val topology = MergeTopology.of(
             calls = listOf(call("1002", video = true), call("1003", video = true)),
             bridgeConfigured = false,
         )
 
-        // Declining says what is wrong. Silently dropping to audio would take the cameras
-        // off two people who asked for a video conference and tell them nothing.
-        val unavailable = assertIs<MergeTopology.Unavailable>(topology)
-        assertEquals(MergeTopology.Unavailable.Reason.NO_BRIDGE_CONFIGURED, unavailable.reason)
+        // The whole point of composing the picture here: no server, so no dependency on
+        // one being reachable or configured.
+        assertIs<MergeTopology.LocalMix>(topology)
     }
 
     @Test
@@ -118,8 +134,10 @@ class MergeTopologyTest {
 
     @Test
     fun `four video participants are within the ceiling`() {
-        // The size this feature is specified to: the user plus three, which is four legs
-        // into the room. Named so the ceiling changing is a test failure and not a surprise.
+        // The size this feature is specified to: the user plus three. Named so the ceiling
+        // changing is a test failure and not a surprise. Composed on the device, because
+        // the busiest sink then carries three sources — camera plus two decoders — which
+        // is inside `vid_conf`'s four.
         val topology = MergeTopology.of(
             calls = listOf(
                 call("1002", video = true),
@@ -129,7 +147,7 @@ class MergeTopologyTest {
             bridgeConfigured = true,
         )
 
-        assertIs<MergeTopology.Bridge>(topology)
+        assertIs<MergeTopology.LocalMix>(topology)
     }
 
     @Test

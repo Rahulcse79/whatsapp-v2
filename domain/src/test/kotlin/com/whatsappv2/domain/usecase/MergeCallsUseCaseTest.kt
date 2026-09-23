@@ -79,10 +79,13 @@ class MergeCallsUseCaseTest {
     }
 
     @Test
-    fun `merging video calls transfers every leg into the room and joins it`() = runTest {
+    fun `merging video and audio-only legs transfers every leg into the room and joins it`() = runTest {
+        // Mixed media, which is what still needs the bridge: a canvas cannot be composed
+        // for a member who sends no picture. An all-video merge is mixed on the device —
+        // see the test below.
         val engine = FakeSipEngine().givenRegistered(account)
         val first = engine.establish("1002", video = true)
-        val second = engine.establish("1004", video = true)
+        val second = engine.establish("1004", video = false)
 
         val result = useCase(engine)()
 
@@ -119,18 +122,34 @@ class MergeCallsUseCaseTest {
     }
 
     @Test
-    fun `a video merge with no room configured fails and changes nothing`() = runTest {
+    fun `a mixed merge with no room configured fails and changes nothing`() = runTest {
         val engine = FakeSipEngine().givenRegistered(account)
         engine.establish("1002", video = true)
-        engine.establish("1004", video = true)
+        engine.establish("1004", video = false)
 
         val result = useCase(engine, ConferenceRoom.NONE)()
 
         assertIs<Outcome.Failure<*>>(result)
         assertTrue(engine.bridgeMergeRequests.isEmpty())
-        // And emphatically not mixed instead: a silent downgrade to audio would take two
-        // people's cameras away without telling them.
+        // And emphatically not mixed instead: a silent downgrade to audio would take a
+        // camera away without telling anybody.
         assertTrue(engine.mixRequests.isEmpty())
+    }
+
+    @Test
+    fun `an all-video merge is mixed on the device and never reaches the room`() = runTest {
+        val engine = FakeSipEngine().givenRegistered(account)
+        val first = engine.establish("1002", video = true)
+        val second = engine.establish("1004", video = true)
+
+        val result = useCase(engine)()
+
+        val mixed = assertIs<MergeResult.Mixed>(assertIs<Outcome.Success<MergeResult>>(result).value)
+        assertEquals(setOf(first, second), mixed.callIds)
+        // The room is configured and deliberately unused: the handset composes each
+        // peer's canvas itself, so no video RTP goes near 3000.
+        assertTrue(engine.bridgeMergeRequests.isEmpty())
+        assertEquals(setOf(first, second), engine.mixRequests.single())
     }
 
     @Test
