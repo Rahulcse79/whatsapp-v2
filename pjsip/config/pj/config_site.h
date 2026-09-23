@@ -93,6 +93,26 @@
  * state. DECIDE: OpenH264 in, or H264 out of DEFAULT. */
 #define PJMEDIA_HAS_OPENH264_CODEC 0
 
+/* H.264 comes from Android's MediaCodec instead, and the HARDWARE component is preferred.
+ *
+ * Upstream defaults both of these to 1, which asks for the software component first —
+ * `OMX.google.h264.encoder`. That name was retired in Android 12 and is absent in 15,
+ * but `AMediaCodec_createCodecByName` still returns a handle for it, so PJSIP's
+ * `codec_exists()` accepts it and then cannot get a single input buffer out of it: the
+ * camera captures, the preview draws, and the stream sends 0 packets/s while the far end
+ * holds its first frame. A Galaxy M14 on Android 15 does this on every video call it
+ * answers; a Galaxy M23 on Android 14, which still has the OMX names, does not — which is
+ * what made it look like a network fault rather than a codec one (2026-09-23).
+ *
+ * So the hardware list is tried first, and `and_vid_mediacodec.cpp` now carries the
+ * Codec2 names ahead of the OMX ones in both lists. A device that has neither vendor
+ * component still falls back to the software list, which now finds `c2.android.avc.encoder`
+ * before the dead OMX name.
+ *
+ * The DECODER is deliberately left on the upstream default. It works on both handsets
+ * today and a video call that decodes is not worth risking to tidy a symmetry. */
+#define PJMEDIA_AND_MEDIA_PRIO_SW_VID_ENC 0
+
 /* Lyra IS compiled. ADR-008 closed at Exit A on 2026-09-10: TensorFlow Lite v2.11.0 with
  * the XNNPACK delegate, audio_dsp, glog and Lyra v1.3.2 all build for arm64-v8a under
  * NDK r27c from the vendored trees (pjsip/lyra/CMakeLists.txt), and the codec encoded and

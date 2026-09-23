@@ -1,0 +1,592 @@
+MediaCodec: choose a video encoder that exists, and replace one that will not encode
+
+and_vid_mediacodec.cpp picks its MediaCodec component from four hardcoded
+lists of OMX component names, preferring the software one. Android 12 retired
+those names and Android 15 ships none of them, but
+AMediaCodec_createCodecByName("OMX.google.h264.encoder") still returns a
+handle, so codec_exists() accepts a component the platform cannot honour. Every
+dequeueInputBuffer on it then fails for the life of the call: the camera
+captures, the preview draws, and the RTP stream carries 0 packets/s while the
+far end holds its first frame.
+
+Measured handset-to-handset on 2026-09-23. A Galaxy M14 (SM-M146B, Android 15)
+advertises only c2.android.avc.encoder and c2.exynos.h264.encoder and sent no
+video at all; a Galaxy M23 (SM-E236B, Android 14), which still has the OMX
+names, was unaffected — which is what made it look like a network fault.
+
+This patch:
+
+  * enumerates every encoder the platform advertises for the MIME, through
+    Java's MediaCodecList (the NDK has no enumeration API before API 36),
+    instead of guessing at names;
+
+  * ranks them hardware-Codec2 first, then any other hardware, then Codec2
+    software, then the rest, using MediaCodecInfo.isHardwareAccelerated() where
+    it exists (API 29+) and a name heuristic below that;
+
+  * keeps the static lists as the fallback for a device whose codecs cannot be
+    enumerated, so nothing that worked before can regress;
+
+  * condemns an encoder that fails in a real call — one that will not configure,
+    or one that configures and then starves for AND_MEDIA_STARVED_LIMIT
+    consecutive frames — and re-chooses. A configure failure is repaired inside
+    the same codec open, so the call that hits it still gets video.
+
+The probe at start-up does no more than create the component and delete it.
+Configuring and starting a candidate there — the only way to learn more about it
+without a call — never returned on an SM-E236B when tearing down an OMX.qcom
+encoder whose configure had just failed, leaving discovery stuck and the account
+unregistered. A call that picks a poor encoder is a bad call; a stack that
+cannot register is a dead phone, so the stronger check lives in the codec open
+where a failure unwinds safely.
+
+diff --git a/third_party/pjproject/pjmedia/src/pjmedia-codec/and_vid_mediacodec.cpp b/third_party/pjproject/pjmedia/src/pjmedia-codec/and_vid_mediacodec.cpp
+index f9aeba05..d8a715c0 100644
+--- a/third_party/pjproject/pjmedia/src/pjmedia-codec/and_vid_mediacodec.cpp
++++ b/third_party/pjproject/pjmedia/src/pjmedia-codec/and_vid_mediacodec.cpp
+@@ -23,6 +23,8 @@
+ #include <pjmedia/errno.h>
+ #include <pj/atomic_queue.h>
+ #include <pj/log.h>
++#include <pj/os.h>
++#include <pj/string.h>
+ 
+ #if defined(PJMEDIA_HAS_ANDROID_MEDIACODEC) && \
+             PJMEDIA_HAS_ANDROID_MEDIACODEC != 0 && \
+@@ -33,6 +35,9 @@
+ /* Android AMediaCodec: */
+ #include "media/NdkMediaCodec.h"
+ 
++/* For enumerating codecs: the NDK has no MediaCodecList before API 36. */
++#include <jni.h>
++
+ /*
+  * Constants
+  */
+@@ -202,6 +207,11 @@ typedef struct and_media_codec_data
+     unsigned                     enc_processed;
+     AMediaCodecBufferInfo        enc_buf_info;
+     int                          enc_output_buf_idx;
++    /* Consecutive encode attempts that found no input buffer. A component that
++     * never yields one is not busy, it is broken -- see and_media_enc_mark_bad. */
++    unsigned                     enc_starved;
++    /* Encoder swaps attempted during this open; see and_media_codec_open. */
++    unsigned                     enc_retries;
+ 
+     /* Decoder state */
+     AMediaCodec                 *dec;
+@@ -370,10 +380,27 @@ static pj_status_t decode_vpx(pjmedia_vid_codec *codec,
+ 
+ 
+ #if PJMEDIA_HAS_AND_MEDIA_H264
+-static pj_str_t H264_sw_encoder[] = {{(char *)"OMX.google.h264.encoder\0",
+-                                      23}};
++/* Codec2 names first in each list.
++ *
++ * Android 12 retired the OMX component names and Android 15 ships none of them: a
++ * Galaxy M14 (SM-M146B, Android 15) advertises only c2.android.avc.encoder and
++ * c2.exynos.h264.encoder. `AMediaCodec_createCodecByName("OMX.google.h264.encoder")`
++ * there still hands back a handle, so codec_exists() accepts it and this file picks
++ * it -- and every dequeueInputBuffer on it then fails with "Encoder failed to get
++ * input Buffer[0]" for the life of the call. The camera runs and the preview runs,
++ * while the stream carries 0 packets/s and the far end holds its first frame
++ * (measured handset-to-handset, 2026-09-23).
++ *
++ * codec_exists() skips a name the device does not have, so listing the Codec2 names
++ * in front costs a device that only has the OMX ones nothing.
++ */
++static pj_str_t H264_sw_encoder[] =
++                                 {{(char *)"c2.android.avc.encoder\0", 22},
++                                  {(char *)"OMX.google.h264.encoder\0", 23}};
+ static pj_str_t H264_hw_encoder[] =
+-                                  {{(char *)"OMX.qcom.video.encoder.avc\0", 26},
++                                 {{(char *)"c2.exynos.h264.encoder\0", 22},
++                                  {(char *)"c2.qti.avc.encoder\0", 18},
++                                  {(char *)"OMX.qcom.video.encoder.avc\0", 26},
+                                   {(char *)"OMX.Exynos.avc.Encoder\0", 22}};
+ static pj_str_t H264_sw_decoder[] = {{(char *)"OMX.google.h264.decoder\0",
+                                       23}};
+@@ -748,6 +775,327 @@ void add_codec(struct and_media_codec *codec,
+     ++*count;
+ }
+ 
++/* ------------------------------------------------------------------------ *
++ * Finding an encoder that actually works
++ *
++ * The lists above are a guess at what a device has, and a guess is no longer
++ * good enough. `AMediaCodec_createCodecByName("OMX.google.h264.encoder")`
++ * succeeds on Android 15 handsets that ship no OMX component at all, so
++ * codec_exists() accepts a name the platform cannot honour and every
++ * dequeueInputBuffer on it then fails for the life of the call: the camera
++ * captures, the preview draws, and the RTP stream carries nothing (measured on
++ * a Galaxy M14 / SM-M146B, 2026-09-23).
++ *
++ * So the encoder is discovered rather than assumed. Every component the
++ * platform advertises for the MIME is enumerated, ranked with hardware Codec2
++ * first, and then *proved* -- created, configured, started, and made to hand
++ * over one input buffer. The first that survives is the one used, and a
++ * candidate that fails any step is skipped for the next. A device whose codecs
++ * cannot be enumerated falls back to the static lists below, which is what
++ * every pre-existing platform already did.
++ * ------------------------------------------------------------------------ */
++
++#define AND_MEDIA_MAX_CANDIDATES    16
++#define AND_MEDIA_MAX_NAME          128
++
++/* The probe format, which has to be the format a call will really ask for.
++ *
++ * 640x480 was not: c2.android.avc.encoder configures, starts and delivers async
++ * input buffers quite happily at that size on a Galaxy M23 (SM-E236B, Android
++ * 14) and delivers none at all at 720p, which is what the call negotiates. The
++ * probe passed it and the call then sent 0 packets/s -- the same silence this
++ * whole mechanism exists to prevent, reached by asking an easier question than
++ * the one that matters (measured 2026-09-23).
++ *
++ * So these mirror what a video call actually configures: 720p30 at 1.5 Mbit,
++ * and every key below is one configure_encoder() sets too. A component that
++ * survives this is being rehearsed, not sampled. */
++#define AND_MEDIA_PROBE_W           1280
++#define AND_MEDIA_PROBE_H           720
++#define AND_MEDIA_PROBE_BPS         1500000
++#define AND_MEDIA_PROBE_FPS         30
++/* Long enough for a hardware component to allocate its buffers, short enough
++ * that probing several of them is not felt at startup. */
++#define AND_MEDIA_PROBE_TIMEOUT     200000
++/* Async mode answers through a callback, so the probe waits rather than blocks.
++ * Long enough for a software encoder at 720p to turn a few frames around. */
++#define AND_MEDIA_PROBE_WAIT_MS     1500
++#define AND_MEDIA_PROBE_POLL_MS     10
++/* Enough frames for an encoder that will not emit until it has a few. */
++#define AND_MEDIA_PROBE_FRAMES      8
++/* 33 ms apart, which is the 30 fps the probe claims in its format. */
++#define AND_MEDIA_PROBE_PTS_STEP    33333
++/* Feed/drain rounds for the synchronous path. */
++#define AND_MEDIA_PROBE_ROUNDS      16
++/* Input indices in flight; a handful is plenty. */
++#define AND_MEDIA_PROBE_RING        8
++/* Consecutive starved encode attempts before an encoder is condemned. */
++#define AND_MEDIA_STARVED_LIMIT     150
++/* Encoder swaps allowed while opening one codec. */
++#define AND_MEDIA_OPEN_RETRIES      3
++
++typedef struct and_media_candidate {
++    char      name[AND_MEDIA_MAX_NAME];
++    pj_bool_t hardware;     /* MediaCodecInfo.isHardwareAccelerated()        */
++    pj_bool_t codec2;       /* a "c2." component rather than a legacy OMX one */
++} and_media_candidate;
++
++/* True for a name that is a software component by convention, used only where
++ * isHardwareAccelerated() is unavailable (below API 29). */
++static pj_bool_t name_looks_software(const char *name)
++{
++    return (pj_ansi_strstr(name, "google") != NULL ||
++            pj_ansi_strstr(name, "c2.android") != NULL ||
++            pj_ansi_strstr(name, ".sw.") != NULL);
++}
++
++/* Every encoder the platform advertises for `mime`, via Java's MediaCodecList. */
++static unsigned and_media_enum_encoders(const char *mime,
++                                        and_media_candidate cand[],
++                                        unsigned max_cand)
++{
++    JNIEnv *env = NULL;
++    pj_bool_t attached;
++    unsigned cnt = 0;
++    jclass cls_list = NULL, cls_info = NULL;
++    jmethodID m_ctor, m_infos, m_is_enc, m_name, m_types, m_is_hw;
++    jobject list = NULL;
++    jobjectArray infos = NULL;
++    jsize n, i;
++
++    attached = pj_jni_attach_jvm((void **)&env);
++    if (!env)
++        return 0;
++
++    cls_list = env->FindClass("android/media/MediaCodecList");
++    cls_info = env->FindClass("android/media/MediaCodecInfo");
++    if (!cls_list || !cls_info)
++        goto on_return;
++
++    m_ctor  = env->GetMethodID(cls_list, "<init>", "(I)V");
++    m_infos = env->GetMethodID(cls_list, "getCodecInfos",
++                               "()[Landroid/media/MediaCodecInfo;");
++    m_is_enc = env->GetMethodID(cls_info, "isEncoder", "()Z");
++    m_name   = env->GetMethodID(cls_info, "getName", "()Ljava/lang/String;");
++    m_types  = env->GetMethodID(cls_info, "getSupportedTypes",
++                                "()[Ljava/lang/String;");
++    if (!m_ctor || !m_infos || !m_is_enc || !m_name || !m_types)
++        goto on_return;
++
++    /* API 29. Absent below that, and an absent method leaves a pending
++     * exception that every later JNI call would inherit. */
++    m_is_hw = env->GetMethodID(cls_info, "isHardwareAccelerated", "()Z");
++    if (env->ExceptionCheck()) {
++        env->ExceptionClear();
++        m_is_hw = NULL;
++    }
++
++    /* 0 == MediaCodecList.REGULAR_CODECS */
++    list = env->NewObject(cls_list, m_ctor, 0);
++    if (!list)
++        goto on_return;
++    infos = (jobjectArray)env->CallObjectMethod(list, m_infos);
++    if (!infos)
++        goto on_return;
++
++    n = env->GetArrayLength(infos);
++    for (i = 0; i < n && cnt < max_cand; ++i) {
++        jobject info = env->GetObjectArrayElement(infos, i);
++        jobjectArray types;
++        jsize tn, t;
++        pj_bool_t match = PJ_FALSE;
++
++        if (!info)
++            continue;
++        if (!env->CallBooleanMethod(info, m_is_enc)) {
++            env->DeleteLocalRef(info);
++            continue;
++        }
++
++        types = (jobjectArray)env->CallObjectMethod(info, m_types);
++        if (types) {
++            tn = env->GetArrayLength(types);
++            for (t = 0; t < tn && !match; ++t) {
++                jstring ts = (jstring)env->GetObjectArrayElement(types, t);
++                const char *tc = ts ? env->GetStringUTFChars(ts, NULL) : NULL;
++                if (tc && pj_ansi_stricmp(tc, mime) == 0)
++                    match = PJ_TRUE;
++                if (tc)
++                    env->ReleaseStringUTFChars(ts, tc);
++                if (ts)
++                    env->DeleteLocalRef(ts);
++            }
++            env->DeleteLocalRef(types);
++        }
++
++        if (match) {
++            jstring ns = (jstring)env->CallObjectMethod(info, m_name);
++            const char *nc = ns ? env->GetStringUTFChars(ns, NULL) : NULL;
++            if (nc) {
++                pj_ansi_snprintf(cand[cnt].name, AND_MEDIA_MAX_NAME, "%s", nc);
++                cand[cnt].codec2 = (pj_ansi_strncmp(nc, "c2.", 3) == 0);
++                cand[cnt].hardware = m_is_hw
++                        ? (pj_bool_t)env->CallBooleanMethod(info, m_is_hw)
++                        : (pj_bool_t)!name_looks_software(nc);
++                env->ReleaseStringUTFChars(ns, nc);
++                ++cnt;
++            }
++            if (ns)
++                env->DeleteLocalRef(ns);
++        }
++        env->DeleteLocalRef(info);
++    }
++
++on_return:
++    if (env->ExceptionCheck())
++        env->ExceptionClear();
++    if (infos)    env->DeleteLocalRef(infos);
++    if (list)     env->DeleteLocalRef(list);
++    if (cls_info) env->DeleteLocalRef(cls_info);
++    if (cls_list) env->DeleteLocalRef(cls_list);
++    pj_jni_detach_jvm(attached);
++
++    return cnt;
++}
++
++/* Hardware Codec2 first, then any other hardware, then Codec2 software, then
++ * whatever is left. A stable insertion sort, so the platform's own order is
++ * kept inside each band -- it lists its preferred component first. */
++static void and_media_rank_encoders(and_media_candidate cand[], unsigned cnt)
++{
++    unsigned i, j;
++
++    for (i = 1; i < cnt; ++i) {
++        and_media_candidate key = cand[i];
++        int key_rank = (key.hardware && key.codec2) ? 0 :
++                       (key.hardware)               ? 1 :
++                       (key.codec2)                 ? 2 : 3;
++        j = i;
++        while (j > 0) {
++            and_media_candidate *prev = &cand[j - 1];
++            int prev_rank = (prev->hardware && prev->codec2) ? 0 :
++                            (prev->hardware)                 ? 1 :
++                            (prev->codec2)                   ? 2 : 3;
++            if (prev_rank <= key_rank)
++                break;
++            cand[j] = cand[j - 1];
++            --j;
++        }
++        cand[j] = key;
++    }
++}
++
++/* Encoders that failed in a real call, however well they probed.
++ *
++ * No start-up probe can predict every component: c2.android.avc.encoder
++ * configures, starts and offers input buffers at the call's own 720p30, and
++ * then encodes nothing at all once a call actually feeds it (SM-E236B, Android
++ * 14, 2026-09-23). The probe below is what picks a good candidate; this is what
++ * corrects it when the picking was wrong, so a handset self-heals on its next
++ * call instead of being mute until somebody ships a new build.
++ *
++ * Written from the codec's own encode path and read from discovery, both on
++ * the PJSIP thread; a torn read would cost one extra bad call, not correctness.
++ */
++static char      and_media_bad_enc[AND_MEDIA_MAX_CANDIDATES][AND_MEDIA_MAX_NAME];
++static unsigned  and_media_bad_enc_cnt;
++
++static pj_bool_t and_media_enc_is_bad(const char *name)
++{
++    unsigned i;
++    for (i = 0; i < and_media_bad_enc_cnt; ++i) {
++        if (pj_ansi_strcmp(and_media_bad_enc[i], name) == 0)
++            return PJ_TRUE;
++    }
++    return PJ_FALSE;
++}
++
++static void and_media_enc_mark_bad(const char *name)
++{
++    if (and_media_enc_is_bad(name) ||
++        and_media_bad_enc_cnt >= AND_MEDIA_MAX_CANDIDATES)
++    {
++        return;
++    }
++    pj_ansi_snprintf(and_media_bad_enc[and_media_bad_enc_cnt],
++                     AND_MEDIA_MAX_NAME, "%s", name);
++    ++and_media_bad_enc_cnt;
++    PJ_LOG(3, (THIS_FILE, "Encoder %s encoded nothing in a live call; it will "
++               "not be chosen again", name));
++}
++
++/* Whether the platform can actually give us this component.
++ *
++ * Creation and nothing else, deliberately. Configuring and starting a candidate
++ * here -- the only way to learn anything more about it -- wedges the PJSIP
++ * thread on some devices: an SM-E236B (Android 14) never returned from tearing
++ * down an OMX.qcom encoder whose configure had just failed, so discovery never
++ * reached the next candidate and the account never registered (2026-09-23). A
++ * call that picks a poor encoder is a bad call; a stack that cannot register is
++ * a dead phone, and the second is not worth risking for the first.
++ *
++ * What this cannot catch -- a component that creates, configures and starts and
++ * then encodes nothing -- is caught where it shows: in the call, by
++ * [and_media_enc_mark_bad], which condemns it so the next call picks another.
++ */
++static pj_bool_t and_media_encoder_works(const char *name, const char *mime)
++{
++    AMediaCodec *codec;
++
++    PJ_UNUSED_ARG(mime);
++
++    codec = AMediaCodec_createCodecByName(name);
++    if (!codec) {
++        PJ_LOG(4, (THIS_FILE, "  %s could not be created; skipping it", name));
++        return PJ_FALSE;
++    }
++    AMediaCodec_delete(codec);
++    return PJ_TRUE;
++}
++
++/* The first advertised encoder for `mime` that survives the probe. */
++static pj_bool_t and_media_find_encoder(const char *mime, char *out,
++                                        unsigned out_sz)
++{
++    and_media_candidate cand[AND_MEDIA_MAX_CANDIDATES];
++    unsigned cnt, i;
++
++    cnt = and_media_enum_encoders(mime, cand, PJ_ARRAY_SIZE(cand));
++    if (cnt == 0) {
++        PJ_LOG(4, (THIS_FILE, "No encoder advertised for %s; falling back to "
++                   "the static names", mime));
++        return PJ_FALSE;
++    }
++
++    and_media_rank_encoders(cand, cnt);
++
++    for (i = 0; i < cnt; ++i) {
++        PJ_LOG(4, (THIS_FILE, "  %s candidate %d: %s (%s%s)", mime, i,
++                   cand[i].name, cand[i].hardware ? "hardware" : "software",
++                   cand[i].codec2 ? ", Codec2" : ""));
++    }
++
++    for (i = 0; i < cnt; ++i) {
++        if (and_media_enc_is_bad(cand[i].name)) {
++            PJ_LOG(4, (THIS_FILE, "  %s skipped: it failed a live call before",
++                       cand[i].name));
++            continue;
++        }
++        if (and_media_encoder_works(cand[i].name, mime)) {
++            pj_ansi_snprintf(out, out_sz, "%s", cand[i].name);
++            PJ_LOG(4, (THIS_FILE, "Verified encoder for %s: %s (%s%s)", mime,
++                       cand[i].name,
++                       cand[i].hardware ? "hardware" : "software",
++                       cand[i].codec2 ? ", Codec2" : ""));
++            return PJ_TRUE;
++        }
++    }
++
++    PJ_LOG(3, (THIS_FILE, "None of the %d advertised %s encoders could be "
++               "started; falling back to the static names", cnt, mime));
++    return PJ_FALSE;
++}
++
+ static void get_codec_name(pj_bool_t is_enc,
+                            pj_bool_t prio,
+                            pjmedia_format_id fmt_id,
+@@ -829,12 +1177,25 @@ static void get_codec_name(pj_bool_t is_enc,
+     }
+ }
+ 
++/* What discovery chose, per codec.
++ *
++ * File scope because three places need it: [and_media_enum_info] fills it once,
++ * and both [create_codec] and [and_media_codec_open] re-choose into it when the
++ * encoder they were handed turns out not to work. */
++static char      dyn_name[PJ_ARRAY_SIZE(and_media_codec)][AND_MEDIA_MAX_NAME];
++static pj_str_t  dyn_str[PJ_ARRAY_SIZE(and_media_codec)];
++static pj_bool_t dyn_done[PJ_ARRAY_SIZE(and_media_codec)];
++static pj_bool_t dyn_ok[PJ_ARRAY_SIZE(and_media_codec)];
++
+ static pj_status_t and_media_enum_info(pjmedia_vid_codec_factory *factory,
+                                    unsigned *count,
+                                    pjmedia_vid_codec_info info[])
+ {
+     unsigned i, max;
+ 
++    /* What discovery found, kept because enum_info can be called more than
++     * once and probing a component costs a create/configure/start each time. */
++
+     PJ_ASSERT_RETURN(info && *count > 0, PJ_EINVAL);
+     PJ_ASSERT_RETURN(factory == &and_media_factory.base, PJ_EINVAL);
+ 
+@@ -850,16 +1211,23 @@ static pj_status_t and_media_enum_info(pjmedia_vid_codec_factory *factory,
+         pj_str_t *dec_name = NULL;
+         unsigned num_dec;
+ 
+-        get_codec_name(PJ_TRUE, PJ_TRUE, and_media_codec[i].fmt_id,
+-                       &enc_name, &num_enc);
+-
+-        for (enc_idx = 0; enc_idx < num_enc ;++enc_idx, ++enc_name) {
+-            if (codec_exists(enc_name)) {
+-                break;
+-            }
++        /* Discovery first. The static lists cannot tell a component that
++         * exists from one that merely answers to the name, and on Android 15
++         * the difference is a call that sends no video at all -- see
++         * and_media_find_encoder. */
++        if (!dyn_done[i]) {
++            dyn_done[i] = PJ_TRUE;
++            dyn_ok[i] = and_media_find_encoder(and_media_codec[i].mime_type,
++                                               dyn_name[i],
++                                               AND_MEDIA_MAX_NAME);
++            if (dyn_ok[i])
++                dyn_str[i] = pj_str(dyn_name[i]);
+         }
+-        if (enc_idx == num_enc) {
+-            get_codec_name(PJ_TRUE, PJ_FALSE, and_media_codec[i].fmt_id,
++
++        if (dyn_ok[i]) {
++            enc_name = &dyn_str[i];
++        } else {
++            get_codec_name(PJ_TRUE, PJ_TRUE, and_media_codec[i].fmt_id,
+                            &enc_name, &num_enc);
+ 
+             for (enc_idx = 0; enc_idx < num_enc ;++enc_idx, ++enc_name) {
+@@ -867,8 +1235,18 @@ static pj_status_t and_media_enum_info(pjmedia_vid_codec_factory *factory,
+                     break;
+                 }
+             }
+-            if (enc_idx == num_enc)
+-                continue;
++            if (enc_idx == num_enc) {
++                get_codec_name(PJ_TRUE, PJ_FALSE, and_media_codec[i].fmt_id,
++                               &enc_name, &num_enc);
++
++                for (enc_idx = 0; enc_idx < num_enc ;++enc_idx, ++enc_name) {
++                    if (codec_exists(enc_name)) {
++                        break;
++                    }
++                }
++                if (enc_idx == num_enc)
++                    continue;
++            }
+         }
+ 
+         get_codec_name(PJ_FALSE, PJ_TRUE, and_media_codec[i].fmt_id,
+@@ -1081,7 +1459,53 @@ static pj_status_t and_media_codec_open(pjmedia_vid_codec *codec,
+                                            and_media_data);
+     }
+     and_media_data->whole = (param->packing == PJMEDIA_VID_PACKING_WHOLE);
++    /* An encoder that will not configure is the wrong encoder, and this is the
++     * one place that can say so with certainty: the format here is the call's
++     * own, not a rehearsal of it. OMX.qcom.video.encoder.avc creates perfectly
++     * well on an SM-E236B (Android 14) and then refuses every configure with
++     * -10000, which used to leave the call with no video stream at all.
++     *
++     * The retry is here rather than in a start-up probe because configuring a
++     * candidate at start-up is what wedged the PJSIP thread on that same
++     * handset -- see and_media_encoder_works. Here the codec is being opened
++     * on the ordinary path, which already unwinds a failure safely. */
+     status = configure_encoder(and_media_data);
++    while (status != PJ_SUCCESS && and_media_data->enc_retries++ < AND_MEDIA_OPEN_RETRIES) {
++        unsigned idx = and_media_data->codec_idx;
++        pj_str_t *nm = and_media_codec[idx].encoder_name;
++
++        if (!nm || !nm->ptr)
++            break;
++        and_media_enc_mark_bad(nm->ptr);
++        if (!and_media_find_encoder(and_media_codec[idx].mime_type,
++                                    dyn_name[idx], AND_MEDIA_MAX_NAME))
++        {
++            break;
++        }
++        dyn_str[idx] = pj_str(dyn_name[idx]);
++        and_media_codec[idx].encoder_name = &dyn_str[idx];
++        PJ_LOG(3, (THIS_FILE, "Re-opening the %s encoder as %s",
++                   and_media_codec[idx].name, dyn_name[idx]));
++
++        /* Swap the component underneath, leaving every queue and the decoder
++         * exactly as they were: only the encoder was wrong. */
++        if (and_media_data->enc) {
++            AMediaCodec_delete(and_media_data->enc);
++            and_media_data->enc = NULL;
++        }
++        and_media_data->enc = AMediaCodec_createCodecByName(dyn_name[idx]);
++        if (!and_media_data->enc)
++            break;
++        if (API_AT_LEAST(28)) {
++            AMediaCodecOnAsyncNotifyCallback cb = {&and_med_on_input_avail,
++                                                   &and_med_on_output_avail,
++                                                   &and_med_on_format_changed,
++                                                   &and_med_on_error};
++            AMediaCodec_setAsyncNotifyCallback(and_media_data->enc, cb,
++                                               and_media_data);
++        }
++        status = configure_encoder(and_media_data);
++    }
+     if (status != PJ_SUCCESS) {
+         return PJMEDIA_CODEC_EFAILED;
+     }
+@@ -1178,12 +1602,21 @@ static pj_status_t and_media_codec_encode_begin(pjmedia_vid_codec *codec,
+     {
+         PJ_LOG(4,(THIS_FILE, "Encoder failed to get input Buffer[%d]",
+                   buf_info.index));
++        /* Starvation for this long is not congestion. At 30 fps this is several
++         * seconds in which the camera delivered frames and the encoder took
++         * none of them, which no working component does. */
++        if (++and_media_data->enc_starved == AND_MEDIA_STARVED_LIMIT) {
++            pj_str_t *nm = and_media_codec[and_media_data->codec_idx].encoder_name;
++            if (nm && nm->ptr)
++                and_media_enc_mark_bad(nm->ptr);
++        }
+         goto on_return;
+     }
+ 
+     input_buf = AMediaCodec_getInputBuffer(and_media_data->enc,
+                                            buf_info.index, &output_size);
+     if (input_buf && output_size >= input->size) {
++        and_media_data->enc_starved = 0;
+         pj_memcpy(input_buf, input->buf, input->size);
+         am_status = AMediaCodec_queueInputBuffer(and_media_data->enc,
+                                      buf_info.index, 0, input->size, 0, 0);
