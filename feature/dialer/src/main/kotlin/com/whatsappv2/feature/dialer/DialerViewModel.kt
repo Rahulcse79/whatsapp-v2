@@ -11,6 +11,7 @@ import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.engine.SipRegistrar
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
+import com.whatsappv2.domain.engine.CallPlacement
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.model.RegistrationState
 import com.whatsappv2.domain.model.SipAccount
@@ -144,7 +145,7 @@ class DialerViewModel @Inject constructor(
         matchingContacts,
     ) { accounts, registrations, current, recent, matches ->
         Frame(accounts, registrations, current, recent, matches)
-    }.combine(joins.hostingLiveConference) { frame, adding -> frame.toUiState(adding) }.stateIn(
+    }.combine(joins.addingToCall) { frame, adding -> frame.toUiState(adding) }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(SUBSCRIPTION_TIMEOUT_MILLIS),
         initialValue = DialerUiState(),
@@ -306,6 +307,16 @@ class DialerViewModel @Inject constructor(
                     accountOverride = state.selectedAccount?.id.takeIf { !state.selectionIsDefault },
                     input = target,
                     media = media,
+                    // A call placed while another is established is a participant, and a
+                    // participant must not take the platform's side off the leg that has
+                    // it — Telecom would answer by holding that leg, and a hold is what
+                    // the 481 at 192.168.20.56 was made of. See
+                    // [ConferenceJoinCoordinator.addingToCall].
+                    placement = if (state.addingToConference) {
+                        CallPlacement.CONFERENCE_MEMBER
+                    } else {
+                        CallPlacement.STANDALONE
+                    },
                 )
                 // Decided from the state the screen showed, which is what the user was
                 // told this call would be. Asked for before anything else can happen to

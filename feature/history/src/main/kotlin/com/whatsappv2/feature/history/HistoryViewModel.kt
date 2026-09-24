@@ -261,15 +261,14 @@ class HistoryViewModel @Inject constructor(
     }
 
     /**
-     * Calls the row back with video: one person, or the whole conference in the bridge
-     * (ADR-003).
+     * Calls the row back with video: one person, or the whole conference, composed here.
      *
      * It used to go out as audio for a conference "whatever was asked", from the days
-     * when a conference could only be mixed here. A video conference is a real thing now
-     * — the legs are dialled with video and REFERred into the room as they answer, which
-     * is the coordinator's job — so the left swipe means the same on a conference as on a
-     * call. Downgraded to voice, and said so, when the camera cannot be used, exactly as
-     * a single video redial is (Task 75).
+     * when a conference could only be mixed here without a picture. Every leg is dialled
+     * with video now and mixed as it answers — the same join the coordinator performs for
+     * an audio conference — so the left swipe means the same on a conference as on a
+     * call, and no conference room is dialled. Downgraded to voice, and said so, when the
+     * camera cannot be used, exactly as a single video redial is (Task 75).
      */
     fun onVideoCallBack(row: HistoryRow.Call) {
         if (!row.isConferenceGroup) return onVideoCallBack(row.entry)
@@ -281,15 +280,15 @@ class HistoryViewModel @Inject constructor(
      * Every member dialled at once, each asked to join as they answer.
      *
      * One INVITE per distinct address — a member who was dialled twice in the original
-     * (the roster makes that visible now) is dialled once, and the room itself is never
-     * dialled as if it were a person ([HistoryRow.Call.members]). The screen is moved to
+     * (the roster makes that visible now) is dialled once, and a conference room left in
+     * an old log row is never dialled as if it were a person ([HistoryRow.Call.members]). The screen is moved to
      * the first leg that goes out; the coordinator places the rest together beside it,
      * with the placement it decides ([CallPlacement]), and a member that cannot be
      * dialled is skipped, because a conference minus one absent person is still the
      * conference.
      *
-     * @param video true to dial with video and assemble the conference in the bridge;
-     *   false for a voice conference mixed here.
+     * @param video true to dial every member with video; false for a voice conference.
+     *   Either way the conference is mixed on this device.
      * @param downgraded true when video was asked for and cannot be given, so the user is told.
      */
     private fun callConferenceBack(row: HistoryRow.Call, video: Boolean, downgraded: Boolean = false) {
@@ -306,7 +305,7 @@ class HistoryViewModel @Inject constructor(
                 }
                 dial
             }
-            val first = joins.callBack(members, video)
+            val first = joins.callBack(members)
             eventChannel.send(
                 first?.let { HistoryEvent.CallPlaced(it) }
                     ?: HistoryEvent.Refused("Nobody in the conference could be dialled"),

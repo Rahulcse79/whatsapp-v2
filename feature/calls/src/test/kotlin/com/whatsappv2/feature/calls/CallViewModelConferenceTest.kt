@@ -140,15 +140,12 @@ class CallViewModelConferenceTest : CallViewModelFixture() {
     }
 
     @Test
-    fun `a conference merged into the bridge lists the people merged, and keeps them after their legs end`() = runTest {
-        // The bridge publishes no roster, and the screen used to say only that. The device
-        // that pressed Merge knows exactly whom it sent into the room, so the roster names
-        // them, the user first — and goes on naming them after the merged legs have been
-        // transferred away and ended, which is a second after Merge. It is a list of what
-        // this device merged, said so, and never a count the bridge did not give.
-        //
-        // Mixed media, because that is what still reaches the bridge: an all-video merge
-        // is composed on the device and never goes near the room.
+    fun `a conference of video and audio-only legs is this device's own, with a full roster`() = runTest {
+        // Mixed media was the last case that reached a FreeSWITCH room, and the room
+        // published no roster — so the screen listed whom this device had *sent* in and
+        // said it was doing that (`fromMerge`, no count). It is mixed here now, which
+        // means the mixer is this device and the roster is not a guess: it is the
+        // membership, complete, in the order the legs were called.
         engine.givenRegistered(ACCOUNT)
         accounts.given(ACCOUNT)
         val first = engine.placeCall(ACCOUNT.id, REMOTE, MediaProfile.AUDIO_VIDEO).getOrNull()!!
@@ -163,21 +160,17 @@ class CallViewModelConferenceTest : CallViewModelFixture() {
             viewModel.merge()
             runCurrent()
 
-            val merged = awaitActive { it.conference != null }
+            val merged = awaitActive { it.mixedCallCount >= MIN_MIXED_IN_TEST && it.conference != null }
             val roster = merged.conference!!
-            assertTrue(roster.fromMerge, "the list is what this device merged, and says so")
-            assertFalse(roster.rosterAvailable, "the bridge still published nothing")
-            assertNull(roster.count, "no count the bridge did not give")
+            assertTrue(roster.rosterAvailable, "this device is the mixer, so it knows exactly who is here")
+            assertFalse(roster.fromMerge, "not a list of people sent somewhere — a membership")
             assertEquals(listOf("alice", "bob", "1003"), roster.participants.map { it.label })
             assertEquals(listOf(true, false, false), roster.participants.map { it.isSelf })
 
-            // The merged legs end as their transfers complete; the list does not change.
-            engine.simulateTransferSucceeded(first)
-            engine.simulateTransferSucceeded(second)
-            engine.simulateRemoteAnswer(merged.call.callId)
-            runCurrent()
-            val settled = awaitActive { it.call.phase == CallPhase.CONNECTED && it.otherCalls.isEmpty() }
-            assertEquals(listOf("alice", "bob", "1003"), settled.conference!!.participants.map { it.label })
+            // And the legs are still here: nothing was transferred away, so the roster
+            // does not have to outlive calls that are ending.
+            assertTrue(engine.activeCalls.value.any { it.callId == first })
+            assertTrue(engine.activeCalls.value.any { it.callId == second })
             cancelAndIgnoreRemainingEvents()
         }
     }

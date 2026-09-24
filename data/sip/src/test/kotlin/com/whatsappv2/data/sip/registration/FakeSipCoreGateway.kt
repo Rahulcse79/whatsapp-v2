@@ -330,6 +330,13 @@ internal class FakeSipCoreGateway :
     /** Every membership the stack was asked to mix, in order (ADR-009). */
     val conferenceMemberships: MutableList<Set<String>> = mutableListOf()
 
+    /** Every roster announced, as (call key, document), in order. */
+    val announcedRosters: MutableList<Pair<String, String>> = mutableListOf()
+
+    override fun announceRoster(callKey: String, document: String) {
+        announcedRosters += callKey to document
+    }
+
     override suspend fun setConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String> {
         conferenceMemberships += callKeys
         return success(callKeys)

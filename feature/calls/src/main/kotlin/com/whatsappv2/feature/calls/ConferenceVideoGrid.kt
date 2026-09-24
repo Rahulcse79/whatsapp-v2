@@ -1,6 +1,8 @@
 package com.whatsappv2.feature.calls
 
-import android.view.SurfaceView
+import android.graphics.SurfaceTexture
+import android.view.Surface
+import android.view.TextureView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,12 +28,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Constraints
-import com.whatsappv2.domain.engine.VideoSize
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.viewinterop.AndroidView
 import com.whatsappv2.core.designsystem.theme.AppTheme
+import com.whatsappv2.domain.engine.VideoSize
+import com.whatsappv2.domain.engine.VideoSizes
 
 /**
  * One tile per participant, arranged by this app (Task 61, §2.2 option b).
@@ -55,6 +58,26 @@ import com.whatsappv2.core.designsystem.theme.AppTheme
  * keeps it honest in landscape and in split-screen, where reading the display's size would
  * describe a rectangle this composable does not have.
  *
+ * ## The tiles are `TextureView`s, and they have to be
+ *
+ * A `SurfaceView` is not drawn by the view hierarchy — it is its own window, composited by
+ * SurfaceFlinger — so it **ignores every clip its parents set**. A tile sizes its picture
+ * to *cover* its cell, which means the picture is deliberately larger than the cell and
+ * the overflow is supposed to disappear at the tile's rounded corners. With SurfaceViews
+ * it did not disappear: on a four-party call (2026-09-24) one participant's picture ran
+ * out of its cell and straight across the neighbouring tile.
+ *
+ * `TextureView` is an ordinary view in the hierarchy, so `clip` applies to it. It costs a
+ * GPU composite per tile, which at four tiles is a trade worth making for a grid whose
+ * cells are actually cells.
+ *
+ * ## Every tile is sized by its own stream
+ *
+ * [VideoSizes.remoteFor], not one shared remote size. The handsets do not agree on a frame
+ * shape — a TC15's camera, an M14's and a re-negotiated peer are three rectangles — and
+ * laying every tile out on whichever of them decoded last is what made one tile a narrow
+ * strip in a field of black while another overflowed.
+ *
  * ## The self-view is not one of these tiles
  *
  * pjsua keeps **one** preview window per capture device, so a second surface showing this
@@ -66,7 +89,7 @@ import com.whatsappv2.core.designsystem.theme.AppTheme
 internal fun ConferenceVideoGrid(
     participants: List<ConferenceParticipantRow>,
     columns: Int,
-    frame: VideoSize,
+    sizes: VideoSizes,
     onSurfaces: (Map<String, Any?>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -75,9 +98,9 @@ internal fun ConferenceVideoGrid(
 
     // One view per participant, kept across recompositions so a re-measure does not tear
     // the renderer's surface down and build it again — which reads as a black flash.
-    val views = remember { mutableMapOf<String, SurfaceView>() }
+    val views = remember { mutableMapOf<String, TextureView>() }
     ids.forEach { id ->
-        views.getOrPut(id) { SurfaceView(context).apply { keepScreenOn = true } }
+        views.getOrPut(id) { TextureView(context).apply { keepScreenOn = true } }
     }
     // A participant who left takes their view with them, or the map grows for the life of
     // the call and holds surfaces the stack may still be handed.
@@ -85,26 +108,38 @@ internal fun ConferenceVideoGrid(
 
     DisposableEffect(ids) {
         val live = mutableMapOf<String, Any?>()
+        val held = mutableMapOf<String, Surface>()
         fun publish() = onSurfaces(live.toMap())
 
-        val callbacks = ids.associateWith { id ->
-            surfaceCallback { surface ->
-                live[id] = surface
-                publish()
-            }
+        fun attach(id: String, texture: SurfaceTexture) {
+            held.remove(id)?.release()
+            val surface = Surface(texture)
+            held[id] = surface
+            live[id] = surface
+            publish()
         }
+
         ids.forEach { id ->
             val view = views.getValue(id)
-            view.holder.addCallback(callbacks.getValue(id))
-            // A surface that already existed is not announced again — the view outlives
+            view.surfaceTextureListener = surfaceTextureListener(
+                onAvailable = { texture -> attach(id, texture) },
+                onDestroyed = {
+                    live -= id
+                    publish()
+                    held.remove(id)?.release()
+                },
+            )
+            // A texture that already existed is not announced again — the view outlives
             // this effect, so a re-measure would otherwise leave its tile black.
-            view.holder.surface?.takeIf { it.isValid }?.let { live[id] = it }
+            view.surfaceTexture?.let { attach(id, it) }
         }
         publish()
 
         onDispose {
-            ids.forEach { views[it]?.holder?.removeCallback(callbacks.getValue(it)) }
+            ids.forEach { views[it]?.surfaceTextureListener = null }
             onSurfaces(emptyMap())
+            held.values.forEach { it.release() }
+            held.clear()
         }
     }
 
@@ -123,7 +158,9 @@ internal fun ConferenceVideoGrid(
                         ParticipantTile(
                             participant = participant,
                             view = views.getValue(participant.id),
-                            frame = frame,
+                            // This participant's own decoded shape, never the conference's
+                            // most recent one. See the class KDoc.
+                            frame = sizes.remoteFor(participant.id),
                             // The last row of an odd count spreads across the width rather
                             // than leaving a hole beside it, which is the difference
                             // between a grid and a grid with a gap in it.
@@ -139,16 +176,17 @@ internal fun ConferenceVideoGrid(
 /**
  * One participant: their picture, their name and extension, and whether they are muted.
  *
- * The surface is clipped to the tile and fills it. PJSIP stretches whatever it decodes to
+ * The picture is clipped to the tile and fills it. PJSIP stretches whatever it decodes to
  * the bounds of the view it is given (`opengl_dev.c` sets the viewport to the whole
  * surface and corrects nothing), so a tile is only the right shape if it is *given* the
- * right shape — here that is a cell of the grid, and the renderer fills it edge to edge
- * rather than letterboxing inside it.
+ * right shape — here that is [frame]'s aspect ratio scaled to cover the cell, with the
+ * overflow clipped by the tile's rounded corners. A `TextureView` is what makes that clip
+ * real; see the grid's KDoc for the SurfaceView that ignored it.
  */
 @Composable
 private fun ParticipantTile(
     participant: ConferenceParticipantRow,
-    view: SurfaceView,
+    view: TextureView,
     frame: VideoSize,
     modifier: Modifier = Modifier,
 ) {

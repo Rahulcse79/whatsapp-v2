@@ -11,11 +11,13 @@ import com.whatsappv2.core.common.result.success
 import com.whatsappv2.core.common.time.Clock
 import com.whatsappv2.core.common.time.SystemClock
 import com.whatsappv2.data.sip.call.CallStateMapper
+import com.whatsappv2.data.sip.call.ConferenceInfoWriter
 import com.whatsappv2.data.sip.call.ConferenceMapper
 import com.whatsappv2.data.sip.call.SipCallGateway
 import com.whatsappv2.data.sip.call.SipConferenceGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
+import com.whatsappv2.data.sip.call.StackParticipant
 import com.whatsappv2.data.sip.call.VideoMix
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.TransferEventMapper
@@ -468,6 +470,10 @@ internal class PjsipSipEngine @Inject constructor(
         collectors += scope.collectCallEvents()
         collectors += scope.collectTransferEvents()
         collectors += scope.collectConferenceEvents()
+        // The roster goes out on every membership change, which is what makes join and
+        // leave propagate to the members without a second mechanism: `mixed` is the
+        // membership, and restating it in full is the whole protocol.
+        collectors += scope.launch { mixed.collect { announceRoster(it) } }
         collectors += scope.launch {
             // The switch in Settings, finally connected to something. It was written to
             // DataStore and read by nothing, so the control did nothing while its own
@@ -751,6 +757,14 @@ internal class PjsipSipEngine @Inject constructor(
 
         store(id, current, settled, media, justConnected)
 
+        // A member whose video appeared or went away changes who belongs in the picture.
+        // The stack's own `remix` cannot notice: it re-states the membership it was last
+        // given against the ports that exist now, and never admits a call that was not in
+        // that set. So the membership itself is re-planned here, on the one event that
+        // can change it — a leg that turns its camera on mid-conference joins the canvas,
+        // and one that turns it off leaves it instead of holding a dead source.
+        if (media.hasVideo != current.media.hasVideo) rebalanceConferenceVideo()
+
         // Settled the moment the call is up, and settled from the address, because there
         // is nothing else to settle it with. See [markConferenceIfRoom].
         //
@@ -938,7 +952,7 @@ internal class PjsipSipEngine @Inject constructor(
             }
             return failure(notPlaced)
         }
-        if (!register) logger.info(TAG, "Placing $callId beside a dialling call; the platform is not told")
+        if (!register) logger.info(TAG, "Placing $callId beside a registered leg; the platform is not told")
         callGateway.placeCall(
             callKey = callId.value,
             accountKey = accountId.value,
@@ -1418,16 +1432,20 @@ internal class PjsipSipEngine @Inject constructor(
         // conference.
         //
         // ...unless the picture is composed HERE (2026-09-22). `pjmedia`'s video bridge
-        // makes each peer a canvas of this device's camera and every other peer, and the
-        // dialplan bypasses media for video offers, so video RTP is phone-to-phone and
-        // room 3000 carries no picture at all. [videoMixable] is the whole of the
-        // decision, and it is deliberately narrow: within the mixer's four-source
-        // ceiling, and every member actually carrying video. Anything else drops video
-        // and gets the audio mix exactly as before.
+        // makes each peer a canvas of this device's camera and every other peer, so no
+        // conference room carries a picture and none is dialled. [videoMixable] is the
+        // whole of the decision: the legs actually carrying video, within the mixer's
+        // four-source ceiling.
+        //
+        // Video is dropped on the legs that are NOT in the picture, not on all of them.
+        // A member with no camera has nothing to drop and the call is a no-op; a member
+        // whose video cannot be composed — the ceiling — is re-INVITEd down to audio
+        // once, here, rather than paying for a stream nobody will ever see.
         val withVideo = videoMixable(activeCalls.value, live)
-        if (withVideo.isEmpty()) {
-            dropVideoForMix(live, logger) { videoGateway.setVideoEnabled(it.value, false) }
-        }
+        val droppable = activeCalls.value
+            .filterTo(mutableSetOf()) { it.callId in live && it.callId !in withVideo && it.media.hasVideo }
+            .mapTo(mutableSetOf()) { it.callId }
+        dropVideoForMix(droppable, logger) { videoGateway.setVideoEnabled(it.value, false) }
 
         val mixedAudio = publishMix(
             conferenceGateway.setConferenceMembers(live.map { it.value }.toSet()),
@@ -1449,6 +1467,111 @@ internal class PjsipSipEngine @Inject constructor(
             }
         }
         return mixedAudio
+    }
+
+    /**
+     * Tells every member of the mix who else is in it (RFC 4575 over in-dialog MESSAGE).
+     *
+     * ## The half a member cannot work out for itself
+     *
+     * A member holds exactly one dialog — to this device — and receives one picture. It
+     * has no way to know that the call it is on is a conference, let alone who else is in
+     * it: until this existed a member showed no badge, no participant list, and treated
+     * the composed canvas as an ordinary one-to-one call. The host is the only party that
+     * knows the membership, so the host says so.
+     *
+     * Sent to **every** member on every membership change, in full. Full rather than a
+     * delta for the reason [StackConferenceEvent] gives, and to every member rather than
+     * the new one because a delta to some and a restatement to others is two protocols.
+     *
+     * The document is exactly what a server bridge would send, so the receiving end feeds
+     * it to the same [ConferenceInfoParser] and the same collector — see
+     * [ConferenceInfoWriter] for why this is a MESSAGE and not a subscription.
+     *
+     * Silent when there is no conference: below two members there is nothing to announce,
+     * and a stale roster is worse than none.
+     */
+    private suspend fun announceRoster(members: Set<CallId>) {
+        if (members.size < SipConferenceController.MINIMUM_MIXED) return
+        val live = calls.value
+        val legs = members.mapNotNull { live[it] }
+        if (legs.size < SipConferenceController.MINIMUM_MIXED) return
+
+        // This device's own address, so members can see the host in the list and can tell
+        // which entry is themselves — the parser decides `isSelf` by comparing against it.
+        val account = accounts.findById(legs.first().accountId) ?: return
+        val selfUri = "sip:${account.username}@${account.domain}"
+
+        val participants = buildList {
+            add(
+                StackParticipant(
+                    id = selfUri,
+                    uri = selfUri,
+                    displayName = account.displayName,
+                    // One microphone: the host is muted when its legs are.
+                    isMuted = legs.any { it.state.controlsOrNull?.isMuted == true },
+                    isSpeaking = false,
+                    isSelf = false,
+                    hasVideoStream = legs.any { it.media.hasVideo },
+                    joinedAtEpochMillis = null,
+                ),
+            )
+            legs.forEach { leg ->
+                val uri = leg.remote.render()
+                add(
+                    StackParticipant(
+                        id = uri,
+                        uri = uri,
+                        displayName = leg.remoteDisplayName,
+                        isMuted = false,
+                        isSpeaking = false,
+                        isSelf = false,
+                        hasVideoStream = leg.media.hasVideo,
+                        joinedAtEpochMillis = leg.connectedAtEpochMillis,
+                    ),
+                )
+            }
+        }
+
+        val document = ConferenceInfoWriter.roster(entity = selfUri, participants = participants)
+        logger.info(TAG, "Announcing the roster to ${legs.size} member(s): ${participants.size} in the room")
+        legs.forEach { conferenceGateway.announceRoster(it.callId.value, document) }
+    }
+
+    /**
+     * Re-plans the conference picture when a member's video comes up or goes away.
+     *
+     * ## Why `remix` is not enough
+     *
+     * [VideoConferenceBridge.remix] re-states the membership it was last given against
+     * the ports that exist now — which is what lets a member who was still ringing enter
+     * the picture by itself. It cannot admit a call that was never in that set, and a leg
+     * that had no video when the merge was planned is exactly that. Without this, turning
+     * the camera on during a conference re-INVITEs the far end, negotiates a stream, and
+     * then composes it into nobody's canvas.
+     *
+     * The whole membership is re-planned rather than the one leg patched in, for the same
+     * reason [mixCalls] does: one set replacing another has no add/remove pair to get out
+     * of order. It is cheap — [videoMixable] is pure and the gateway's `set` is idempotent
+     * — so the cost of running it on a media change that turns out not to matter is a
+     * comparison.
+     *
+     * Fire-and-forget on the engine's scope: this is reached from the call-event collector,
+     * which is not a suspending context and must not wait on the PJSIP thread.
+     */
+    private fun rebalanceConferenceVideo() {
+        val members = mixed.value
+        if (members.size < SipConferenceController.MINIMUM_MIXED) return
+        scope.launch {
+            val live = liveForMix(activeCalls.value, members)
+            val withVideo = videoMixable(activeCalls.value, live)
+            when (val picture = conferenceGateway.setVideoConferenceMembers(withVideo.map { it.value }.toSet())) {
+                is Outcome.Success ->
+                    logger.info(TAG, "Conference picture re-planned: ${picture.value.size} member(s)")
+                is Outcome.Failure ->
+                    logger.warn(TAG, "The conference picture could not be re-planned: ${picture.error}")
+            }
+        }
     }
 
     /**
@@ -1945,8 +2068,37 @@ private fun outgoingSnapshot(
  * A standalone call always; a member of a group only when no registered call is still
  * being placed, because the platform refuses a second outgoing call while one dials.
  */
+/**
+ * Whether the platform should be told about a call placed this way.
+ *
+ * [CallPlacement.STANDALONE] always registers: that is what the value means.
+ *
+ * A [CallPlacement.CONFERENCE_MEMBER] registers **only when no other leg already carries
+ * the platform's side**, and "carries" means dialling *or* established — not, as it did
+ * until 2026-09-24, dialling alone.
+ *
+ * ## The 481 that rule cost
+ *
+ * Telecom allows one active call per connection service and holds every other the instant
+ * one goes active. Testing `Outgoing` only meant that adding a participant to a call that
+ * was already **Connected** registered the new leg, Telecom made it active, and Telecom
+ * held the established one — so the app sent a hold re-INVITE on a perfectly good call for
+ * no reason of its own.
+ *
+ * On the reference FreeSWITCH that is survivable. On the `iriscloud` platform at
+ * 192.168.20.56 it is fatal: the held dialog is torn down while it is held, and the resume
+ * that every merge begins with comes back `481 Call is being terminated`. PJSIP then BYEs
+ * the leg, and Merge is left with one call and nothing to mix (measured 2026-09-24,
+ * 13:29:03 — `Error releasing hold on call 5 (reason=481)`).
+ *
+ * The fix is not to send media through a hold, and not to ignore the platform. It is to
+ * stop creating the hold: one registered leg carries audio focus, routing and the lock
+ * screen for the whole group call — which is what [CallPlacement] has always said — so a
+ * second leg placed to build a conference has no business being registered beside it.
+ */
 private fun CallPlacement.registersWithPlatform(live: Collection<CallSnapshot>): Boolean =
-    this == CallPlacement.STANDALONE || live.none { it.platformManaged && it.state is CallState.Outgoing }
+    this == CallPlacement.STANDALONE ||
+        live.none { it.platformManaged && (it.state is CallState.Outgoing || it.state.isEstablished) }
 
 /**
  * The call the platform routes this call's audio through: itself when registered,
@@ -2423,25 +2575,39 @@ internal inline fun dropVideoForMix(
 }
 
 /**
- * The members whose picture this device can compose, or empty for an audio-only mix.
+ * The members whose picture this device composes, or empty for an audio-only mix.
  *
- * Two conditions, and both are refusals rather than adjustments:
+ * ## It composes among the legs that carry video, rather than refusing a mixed mix
  *
- *  - **Everybody must be carrying video.** A mix of two video legs and one audio leg is a
- *    canvas with a hole in it; the audio conference already handles that case perfectly
- *    well and the honest thing is to use it.
- *  - **It must fit the mixer.** `vid_conf` composes four sources onto a sink and silently
- *    does not draw a fifth, so a conference past [VideoMix.MAX_PARTICIPANTS] would be a
- *    participant in the roster and in nobody's picture.
+ * This used to require **every** member to be carrying video and return nothing
+ * otherwise, on the grounds that a canvas with a hole in it was worse than sending the
+ * whole conference to a FreeSWITCH room. With the room gone the comparison is against an
+ * audio conference for everybody, and losing the picture for the people who do have a
+ * camera because one member does not is plainly worse.
  *
- * Pure, so the rule is testable without a stack — which is the point, because both
- * branches are expensive to reach on hardware.
+ * There is no obstacle in the mixer: [VideoMix.wanted] takes whatever member set it is
+ * given and wires this camera into each of their encoders and each of their decoders into
+ * the others'. A member left out simply holds no video links, stays in the audio mix, and
+ * appears in nobody's canvas — which is exactly what "they have no camera" should look
+ * like. It cost a real conference on 2026-09-24: two video legs and one audio leg were
+ * REFERred to a room that answered 480, and three people got nothing.
+ *
+ * ## The ceiling is still a refusal
+ *
+ * `vid_conf` composes four sources onto a sink and silently does not draw a fifth, so
+ * past [VideoMix.MAX_PARTICIPANTS] this returns nothing rather than a subset: a
+ * participant who is in the call, in the roster and in nobody's picture is precisely what
+ * the silent limit produces by itself. [MergeTopology] refuses such a merge up front; this
+ * is the backstop for a conference that grew into it one join at a time.
+ *
+ * Pure, so the rule is testable without a stack — which is the point, because every
+ * branch is expensive to reach on hardware.
  */
 internal fun videoMixable(calls: List<CallSnapshot>, live: Set<CallId>): Set<CallId> {
-    if (live.size < VideoMix.MINIMUM_MEMBERS || live.size > VideoMix.MAX_MEMBERS) return emptySet()
     val carrying = calls.filterTo(mutableSetOf()) { it.callId in live && it.media.hasVideo }
         .mapTo(mutableSetOf()) { it.callId }
-    return if (carrying.size == live.size) carrying else emptySet()
+    if (carrying.size < VideoMix.MINIMUM_MEMBERS || carrying.size > VideoMix.MAX_MEMBERS) return emptySet()
+    return carrying
 }
 
 private fun liveForMix(calls: List<CallSnapshot>, requested: Set<CallId>): Set<CallId> =

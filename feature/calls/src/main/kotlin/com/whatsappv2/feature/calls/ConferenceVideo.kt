@@ -89,18 +89,27 @@ internal fun ConferenceVideo(
     // of it, and would be wrong on a foldable or in split-screen — which is precisely where
     // "adapts to rotation" stops being a rotation question.
     BoxWithConstraints(modifier = modifier.fillMaxSize().testTag(TAG_CONFERENCE_VIDEO)) {
+        // Everybody but this device. The self-view is a draggable overlay and never a
+        // tile (pjsua keeps one preview window per capture device), so the arrangement is
+        // decided by how many *remote* pictures there are. Counting participants instead
+        // gave a two-person conference the three-tile arrangement — one tile too many,
+        // and the wrong shape for every size.
+        val remoteCount = conference.participants.count { !it.isSelf }
         val mode = ConferenceVideoLayout.of(
-            participantCount = conference.participants.size,
+            participantCount = remoteCount,
             // Either picture counts. On `showsRemoteVideo` alone this fell to AudioOnly —
             // which draws nothing — for the whole window between joining the room and the
             // bridge's first composed frame, taking the local preview down with it. A
             // conference the user has just joined with their camera on must show them
             // their own camera while the canvas is still on its way.
             hasVideo = call.showsAnyVideo,
-            // True since the local mix stopped composing a canvas for this screen: every
-            // call renders into a window of its own, so the arrangement is this app's.
-            // The model carried this flag for exactly this day.
-            perParticipantVideo = conference.participants.isNotEmpty(),
+            // Only when the rows are this device's own calls. A host mixing the
+            // conference has a stream per participant and draws the grid; a member holds
+            // one call and receives one composed picture, and drawing a grid from the
+            // roster it was *told* would be a tile per participant bound to a key the
+            // stack has never seen — every one of them black. See
+            // [ConferenceUiState.perParticipantStreams].
+            perParticipantVideo = conference.perParticipantStreams && remoteCount > 0,
             isLandscape = maxWidth > maxHeight,
         )
 
@@ -223,9 +232,9 @@ private fun ConferenceTiles(
         ConferenceVideoGrid(
             participants = remote,
             columns = columns,
-            // The decoded shape, so each tile crops the picture to fill its cell instead
-            // of letterboxing it. PJSIP stretches to whatever bounds it is given.
-            frame = sizes.remote,
+            // Every shape, so each tile crops its *own* picture to fill its cell. One
+            // shared remote size laid every tile out on whichever stream decoded last.
+            sizes = sizes,
             onSurfaces = { remoteSurfaces = it },
         )
 

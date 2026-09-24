@@ -15,13 +15,25 @@ import com.whatsappv2.data.sip.call.VideoPortRef
  * differs is [VideoMix]: audio is a full mesh of one port per member, video is a set of
  * personal canvases built from asymmetric source and sink ports. See that file for why.
  *
- * ## No server is involved, and that is the point
+ * ## No server composes the picture, and that is the point
  *
  * Under ADR-003 the conference picture was composed by FreeSWITCH's `mod_conference` in
  * room 3000 and arrived as one stream. This composes it here: every peer's decoder is a
  * source, every peer's encoder is a sink, and the mixer makes each of them a canvas of
- * everyone else. Room 3000 carries no video at all, and video RTP is phone-to-phone —
- * which the dialplan's `bypass_media` for video offers is what makes possible.
+ * everyone else. No conference room is dialled and none carries a picture.
+ *
+ * ## It does **not** require the RTP to leave the server
+ *
+ * Worth stating plainly, because a dialplan change was once made on the opposite belief.
+ * What this class needs is that each leg negotiates a video stream — nothing more. Whether
+ * FreeSWITCH bypasses the media, proxies it, or sits in the path and transcodes is
+ * invisible here: the decoders and encoders are this handset's either way, and the canvas
+ * is built from them.
+ *
+ * That matters because the media path is not free to choose. Server-side Lyra recording
+ * (`freeswitch-lyra`) can only record what reaches the server, so a deployment that
+ * records keeps FreeSWITCH in the path — and this composes exactly the same picture. The
+ * cost of being in the path is the server's codec list, not the conference.
  *
  * ## Opening a link is asynchronous, and the audio bridge's is not
  *

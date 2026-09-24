@@ -79,11 +79,7 @@ class HistoryViewModelTest {
      * The coordinator the ViewModel hands group call-backs to. Shared so a test can run
      * its loop — [running] — and watch the members after the first be dialled.
      */
-    private val joins = ConferenceJoinCoordinator(
-        engine,
-        engine,
-        MergeCallsUseCase(engine, engine, accounts, ConferenceRoom.DEFAULT),
-    )
+    private val joins = ConferenceJoinCoordinator(engine, engine)
 
     private fun viewModel(camera: CameraAvailability = CameraPresent) =
         HistoryViewModel(
@@ -312,10 +308,12 @@ class HistoryViewModelTest {
     }
 
     @Test
-    fun `a video swipe on a conference dials every member with video and builds it in the bridge`() = runTest {
+    fun `a video swipe on a conference dials every member with video and mixes them here`() = runTest {
         // The left swipe. It used to place the members as a voice conference "whatever was
-        // asked", and before that only the leg the row was built on. Now every member is
-        // dialled with video and, as they answer, REFERred into the room (ADR-003).
+        // asked"; then it dialled them with video and REFERred each into room 3000. Both
+        // are gone: every member is dialled with video and mixed on this device as they
+        // answer, and a `3000` left in an old log row is a leg of that call, never a
+        // member to dial.
         accounts.given(work(domain = "sip.example.com"))
         engine.givenRegistered(work(domain = "sip.example.com"))
         val conference = recordedConference(listOf("1004", "1005", "3000"), video = true)
@@ -330,17 +328,18 @@ class HistoryViewModelTest {
             .filter { it.operation == FakeSipEngine.Operation.PLACE_CALL }
             .map { it.detail }
         assertEquals(
-            listOf("sip:1004@sip.example.com", "sip:1005@sip.example.com", "sip:3000@sip.example.com"),
+            listOf("sip:1004@sip.example.com", "sip:1005@sip.example.com"),
             dialled,
-            "both members with video, then this device's own leg into the room",
+            "both members with video, and nothing else — no room is dialled",
         )
+        assertTrue(engine.bridgeMergeRequests.isEmpty(), "no leg was REFERred anywhere")
         assertEquals(
             setOf("sip:1004@sip.example.com", "sip:1005@sip.example.com"),
-            engine.bridgeMergeRequests.single().first.mapTo(HashSet()) { id ->
+            engine.mixedCalls.value.mapTo(HashSet()) { id ->
                 engine.activeCalls.value.single { it.callId == id }.remote.render()
             },
+            "a video conference is mixed on this device now",
         )
-        assertTrue(engine.mixedCalls.value.isEmpty(), "a video conference is never mixed on this device")
         assertTrue(engine.activeCalls.value.all { it.media == MediaProfile.AUDIO_VIDEO }, "every leg carries video")
         loop.cancel()
     }

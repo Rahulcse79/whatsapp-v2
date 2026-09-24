@@ -42,6 +42,25 @@ internal interface SipConferenceGateway {
     suspend fun setConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String>
 
     /**
+     * Tells [callKey]'s far end who is in the conference, as RFC 4575 XML.
+     *
+     * ## Why the host has to say it
+     *
+     * On a device-mixed conference the host is the only thing that knows the membership:
+     * a member holds one leg, receives one composed picture, and cannot tell a conference
+     * from an ordinary call. Until this existed a member showed no badge, no participant
+     * list, and cropped the host's canvas as though it were one person's face.
+     *
+     * Fire-and-forget, and deliberately not an `Outcome`: a member that will not take the
+     * MESSAGE is a member without a participant list, which is what every member had
+     * before, and failing a conference over it would be absurd. The gateway logs it.
+     *
+     * @param document a full roster from [ConferenceInfoWriter]. Full every time, never a
+     *   delta — see [StackConferenceEvent].
+     */
+    fun announceRoster(callKey: String, document: String)
+
+    /**
      * Composes the conference **picture** from [callKeys], on this device.
      *
      * The video counterpart of [setConferenceMembers], and deliberately a second call

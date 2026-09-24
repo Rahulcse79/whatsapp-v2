@@ -70,11 +70,7 @@ class CallWaitingUseCaseTest {
         CallWaitingUseCase(
             engine,
             camera,
-            ConferenceJoinCoordinator(
-                engine,
-                engine,
-                MergeCallsUseCase(engine, engine, FakeSipAccountRepository(), ConferenceRoom.DEFAULT),
-            ),
+            ConferenceJoinCoordinator(engine, engine),
         )
 
     /** A connected first call, and a second one ringing. */

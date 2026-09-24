@@ -205,11 +205,7 @@ class DialerScreenTest {
             camera = NoCameraAvailable,
             repository = repository,
             registrar = engine,
-            joins = ConferenceJoinCoordinator(
-                engine,
-                engine,
-                MergeCallsUseCase(engine, engine, repository, ConferenceRoom.DEFAULT),
-            ),
+            joins = ConferenceJoinCoordinator(engine, engine),
         )
 
         compose.setContent {

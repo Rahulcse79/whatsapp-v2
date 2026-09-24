@@ -12,8 +12,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -37,14 +37,16 @@ import javax.inject.Singleton
  * this lives at application scope beside the call-log recorder, and why it is not a
  * method on a ViewModel.
  *
- * ## Video goes to the bridge, by the same mechanism
+ * ## Video joins the same way audio does
  *
- * A video conference is not mixed here (ADR-003; the measurement is on
- * [SipConferenceController.mergeIntoConference]). Calling one back from history dials
- * every member with video and, as each answers, [bridgeOnConnect] has it REFERred into the
- * room: the first two together, when the room is dialled, and every later one alone,
- * because by then this device holds a leg into the room and the engine sends the newcomer
- * to join it.
+ * It did not use to. A video conference was assembled in a FreeSWITCH room (ADR-003), so
+ * calling one back from history dialled every member with video and REFERred each into
+ * the room as it answered — a second join loop, with its own planner, that ended in a
+ * blind transfer to extension `3000`.
+ *
+ * `pjmedia`'s video bridge composes the picture here, so that whole path is gone: a
+ * member joining a video conference is mixed exactly as a member joining an audio one,
+ * and `mixCalls` decides who is in the picture. One loop, one planner, one way in.
  *
  * ## What it will not do
  *
@@ -57,31 +59,21 @@ import javax.inject.Singleton
 class ConferenceJoinCoordinator @Inject constructor(
     private val calls: SipCallController,
     private val conferences: SipConferenceController,
-    /** How legs reach the bridge; it knows the room, and this does not need to. */
-    private val merge: MergeCallsUseCase,
 ) {
 
     private val wanted = MutableStateFlow<Set<CallId>>(emptySet())
 
-    /** Calls to be REFERred into the room as they are established, not mixed here. */
-    private val wantedInBridge = MutableStateFlow<Set<CallId>>(emptySet())
-
     /**
-     * Every leg somebody has asked to have joined and that has not joined yet, whichever
-     * way it is to join.
+     * Every leg somebody has asked to have joined and that has not joined yet.
      *
      * Published so the call screen can list the members of a conference being called
      * back while they are still ringing — the roster is otherwise built from the mix,
      * which nobody is in until two have answered.
      */
-    val pendingMembers: Flow<Set<CallId>> =
-        combine(wanted, wantedInBridge) { mix, bridge -> mix + bridge }.distinctUntilChanged()
+    val pendingMembers: Flow<Set<CallId>> = wanted
 
     /** Asks for [callId] to be mixed into the conference the moment it is established. */
     fun joinOnConnect(callId: CallId) = wanted.update { it + callId }
-
-    /** Asks for [callId] to be moved into the bridge the moment it is established (ADR-003). */
-    fun bridgeOnConnect(callId: CallId) = wantedInBridge.update { it + callId }
 
     /**
      * Calls a conference back: every member dialled **at the same time**, each asked to
@@ -106,18 +98,18 @@ class ConferenceJoinCoordinator @Inject constructor(
      * be dialled for its own reason (an address that will not resolve) is skipped, and
      * the next becomes the first.
      *
+     * Audio and video call-backs are the same operation here; what differs is the media
+     * each member is dialled with, which the caller decides.
+     *
      * @param members how to dial each member, in order, given how it is being placed;
-     *   one that cannot be dialled returns null and is skipped. For a video call-back
-     *   each dials with video.
-     * @param video true to assemble the conference in the bridge rather than mix it here.
+     *   one that cannot be dialled returns null and is skipped.
      * @return the first leg that went out, for the screen to show, or null if none did.
      */
-    suspend fun callBack(members: List<suspend (CallPlacement) -> CallId?>, video: Boolean = false): CallId? {
-        val ask = if (video) ::bridgeOnConnect else ::joinOnConnect
+    suspend fun callBack(members: List<suspend (CallPlacement) -> CallId?>): CallId? {
         var index = 0
         var first: CallId? = null
         while (first == null && index < members.size) {
-            first = members[index](CallPlacement.STANDALONE)?.also(ask)
+            first = members[index](CallPlacement.STANDALONE)?.also(::joinOnConnect)
             index++
         }
         if (first == null) return null
@@ -126,11 +118,35 @@ class ConferenceJoinCoordinator @Inject constructor(
         // placement returning and the request being recorded still joins.
         coroutineScope {
             members.drop(index).map { place ->
-                async { place(CallPlacement.CONFERENCE_MEMBER)?.also(ask) }
+                async { place(CallPlacement.CONFERENCE_MEMBER)?.also(::joinOnConnect) }
             }.awaitAll()
         }
         return first
     }
+
+    /**
+     * True while a call placed now would be a **participant** rather than a new call.
+     *
+     * Any established call is enough — it does not have to be a conference yet. That is
+     * the difference between this and [hostingLiveConference], and it is the difference
+     * that makes Add → Merge work at all:
+     *
+     * A second call placed as [CallPlacement.STANDALONE] is registered with Telecom,
+     * Telecom makes it the active call, and Telecom holds the first one. The app then
+     * sends a hold re-INVITE on a call nobody asked to hold. The reference FreeSWITCH
+     * tolerates that; the `iriscloud` platform at 192.168.20.56 tears the held dialog
+     * down, so the resume every merge starts with returns `481` and the leg is gone
+     * before it can be mixed (2026-09-24).
+     *
+     * So the dialler reads this and places the call as a [CallPlacement.CONFERENCE_MEMBER]
+     * instead, which leaves the platform's side where it is and sends no hold at all.
+     *
+     * Established rather than connected, deliberately: a leg Telecom parked a moment ago
+     * is still a call this device is on, and treating it as absent is how the hold comes
+     * back by another route.
+     */
+    val addingToCall: Flow<Boolean> =
+        calls.activeCalls.map { active -> active.any { it.state.isEstablished } }.distinctUntilChanged()
 
     /**
      * True while this device is mixing a conference that is live — at least two members,
@@ -143,11 +159,8 @@ class ConferenceJoinCoordinator @Inject constructor(
                 active.any { it.callId in mixed && it.state is CallState.Connected }
         }.distinctUntilChanged()
 
-    /** Runs until cancelled: the two join loops. */
-    suspend fun run() = coroutineScope {
-        launch { joinLoop() }
-        launch { bridgeLoop() }
-    }
+    /** Runs until cancelled: the join loop. */
+    suspend fun run() = joinLoop()
 
     /** One collector, so joins are planned in order and never twice. */
     private suspend fun joinLoop() {
@@ -166,30 +179,6 @@ class ConferenceJoinCoordinator @Inject constructor(
             val plan = ConferenceJoinPolicy.plan(active, asked - ended.toSet(), mixed) ?: return@collect
             wanted.update { it - plan }
             conferences.mixCalls(plan)
-        }
-    }
-
-    /**
-     * The bridge's counterpart of [joinLoop]: wanted legs are REFERred as they establish.
-     *
-     * The room is joined as a [CallPlacement.CONFERENCE_MEMBER] by the engine, so a
-     * merge while the first member is still ringing is not refused by the platform. A
-     * merge the engine refuses is logged by the engine and dropped here: the legs stay
-     * as the calls they are, and the user can press Merge.
-     */
-    private suspend fun bridgeLoop() {
-        var seen = emptySet<CallId>()
-        combine(calls.activeCalls, wantedInBridge, conferences.conferences) { active, asked, rooms ->
-            Triple(active, asked, rooms.mapTo(HashSet()) { it.callId })
-        }.collect { (active, asked, rooms) ->
-            val alive = active.mapTo(HashSet()) { it.callId }
-            val ended = asked.filter { it !in alive && it in seen }
-            seen = alive
-            if (ended.isNotEmpty()) wantedInBridge.update { it - ended.toSet() }
-
-            val plan = ConferenceJoinPolicy.planBridge(active, asked - ended.toSet(), rooms) ?: return@collect
-            wantedInBridge.update { it - plan }
-            merge.bridge(plan)
         }
     }
 }

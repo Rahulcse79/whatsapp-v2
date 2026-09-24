@@ -92,40 +92,6 @@ class ConferenceJoinPolicyTest {
         assertNull(ConferenceJoinPolicy.plan(calls, wanted = setOf(d), mixed = mixed))
     }
 
-    // ---------------------------------------------------------------- the bridge (ADR-003)
-
-    @Test
-    fun `the first video leg to answer waits for a second before the room is dialled`() {
-        val first = CallId("bob")
-        assertNull(ConferenceJoinPolicy.planBridge(listOf(call(first)), wanted = setOf(first), rooms = emptySet()))
-    }
-
-    @Test
-    fun `two answered video legs are sent to the room together`() {
-        val a = CallId("bob")
-        val b = CallId("carol")
-        val calls = listOf(call(a, CallState.Held(by = HoldParty.LOCAL)), call(b))
-        assertEquals(setOf(a, b), ConferenceJoinPolicy.planBridge(calls, wanted = setOf(a, b), rooms = emptySet()))
-    }
-
-    @Test
-    fun `a leg answering while this device is in the room is sent to join that leg`() {
-        // The engine keeps the room leg and REFERs the newcomer; both are in the plan so
-        // the engine knows which is which and resumes the one Telecom parked.
-        val room = CallId("3000")
-        val late = CallId("dave")
-        val calls = listOf(call(room, CallState.Held(by = HoldParty.LOCAL)), call(late))
-        val plan = ConferenceJoinPolicy.planBridge(calls, wanted = setOf(late), rooms = setOf(room))
-        assertEquals(setOf(late, room), plan)
-    }
-
-    @Test
-    fun `a video conference sends at most three from here, because this handset is the fourth`() {
-        val legs = (1..4).map { CallId("m$it") }
-        val plan = ConferenceJoinPolicy.planBridge(legs.map { call(it) }, wanted = legs.toSet(), rooms = emptySet())
-        assertEquals(3, plan?.size)
-    }
-
     private fun call(id: CallId, state: CallState = CallState.Connected()) = CallSnapshot(
         callId = id,
         accountId = AccountId("acct"),

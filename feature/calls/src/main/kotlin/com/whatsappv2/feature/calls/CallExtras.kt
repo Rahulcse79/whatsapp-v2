@@ -165,6 +165,23 @@ data class ConferenceUiState(
     val rosterAvailable: Boolean,
     /** True when [participants] is what this device merged into the room, not what the bridge reports. */
     val fromMerge: Boolean = false,
+
+    /**
+     * True when each row is backed by a **call this device holds**, so the screen can
+     * draw one video tile per participant.
+     *
+     * The discriminator between the two rosters, and it is not cosmetic. A local mix
+     * identifies a row by its `CallId`, which is exactly what the video surfaces are
+     * keyed by, so the grid can hand the stack a surface per row. A roster that arrived
+     * from a host identifies rows by **SIP URI** — this device holds one call, to the
+     * host, and has no stream for anybody else. Drawing a grid from that roster produces
+     * a tile per participant, every one of them bound to a key the stack has never heard
+     * of, and every one of them black.
+     *
+     * So the member renders the one composed picture it actually receives until it has
+     * streams of its own. See [ConferenceVideoMode.MixedStream].
+     */
+    val perParticipantStreams: Boolean = false,
 ) {
     /** How many people are in the conference, or null when the bridge does not say. */
     val count: Int? get() = participants.size.takeIf { rosterAvailable }
@@ -345,6 +362,9 @@ internal fun localMixRoster(
             members.forEach { add(it.participantRow(contacts[it.remote])) }
         },
         rosterAvailable = true,
+        // Every row but the self row is one of this device's own calls, keyed by its
+        // `CallId` — which is what the video surfaces are keyed by. See the field.
+        perParticipantStreams = true,
     )
 }
 

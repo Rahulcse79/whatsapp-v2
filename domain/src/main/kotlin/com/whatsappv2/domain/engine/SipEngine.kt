@@ -403,9 +403,13 @@ interface SipConferenceController {
      * ## What it does not do
      *
      * It does not place calls: every id must already be an established call on this
-     * device. And it is **audio only** — ADR-009's gate measured video at ~135 % of a
-     * core per stream, which does not fit, so a video conference remains a call to the
-     * bridge (ADR-003).
+     * device.
+     *
+     * It is **not** audio only any more. ADR-009's gate measured video at ~135 % of a core
+     * per stream and sent video conferences to the bridge (ADR-003); `pjmedia`'s video
+     * bridge composes a canvas per peer instead, so this mixes the audio and composes the
+     * picture for whichever members are carrying video — see `videoMixable` for who those
+     * are, and [MAX_VIDEO_CONFERENCE] for how many of them fit.
      *
      * @param callIds the calls to mix. At most [MAX_LOCAL_CONFERENCE], which is ADR-009's
      *   measured ceiling rather than a round number.
@@ -416,6 +420,15 @@ interface SipConferenceController {
     /**
      * Moves [callIds] into the bridge at [room], so every participant sees every other
      * (ADR-003).
+     *
+     * ## Nothing in the app calls this any more (2026-09-24)
+     *
+     * Every conference is built on the device now — `pjmedia`'s video bridge composes a
+     * canvas per peer, so neither a merge nor a conference call-back from history dials a
+     * room. This and [joinConference] are the machinery that did, kept because recognising
+     * a room address is still wanted (an old call-log row folds into one conference) and
+     * because a deployment that wants a server-composed conference has not been argued
+     * out of existence — only out of the default path. Removing them is its own change.
      *
      * The video answer to [mixCalls], and a different topology rather than a flag on the
      * same one. [mixCalls] builds a star: this handset holds N-1 legs and mixes them, and
@@ -482,16 +495,19 @@ interface SipConferenceController {
         /**
          * The most participants a **video** conference carries, counting this handset.
          *
-         * Four, and it is a product decision rather than a measurement: the bridge composes
-         * what it is given — the `wa-portrait` layout group runs to nine tiles — and the
-         * handset pays for one stream however many people are in the picture. What four
-         * protects is the picture itself. On a 9:20 screen a 2x2 of portrait tiles is four
-         * faces you can recognise; the six- and nine-way layouts are the same canvas cut
-         * into stamps.
+         * Four, and it is now a limit of the mixer as well as a product decision.
+         * `pjmedia`'s `vid_conf` composes at most four sources onto one sink — `vid_conf.c`
+         * declares `pjmedia_rect_size tr_size[4]` and loops `i < transmitter_cnt && i < 4`
+         * — and a fifth source is not refused, not logged, simply never drawn. It is also
+         * the right number for the screen: on a 9:20 display a 2x2 of portrait tiles is
+         * four faces you can recognise, and a nine-way layout is the same canvas cut into
+         * stamps.
          *
-         * Enforced on the merge, which is the only place this app decides a conference's
-         * size. Somebody who dials the room directly is the bridge's business, and the
-         * bridge will compose them.
+         * Counted over the legs **carrying video**, not over the conference: an audio-only
+         * member is not in the picture and costs it nothing, so a five-way conference with
+         * a three-way picture is within this ceiling. [MergeTopology] enforces it on the
+         * merge and `videoMixable` enforces it again on a conference that grew into it one
+         * join at a time.
          */
         const val MAX_VIDEO_CONFERENCE = 4
     }

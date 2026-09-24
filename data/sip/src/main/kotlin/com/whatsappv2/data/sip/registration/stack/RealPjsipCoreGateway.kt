@@ -42,6 +42,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withTimeoutOrNull
 import org.pjsip.PjCameraInfo2
 import org.pjsip.pjsua2.Account
@@ -66,11 +67,13 @@ import org.pjsip.pjsua2.OnCallStateParam
 import org.pjsip.pjsua2.OnCallTransferRequestParam
 import org.pjsip.pjsua2.OnCallTransferStatusParam
 import org.pjsip.pjsua2.OnCallTsxStateParam
+import org.pjsip.pjsua2.OnInstantMessageParam
 import org.pjsip.pjsua2.OnIncomingCallParam
 import org.pjsip.pjsua2.OnIpChangeProgressParam
 import org.pjsip.pjsua2.OnVideoMediaOpCompletedParam
 import org.pjsip.pjsua2.OnRegStateParam
 import org.pjsip.pjsua2.SipHeader
+import org.pjsip.pjsua2.SendInstantMessageParam
 import org.pjsip.pjsua2.SipHeaderVector
 import org.pjsip.pjsua2.SipTxOption
 import org.pjsip.pjsua2.TlsConfig
@@ -1666,6 +1669,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * ceiling here would be a participant who is in the call, in the roster, and in
      * nobody's picture.
      */
+    override fun announceRoster(callKey: String, document: String) {
+        onPjsip("announceRoster") { calls[callKey]?.announceRoster(document) }
+    }
+
     override suspend fun setVideoConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String> {
         if (callKeys.size > VideoMix.MAX_MEMBERS) {
             return failure(
@@ -1862,6 +1869,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 // Before the media goes: a conference link into a released port is a
                 // use-after-free in a native bridge, not a stale entry in a map.
                 conference.remove(callKey)
+                // And the shape its tile was laid out on. Left behind, a rejoining call
+                // reusing the key would be sized to the picture it sent last time.
+                videoSizeFlow.update { it.copy(remotes = it.remotes - callKey) }
                 // Before the ports go, and for a sharper reason than audio's: a video
                 // connect is queued and runs on a later clock tick, so a link requested a
                 // moment ago could otherwise land on a port freed in between.
@@ -1983,6 +1993,66 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
             logger.warn(TAG, "Resume refused on $callKey with ${tsx.statusCode}; the call is still held")
             publish(StackCallState.RESUME_FAILED)
+        }
+
+        /**
+         * The roster a **host** sent us, in this call's own dialog.
+         *
+         * ## The member's half of a device-mixed conference
+         *
+         * A member holds one leg and receives one composed picture, so left to itself it
+         * cannot tell a conference from an ordinary call: it showed neither a badge nor a
+         * participant list, and cropped the host's canvas to fill a portrait screen so the
+         * outer column of the picture was off the edge (TC15, 2026-09-24). The host is the
+         * only thing that knows the membership, so the host says so — see
+         * [ConferenceInfoWriter] for why a MESSAGE and not a subscription.
+         *
+         * The document is fed to the same [ConferenceInfoParser] that reads a server's,
+         * from the same raw bytes, and published on the same flow. Nothing above this
+         * knows or cares which end composed the room.
+         *
+         * Anything that is not a conference-info document is ignored in silence — this
+         * callback is every in-dialog MESSAGE, and a peer is entitled to send others.
+         */
+        override fun onInstantMessage(prm: OnInstantMessageParam) {
+            // The whole message, because that is what the parser reads: it matches on the
+            // content type in the headers before it will hand a body to an XML parser.
+            val message = runCatching { prm.rdata.wholeMsg }.getOrNull()
+            if (message.isNullOrEmpty()) return
+
+            val roster = ConferenceInfoParser.parse(message, selfUri = selfUri(), logger = logger) ?: return
+
+            logger.info(TAG, "Conference roster from the host on $callKey: ${roster.participants.size} in the room")
+            conferenceEventFlow.tryEmit(
+                StackConferenceEvent(
+                    callKey = callKey,
+                    participants = roster.participants,
+                    rosterAvailable = true,
+                ),
+            )
+        }
+
+        /**
+         * Tells this member who is in the conference (RFC 4575 over an in-dialog MESSAGE).
+         *
+         * The host's half of [onInstantMessage]. Sent on every membership change, in full,
+         * for the reason [StackConferenceEvent] gives: a delta against a roster the other
+         * end may not have is how a participant list ends up naming somebody who left.
+         *
+         * Failure is logged and swallowed. A member whose handset refuses the MESSAGE —
+         * an older build, a peer that is not this app at all — is a member without a
+         * participant list, which is exactly what they had before this existed. It is not
+         * a reason to disturb a call that is otherwise working.
+         */
+        fun announceRoster(document: String) {
+            runCatching {
+                sendInstantMessage(
+                    SendInstantMessageParam().apply {
+                        contentType = ConferenceInfoParser.CONTENT_TYPE
+                        content = document
+                    },
+                )
+            }.onFailure { logger.warn(TAG, "Could not send the roster on $callKey: ${it.message}") }
         }
 
         /**
@@ -2933,9 +3003,14 @@ private fun MutableStateFlow<VideoSizes>.publishVideoSizes(
     logger: Logger,
 ) {
     val current = value
+    val decoded = info?.decodedVideoSize(decodedFormat)
     val updated = VideoSizes(
-        remote = info?.decodedVideoSize(decodedFormat) ?: current.remote,
+        remote = decoded ?: current.remote,
         local = previewSize ?: current.local,
+        // Recorded against the call as well as into `remote`, because a conference lays
+        // each tile out on its own stream's shape and `remote` only ever holds the last
+        // one to publish. See [VideoSizes.remotes].
+        remotes = if (decoded != null) current.remotes + (callKey to decoded) else current.remotes,
     )
     if (updated == current) return
 

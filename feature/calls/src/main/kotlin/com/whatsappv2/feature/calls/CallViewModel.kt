@@ -28,7 +28,6 @@ import com.whatsappv2.domain.recording.CallRecorder
 import com.whatsappv2.domain.repository.SipAccountRepository
 import com.whatsappv2.domain.usecase.CallWaitingUseCase
 import com.whatsappv2.domain.usecase.MergeCallsUseCase
-import com.whatsappv2.domain.usecase.MergeResult
 import com.whatsappv2.domain.usecase.TransferCallUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -608,36 +607,18 @@ class CallViewModel @Inject constructor(
      * are left out — they have no media to contribute — and join by themselves when they
      * are answered, because the stack re-plans the mix on every media change.
      *
-     * ## Two conferences behind one button
+     * ## One conference, and the screen does not move
      *
-     * [MergeCallsUseCase] decides which, and the decision is about video: audio is mixed
-     * here on the device (ADR-009) and video goes to the bridge (ADR-003). The screen has
-     * to react differently to each, which is the whole reason the result is a type rather
-     * than a set of ids:
-     *
-     *  - **Mixed** leaves every leg in place, so the merged set is what the stack accepted
-     *    — a member the bridge refused never appears on screen as merged.
-     *  - **Bridged** replaced every leg with a single call to the room, so the screen is
-     *    re-pointed at it. Without that the user would be left watching a leg that is
-     *    being transferred away and is about to end, and the conference they just built
-     *    would appear to have hung up on them.
+     * There used to be two mechanisms behind this button: audio was mixed here and
+     * anything carrying video was REFERred into a FreeSWITCH room, which replaced every
+     * leg with a single call to the room and so forced the screen to re-point at it. The
+     * picture is composed here now, so a merge leaves every leg exactly where it was and
+     * the call the user is looking at is still theirs. [MergeCallsUseCase] returns the
+     * membership the stack accepted; the engine publishes it, so there is nothing to
+     * record here.
      */
     fun merge() {
-        act(CallAction.MERGE) {
-            mergeCalls().also { result ->
-                when (result) {
-                    is Outcome.Failure -> Unit
-                    is Outcome.Success -> when (val merged = result.value) {
-                        // The engine publishes the membership; nothing to record here.
-                        is MergeResult.Mixed -> Unit
-                        // The local mix is over: this device is a member now, not the
-                        // host, and the engine has already emptied the set. The screen
-                        // moves to the leg that is in the room.
-                        is MergeResult.Bridged -> pointAt(merged.callId)
-                    }
-                }
-            }
-        }
+        act(CallAction.MERGE) { mergeCalls() }
     }
 
     /**
