@@ -21,10 +21,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -49,6 +51,7 @@ import com.whatsappv2.core.designsystem.component.Avatar
 import com.whatsappv2.core.designsystem.component.StatusLabel
 import com.whatsappv2.core.designsystem.component.StatusTone
 import com.whatsappv2.core.designsystem.theme.AppTheme
+import com.whatsappv2.domain.model.CallId
 
 /**
  * Who is in the conference (Task 60, §2.2, DoD 11), as a card that drops its list down.
@@ -102,6 +105,12 @@ import com.whatsappv2.core.designsystem.theme.AppTheme
 internal fun ConferenceRoster(
     state: ConferenceUiState,
     composedVideo: Boolean = false,
+    /**
+     * Drops one member, when this device is the conference's focus and the row is backed
+     * by a leg. Null everywhere else, which is what removes the control rather than
+     * showing one that cannot work — see [ConferenceUiState.canRemoveParticipants].
+     */
+    onRemoveParticipant: ((CallId) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
@@ -130,7 +139,12 @@ internal fun ConferenceRoster(
             exit = shrinkVertically() + fadeOut(),
             modifier = Modifier.weight(1f, fill = false),
         ) {
-            ParticipantList(state = state, composedVideo = composedVideo, palette = palette)
+            ParticipantList(
+                state = state,
+                composedVideo = composedVideo,
+                palette = palette,
+                onRemoveParticipant = onRemoveParticipant,
+            )
         }
     }
 }
@@ -226,6 +240,7 @@ private fun ParticipantList(
     state: ConferenceUiState,
     composedVideo: Boolean,
     palette: RosterPalette,
+    onRemoveParticipant: ((CallId) -> Unit)? = null,
 ) {
     Column(
         modifier = Modifier
@@ -236,7 +251,16 @@ private fun ParticipantList(
         HorizontalDivider(color = palette.divider)
 
         state.participants.forEachIndexed { index, participant ->
-            ParticipantRow(participant = participant, palette = palette)
+            ParticipantRow(
+                participant = participant,
+                palette = palette,
+                // Only a member with a leg of their own, and only on the focus. The local
+                // user's row has no call to end, and ending the conference is the big red
+                // button's job rather than a small one beside your own name.
+                onRemove = onRemoveParticipant
+                    ?.takeIf { state.canRemoveParticipants && !participant.isSelf }
+                    ?.let { remove -> participant.callId?.let { leg -> { remove(leg) } } },
+            )
             if (index < state.participants.lastIndex) {
                 HorizontalDivider(
                     color = palette.divider,
@@ -286,6 +310,7 @@ private fun ParticipantList(
 private fun ParticipantRow(
     participant: ConferenceParticipantRow,
     palette: RosterPalette,
+    onRemove: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -343,6 +368,24 @@ private fun ParticipantRow(
                 tint = palette.secondary,
                 modifier = Modifier.size(AppTheme.sizing.listTrailingIcon),
             )
+        }
+        onRemove?.let { remove ->
+            // Red, and the handset-down glyph, because it does to one person exactly what
+            // the big red button does to everybody — and a control that ends somebody's
+            // call should look like one wherever it appears. Named with the member, so a
+            // screen reader announces which of six people is about to be dropped rather
+            // than six identical "End call" buttons.
+            IconButton(
+                onClick = remove,
+                modifier = Modifier.testTag(removeParticipantTag(participant.id)),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.CallEnd,
+                    contentDescription = "Remove ${participant.label} from the conference",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(AppTheme.sizing.listTrailingIcon),
+                )
+            }
         }
     }
 }
@@ -456,3 +499,6 @@ internal const val TAG_MERGED_NOTE = "conference-merged-note"
 
 /** The test tag of one member's row, by the row's id. */
 internal fun participantRowTag(id: String): String = "conference-participant-$id"
+
+/** The test tag of one member's End button, by the row's id. */
+internal fun removeParticipantTag(id: String): String = "conference-remove-$id"

@@ -71,7 +71,11 @@ class CallStateMachineTest {
         Legal(CallState.Held(HoldParty.BOTH), CallEvent.RemoteResume, CallState.Held(HoldParty.LOCAL)),
         Legal(CallState.Resuming(), CallEvent.ResumeConfirmed, CallState.Connected()),
         Legal(CallState.Resuming(), CallEvent.ResumeFailed, CallState.Held(HoldParty.LOCAL)),
-        Legal(CallState.Resuming(), CallEvent.RemoteHold, CallState.Held(HoldParty.REMOTE)),
+        // BOTH, not REMOTE. `Resuming` means our own hold has *not* been lifted yet — the
+        // re-INVITE is out and unanswered — so a hold arriving from the far end on top of
+        // it leaves both ends holding. Recording it as theirs alone threw ours away and
+        // left the call in a state with no Resume button and nothing to move it on.
+        Legal(CallState.Resuming(), CallEvent.RemoteHold, CallState.Held(HoldParty.BOTH)),
 
         // --- transfer
         Legal(

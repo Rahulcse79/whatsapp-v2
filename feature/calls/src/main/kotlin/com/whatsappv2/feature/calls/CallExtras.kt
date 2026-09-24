@@ -124,6 +124,16 @@ data class ConferenceParticipantRow(
 
     /** The member's address-book photo, when the address book has one. */
     val photoUri: String? = null,
+
+    /**
+     * The call this member is on, when the row is backed by a leg this device holds.
+     *
+     * Null for the local user's own row — there is no leg to yourself — and for a row that
+     * came from an announced roster, where this device knows the member's address and
+     * holds no call to them. It is what the per-member End button acts on, so a row
+     * without one simply is not offered the control: there is nothing it could end.
+     */
+    val callId: CallId? = null,
 )
 
 /** A member's state when it is not simply "in the conference". */
@@ -182,6 +192,16 @@ data class ConferenceUiState(
      * streams of its own. See [ConferenceVideoMode.MixedStream].
      */
     val perParticipantStreams: Boolean = false,
+
+    /**
+     * True when this device may drop a member from the conference (`ConferenceMesh`).
+     *
+     * The focus's privilege alone. In a mesh every participant holds a leg to every other,
+     * so a member could certainly hang one up — and it would remove that person from one
+     * screen out of four, until the next roster put them back. Removing somebody is an
+     * edit to the announced membership, and only the focus announces it.
+     */
+    val canRemoveParticipants: Boolean = false,
 ) {
     /** How many people are in the conference, or null when the bridge does not say. */
     val count: Int? get() = participants.size.takeIf { rosterAvailable }
@@ -335,6 +355,7 @@ internal fun localMixRoster(
     mixed: Set<CallId>,
     self: LocalParticipant?,
     contacts: Map<SipUri, Contact> = emptyMap(),
+    canRemoveParticipants: Boolean = false,
 ): ConferenceUiState? {
     if (mixed.size < SipConferenceController.MINIMUM_MIXED) return null
 
@@ -365,6 +386,7 @@ internal fun localMixRoster(
         // Every row but the self row is one of this device's own calls, keyed by its
         // `CallId` — which is what the video surfaces are keyed by. See the field.
         perParticipantStreams = true,
+        canRemoveParticipants = canRemoveParticipants,
     )
 }
 
@@ -388,6 +410,7 @@ private fun CallSnapshot.participantRow(contact: Contact?): ConferenceParticipan
         detail = address.takeIf { it != name },
         status = memberStatus(),
         photoUri = contact?.photoUri,
+        callId = callId,
     )
 }
 

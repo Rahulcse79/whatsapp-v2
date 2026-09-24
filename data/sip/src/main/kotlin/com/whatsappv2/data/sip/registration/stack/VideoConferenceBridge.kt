@@ -65,6 +65,14 @@ internal class VideoConferenceBridge(
     private var members: Set<String> = emptySet()
     private var links: Set<VideoLink> = emptySet()
 
+    /**
+     * Whether this device composes a canvas for each peer — see [VideoMix.wanted].
+     *
+     * Held for the reason [ConferenceBridge]'s twin is: [remix] runs from the media-state
+     * callback and has no way to be told the conference's shape at that moment.
+     */
+    private var compose: Boolean = true
+
     /** The bridge slot each end of a link was opened on — see [forgetRebuiltPorts]. */
     private val portIds = mutableMapOf<VideoPortRef, Int>()
 
@@ -79,9 +87,13 @@ internal class VideoConferenceBridge(
      *
      * Idempotent. An empty set is a teardown: [remix] closes every link to get there, and
      * the slot bookkeeping goes with them.
+     *
+     * @param compose false for a mesh, where every peer receives every other peer's
+     *   camera directly and a composed canvas would draw each of them twice.
      */
-    fun set(callKeys: Set<String>): Set<String> {
+    fun set(callKeys: Set<String>, compose: Boolean = true): Set<String> {
         members = callKeys
+        this.compose = compose
         val live = remix()
         if (members.isEmpty()) portIds.clear()
         return live
@@ -98,7 +110,7 @@ internal class VideoConferenceBridge(
     fun remix(): Set<String> {
         val live = members.filterTo(mutableSetOf()) { portOf(VideoPortRef.decoder(it)) != null }
         forgetRebuiltPorts(live)
-        val plan = VideoMix.plan(links, live)
+        val plan = VideoMix.plan(links, live, compose)
         if (plan.isEmpty) return live
 
         val applied = apply(plan)
@@ -153,7 +165,7 @@ internal class VideoConferenceBridge(
         if (!isActive) return
         members = VideoMix.without(members, callKey)
         val live = members.filterTo(mutableSetOf()) { portOf(VideoPortRef.decoder(it)) != null }
-        val plan = VideoMix.plan(links, live)
+        val plan = VideoMix.plan(links, live, compose)
         apply(plan)
         links = links - plan.disconnect
         portIds.keys.filterTo(mutableSetOf()) { it.callKey == callKey }.forEach(portIds::remove)

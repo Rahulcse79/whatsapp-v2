@@ -140,8 +140,14 @@ object CallStateMachine {
         // resume refused". Resuming is only ever entered from Held(LOCAL), so LOCAL is
         // the party to restore rather than a value to carry.
         is CallEvent.ResumeFailed -> moved(CallState.Held(HoldParty.LOCAL, state.controls))
-        // The far end can hold us while our own resume is still in flight.
-        is CallEvent.RemoteHold -> moved(CallState.Held(HoldParty.REMOTE, state.controls))
+        // The far end can hold us while our own resume is still in flight — and when it
+        // does, **both** ends are holding. `Resuming` is entered from `Held(LOCAL)` and
+        // means the re-INVITE that would lift our hold has gone out and not been answered,
+        // so our hold is still in force; recording only theirs threw ours away. The call
+        // then read as `HELD_BY_REMOTE`, where `canResume` is false, and the user had no
+        // button at all for a hold that was half theirs to lift and half their own — and
+        // no way back to it, because nothing else moves a call out of that state.
+        is CallEvent.RemoteHold -> moved(CallState.Held(HoldParty.BOTH, state.controls))
         else -> reject(state, event)
     }
 

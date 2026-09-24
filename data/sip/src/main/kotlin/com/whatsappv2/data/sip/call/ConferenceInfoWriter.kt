@@ -52,11 +52,21 @@ internal object ConferenceInfoWriter {
      * @param participants everybody in the conference, the host included. Order is kept:
      *   the reader lists them as they arrive and the host is written first.
      */
-    fun roster(entity: String, participants: List<StackParticipant>): String = buildString {
+    fun roster(
+        entity: String,
+        participants: List<StackParticipant>,
+        mesh: Boolean = false,
+    ): String = buildString {
         append("""<?xml version="1.0" encoding="UTF-8"?>""")
         append("<conference-info state=\"full\" entity=\"${entity.escaped()}\">")
         append("<conference-description>")
         append("<display-text>Conference</display-text>")
+        // The one thing a server bridge would never say, and the one thing a member
+        // cannot work out: that this conference is a mesh, so it should hold a leg to
+        // every other participant rather than wait for a canvas. An RFC 4575 reader that
+        // does not know the element ignores it, which is exactly the right behaviour for
+        // a peer that cannot mesh — it keeps the roster and stays a spoke.
+        if (mesh) append("<$TOPOLOGY>$MESH</$TOPOLOGY>")
         append("</conference-description>")
         append("<users>")
         participants.forEach { append(it.asUser()) }
@@ -85,6 +95,12 @@ internal object ConferenceInfoWriter {
         append("</endpoint>")
         append("</user>")
     }
+
+    /** The extension element naming the topology, read back by [ConferenceInfoParser]. */
+    const val TOPOLOGY = "coralx-topology"
+
+    /** Its value for a conference every participant holds a leg into. */
+    const val MESH = "mesh"
 
     private fun media(type: String, sending: Boolean): String =
         "<media><type>$type</type><status>${if (sending) "sendrecv" else "recvonly"}</status></media>"

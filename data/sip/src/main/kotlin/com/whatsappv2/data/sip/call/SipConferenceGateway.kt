@@ -36,10 +36,17 @@ internal interface SipConferenceGateway {
      * Fewer than two members tears the bridge down, which is how a conference ends: there
      * is no separate teardown to forget to call.
      *
+     * @param relay whether this device carries one member's audio to another. True for
+     *   ADR-009's star. **False for a mesh**, where every pair holds a dialog of its own
+     *   and a cross-link here would be that pair heard twice — see `ConferenceMesh`. The
+     *   membership is still stated either way; only the links between members go.
      * @return the members actually mixed, which is [callKeys] minus any whose media was
      *   not available. A caller that needs to know the conference is whole compares them.
      */
-    suspend fun setConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String>
+    suspend fun setConferenceMembers(
+        callKeys: Set<String>,
+        relay: Boolean = true,
+    ): Outcome<Set<String>, String>
 
     /**
      * Tells [callKey]'s far end who is in the conference, as RFC 4575 XML.
@@ -80,8 +87,14 @@ internal interface SipConferenceGateway {
      * `vid_conf` composes at most four sources onto one sink and does not draw a fifth —
      * no error, no log — so the ceiling is enforced where it can be reported.
      *
+     * @param compose whether a canvas is built for each peer. False for a mesh, where
+     *   each peer receives every other's camera on a dialog of its own; composing as well
+     *   would draw every participant twice.
      * @return the members actually in the picture, which is [callKeys] minus any whose
      *   video was not up yet.
      */
-    suspend fun setVideoConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String>
+    suspend fun setVideoConferenceMembers(
+        callKeys: Set<String>,
+        compose: Boolean = true,
+    ): Outcome<Set<String>, String>
 }

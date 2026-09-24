@@ -435,6 +435,34 @@ class FakeSipEngine(
     private val mixed = MutableStateFlow<Set<CallId>>(emptySet())
     override val mixedCalls: StateFlow<Set<CallId>> = mixed.asStateFlow()
 
+    /** Every member [removeFromConference] was asked to drop, in order. */
+    val removedFromConference: MutableList<CallId> = mutableListOf()
+
+    /**
+     * Whether this device is the conference's focus — see
+     * `SipConferenceController.hostsConference`.
+     *
+     * Moved by [mixCalls] rather than by a setter, so it cannot be left describing a
+     * device that is mixing a conference and somehow not allowed to edit it. A test that
+     * needs a *member* — told the roster, holding legs, focus of nothing — writes to
+     * [hosting] directly, which is the one state this fake cannot reach by itself.
+     */
+    val hosting: MutableStateFlow<Boolean> = MutableStateFlow(false)
+    override val hostsConference: StateFlow<Boolean> = hosting.asStateFlow()
+
+    override suspend fun removeFromConference(callId: CallId): Outcome<Unit, SipError> {
+        record(Operation.HANGUP, "${callId.value}:removeFromConference")
+        if (snapshot(callId) == null) return failure(SipError.UnknownCall)
+        removedFromConference += callId
+        // Only this leg. The rest of the mix survives, which is the whole point of this
+        // existing beside `hangup` — that one fans out and ends the conference.
+        mixed.value = (mixed.value - callId)
+            .takeIf { it.size >= SipConferenceController.MINIMUM_MIXED }
+            ?: emptySet()
+        hosting.value = mixed.value.isNotEmpty()
+        return guard(Operation.HANGUP) { apply(callId, CallEvent.Terminate(HangupReason.LOCAL_HANGUP)) }
+    }
+
     override suspend fun mixCalls(callIds: Set<CallId>): Outcome<Set<CallId>, SipError> {
         record(Operation.MIX_CALLS, callIds.joinToString(",") { it.value })
         if (callIds.size > SipConferenceController.MAX_LOCAL_CONFERENCE) {
@@ -459,6 +487,7 @@ class FakeSipEngine(
         val key = mixed.value.firstNotNullOfOrNull { id -> activeCalls.value.firstOrNull { it.callId == id }?.conferenceKey }
             ?: "conference-${++conferencesFormed}"
         mixed.value.forEach { id -> updateCall(id) { it.copy(isConference = true, conferenceKey = key) } }
+        hosting.value = mixed.value.isNotEmpty()
         return guard(Operation.MIX_CALLS) { success(live) }
     }
 

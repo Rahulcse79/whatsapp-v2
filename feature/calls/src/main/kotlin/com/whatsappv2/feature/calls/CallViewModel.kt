@@ -257,6 +257,8 @@ class CallViewModel @Inject constructor(
         val pendingVideo: PendingVideoRequest?,
         val transfer: TransferUiState,
         val mixed: Set<CallId> = emptySet(),
+        /** True while this device is the conference's focus, so it may drop a member. */
+        val hostsConference: Boolean = false,
         val accounts: List<SipAccount> = emptyList(),
         /** The address book's name for each call's address, where it has one. */
         val contacts: Map<SipUri, Contact> = emptyMap(),
@@ -295,6 +297,7 @@ class CallViewModel @Inject constructor(
             // trade than one extra operator.
         }
             .combine(mixed) { state, mixedNow -> state.copy(mixed = mixedNow) }
+            .combine(conferences.hostsConference) { state, hosts -> state.copy(hostsConference = hosts) }
             .combine(accounts.observeAccounts()) { state, all -> state.copy(accounts = all) }
             .combine(memberContacts()) { state, known -> state.copy(contacts = known) }
             .combine(endedReasons) { state, ended -> state.copy(endedReason = ended[callId]) }
@@ -326,16 +329,30 @@ class CallViewModel @Inject constructor(
                     secondCall = state.secondCallPrompt(callId, call),
                     transfer = state.transfer,
                     recording = state.recording,
-                    // The bridge's roster when there is a bridge, and this device's own
-                    // membership when it is the one mixing — the two never coexist, because
-                    // a merge into the bridge tears the local mix down before it transfers
-                    // anybody.
-                    conference = state.conference?.toUiState(
+                    // This device's own membership first, and an announced roster only
+                    // when there is no local mix to describe.
+                    //
+                    // The order matters now that conferences are a mesh. A member is
+                    // *told* the membership by the focus — a roster keyed by SIP URI,
+                    // which is what `ConferenceUiState.perParticipantStreams` is false for
+                    // — and then dials the other participants and ends up holding a leg to
+                    // each of them. Both descriptions are then true, and only one of them
+                    // is backed by streams this device can actually draw: preferring the
+                    // announced one left every member with the roster's URI-keyed rows, so
+                    // `ConferenceVideo` fell to `MixedStream` and drew one picture over
+                    // three real ones.
+                    conference = localMixRoster(
+                        state.calls,
+                        state.mixed,
+                        state.localParticipant(call),
+                        state.contacts,
+                        canRemoveParticipants = state.hostsConference,
+                    ) ?: state.conference?.toUiState(
                         unknownLabel = UNKNOWN_PARTICIPANT,
                         self = state.localParticipant(call),
                         isMuted = call.state.controlsOrNull?.isMuted == true,
                         contacts = state.contacts,
-                    ) ?: localMixRoster(state.calls, state.mixed, state.localParticipant(call), state.contacts),
+                    ),
                     canMerge = state.calls.count { it.state.isEstablished } >= MIN_MERGEABLE,
                     mixedCallCount = state.mixed.size,
                     pendingActions = busy,
@@ -627,6 +644,19 @@ class CallViewModel @Inject constructor(
      * Also re-points the screen, because after a swap the call the user is looking at
      * should be the one they are talking to.
      */
+    /**
+     * Drops one member and leaves the conference running (ADR-009).
+     *
+     * Deliberately not [hangUp], which fans out across the mix and ends the whole
+     * conference — that is what the one big red button under "Conference call" means, and
+     * what the user means by pressing it. This is the small button beside a name, and the
+     * engine keeps the two apart all the way down: see
+     * `SipConferenceController.removeFromConference`.
+     */
+    fun removeParticipant(callId: CallId) {
+        act(CallAction.REMOVE_PARTICIPANT) { conferences.removeFromConference(callId) }
+    }
+
     fun swapTo(callId: CallId) {
         viewModelScope.launch {
             when (val result = callWaiting.swapTo(callId)) {

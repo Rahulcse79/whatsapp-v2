@@ -155,4 +155,21 @@ class VideoMixTest {
     private companion object {
         const val VID_CONF_MAX_SOURCES = 4
     }
+
+    @Test
+    fun `a mesh composes no canvas for anybody`() {
+        // Each peer receives every other peer's camera on its own dialog, so a composed
+        // canvas as well would draw every participant twice — once in their own tile and
+        // once inside somebody else's.
+        assertTrue(VideoMix.wanted(setOf("a", "b", "c"), compose = false).isEmpty())
+    }
+
+    @Test
+    fun `turning composition off closes the canvases that were open`() {
+        val established = VideoMix.wanted(setOf("a", "b"))
+        val plan = VideoMix.plan(established, setOf("a", "b"), compose = false)
+
+        assertTrue(plan.connect.isEmpty())
+        assertEquals(established, plan.disconnect)
+    }
 }

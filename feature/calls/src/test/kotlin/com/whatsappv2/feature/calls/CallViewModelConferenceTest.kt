@@ -204,4 +204,71 @@ class CallViewModelConferenceTest : CallViewModelFixture() {
             cancelAndIgnoreRemainingEvents()
         }
     }
+
+    @Test
+    fun `the focus is offered an End button against every member and none against itself`() = runTest {
+        accounts.given(ACCOUNT)
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO).getOrNull()!!
+        engine.simulateRemoteAnswer(second)
+        val viewModel = viewModel().also { it.watch(first) }
+
+        viewModel.uiState.test {
+            awaitActive { it.call.phase == CallPhase.CONNECTED }
+            engine.mixCalls(setOf(first, second))
+            runCurrent()
+
+            val shown = awaitActive { it.mixedCallCount == 2 }
+            val roster = shown.conference!!
+            assertTrue(roster.canRemoveParticipants, "the focus was not offered the control")
+            // Every member's row carries the leg the button acts on; the user's own row
+            // carries none, because there is no leg to yourself to end.
+            assertEquals(
+                listOf(null, first, second),
+                roster.participants.map { it.callId },
+            )
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `a member of somebody else's conference is not offered the control`() = runTest {
+        // Removing somebody is an edit to the announced membership, and only the focus
+        // announces it. A member dropping its own leg would take that person off one
+        // screen out of four, until the next roster put them back.
+        accounts.given(ACCOUNT)
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO).getOrNull()!!
+        engine.simulateRemoteAnswer(second)
+        engine.mixCalls(setOf(first, second))
+        engine.hosting.value = false
+        val viewModel = viewModel().also { it.watch(first) }
+
+        viewModel.uiState.test {
+            val shown = awaitActive { it.conference != null }
+            assertFalse(shown.conference!!.canRemoveParticipants)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `removing a member ends that leg and leaves the conference running`() = runTest {
+        accounts.given(ACCOUNT)
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO).getOrNull()!!
+        engine.simulateRemoteAnswer(second)
+        engine.mixCalls(setOf(first, second))
+        val viewModel = viewModel().also { it.watch(first) }
+        runCurrent()
+
+        viewModel.removeParticipant(second)
+        runCurrent()
+
+        // The deliberate opposite of the big red button, which fans out across the mix.
+        assertEquals(listOf(second), engine.removedFromConference)
+        assertTrue(engine.activeCalls.value.any { it.callId == first }, "removing one member ended the other")
+    }
 }

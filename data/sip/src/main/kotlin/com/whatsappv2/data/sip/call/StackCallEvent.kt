@@ -69,6 +69,22 @@ internal enum class StackCallState {
     RESUME_FAILED,
 
     /**
+     * Our **hold** re-INVITE was refused, or nothing ever answered it.
+     *
+     * The twin of [RESUME_FAILED], and it is needed for a sharper reason. A refused resume
+     * left a call stuck on screen; a refused hold leaves nothing on screen at all — the
+     * call simply stays connected, which is correct — but the engine keeps the hold in
+     * `pendingHolds` waiting for an answer that has already been and gone. Every later
+     * press of Hold is then answered "that is already happening" and no re-INVITE is ever
+     * sent again: the button dies silently for the rest of the call.
+     *
+     * PJSIP reports it through the same one place as a refused resume, and for the same
+     * reason — see [RESUME_FAILED] — so the detection is `PendingHold`, beside
+     * `PendingResume`.
+     */
+    HOLD_FAILED,
+
+    /**
      * The far end sent a re-INVITE and the stack is holding it for an answer (Task 54).
      *
      * Its own state because it is the one moment an escalation can be declined. Treated
@@ -155,6 +171,21 @@ internal data class StackCallEvent(
      * offer was built would never notice.
      */
     val mediaEncrypted: Boolean = false,
+
+    /**
+     * The conference this INVITE says it is a leg of, from `X-Coralx-Conference`.
+     *
+     * Only ever set on [StackCallState.INCOMING_RECEIVED], and only by a peer running
+     * this app: it is how a mesh leg is told from an ordinary call that happens to come
+     * from somebody already in the conference. Without it the only available rule would
+     * be "auto-answer anyone in the roster", which would swallow a genuine second call
+     * from a participant and answer it silently.
+     *
+     * Not trusted on its own. The engine also requires this device to actually be in the
+     * conference it names — see `PjsipSipEngine.meshLegFor` — so a stranger asserting the
+     * header rings like anybody else.
+     */
+    val conferenceEntity: String? = null,
 )
 
 /**
@@ -208,4 +239,22 @@ internal data class StackConferenceEvent(
     val callKey: String,
     val participants: List<StackParticipant>,
     val rosterAvailable: Boolean,
+
+    /**
+     * The conference's own address, as the document's `entity` gave it.
+     *
+     * The focus, in a mesh: the participant that built the conference and the one whose
+     * leg ending ends it. Null for a roster that named none, which every server bridge
+     * does name and so in practice means "not a mesh".
+     */
+    val entity: String? = null,
+
+    /**
+     * True when this roster describes a mesh — see `ConferenceMesh`.
+     *
+     * A device that receives one owes a leg to every other participant and relays for
+     * nobody. False for a server bridge's roster and for a host that predates meshing,
+     * both of which leave this device a spoke receiving one composed picture.
+     */
+    val mesh: Boolean = false,
 )

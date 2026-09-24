@@ -106,8 +106,18 @@ internal object VideoMix {
      * already wires camera → encoder and decoder → window by itself. Returning links for
      * it would re-state what is already true and make every ordinary video call pay for
      * the conference's bookkeeping.
+     *
+     * @param compose whether this device composes a canvas for each peer. True for the
+     *   star, where a peer's only sight of another peer is the picture built here.
+     *   **False for a mesh**, where every peer has a stream straight from every other and
+     *   a composed canvas would be each of them drawn twice — once in their own tile and
+     *   once inside somebody else's. It costs nothing to switch off: the same per-call
+     *   `START_TRANSMIT` that wires a one-to-one call's camera to its encoder wires every
+     *   mesh leg's, and each decoder already renders into the tile the screen laid out
+     *   for it. See `ConferenceMesh`.
      */
-    fun wanted(members: Set<String>): Set<VideoLink> {
+    fun wanted(members: Set<String>, compose: Boolean = true): Set<VideoLink> {
+        if (!compose) return emptySet()
         if (members.size < MINIMUM_MEMBERS) return emptySet()
         return buildSet {
             members.forEach { member ->
@@ -123,8 +133,12 @@ internal object VideoMix {
     }
 
     /** What to open and what to close to get from [established] to the mix [members] want. */
-    fun plan(established: Set<VideoLink>, members: Set<String>): VideoMixPlan {
-        val target = wanted(members)
+    fun plan(
+        established: Set<VideoLink>,
+        members: Set<String>,
+        compose: Boolean = true,
+    ): VideoMixPlan {
+        val target = wanted(members, compose)
         return VideoMixPlan(connect = target - established, disconnect = established - target)
     }
 

@@ -71,6 +71,16 @@ data class CallActions(
      */
     val onMerge: () -> Unit = {},
 
+    /**
+     * Drops one member from the conference, leaving the rest of it running (ADR-009).
+     *
+     * The deliberate opposite of [onHangUp], which under "Conference call" ends the whole
+     * thing — one is the big red button and the other is the small one beside a name, and
+     * they must not be the same instruction. Offered on the focus's screen only; see
+     * `ConferenceUiState.canRemoveParticipants`.
+     */
+    val onRemoveParticipant: (CallId) -> Unit = {},
+
     // ------------------------------------------------------------------ recording
     /** Opens the consent dialog. There is no way to start recording that skips it (§2.6). */
     val onRequestRecording: () -> Unit = {},

@@ -468,6 +468,33 @@ interface SipConferenceController {
     ): Outcome<CallId, SipError>
 
     /**
+     * Drops one member from the conference, ending **only** their leg.
+     *
+     * ## Why this is not `hangup`
+     *
+     * `hangup` on a mixed call is a device-level control: it fans out across the mix and
+     * ends the whole conference, which is what the big red button should do and what the
+     * user means by pressing it. "Remove this person" is the opposite instruction and had
+     * no way to be expressed — every route to the stack went through the fan-out.
+     *
+     * Nothing else has to be re-planned. The engine's own `endCall` shrinks
+     * [mixedCalls], and both conference bridges drop a leg when its media goes away, so
+     * the audio mix and the picture recompose themselves around the gap. A conference of
+     * three losing one becomes a conference of two; a conference of two losing one becomes
+     * a call, which is [MINIMUM_MIXED] doing its job.
+     *
+     * Only the **focus** can do this, and [hostsConference] is how the screen knows
+     * whether to offer it. In a mesh the removed member is held by every participant, so
+     * ending the one leg here would take them off this screen and nobody else's; the
+     * removal is an edit to the announced membership, and the focus is what announces it.
+     * Every other device then drops its own leg by reconciling against the new roster.
+     *
+     * @param callId the member's leg. Not this device — there is no removing yourself from
+     *   a conference you are hosting, only ending it.
+     */
+    suspend fun removeFromConference(callId: CallId): Outcome<Unit, SipError>
+
+    /**
      * The calls currently mixed on this device by [mixCalls], or empty when there is no
      * local conference.
      *
@@ -478,6 +505,23 @@ interface SipConferenceController {
      * and declines to hold a member. A `StateFlow` so a late reader sees the current set.
      */
     val mixedCalls: StateFlow<Set<CallId>>
+
+    /**
+     * True while this device is the **focus** of the conference it is in.
+     *
+     * In a mesh every participant ends up holding the same legs and drawing the same grid,
+     * so nothing about the call list says which of them built the conference — see
+     * `ConferenceMesh`. Two things still turn on it, and this is the one the screen needs:
+     * [removeFromConference] is the focus's alone, because the focus owns the announced
+     * membership and removing somebody is an edit to *that*. A member dropping its own leg
+     * to a peer would take them off one screen out of four, and the next roster would put
+     * them back.
+     *
+     * False when there is no conference, and false on every member of one. A `StateFlow`
+     * so a screen recreated mid-conference sees the current answer rather than waiting for
+     * the membership to change again.
+     */
+    val hostsConference: StateFlow<Boolean>
 
     companion object {
         /**

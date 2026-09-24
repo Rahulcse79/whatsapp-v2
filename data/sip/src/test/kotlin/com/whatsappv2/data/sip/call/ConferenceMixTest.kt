@@ -119,4 +119,23 @@ class ConferenceMixTest {
         assertEquals(setOf(MixLink("b", "a")), plan.connect)
         assertTrue(plan.disconnect.isEmpty())
     }
+
+    @Test
+    fun `a mesh opens no links between members, whatever the membership`() {
+        // The whole of "each remote participant is heard exactly once". In a mesh every
+        // pair holds a dialog of its own, so a cross-link here would be that pair heard
+        // twice — once directly and once relayed through this device.
+        assertTrue(ConferenceMix.wanted(setOf("a", "b", "c"), relay = false).isEmpty())
+    }
+
+    @Test
+    fun `turning relaying off on a running conference closes every link`() {
+        // How a star becomes a mesh: the same membership, stated with `relay = false`,
+        // produces a plan of pure disconnects rather than needing a teardown of its own.
+        val established = ConferenceMix.wanted(setOf("a", "b"))
+        val plan = ConferenceMix.plan(established, setOf("a", "b"), relay = false)
+
+        assertTrue(plan.connect.isEmpty())
+        assertEquals(established, plan.disconnect)
+    }
 }

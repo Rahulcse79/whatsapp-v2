@@ -49,6 +49,15 @@ internal object ConferenceInfoParser {
         /** The conference's own address, from the document's `entity`. */
         val entity: String?,
         val participants: List<StackParticipant>,
+
+        /**
+         * True when the focus says every participant holds a leg to every other.
+         *
+         * Absent on any document a server bridge sends, and on one from a build that
+         * predates meshing — both of which are spokes of a star and must go on being
+         * treated as one. See [ConferenceInfoWriter.TOPOLOGY].
+         */
+        val mesh: Boolean = false,
     )
 
     /**
@@ -75,6 +84,8 @@ internal object ConferenceInfoParser {
 
         return Roster(
             entity = root.getAttribute("entity").takeIf { it.isNotBlank() },
+            mesh = root.childrenNamed("conference-description")
+                .any { it.textOf(ConferenceInfoWriter.TOPOLOGY).equals(ConferenceInfoWriter.MESH, true) },
             participants = root.childrenNamed("users")
                 .flatMap { it.childrenNamed("user") }
                 .mapNotNull { it.toParticipant(selfUri) },

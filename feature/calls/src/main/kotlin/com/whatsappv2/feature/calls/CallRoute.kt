@@ -91,6 +91,7 @@ fun CallRoute(
             onSwapTo = viewModel::swapTo,
             onAddCall = onAddCall,
             onMerge = viewModel::merge,
+            onRemoveParticipant = viewModel::removeParticipant,
             onRequestRecording = viewModel.recording::request,
             onConfirmRecording = viewModel.recording::confirm,
             onDismissRecordingConsent = viewModel.recording::dismiss,

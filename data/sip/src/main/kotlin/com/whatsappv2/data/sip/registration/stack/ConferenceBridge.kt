@@ -49,6 +49,16 @@ internal class ConferenceBridge(
     private var members: Set<String> = emptySet()
     private var links: Set<MixLink> = emptySet()
 
+    /**
+     * Whether this device carries one member's audio to another — see
+     * [ConferenceMix.wanted].
+     *
+     * Held rather than passed to [remix], because [remix] is called from the media-state
+     * callback, which knows a port moved and nothing about the conference's shape. Kept
+     * beside [members] so the two can only ever be changed together, by [set].
+     */
+    private var relay: Boolean = true
+
     /** The bridge port each linked member was linked on — see the class comment. */
     private val portIds = mutableMapOf<String, Int>()
 
@@ -60,9 +70,14 @@ internal class ConferenceBridge(
      *
      * Idempotent. Fewer than two live members tears every link down, which is how a
      * conference ends — there is no separate teardown to forget.
+     *
+     * @param relay false for a mesh, where every pair has a dialog of its own and a
+     *   cross-link here would be that pair heard twice. The membership is still recorded:
+     *   a mesh conference has members, it simply has no links between them.
      */
-    fun set(callKeys: Set<String>): Set<String> {
+    fun set(callKeys: Set<String>, relay: Boolean = true): Set<String> {
         members = callKeys
+        this.relay = relay
         val live = remix()
         // An empty membership is a teardown, and [remix] has just closed every link to
         // get there. The port bookkeeping goes with them: keeping it would make the next
@@ -89,7 +104,7 @@ internal class ConferenceBridge(
         // plan when there is no conference and tears the real one down when there is.
         val live = members.filterTo(mutableSetOf()) { mediaOf(it) != null }
         forgetRebuiltPorts(live)
-        val plan = ConferenceMix.plan(links, live)
+        val plan = ConferenceMix.plan(links, live, relay)
         if (plan.isEmpty) return live
 
         val applied = apply(plan)

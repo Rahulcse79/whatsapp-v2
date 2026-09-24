@@ -104,6 +104,7 @@ import org.pjsip.pjsua2.pjsua_call_vid_strm_op
 import org.pjsip.pjsua2.pjsua_ip_change_op
 import org.pjsip.pjsua2.pjsua_vid_req_keyframe_method
 import java.io.File
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ScheduledThreadPoolExecutor
@@ -1272,6 +1273,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
         accountKey: String,
         destination: String,
         videoEnabled: Boolean,
+        conferenceEntity: String?,
     ) {
         onPjsip("placeCall") {
             val account = accounts[accountKey] ?: run {
@@ -1280,7 +1282,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             }
             val call = PjCall(callKey, account)
             calls[callKey] = call
-            call.makeCall(destination, callParams(videoEnabled))
+            call.makeCall(destination, callParams(videoEnabled).withConference(conferenceEntity))
         }
     }
 
@@ -1323,7 +1325,23 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     override fun pauseCall(callKey: String) {
         onPjsip("pauseCall") {
-            calls[callKey]?.setHold(CallOpParam(true))
+            val call = calls[callKey] ?: return@onPjsip
+
+            // Armed before the send, so a refusal that arrives on the very next callback
+            // still finds a hold to settle. Unlike a resume, nothing is published here:
+            // the call has not moved and must not appear to have — `Held` arrives when
+            // the far end *accepts*, which is the whole of `PjsipSipEngine.setHold`'s
+            // contract. This only records that an answer is owed.
+            call.pendingHold.begin()
+            runCatching { call.setHold(CallOpParam(true)) }
+                .onFailure {
+                    // Never left this device. Without this the engine would wait for an
+                    // answer to a request that was never asked, and every later press of
+                    // Hold would be told one was already in flight.
+                    call.pendingHold.cancel()
+                    call.publish(StackCallState.HOLD_FAILED)
+                }
+                .getOrThrow()
         }
     }
 
@@ -1649,9 +1667,12 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     // -------------------------------------------------------------- conference
 
-    override suspend fun setConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String> {
+    override suspend fun setConferenceMembers(
+        callKeys: Set<String>,
+        relay: Boolean,
+    ): Outcome<Set<String>, String> {
         val answer = CompletableDeferred<Set<String>>()
-        onPjsip("setConferenceMembers") { answer.complete(conference.set(callKeys)) }
+        onPjsip("setConferenceMembers") { answer.complete(conference.set(callKeys, relay)) }
         return withTimeoutOrNull(CONFERENCE_MIX_TIMEOUT_MILLIS) { success(answer.await()) }
             ?: failure("the stack did not answer in $CONFERENCE_MIX_TIMEOUT_MILLIS ms")
     }
@@ -1673,8 +1694,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
         onPjsip("announceRoster") { calls[callKey]?.announceRoster(document) }
     }
 
-    override suspend fun setVideoConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String> {
-        if (callKeys.size > VideoMix.MAX_MEMBERS) {
+    override suspend fun setVideoConferenceMembers(
+        callKeys: Set<String>,
+        compose: Boolean,
+    ): Outcome<Set<String>, String> {
+        if (compose && callKeys.size > VideoMix.MAX_MEMBERS) {
             return failure(
                 "a video conference holds ${VideoMix.MAX_PARTICIPANTS} people including this device, " +
                     "and ${callKeys.size + 1} were asked for",
@@ -1682,7 +1706,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
         val answer = CompletableDeferred<Set<String>>()
         onPjsip("setVideoConferenceMembers") {
-            answer.complete(videoConference.set(callKeys))
+            answer.complete(videoConference.set(callKeys, compose))
             // The canvas may have moved to a different call, so the surfaces are
             // re-applied: exactly one window may hold the screen's `Surface`.
             calls.values.forEach { it.applyVideoWindows() }
@@ -1753,14 +1777,75 @@ internal class RealPjsipCoreGateway @Inject constructor(
             release()
         }
 
+        /**
+         * A roster that reached this device **out of dialog**.
+         *
+         * ## Why the call's own callback is not enough
+         *
+         * `ConferenceInfoWriter` sends the roster as an in-dialog MESSAGE, and pjsua
+         * delivers one of those to [PjCall.onInstantMessage]. FreeSWITCH does not forward
+         * it as one. `mod_sofia` terminates the MESSAGE and re-originates it towards the
+         * registered contact as a **new request**: a fresh `Call-ID`, no `To` tag, and its
+         * own `X-FS-Sending-Message` header. pjsua sees no dialog on it, `im_on_rx_request`
+         * takes it, and it arrives here instead — so on the deployment this app actually
+         * ships against, the call-level callback never fired and every member sat waiting
+         * for a conference it had already been told about (measured on 1000/1001/1005,
+         * 2026-09-24 17:09).
+         *
+         * Both paths are kept. A peer-to-peer dialog — a mesh leg whose media bypasses the
+         * server — really does deliver in-dialog, and a server that proxies rather than
+         * re-originates would too.
+         *
+         * The call is found by **who sent it**, because that is the only thing the two
+         * messages still have in common: the re-originated request keeps the original
+         * `From`. A roster from somebody this device is not on a call with is dropped —
+         * there is no conference it could describe.
+         */
+        override fun onInstantMessage(prm: OnInstantMessageParam) {
+            val message = runCatching { prm.rdata.wholeMsg }.getOrNull()
+            if (message.isNullOrEmpty()) return
+            val roster = ConferenceInfoParser.parse(message, selfUri = accountUri(), logger = logger) ?: return
+
+            val from = NameAddr.of(runCatching { prm.fromUri }.getOrNull()).uri
+            val leg = calls.values.firstOrNull { call ->
+                call.accountKey == accountKey && sameSipAddress(call.remoteAddress(), from)
+            }
+            if (leg == null) {
+                logger.debug(TAG, "A conference roster arrived from somebody this device is not talking to")
+                return
+            }
+
+            logger.info(TAG, "Conference roster for ${leg.callKey}: ${roster.participants.size} in the room")
+            conferenceEventFlow.tryEmit(
+                StackConferenceEvent(
+                    callKey = leg.callKey,
+                    participants = roster.participants,
+                    rosterAvailable = true,
+                    entity = roster.entity,
+                    mesh = roster.mesh,
+                ),
+            )
+        }
+
+        /** This account's own address, so the parser can mark the member that is us. */
+        private fun accountUri(): String? = runCatching { info.uri }.getOrNull()
+
         override fun onIncomingCall(prm: OnIncomingCallParam) {
             // The one call this gateway has never seen before, so the one place a key is
             // minted rather than looked up.
             val callKey = UUID.randomUUID().toString()
             val call = PjCall(callKey, this, prm.callId)
             calls[callKey] = call
+            // Read here because here is the only place it exists: the INVITE is gone by
+            // the next callback, and pjsua2 offers no header lookup on a call.
+            val conference = runCatching { prm.rdata.wholeMsg }.getOrNull()?.let(::conferenceHeaderOf)
+            // 180 for a mesh leg too, and deliberately. The engine answers it a moment
+            // later without ringing anything — the ringer is driven by `incomingCalls`,
+            // not by this — and a leg that turns out *not* to be one this device should
+            // answer must still have progressed, or the caller sits on silence until its
+            // own timeout.
             call.sendRinging(callKey, logger)
-            call.publish(StackCallState.INCOMING_RECEIVED)
+            call.publish(StackCallState.INCOMING_RECEIVED, conferenceEntity = conference)
         }
     }
 
@@ -1768,7 +1853,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
     private inner class PjCall : Call {
 
         val callKey: String
-        private val accountKey: String
+
+        /** Which account placed or answered this call — read when a roster has to find it. */
+        val accountKey: String
 
         /** The negotiated audio stream, held so mute and recording can reach it. */
         @Volatile
@@ -1823,6 +1910,15 @@ internal class RealPjsipCoreGateway @Inject constructor(
          */
         val pendingResume = PendingResume()
 
+        /**
+         * Our hold re-INVITE, between going out and being answered.
+         *
+         * Beside [pendingResume] and read in the same callback, for the reason
+         * [PendingHold] gives: PJSIP announces a re-INVITE that succeeded and says
+         * nothing at all about one that did not.
+         */
+        val pendingHold = PendingHold()
+
         constructor(callKey: String, account: PjAccount) : super(account) {
             this.callKey = callKey
             this.accountKey = account.accountKey
@@ -1861,6 +1957,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             if (info.state == pjsip_inv_state.PJSIP_INV_STATE_DISCONNECTED) {
                 logMediaStatistics()
                 pendingResume.cancel()
+                pendingHold.cancel()
                 stopPreview()
                 // Only now. The native peer is finished with this director, and holding it
                 // any longer is the leak; releasing it any earlier is a crash.
@@ -1957,6 +2054,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // Media running again is our resume landing; anything else, LOCAL_HOLD
             // restated mid-flight included, leaves it outstanding.
             pendingResume.onMediaState(state)
+            // And media paused by us is our hold landing, which is the other half of the
+            // same rule: the two cannot be outstanding at once, because the FSM will not
+            // let a hold start from a call that is resuming or the reverse.
+            pendingHold.onMediaState(state)
             publish(state, info)
         }
 
@@ -1982,17 +2083,23 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // on this call. See [subscribeToConferenceRoster].
             if (readRosterFrom(tsxState)) return
 
-            if (!pendingResume.isOutstanding) return
+            if (!pendingResume.isOutstanding && !pendingHold.isOutstanding) return
             val tsx = runCatching { tsxState.tsx }.getOrNull() ?: return
-            val refused = pendingResume.refusedBy(
-                isClient = tsx.role == pjsip_role_e.PJSIP_ROLE_UAC,
-                method = tsx.method,
-                statusCode = tsx.statusCode,
-            )
-            if (!refused) return
+            val isClient = tsx.role == pjsip_role_e.PJSIP_ROLE_UAC
 
-            logger.warn(TAG, "Resume refused on $callKey with ${tsx.statusCode}; the call is still held")
-            publish(StackCallState.RESUME_FAILED)
+            if (pendingResume.refusedBy(isClient, tsx.method, tsx.statusCode)) {
+                logger.warn(TAG, "Resume refused on $callKey with ${tsx.statusCode}; the call is still held")
+                publish(StackCallState.RESUME_FAILED)
+                return
+            }
+            if (pendingHold.refusedBy(isClient, tsx.method, tsx.statusCode)) {
+                // The call is exactly where it was — connected — so nothing moves. What
+                // this publishes is the *settlement*: without it the engine waits forever
+                // for an answer that has already been refused, and the Hold button never
+                // sends another re-INVITE. See [PendingHold].
+                logger.warn(TAG, "Hold refused on $callKey with ${tsx.statusCode}; the call is still connected")
+                publish(StackCallState.HOLD_FAILED)
+            }
         }
 
         /**
@@ -2028,9 +2135,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     callKey = callKey,
                     participants = roster.participants,
                     rosterAvailable = true,
+                    entity = roster.entity,
+                    mesh = roster.mesh,
                 ),
             )
         }
+
+        /** The far end's bare address, for matching a roster that arrived out of dialog. */
+        fun remoteAddress(): String? = NameAddr.of(infoOrNull()?.remoteUri).uri.takeIf { it.isNotBlank() }
 
         /**
          * Tells this member who is in the conference (RFC 4575 over an in-dialog MESSAGE).
@@ -2121,6 +2233,8 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     callKey = callKey,
                     participants = roster.participants,
                     rosterAvailable = true,
+                    entity = roster.entity,
+                    mesh = roster.mesh,
                 ),
             )
             return true
@@ -2421,6 +2535,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             state: StackCallState,
             info: CallInfo? = infoOrNull(),
             remoteUriOverride: String? = null,
+            conferenceEntity: String? = null,
         ) {
             val remote = NameAddr.of(remoteUriOverride ?: info?.remoteUri)
             callEventFlow.tryEmit(
@@ -2437,6 +2552,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     videoOffered = (info?.remVideoCount ?: 0) > 0,
                     videoActive = info?.hasActiveVideo() == true,
                     mediaEncrypted = encryptedAudio(info),
+                    conferenceEntity = conferenceEntity,
                 ),
             )
         }
@@ -2844,6 +2960,59 @@ private const val SIP_ERROR_FLOOR = 300
  * it only for the callee — see the comment there for what each side broke.
  */
 /** One SIP header, named and valued, for a request built by hand. */
+/**
+ * The INVITE's `X-Coralx-Conference`, or null.
+ *
+ * Read off the raw message rather than through pjsua2, which exposes no header lookup on
+ * `SipRxData` — only `wholeMsg`. Folded continuation lines are not handled and do not need
+ * to be: this header is written by [RealPjsipCoreGateway] itself and is one short URI.
+ */
+/**
+ * Whether two SIP addresses name the same peer.
+ *
+ * `user@host`, case-insensitively, with the scheme, port, parameters and any angle
+ * brackets thrown away. The same participant reaches this device as
+ * `sip:1001@192.168.137.123` on a roster and as `<sip:1001@192.168.137.123;transport=udp>`
+ * on a call, and a string comparison says they are different people.
+ */
+internal fun sameSipAddress(one: String?, other: String?): Boolean {
+    if (one.isNullOrBlank() || other.isNullOrBlank()) return false
+    return sipCore(one) == sipCore(other)
+}
+
+private fun sipCore(value: String): String = value.trim()
+    .removePrefix("<").substringBefore(">")
+    .substringAfter("sip:").substringAfter("sips:")
+    .substringBefore(";").substringBefore("?")
+    .lowercase(Locale.ROOT)
+
+internal fun conferenceHeaderOf(rawMessage: String): String? = rawMessage
+    .lineSequence()
+    // The headers end at the first blank line; a body that happened to contain the name
+    // must not be read as one.
+    .takeWhile { it.isNotBlank() }
+    .firstOrNull { it.startsWith("$CONFERENCE_HEADER:", ignoreCase = true) }
+    ?.substringAfter(':')
+    ?.trim()
+    ?.takeIf { it.isNotEmpty() }
+
+/** Adds the mesh marker to an outgoing INVITE, or leaves it exactly as it was. */
+private fun CallOpParam.withConference(entity: String?): CallOpParam = apply {
+    if (entity == null) return@apply
+    txOption = SipTxOption().apply {
+        headers = SipHeaderVector().apply { add(header(CONFERENCE_HEADER, entity)) }
+    }
+}
+
+/**
+ * Names the conference a mesh leg belongs to (see `ConferenceMesh`).
+ *
+ * `X-`, because it is this application's own and not a registered SIP header. A peer that
+ * does not know it ignores it, which is exactly what should happen: the call then rings
+ * like any other rather than being answered by a device that cannot mesh.
+ */
+internal const val CONFERENCE_HEADER = "X-Coralx-Conference"
+
 private fun header(name: String, value: String): SipHeader = SipHeader().apply {
     hName = name
     hValue = value

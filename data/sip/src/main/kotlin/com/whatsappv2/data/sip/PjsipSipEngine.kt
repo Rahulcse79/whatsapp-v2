@@ -20,6 +20,7 @@ import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackParticipant
 import com.whatsappv2.data.sip.call.VideoMix
 import com.whatsappv2.data.sip.call.StackCallState
+import com.whatsappv2.data.sip.call.StackConferenceEvent
 import com.whatsappv2.data.sip.call.TransferEventMapper
 import com.whatsappv2.data.sip.di.SipStackScope
 import com.whatsappv2.data.sip.network.DeviceWakeMonitor
@@ -42,6 +43,7 @@ import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.CallPlacement
 import com.whatsappv2.domain.engine.CallSnapshot
 import com.whatsappv2.domain.engine.CameraAvailability
+import com.whatsappv2.domain.engine.ConferenceMesh
 import com.whatsappv2.domain.engine.ConferenceParticipant
 import com.whatsappv2.domain.engine.ConferenceRoom
 import com.whatsappv2.domain.engine.ConferenceSession
@@ -80,6 +82,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -373,6 +376,41 @@ internal class PjsipSipEngine @Inject constructor(
     override val mixedCalls: StateFlow<Set<CallId>> = mixed.asStateFlow()
 
     /**
+     * The mesh conference this device is in, or null when it is in none (`ConferenceMesh`).
+     *
+     * ## Why the engine holds this and not the screen
+     *
+     * It is the only thing that can. A mesh is built out of *calls* — one to every other
+     * participant — and reconciling the legs against the announced membership is an
+     * operation on the call list, on the stack's own thread, triggered by events the UI
+     * never sees: a roster arriving in-dialog, a leg connecting, a leg ending. A screen
+     * that owned it would have to be alive for a conference to stay whole.
+     *
+     * Non-null is also what turns relaying **off**. Every device in a mesh connects its
+     * microphone and camera to each leg and nothing to anything else, because each pair
+     * already has a dialog of its own — see `ConferenceMix.wanted` and `VideoMix.wanted`.
+     */
+    private val meshConference = MutableStateFlow<MeshConference?>(null)
+
+    /** Mesh legs whose INVITE this device has sent but which have not connected yet. */
+    private val meshDialling: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * Whether this device is the focus — derived from the mesh and the mix, so the screen
+     * and the engine cannot disagree about who may remove a participant.
+     *
+     * A conference built the old way, with no mesh at all, still answers true: the device
+     * mixing a star holds every leg and is the only one that can drop a member from it,
+     * which is the same question the screen is asking.
+     *
+     * Fed by a collector in [start] rather than `stateIn`, for the reason [active] gives:
+     * a sharing coroutine started at construction cannot be ended, so it outlives the
+     * stack it describes and, under `runTest`, is a child that never finishes.
+     */
+    private val hosting = MutableStateFlow(false)
+    override val hostsConference: StateFlow<Boolean> = hosting.asStateFlow()
+
+    /**
      * The one way a call ends here (Task 47).
      *
      * Three paths reach it — the stack reporting a terminal state, a local hangup, and a
@@ -393,6 +431,18 @@ internal class PjsipSipEngine @Inject constructor(
         conferenceSessions.update { sessions -> sessions.filterNot { it.callId == callId } }
         // A member leaving shrinks the mix; one member left is no conference (ADR-009).
         mixed.update { (it - callId).asConferenceOrEmpty() }
+        ending?.remote?.let { meshDialling -= ConferenceMesh.key(it) }
+        // The leg to the focus ending ends this device's conference, because the focus is
+        // what the conference *is* — see [leaveMeshIfFocusEnded]. Read before the mesh is
+        // examined for collapse, so the two cannot both fire for one ending.
+        leaveMeshIfFocusEnded(callId, ending?.remote)
+        // And a mesh of one is not a mesh. The focus that has just lost its second-to-last
+        // member, and the member that is now alone with the focus, are both back in an
+        // ordinary call and must relay and compose like one again.
+        if (meshConference.value != null && mixed.value.size < SipConferenceController.MINIMUM_MIXED) {
+            logger.info(TAG, "Mesh: down to one leg; this is a call again")
+            closeMesh()
+        }
         pendingVideoRequests -= callId
         pendingHolds -= callId
         transferTypes -= callId
@@ -474,6 +524,11 @@ internal class PjsipSipEngine @Inject constructor(
         // leave propagate to the members without a second mechanism: `mixed` is the
         // membership, and restating it in full is the whole protocol.
         collectors += scope.launch { mixed.collect { announceRoster(it) } }
+        collectors += scope.launch {
+            combine(meshConference, mixed) { mesh, live ->
+                mesh?.hosted ?: (live.size >= SipConferenceController.MINIMUM_MIXED)
+            }.collect { hosting.value = it }
+        }
         collectors += scope.launch {
             // The switch in Settings, finally connected to something. It was written to
             // DataStore and read by nothing, so the control did nothing while its own
@@ -703,7 +758,58 @@ internal class PjsipSipEngine @Inject constructor(
             conferenceSessions.update { sessions ->
                 sessions.map { if (it.callId == id) ConferenceMapper.apply(it, event) else it }
             }
+
+            adoptMeshRoster(call, event)
         }
+    }
+
+    /**
+     * Takes the membership a focus announced, and builds this device's half of the mesh.
+     *
+     * The whole of a member's protocol. There is no join message: the focus says who is in
+     * the conference, this device compares that against the legs it holds, and
+     * [reconcileMesh] closes the difference. A member added later, a member removed by the
+     * host, a member who left — all three arrive as a different list and are answered the
+     * same way.
+     *
+     * Ignored unless the document says `mesh`: a server bridge's roster, and one from a
+     * build that predates this, describe a star in which this device is a spoke receiving
+     * one composed picture. Dialling the other participants off one of those would open
+     * legs nobody is expecting, beside a picture that already contains them.
+     *
+     * The focus's own roster is ignored too. It announces to its members; the copy that
+     * would come back to it is [MeshConference.hosted], which it already is.
+     */
+    private suspend fun adoptMeshRoster(leg: CallSnapshot, event: StackConferenceEvent) {
+        if (!event.mesh) return
+        if (meshConference.value?.hosted == true) return
+
+        val entity = event.entity?.let { SipUri.parse(it).getOrNull() } ?: leg.remote
+        val members = event.participants
+            .mapNotNull { it.uri?.let { uri -> SipUri.parse(uri).getOrNull() } }
+            .toMutableSet()
+        // The focus names itself in the document, but a roster that somehow did not would
+        // otherwise have every member drop the one leg they certainly need.
+        members += entity
+        if (members.size < SipConferenceController.MINIMUM_MIXED) return
+
+        val self = selfUriFor(leg.accountId) ?: return
+        val current = meshConference.value
+        val updated = MeshConference(
+            entity = entity,
+            accountId = leg.accountId,
+            self = self,
+            members = members,
+            hosted = false,
+            // What the leg to the focus is actually carrying. A conference joined with
+            // video meshes with video; one joined without does not light three cameras.
+            media = if (leg.media.hasVideo) MediaProfile.AUDIO_VIDEO else MediaProfile.AUDIO,
+        )
+        if (current == updated) return
+
+        meshConference.value = updated
+        logger.info(TAG, "Mesh: a conference of ${members.size} was announced on ${leg.callId}")
+        reconcileMesh()
     }
 
     /**
@@ -736,9 +842,16 @@ internal class PjsipSipEngine @Inject constructor(
             return
         }
 
-        // Any answer from the stack settles the hold that was in flight — the 200 that
-        // holds it, or a refusal that leaves it connected — so the next ask is a real one.
-        pendingHolds -= id
+        // An answer to the hold that was in flight settles it — the pause that means the
+        // far end accepted, a hold of their own, or the refusal `PendingHold` now detects
+        // — so the next ask is a real one and sends a real re-INVITE.
+        //
+        // Only those. It used to be *any* event at all, which quietly reopened the window
+        // the guard exists to close: a session refresh or a media change arriving between
+        // the request and its answer disarmed it, and the second ask — Telecom's, 200 ms
+        // into every attended transfer — put a second re-INVITE on a dialog that already
+        // had one, which pjsua refuses with `PJ_EINVALIDOP`.
+        if (event.state.settlesHold) pendingHolds -= id
         val next = nextStateFor(id, current, event, logger)
 
         // §7, DoD 13: a call that reached media without encrypting it, on an account that
@@ -756,6 +869,14 @@ internal class PjsipSipEngine @Inject constructor(
         reportToPlatform(id, current, settled, justConnected)
 
         store(id, current, settled, media, justConnected)
+
+        // A mesh leg that has just connected is a participant who can now be heard and
+        // drawn, so the membership is re-stated around it. Also the one place a dial that
+        // never connected stops being counted as in flight.
+        if (justConnected && meshConference.value != null) {
+            meshDialling -= ConferenceMesh.key(current.remote)
+            scope.launch { reconcileMesh() }
+        }
 
         // A member whose video appeared or went away changes who belongs in the picture.
         // The stack's own `remix` cannot notice: it re-states the membership it was last
@@ -878,6 +999,26 @@ internal class PjsipSipEngine @Inject constructor(
             return
         }
 
+        // A leg of a conference this device is already in (`ConferenceMesh`). It is not a
+        // call the user is receiving — they are already in this conversation, and the
+        // other participants are dialling each other precisely so that nobody has to
+        // answer anything — so it neither rings nor reaches Telecom.
+        //
+        // Not registered with the platform, for the reason [CallPlacement] gives: Telecom
+        // allows one active call per connection service and holds every other the instant
+        // one goes active, and a mesh of four is three calls that must all stay live. One
+        // registered leg carries audio focus and the lock screen for the whole conference.
+        val mesh = meshLegFor(event, from)
+        if (mesh != null) {
+            val media = if (event.videoOffered) mesh.media else MediaProfile.AUDIO
+            updateCalls {
+                it + (id to incomingSnapshot(id, event, from, clock.nowEpochMillis(), platformManaged = false))
+            }
+            logger.info(TAG, "Answering $id: a mesh leg of the conference this device is in")
+            callGateway.answerCall(event.callKey, videoEnabled = media.hasVideo)
+            return
+        }
+
         val snapshot = incomingSnapshot(id, event, from, clock.nowEpochMillis())
         updateCalls { it + (id to snapshot) }
         val call = snapshot.asIncomingCall()
@@ -924,6 +1065,22 @@ internal class PjsipSipEngine @Inject constructor(
         target: SipUri,
         media: MediaProfile,
         placement: CallPlacement,
+    ): Outcome<CallId, SipError> = place(accountId, target, media, placement, conferenceEntity = null)
+
+    /**
+     * [placeCall], plus the one thing the public interface has no business carrying.
+     *
+     * A mesh leg is an ordinary outgoing call with `X-Coralx-Conference` on the INVITE, so
+     * the far end can recognise it and answer without ringing (`ConferenceMesh`). That is
+     * a fact about the wire between two copies of this app, not something a use case or a
+     * ViewModel should be able to assert, so it stays inside the engine.
+     */
+    private suspend fun place(
+        accountId: AccountId,
+        target: SipUri,
+        media: MediaProfile,
+        placement: CallPlacement,
+        conferenceEntity: SipUri?,
     ): Outcome<CallId, SipError> {
         if (!started) return failure(SipError.EngineUnavailable)
 
@@ -958,6 +1115,7 @@ internal class PjsipSipEngine @Inject constructor(
             accountKey = accountId.value,
             destination = target.render(),
             videoEnabled = media.hasVideo,
+            conferenceEntity = conferenceEntity?.render(),
         )
         return success(callId)
     }
@@ -990,6 +1148,44 @@ internal class PjsipSipEngine @Inject constructor(
             // did nothing.
             endCall(member, reason)
         }
+        return success(Unit)
+    }
+
+    /**
+     * Ends one member's leg and leaves the rest of the conference running.
+     *
+     * The deliberate opposite of [hangup], which fans out across the mix. Nothing is
+     * re-mixed here on purpose: [endCall] shrinks `mixed`, and the gateway drops the leg
+     * from the audio bridge and the video bridge as its media is released, so the
+     * remaining membership recomposes itself. Doing it by hand as well would be a second
+     * membership change racing the first.
+     */
+    override suspend fun removeFromConference(callId: CallId): Outcome<Unit, SipError> {
+        if (!started) return failure(SipError.EngineUnavailable)
+        if (calls.value[callId] == null) return failure(SipError.UnknownCall)
+
+        logger.info(TAG, "Removing $callId from the conference")
+        // Out of the announced membership first, and only then off the wire. In a mesh the
+        // other participants each hold a leg to this member as well, and ending only the
+        // leg held here would remove them from the host's screen and nobody else's. The
+        // roster is the membership: taking them out of it and restating it is what makes
+        // every other device drop its own leg — see `ConferenceMesh.plan`.
+        val removed = calls.value[callId]?.remote
+        if (removed != null) {
+            meshConference.update { mesh ->
+                mesh?.copy(
+                    members = mesh.members.filterNotTo(mutableSetOf()) {
+                        ConferenceMesh.key(it) == ConferenceMesh.key(removed)
+                    },
+                )
+            }
+        }
+        callGateway.terminateCall(callId.value)
+        // Locally, for the reason [hangup] gives: the host pressed a button, and a row
+        // that lingers until a BYE is acknowledged reads as a button that did nothing.
+        endCall(callId, HangupReason.LOCAL_HANGUP)
+        // `endCall` shrank the mix, which restates the roster to everyone left — without
+        // the member just removed, which is the instruction the others act on.
         return success(Unit)
     }
 
@@ -1413,11 +1609,34 @@ internal class PjsipSipEngine @Inject constructor(
             return failure(SipError.InvalidState("this device mixes at most 8 calls"))
         }
 
+        val established = establishedForMix(activeCalls.value, callIds).asConferenceOrEmpty()
+
+        // A conference built here is a mesh, and this is the moment it becomes one: every
+        // member will hold a leg to every other, so this device relays for nobody and
+        // composes for nobody. Only when there is not one already — a member reconciling
+        // its own legs arrives here too, and it must not declare itself the focus of a
+        // conference somebody else is running.
+        //
+        // **Before the membership is published**, and that ordering is the whole of it.
+        // Publishing `mixed` is what triggers the roster announcement, and the roster is
+        // where a member is told this is a mesh. Opening the mesh afterwards sent the
+        // first roster — the only one a three-party conference ever sends — with no mesh
+        // marker at all, so both members filed it as an ordinary server roster, dialled
+        // nobody, and sat waiting for a composed picture that a mesh never sends
+        // (measured on 1000/1001/1005, 2026-09-24 17:02).
+        //
+        // Whether it was *this* call that opened it is remembered too, because reconciling
+        // is mutually recursive with this function — it re-states the membership when a leg
+        // connects — and only the opening needs to kick it off.
+        val opening = meshConference.value == null
+        val mesh = openMeshIfAbsent(established)
+        val relay = mesh == null
+
         // Published as the intent, before a single resume goes out. Telecom answers each
         // resume by holding another member within milliseconds, and the bridge that
         // declines those holds reads this set — a membership published only once the
         // stack accepted it would arrive after the holds it exists to refuse.
-        mixed.value = establishedForMix(activeCalls.value, callIds).asConferenceOrEmpty()
+        mixed.value = established
         resumeHeldForMix(activeCalls, callIds, logger) { holdLeg(it, held = false) }
         val live = liveForMix(activeCalls.value, callIds)
 
@@ -1448,7 +1667,7 @@ internal class PjsipSipEngine @Inject constructor(
         dropVideoForMix(droppable, logger) { videoGateway.setVideoEnabled(it.value, false) }
 
         val mixedAudio = publishMix(
-            conferenceGateway.setConferenceMembers(live.map { it.value }.toSet()),
+            conferenceGateway.setConferenceMembers(live.map { it.value }.toSet(), relay = relay),
             mixed,
             logger,
         ) {
@@ -1458,14 +1677,35 @@ internal class PjsipSipEngine @Inject constructor(
         // After the audio mix, not before: the picture is worth nothing without the
         // conversation, and a video mix that failed must not take the audio one with it.
         // A refusal is logged and the conference carries on with sound.
-        if (withVideo.isNotEmpty()) {
-            when (val picture = conferenceGateway.setVideoConferenceMembers(withVideo.map { it.value }.toSet())) {
-                is Outcome.Success ->
-                    logger.info(TAG, "Composing the conference picture here: ${picture.value.size} member(s)")
+        //
+        // In a mesh the membership is still stated and the composition is not: each peer
+        // receives every other peer's camera on its own dialog, and a canvas as well would
+        // draw every participant twice — once in their own tile and once inside somebody
+        // else's. Stating it anyway is what tears down a composition that was running,
+        // which is how the conference this device started as a star becomes a mesh.
+        if (withVideo.isNotEmpty() || !relay) {
+            val picture = conferenceGateway.setVideoConferenceMembers(
+                withVideo.map { it.value }.toSet(),
+                compose = relay,
+            )
+            when (picture) {
+                is Outcome.Success -> logger.info(
+                    TAG,
+                    if (relay) {
+                        "Composing the conference picture here: ${picture.value.size} member(s)"
+                    } else {
+                        "Mesh conference: ${picture.value.size} member(s) drawn from their own streams"
+                    },
+                )
                 is Outcome.Failure ->
-                    logger.warn(TAG, "The conference picture could not be composed: ${picture.error}")
+                    logger.warn(TAG, "The conference picture could not be planned: ${picture.error}")
             }
         }
+
+        // The legs this device holds are not the conference; the announced membership is.
+        // Reconciling turns a merge of two calls into a mesh of three participants, by
+        // dialling whichever of them this end of each pair owes a call to.
+        if (opening && mesh != null) reconcileMesh()
         return mixedAudio
     }
 
@@ -1493,6 +1733,13 @@ internal class PjsipSipEngine @Inject constructor(
      */
     private suspend fun announceRoster(members: Set<CallId>) {
         if (members.size < SipConferenceController.MINIMUM_MIXED) return
+        // Only the focus speaks. Every device in a mesh mixes its own legs, so `mixed`
+        // changes on all of them; if each announced, every member would be told it was in
+        // a different conference by a different host, and the membership would be
+        // whichever roster landed last. The participant that pressed Merge owns the list.
+        val mesh = meshConference.value
+        if (mesh != null && !mesh.hosted) return
+
         val live = calls.value
         val legs = members.mapNotNull { live[it] }
         if (legs.size < SipConferenceController.MINIMUM_MIXED) return
@@ -1533,10 +1780,209 @@ internal class PjsipSipEngine @Inject constructor(
             }
         }
 
-        val document = ConferenceInfoWriter.roster(entity = selfUri, participants = participants)
+        val document = ConferenceInfoWriter.roster(
+            entity = selfUri,
+            participants = participants,
+            // The one thing the members cannot work out for themselves, and the whole of
+            // the mesh protocol: told that this is a mesh, each of them reconciles its own
+            // legs against this list and the conference builds itself.
+            mesh = mesh != null,
+        )
         logger.info(TAG, "Announcing the roster to ${legs.size} member(s): ${participants.size} in the room")
         legs.forEach { conferenceGateway.announceRoster(it.callId.value, document) }
     }
+
+    // ------------------------------------------------------------------- mesh
+
+    /**
+     * Declares the conference this device has just mixed to be a mesh, unless it is
+     * already in one.
+     *
+     * The focus is whoever pressed Merge, and its own address is the conference's identity
+     * — a member reads it as the address of the room it is in, and the leg to it is the
+     * leg whose ending ends the conference. Nothing else distinguishes the focus: once the
+     * mesh is up every device holds the same legs and draws the same grid.
+     *
+     * Returns null when there is nothing to declare — no account to name this device by —
+     * so the caller falls back to the star, which is what every build before this one did
+     * and what a peer that cannot mesh still needs.
+     *
+     * @return the mesh this device is now in, or null when it is in none.
+     */
+    private suspend fun openMeshIfAbsent(live: Set<CallId>): MeshConference? {
+        meshConference.value?.let { return it }
+        if (live.size < SipConferenceController.MINIMUM_MIXED) return null
+
+        val legs = live.mapNotNull { calls.value[it] }
+        val accountId = legs.firstOrNull()?.accountId ?: return null
+        val self = selfUriFor(accountId) ?: return null
+
+        val mesh = MeshConference(
+            entity = self,
+            accountId = accountId,
+            self = self,
+            // This device included. A member's roster names everybody, and the plan
+            // filters us out by address rather than by the caller remembering to.
+            members = legs.mapTo(mutableSetOf(self)) { it.remote },
+            hosted = true,
+            // A mesh leg is offered whatever the conference already carries. A merge of
+            // video calls must not dial its new legs audio-only, or the grid has holes in
+            // it that no later re-INVITE fills.
+            media = if (legs.any { it.media.hasVideo }) MediaProfile.AUDIO_VIDEO else MediaProfile.AUDIO,
+        )
+        meshConference.value = mesh
+        logger.info(TAG, "Hosting a mesh conference of ${mesh.members.size}")
+        return mesh
+    }
+
+    /**
+     * Closes the difference between the conference this device is in and the legs it holds.
+     *
+     * The whole of joining, leaving, being removed and recovering, because all four are
+     * the same difference seen from a different side — see [ConferenceMesh.plan]. Run on
+     * every event that can change either half: a roster arriving, a leg connecting, a leg
+     * ending, a member removed here.
+     *
+     * Idempotent, and cheap when nothing moved: the plan is pure and an unchanged
+     * membership produces no dials and no drops. So it is safe to call from anywhere
+     * something might have changed rather than only where something certainly did.
+     */
+    private suspend fun reconcileMesh() {
+        val mesh = meshConference.value ?: return
+        val legs = meshLegs(mesh)
+        val plan = ConferenceMesh.plan(mesh.members, mesh.self, legs)
+
+        // Dropped first. A member the focus no longer lists is somebody this device must
+        // stop drawing and stop sending a camera to, and doing it before the dials keeps
+        // a conference that is shrinking and growing at once from briefly exceeding the
+        // ceiling.
+        plan.drop.forEach { callId ->
+            logger.info(TAG, "Mesh: dropping $callId, who is no longer in the conference")
+            callGateway.terminateCall(callId.value)
+            endCall(callId, HangupReason.LOCAL_HANGUP)
+        }
+
+        plan.dial.forEach { peer ->
+            val key = ConferenceMesh.key(peer)
+            // One INVITE per peer, however many times this runs while it is in flight.
+            // The leg is not in [calls] until `place` returns, and reconciliation is
+            // triggered by events that arrive in bursts.
+            if (!meshDialling.add(key)) return@forEach
+            logger.info(TAG, "Mesh: calling a participant this device owes a leg to")
+            place(mesh.accountId, peer, mesh.media, CallPlacement.CONFERENCE_MEMBER, mesh.entity)
+                .onFailure {
+                    meshDialling -= key
+                    logger.warn(TAG, "Mesh: could not call a participant: $it")
+                }
+        }
+
+        if (plan.awaiting.isNotEmpty()) {
+            logger.debug(TAG, "Mesh: waiting on ${plan.awaiting.size} participant(s) to call this device")
+        }
+
+        // And finally the membership, so a leg that has just connected joins the mix it
+        // belongs to. Only from the legs that are actually established: `mixCalls` filters
+        // the rest, and re-stating a membership it already holds is a no-op.
+        val established = legs.keys.filter { calls.value[it]?.state?.isEstablished == true }
+        if (established.size >= SipConferenceController.MINIMUM_MIXED &&
+            established.toSet() != mixed.value
+        ) {
+            mixCalls(established.toSet())
+        }
+    }
+
+    /**
+     * The calls that are legs of [mesh], by the address each reaches.
+     *
+     * A leg counts if it reaches somebody the roster names **or** if it is in the mix, and
+     * the second half is not redundant — it is the whole of how a removal propagates. A
+     * member dropped by the focus disappears from the next roster, and a set built from
+     * the roster alone would therefore not contain the leg still open to them: every
+     * device but the focus would go on hearing and drawing somebody who had been removed,
+     * because the plan could not see the leg it was supposed to close.
+     *
+     * A call that is neither — an ordinary second call to somebody who happens to be in
+     * the conference — is left alone, which is what keeps reconciliation from hanging up
+     * calls that are none of its business.
+     */
+    private fun meshLegs(mesh: MeshConference): Map<CallId, SipUri> {
+        val members = mesh.members.mapTo(mutableSetOf()) { ConferenceMesh.key(it) }
+        val live = mixed.value
+        return calls.value.values
+            .filter { it.state !is CallState.Terminated }
+            .filter { ConferenceMesh.key(it.remote) in members || it.callId in live }
+            .associate { it.callId to it.remote }
+    }
+
+    /**
+     * The mesh an inbound INVITE belongs to, or null when it is an ordinary call.
+     *
+     * Both halves are required, and the second is the one that matters: the header alone
+     * is a claim anybody can make, so this device also has to already be in the conference
+     * it names. A stranger asserting `X-Coralx-Conference` therefore rings like anybody
+     * else, and a participant who calls again for some other reason — a genuine second
+     * call, from a phone that is not sending the header — rings too.
+     */
+    private fun meshLegFor(event: StackCallEvent, from: SipUri): MeshConference? {
+        val mesh = meshConference.value ?: return null
+
+        // The INVITE says which conference it belongs to. True whenever the signalling
+        // reaches this device as it was sent — a peer-to-peer dialog, or a server that
+        // proxies rather than re-originates.
+        val claimed = event.conferenceEntity?.let { SipUri.parse(it).getOrNull() }
+        if (claimed != null && ConferenceMesh.key(claimed) == ConferenceMesh.key(mesh.entity)) return mesh
+
+        // And when it does not. FreeSWITCH is a B2BUA: it builds a fresh INVITE for the
+        // outbound leg and carries no header it was not configured to copy, so on this
+        // deployment the marker above simply is not there by the time it arrives.
+        //
+        // The fallback is narrow on purpose, and narrower than "anybody in the roster".
+        // It answers only a participant this device is *expecting a call from* — in the
+        // conference, with no leg yet, and on the side of the glare rule that waits rather
+        // than dials. A stranger is not in the roster; a participant already connected is
+        // not awaited, so a genuine second call from somebody in the conference still
+        // rings; and once their leg is up the window closes behind them.
+        val awaited = ConferenceMesh.plan(mesh.members, mesh.self, meshLegs(mesh)).awaiting
+        return mesh.takeIf { awaited.any { peer -> ConferenceMesh.key(peer) == ConferenceMesh.key(from) } }
+    }
+
+    /** This device's own address on [accountId], as the roster and the plan name it. */
+    private suspend fun selfUriFor(accountId: AccountId): SipUri? {
+        val account = accounts.findById(accountId) ?: return null
+        return SipUri.parse("sip:${account.username}@${account.domain}").getOrNull()
+    }
+
+    /**
+     * Leaves the mesh when the leg that held it together has gone.
+     *
+     * The focus owns the conference: its End button ends the whole thing, which is what
+     * the one big red button under "Conference call" has always meant. A member whose leg
+     * to the focus ends therefore leaves too, rather than being left in a rump conference
+     * with the other members and no way to tell that the host has gone.
+     *
+     * The focus's own side needs no such rule — ending its conference ends every leg it
+     * holds, and with them the mesh.
+     */
+    private fun leaveMeshIfFocusEnded(ended: CallId, endedRemote: SipUri?) {
+        val mesh = meshConference.value ?: return
+        if (mesh.hosted || endedRemote == null) return
+        if (ConferenceMesh.key(endedRemote) != ConferenceMesh.key(mesh.entity)) return
+
+        logger.info(TAG, "Mesh: the conference host has gone; leaving")
+        val remaining = meshLegs(mesh).keys - ended
+        closeMesh()
+        remaining.forEach { leg ->
+            callGateway.terminateCall(leg.value)
+            endCall(leg, HangupReason.REMOTE_HANGUP)
+        }
+    }
+
+    /** Forgets the mesh, so the next conference starts from nothing. */
+    private fun closeMesh() {
+        meshConference.value = null
+        meshDialling.clear()
+    }
+
 
     /**
      * Re-plans the conference picture when a member's video comes up or goes away.
@@ -2063,6 +2509,48 @@ private fun outgoingSnapshot(
 )
 
 /**
+ * The mesh conference a device is in (`ConferenceMesh`).
+ *
+ * ## Why the focus is remembered rather than derived
+ *
+ * Once the mesh is up every device holds the same legs and draws the same grid, so nothing
+ * about the call list says which participant built the conference. Two things still need
+ * to know. Only the focus announces the roster, because a membership two devices both
+ * publish is a membership that flaps between whichever document landed last. And only the
+ * leg *to* the focus ends the conference for a member, because the one big red button
+ * under "Conference call" has always meant "end this conference" and somebody has to be
+ * the one holding it.
+ *
+ * [members] includes this device, exactly as the announced roster does, so a plan built
+ * from it filters us out by address rather than by the caller remembering to.
+ */
+internal data class MeshConference(
+    /** The focus's address, which is the conference's identity on the wire. */
+    val entity: SipUri,
+
+    /** The account every leg of this conference is placed on. */
+    val accountId: AccountId,
+
+    /**
+     * This device's own address on [accountId].
+     *
+     * Held rather than looked up, because the two places that need it cannot wait for a
+     * repository read: deciding whether an INVITE that is ringing right now is a mesh leg,
+     * and deciding which peers this end of each pair owes a call to.
+     */
+    val self: SipUri,
+
+    /** Everybody in the conference, this device included. */
+    val members: Set<SipUri>,
+
+    /** True on the device that built it, which is the only one that announces the roster. */
+    val hosted: Boolean,
+
+    /** What a leg of this conference offers — video if the conference carries any. */
+    val media: MediaProfile,
+)
+
+/**
  * Whether a call placed this way is registered with the platform (see [CallPlacement]).
  *
  * A standalone call always; a member of a group only when no registered call is still
@@ -2113,6 +2601,7 @@ private fun incomingSnapshot(
     event: StackCallEvent,
     from: SipUri,
     receivedAtEpochMillis: Long,
+    platformManaged: Boolean = true,
 ): CallSnapshot =
     CallSnapshot(
         callId = id,
@@ -2124,6 +2613,7 @@ private fun incomingSnapshot(
         media = if (event.videoOffered) MediaProfile.AUDIO_VIDEO else MediaProfile.AUDIO,
         startedAtEpochMillis = receivedAtEpochMillis,
         connectedAtEpochMillis = null,
+        platformManaged = platformManaged,
     )
 
 /** The ringing call as the app is told about it. */
@@ -2643,6 +3133,21 @@ private fun <T> eventFlow(): MutableSharedFlow<T> = MutableSharedFlow(
     extraBufferCapacity = PjsipSipEngine.INCOMING_BUFFER,
     onBufferOverflow = BufferOverflow.SUSPEND,
 )
+
+/**
+ * True for a stack state that answers a hold re-INVITE, either way.
+ *
+ * [StackCallState.PAUSED] is the far end accepting. [StackCallState.HOLD_FAILED] is the
+ * far end refusing, or nobody answering at all. [StackCallState.PAUSED_BY_REMOTE] is not
+ * the answer we asked for but does end the wait: the call is held, the FSM records who by,
+ * and a second re-INVITE from here would be one too many. Everything else — a media
+ * change, a session refresh, a codec renegotiation — is news about the call and not about
+ * the request.
+ */
+private val StackCallState.settlesHold: Boolean
+    get() = this == StackCallState.PAUSED ||
+        this == StackCallState.PAUSED_BY_REMOTE ||
+        this == StackCallState.HOLD_FAILED
 
 /** Fewer than two mixed calls is a call, not a conference, and the published set says so by being empty. */
 private fun Set<CallId>.asConferenceOrEmpty(): Set<CallId> =
