@@ -1824,8 +1824,8 @@ internal class PjsipSipEngine @Inject constructor(
     // ------------------------------------------------------------------- mesh
 
     /**
-     * Declares the conference this device has just mixed to be a mesh, unless it is
-     * already in one.
+     * Declares the conference this device has just mixed to be a mesh, or takes into the
+     * one it is already hosting whoever has just been mixed into it.
      *
      * The focus is whoever pressed Merge, and its own address is the conference's identity
      * — a member reads it as the address of the room it is in, and the leg to it is the
@@ -1839,7 +1839,7 @@ internal class PjsipSipEngine @Inject constructor(
      * @return the mesh this device is now in, or null when it is in none.
      */
     private suspend fun openMeshIfAbsent(live: Set<CallId>): MeshConference? {
-        meshConference.value?.let { return it }
+        meshConference.value?.let { return grownToFit(it, live) }
         if (live.size < SipConferenceController.MINIMUM_MIXED) return null
 
         val legs = live.mapNotNull { calls.value[it] }
@@ -1862,6 +1862,54 @@ internal class PjsipSipEngine @Inject constructor(
         meshConference.value = mesh
         logger.info(TAG, "Hosting a mesh conference of ${mesh.members.size}")
         return mesh
+    }
+
+    /**
+     * The focus's conference, widened to include whoever has just joined its mix.
+     *
+     * ## The fourth participant was hung up by the device that invited them
+     *
+     * A mesh was declared once and never grew. The roster is built from the mix, so a
+     * participant added to a running conference *was* announced and every member dialled
+     * them — but [MeshConference.members] still named only the people who were there when
+     * the mesh was opened, and that set is what [reconcileMesh] measures this device's own
+     * legs against. The leg to the new participant therefore matched no member, which is
+     * the signature of somebody the focus has removed, so the moment it connected the
+     * focus hung it up.
+     *
+     * Measured on 1000/1001/1003/1005, 2026-09-24 21:32. 1005 answered at 21:32:05.481 and
+     * logged `REMOTE_HANGUP (status 200)` at 21:32:06.001 — half a second of conference.
+     * 1001 and 1003 had the roster and went on ringing 1005 for ever, because the only leg
+     * that could have told 1005 it was in a mesh was the one the focus had just dropped.
+     * Ten channels where twelve belong, and a participant left ringing on two phones.
+     *
+     * So the host's membership is its mix: a leg mixed here is a participant here. Only
+     * ever widened, never narrowed — a member leaving is `removeFromConference` and a leg
+     * ending is [leaveMeshIfFocusEnded], both of which say so explicitly, and a mix that
+     * is briefly short of a leg still renegotiating must not be read as a removal.
+     *
+     * A device that is *in* somebody else's mesh is returned untouched: its membership is
+     * the roster it was sent, and a member that rewrote it from its own legs would answer
+     * a different conference from the one it is in.
+     */
+    private fun grownToFit(mesh: MeshConference, live: Set<CallId>): MeshConference {
+        if (!mesh.hosted) return mesh
+
+        val legs = live.mapNotNull { calls.value[it] }
+        val known = mesh.members.mapTo(mutableSetOf()) { ConferenceMesh.key(it) }
+        val arrived = legs.map { it.remote }.filterNot { ConferenceMesh.key(it) in known }
+        if (arrived.isEmpty()) return mesh
+
+        val grown = mesh.copy(
+            members = mesh.members + arrived,
+            // A conference that has acquired a camera carries video from here on, for the
+            // reason the opening does: a leg dialled audio-only leaves a hole in the grid
+            // that no later re-INVITE fills.
+            media = if (legs.any { it.media.hasVideo }) MediaProfile.AUDIO_VIDEO else mesh.media,
+        )
+        meshConference.value = grown
+        logger.info(TAG, "Mesh: ${arrived.size} participant(s) joined; the conference is now ${grown.members.size}")
+        return grown
     }
 
     /**
