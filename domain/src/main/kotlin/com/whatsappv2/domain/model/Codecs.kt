@@ -79,10 +79,25 @@ data class CodecPreferences(
     val supportsVideo: Boolean get() = video.isNotEmpty()
 
     companion object {
-        /** Wideband first, then the codecs every gateway understands. */
+        /**
+         * Wideband first, then the codecs every gateway understands.
+         *
+         * **H.264 ahead of VP8**, which is the order a conference actually wants. VP8 led
+         * for as long as it was the only video codec both ends could negotiate, and that
+         * stopped being true once MediaCodec's H.264 encoder was made to work on every
+         * handset. Two things make the old order the wrong one now:
+         *
+         *  - pjmedia offers VP8 with `max-fs=580` (`vpx.c`), and 580 macroblocks derives a
+         *    1088-pixel long edge — so a call that takes VP8 is capped at 1088x612 however
+         *    much the app asks for 1280x720.
+         *  - H.264 runs on the hardware encoder these devices actually have; VP8 on most
+         *    of them does not, which costs a core and gives a softer picture for it.
+         *
+         * Offering both keeps every peer negotiable; it is only the preference that moved.
+         */
         val DEFAULT: CodecPreferences = CodecPreferences(
             audio = listOf(AudioCodec.OPUS, AudioCodec.G722, AudioCodec.PCMU, AudioCodec.PCMA),
-            video = listOf(VideoCodec.VP8, VideoCodec.H264),
+            video = listOf(VideoCodec.H264, VideoCodec.VP8),
         )
 
         /** Audio only, for accounts on links that cannot carry video. */
