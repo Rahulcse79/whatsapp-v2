@@ -1660,11 +1660,40 @@ internal class PjsipSipEngine @Inject constructor(
         // A member with no camera has nothing to drop and the call is a no-op; a member
         // whose video cannot be composed — the ceiling — is re-INVITEd down to audio
         // once, here, rather than paying for a stream nobody will ever see.
-        val withVideo = videoMixable(activeCalls.value, live)
-        val droppable = activeCalls.value
-            .filterTo(mutableSetOf()) { it.callId in live && it.callId !in withVideo && it.media.hasVideo }
-            .mapTo(mutableSetOf()) { it.callId }
-        dropVideoForMix(droppable, logger) { videoGateway.setVideoEnabled(it.value, false) }
+        // Who carries video. The two answers are genuinely different, because the rule
+        // they enforce belongs to *composition* and a mesh composes nothing.
+        //
+        // [videoMixable] refuses a membership `vid_conf` cannot draw: fewer than two
+        // sources is not a canvas, and more than four it silently will not render. Both
+        // are facts about a canvas. In a mesh each leg carries its own stream to its own
+        // tile, so one video leg is perfectly ordinary and the only real limit is what the
+        // handset can encode.
+        //
+        // Applying the canvas rules to a mesh anyway was fatal, and quietly so. A host
+        // whose second camera had not finished negotiating was told "no video at all",
+        // which sent `dropVideoForMix` to re-INVITE video **off every leg** it did have —
+        // and `CameraPolicy`, seeing no call wanting a camera, released it. The conference
+        // then had no picture anywhere and nothing to bring one back: every screen black,
+        // every self-view black, the handsets idling at ~100 % of a core where three
+        // encodes and three decodes should have been (measured on 1000/1001/1003/1005,
+        // 2026-09-24 17:52).
+        val withVideo = if (relay) {
+            videoMixable(activeCalls.value, live)
+        } else {
+            activeCalls.value
+                .filterTo(mutableSetOf()) { it.callId in live && it.media.hasVideo }
+                .mapTo(mutableSetOf()) { it.callId }
+        }
+
+        // And nothing is dropped in a mesh. There is no picture for a leg to be outside
+        // of, so no leg's video is ever in the way — taking it off is a re-INVITE that
+        // removes a stream the far end is drawing in a tile of its own.
+        if (relay) {
+            val droppable = activeCalls.value
+                .filterTo(mutableSetOf()) { it.callId in live && it.callId !in withVideo && it.media.hasVideo }
+                .mapTo(mutableSetOf()) { it.callId }
+            dropVideoForMix(droppable, logger) { videoGateway.setVideoEnabled(it.value, false) }
+        }
 
         val mixedAudio = publishMix(
             conferenceGateway.setConferenceMembers(live.map { it.value }.toSet(), relay = relay),
@@ -2008,10 +2037,23 @@ internal class PjsipSipEngine @Inject constructor(
     private fun rebalanceConferenceVideo() {
         val members = mixed.value
         if (members.size < SipConferenceController.MINIMUM_MIXED) return
+        val mesh = meshConference.value != null
         scope.launch {
             val live = liveForMix(activeCalls.value, members)
-            val withVideo = videoMixable(activeCalls.value, live)
-            when (val picture = conferenceGateway.setVideoConferenceMembers(withVideo.map { it.value }.toSet())) {
+            // The same split [mixCalls] makes, and for the same reason: a mesh composes
+            // nothing, so a canvas ceiling has no business deciding who carries video.
+            val withVideo = if (mesh) {
+                activeCalls.value
+                    .filterTo(mutableSetOf()) { it.callId in live && it.media.hasVideo }
+                    .mapTo(mutableSetOf()) { it.callId }
+            } else {
+                videoMixable(activeCalls.value, live)
+            }
+            val picture = conferenceGateway.setVideoConferenceMembers(
+                withVideo.map { it.value }.toSet(),
+                compose = !mesh,
+            )
+            when (picture) {
                 is Outcome.Success ->
                     logger.info(TAG, "Conference picture re-planned: ${picture.value.size} member(s)")
                 is Outcome.Failure ->
