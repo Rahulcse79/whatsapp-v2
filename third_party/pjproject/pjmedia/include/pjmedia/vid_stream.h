@@ -385,6 +385,40 @@ typedef struct pjmedia_vid_stream_frame_counters
      */
     pj_uint32_t  render_submit_new;
 
+    /* --- receive-path diagnostics -------------------------------------------
+     *
+     * Added to answer one question the stage counters could not: when RTP is
+     * arriving at zero loss and `decoded` stands still, which operation between the
+     * two stops. Counts and reasons, never a line per packet.
+     */
+
+    /** RTP payloads accepted and put into the jitter buffer. */
+    pj_uint32_t  jbuf_put;
+
+    /** Times decode_frame() ran its eligibility scan over the buffer. */
+    pj_uint32_t  scan;
+
+    /** Scan outcomes: a usable payload, a gap, and the end of the buffer. */
+    pj_uint32_t  scan_normal;
+    pj_uint32_t  scan_missing;
+    pj_uint32_t  scan_empty;
+
+    /** Scans that found enough distinct timestamps to assemble a picture. */
+    pj_uint32_t  assembled;
+
+    /** Calls into the codec, and those that returned an error. */
+    pj_uint32_t  decode_call;
+    pj_uint32_t  decode_err;
+
+    /**
+     * The decoding-delay target the scan must reach, in whole pictures.
+     *
+     * A level, not a counter: decode_frame() only assembles once it has seen this
+     * many distinct RTP timestamps, and the test is an equality. Reported because a
+     * target the scan can never reach is one way a buffer grows while nothing decodes.
+     */
+    pj_uint32_t  delay_target;
+
     /**
      * Frames the video device refused.
      *

@@ -604,12 +604,19 @@ static void check_tx_rtcp(pjmedia_vid_stream *stream)
         stream->counters_last_log = now;
         pj_sockaddr_print(&c_strm->rem_rtp_addr, addr, sizeof(addr), 3);
         PJ_LOG(4,(c_strm->name.ptr,
-                  "vidcnt peer=%s cap=%u enc=%u dec=%u sub=%u new=%u rej=%u",
+                  "vidcnt peer=%s cap=%u enc=%u dec=%u sub=%u new=%u rej=%u "
+                  "put=%u scan=%u nrm=%u mis=%u emp=%u asm=%u "
+                  "dcall=%u derr=%u tgt=%u",
                   addr,
                   stream->counters.captured, stream->counters.encoded,
                   stream->counters.decoded, stream->counters.render_submit,
                   stream->counters.render_submit_new,
-                  stream->counters.render_reject));
+                  stream->counters.render_reject,
+                  stream->counters.jbuf_put, stream->counters.scan,
+                  stream->counters.scan_normal, stream->counters.scan_missing,
+                  stream->counters.scan_empty, stream->counters.assembled,
+                  stream->counters.decode_call, stream->counters.decode_err,
+                  stream->counters.delay_target));
     }
 
     /* First check, unless RTCP is 'urgent', just init rtcp_last_tx. */
@@ -722,6 +729,7 @@ static pj_status_t on_stream_rx_rtp(pjmedia_stream_common *c_strm,
         PJ_LOG(4,(channel->port.info.name.ptr, "Jitter buffer reset"));
     } else {
         /* Just put the payload into jitter buffer */
+        ++stream->counters.jbuf_put;
         pjmedia_jbuf_put_frame3(c_strm->jb, payload, payloadlen, 0,
                                 pj_ntohs(hdr->seq), pj_ntohl(hdr->ts), NULL);
 
@@ -1085,6 +1093,10 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
      * timestamp are collected.
      */
 
+    ++stream->counters.scan;
+    stream->counters.delay_target = stream->dec_delay_cnt +
+                                    stream->dec_add_delay_cnt;
+
     /* Check if we got a decodable frame */
     for (cnt=0; ; ) {
         char ptype;
@@ -1095,6 +1107,7 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
         pjmedia_jbuf_peek_frame(c_strm->jb, cnt, NULL, NULL,
                                 &ptype, NULL, &ts, &seq);
         if (ptype == PJMEDIA_JB_NORMAL_FRAME) {
+            ++stream->counters.scan_normal;
             if (stream->last_dec_ts == ts) {
                 /* Remove any late packet (the frame has been decoded) */
                 pjmedia_jbuf_remove_frame(c_strm->jb, 1);
@@ -1124,11 +1137,17 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
             }
         } else if (ptype == PJMEDIA_JB_ZERO_EMPTY_FRAME) {
             /* No more packet in the jitter buffer */
+            ++stream->counters.scan_empty;
             break;
+        } else {
+            ++stream->counters.scan_missing;
         }
 
         ++cnt;
     }
+
+    if (got_frame)
+        ++stream->counters.assembled;
 
     if (got_frame) {
         unsigned i;
@@ -1180,10 +1199,12 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
         }
 
         /* Decode */
+        ++stream->counters.decode_call;
         status = pjmedia_vid_codec_decode(stream->codec, frm_pkt_cnt,
                                           stream->rx_frames,
                                           (unsigned)frame->size, frame);
         if (status != PJ_SUCCESS) {
+            ++stream->counters.decode_err;
             LOGERR_((channel->port.info.name.ptr, status,
                      "codec decode() error"));
             frame->type = PJMEDIA_FRAME_TYPE_NONE;
