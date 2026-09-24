@@ -1091,6 +1091,19 @@ static pj_bool_t and_media_find_encoder(const char *mime, char *out,
         }
     }
 
+    /* Everything advertised has been condemned at some point. Forget that and
+     * take the best of them anyway: a handset whose encoders have all misbehaved
+     * once should send imperfect video, not none, and being left with no
+     * candidate at all is the one outcome with no way back. */
+    for (i = 0; i < cnt; ++i) {
+        if (and_media_encoder_works(cand[i].name, mime)) {
+            pj_ansi_snprintf(out, out_sz, "%s", cand[i].name);
+            PJ_LOG(3, (THIS_FILE, "Every %s encoder has failed before; using %s "
+                       "regardless", mime, cand[i].name));
+            return PJ_TRUE;
+        }
+    }
+
     PJ_LOG(3, (THIS_FILE, "None of the %d advertised %s encoders could be "
                "started; falling back to the static names", cnt, mime));
     return PJ_FALSE;
@@ -1429,6 +1442,74 @@ static pj_status_t and_media_codec_init(pjmedia_vid_codec *codec,
     return PJ_SUCCESS;
 }
 
+/* Condemns the encoder in use and brings up the next candidate in its place.
+ *
+ * The component is swapped underneath a live stream: the decoder, every queue
+ * and the call itself are left exactly as they are, because only the encoder
+ * was wrong. Used both while opening a codec, where a configure can fail
+ * outright, and from the encode path, where a component that configured and
+ * started quite happily stops yielding input buffers some minutes in. The
+ * second is why this is not confined to open: a call that dies at minute four
+ * used to stay dead for its whole length, because re-choosing only happened
+ * the next time a codec was opened.
+ *
+ * `stop()` is deliberately not called first. Tearing a wedged component down
+ * that way never returned on an SM-E236B (Android 14) and took the thread with
+ * it; `delete()` alone releases it and ends its callbacks.
+ */
+static pj_bool_t and_media_swap_encoder(and_media_codec_data *and_media_data)
+{
+    unsigned idx = and_media_data->codec_idx;
+    pj_str_t *current = and_media_codec[idx].encoder_name;
+    and_med_buf_info stale;
+
+    if (and_media_data->enc_retries++ >= AND_MEDIA_OPEN_RETRIES)
+        return PJ_FALSE;
+    if (current && current->ptr)
+        and_media_enc_mark_bad(current->ptr);
+    if (!and_media_find_encoder(and_media_codec[idx].mime_type,
+                                dyn_name[idx], AND_MEDIA_MAX_NAME))
+    {
+        return PJ_FALSE;
+    }
+    dyn_str[idx] = pj_str(dyn_name[idx]);
+    and_media_codec[idx].encoder_name = &dyn_str[idx];
+    PJ_LOG(3, (THIS_FILE, "Re-opening the %s encoder as %s",
+               and_media_codec[idx].name, dyn_name[idx]));
+
+    if (and_media_data->enc) {
+        AMediaCodec_delete(and_media_data->enc);
+        and_media_data->enc = NULL;
+    }
+
+    /* The queues still hold buffer indices the old component handed out. Fed to
+     * the new one they address buffers that are not its own. */
+    while (and_media_data->enc_avail_input_buf &&
+           pj_atomic_queue_get(and_media_data->enc_avail_input_buf, &stale) == PJ_SUCCESS)
+    {
+        /* drained */
+    }
+    while (and_media_data->enc_avail_output_buf &&
+           pj_atomic_queue_get(and_media_data->enc_avail_output_buf, &stale) == PJ_SUCCESS)
+    {
+        /* drained */
+    }
+
+    and_media_data->enc = AMediaCodec_createCodecByName(dyn_name[idx]);
+    if (!and_media_data->enc)
+        return PJ_FALSE;
+    if (API_AT_LEAST(28)) {
+        AMediaCodecOnAsyncNotifyCallback cb = {&and_med_on_input_avail,
+                                               &and_med_on_output_avail,
+                                               &and_med_on_format_changed,
+                                               &and_med_on_error};
+        AMediaCodec_setAsyncNotifyCallback(and_media_data->enc, cb,
+                                           and_media_data);
+    }
+    and_media_data->enc_starved = 0;
+    return configure_encoder(and_media_data) == PJ_SUCCESS;
+}
+
 static pj_status_t and_media_codec_open(pjmedia_vid_codec *codec,
                                     pjmedia_vid_codec_param *codec_param)
 {
@@ -1470,41 +1551,10 @@ static pj_status_t and_media_codec_open(pjmedia_vid_codec *codec,
      * handset -- see and_media_encoder_works. Here the codec is being opened
      * on the ordinary path, which already unwinds a failure safely. */
     status = configure_encoder(and_media_data);
-    while (status != PJ_SUCCESS && and_media_data->enc_retries++ < AND_MEDIA_OPEN_RETRIES) {
-        unsigned idx = and_media_data->codec_idx;
-        pj_str_t *nm = and_media_codec[idx].encoder_name;
-
-        if (!nm || !nm->ptr)
+    while (status != PJ_SUCCESS) {
+        if (!and_media_swap_encoder(and_media_data))
             break;
-        and_media_enc_mark_bad(nm->ptr);
-        if (!and_media_find_encoder(and_media_codec[idx].mime_type,
-                                    dyn_name[idx], AND_MEDIA_MAX_NAME))
-        {
-            break;
-        }
-        dyn_str[idx] = pj_str(dyn_name[idx]);
-        and_media_codec[idx].encoder_name = &dyn_str[idx];
-        PJ_LOG(3, (THIS_FILE, "Re-opening the %s encoder as %s",
-                   and_media_codec[idx].name, dyn_name[idx]));
-
-        /* Swap the component underneath, leaving every queue and the decoder
-         * exactly as they were: only the encoder was wrong. */
-        if (and_media_data->enc) {
-            AMediaCodec_delete(and_media_data->enc);
-            and_media_data->enc = NULL;
-        }
-        and_media_data->enc = AMediaCodec_createCodecByName(dyn_name[idx]);
-        if (!and_media_data->enc)
-            break;
-        if (API_AT_LEAST(28)) {
-            AMediaCodecOnAsyncNotifyCallback cb = {&and_med_on_input_avail,
-                                                   &and_med_on_output_avail,
-                                                   &and_med_on_format_changed,
-                                                   &and_med_on_error};
-            AMediaCodec_setAsyncNotifyCallback(and_media_data->enc, cb,
-                                               and_media_data);
-        }
-        status = configure_encoder(and_media_data);
+        status = PJ_SUCCESS;
     }
     if (status != PJ_SUCCESS) {
         return PJMEDIA_CODEC_EFAILED;
@@ -1567,6 +1617,7 @@ static pj_status_t and_media_codec_encode_begin(pjmedia_vid_codec *codec,
     pj_size_t output_size;
     pj_uint8_t *input_buf = NULL;
     pj_uint8_t *output_buf;
+    pj_bool_t holds_output = PJ_FALSE;
     pj_atomic_queue_t *queue;
 
     PJ_ASSERT_RETURN(codec && input && out_size && output && has_more,
@@ -1604,7 +1655,17 @@ static pj_status_t and_media_codec_encode_begin(pjmedia_vid_codec *codec,
                   buf_info.index));
         /* Starvation for this long is not congestion. At 30 fps this is several
          * seconds in which the camera delivered frames and the encoder took
-         * none of them, which no working component does. */
+         * none of them, which no working component does.
+         *
+         * Remembered for the next call, and deliberately not repaired on this
+         * one. Swapping the component under a live stream was tried and made
+         * matters worse: on an SM-E236B each replacement lasted a shorter time
+         * than the last -- c2.android thirteen minutes, then OMX.google
+         * forty-four seconds -- until every candidate was condemned and the
+         * handset could encode nothing at all (2026-09-23). Whatever stalls
+         * that encoder is not cured by handing the job to another one, and a
+         * call that recovers on redial is better than a device that runs out
+         * of encoders. */
         if (++and_media_data->enc_starved == AND_MEDIA_STARVED_LIMIT) {
             pj_str_t *nm = and_media_codec[and_media_data->codec_idx].encoder_name;
             if (nm && nm->ptr)
@@ -1649,6 +1710,15 @@ static pj_status_t and_media_codec_encode_begin(pjmedia_vid_codec *codec,
     and_media_data->enc_output_buf_idx = buf_info.index;
     and_media_data->enc_buf_info.size = buf_info.size;
     and_media_data->enc_buf_info.flags = buf_info.flags;
+    /* From here the buffer is ours and MUST be given back on every path out.
+     * MediaCodec's output pool is finite: a buffer dequeued and never released
+     * is gone for the life of the component, and once the pool is exhausted the
+     * codec cannot progress -- which it reports, confusingly, by never offering
+     * another *input* buffer. That is the "Encoder failed to get input Buffer"
+     * an SM-E236B produced for ever after some minutes of a call, and it is why
+     * each replacement encoder died sooner than the last: they were all being
+     * drained the same way (2026-09-23). */
+    holds_output = PJ_TRUE;
     output_buf = AMediaCodec_getOutputBuffer(and_media_data->enc,
                                              buf_info.index,
                                              &output_size);
@@ -1698,8 +1768,12 @@ static pj_status_t and_media_codec_encode_begin(pjmedia_vid_codec *codec,
 
         payload_size = and_media_data->enc_buf_info.size + start_data;
 
-        if (payload_size > out_size)
+        if (payload_size > out_size) {
+            AMediaCodec_releaseOutputBuffer(and_media_data->enc,
+                                            buf_info.index, 0);
+            holds_output = PJ_FALSE;
             return PJMEDIA_CODEC_EFRMTOOSHORT;
+        }
 
         output->type = PJMEDIA_FRAME_TYPE_VIDEO;
         output->size = payload_size;
@@ -1711,13 +1785,21 @@ static pj_status_t and_media_codec_encode_begin(pjmedia_vid_codec *codec,
         AMediaCodec_releaseOutputBuffer(and_media_data->enc,
                                         buf_info.index,
                                         0);
+        holds_output = PJ_FALSE;
 
         return PJ_SUCCESS;
     }
 
+    /* Handed on: [and_media_codec_encode_more] releases it when the frame has
+     * been packetised in full. */
+    holds_output = PJ_FALSE;
     return and_media_codec_encode_more(codec, out_size, output, has_more);
 
 on_return:
+    if (holds_output) {
+        AMediaCodec_releaseOutputBuffer(and_media_data->enc,
+                                        and_media_data->enc_output_buf_idx, 0);
+    }
     output->size = 0;
     output->type = PJMEDIA_FRAME_TYPE_NONE;
     *has_more = PJ_FALSE;
