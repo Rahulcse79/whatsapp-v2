@@ -122,10 +122,10 @@ index 32508861..bf7cc25c 100644
                                        const pjmedia_vid_dev_cb *cb,
                                        void *user_data);
 diff --git a/third_party/pjproject/pjmedia/include/pjmedia/vid_stream.h b/third_party/pjproject/pjmedia/include/pjmedia/vid_stream.h
-index f50d3aef..2f737a8c 100644
+index f50d3aef..8b6fddc8 100644
 --- a/third_party/pjproject/pjmedia/include/pjmedia/vid_stream.h
 +++ b/third_party/pjproject/pjmedia/include/pjmedia/vid_stream.h
-@@ -319,6 +319,148 @@ PJ_DECL(pj_status_t) pjmedia_vid_stream_get_stat(
+@@ -319,6 +319,168 @@ PJ_DECL(pj_status_t) pjmedia_vid_stream_get_stat(
  PJ_DECL(pj_status_t) pjmedia_vid_stream_reset_stat(pjmedia_vid_stream *stream);
  
  
@@ -194,6 +194,26 @@ index f50d3aef..2f737a8c 100644
 +     * only `decoded` proves a new picture was produced.
 +     */
 +    pj_uint32_t  render_submit_new;
++
++    /* --- send-path diagnostics ----------------------------------------------
++     *
++     * To place the boundary where ~30 captured frames become ~7 encoded pictures:
++     * before the codec (the encoder is simply not being offered frames) or at it
++     * (it is offered 30 and produces 7).
++     */
++
++    /** Frames handed to the stream's encoding port. The encoder's actual input. */
++    pj_uint32_t  enc_input;
++
++    /** Of those, ones dropped before the codec: stream paused, or an empty frame. */
++    pj_uint32_t  enc_skip_paused;
++    pj_uint32_t  enc_skip_empty;
++
++    /** Calls into the codec. Pairs with `encoded`, which counts those that produced. */
++    pj_uint32_t  enc_begin;
++
++    /** Total microseconds spent inside encode_begin(), for a mean call latency. */
++    pj_uint32_t  enc_usec;
 +
 +    /* --- receive-path diagnostics -------------------------------------------
 +     *
@@ -419,7 +439,7 @@ index 52fe49ab..65f56e76 100644
          /* We are passive while the stream is active so we just store the
           * frame in the buffer.
 diff --git a/third_party/pjproject/pjmedia/src/pjmedia/vid_stream.c b/third_party/pjproject/pjmedia/src/pjmedia/vid_stream.c
-index bef30bdb..0ab1643e 100644
+index bef30bdb..9815555c 100644
 --- a/third_party/pjproject/pjmedia/src/pjmedia/vid_stream.c
 +++ b/third_party/pjproject/pjmedia/src/pjmedia/vid_stream.c
 @@ -95,7 +95,14 @@ struct pjmedia_vid_stream
@@ -437,7 +457,7 @@ index bef30bdb..0ab1643e 100644
  
      unsigned                 dec_max_size;  /**< Size of decoded/raw picture*/
      pjmedia_ratio            dec_max_fps;   /**< Max fps of decoding dir.   */
-@@ -573,6 +580,45 @@ static void check_tx_rtcp(pjmedia_vid_stream *stream)
+@@ -573,6 +580,50 @@ static void check_tx_rtcp(pjmedia_vid_stream *stream)
                pj_elapsed_msec(&c_strm->rtcp_fb_last_tx, &now) >=
                                              PJMEDIA_RTCP_FB_INTERVAL));
  
@@ -467,7 +487,8 @@ index bef30bdb..0ab1643e 100644
 +        PJ_LOG(4,(c_strm->name.ptr,
 +                  "vidcnt peer=%s cap=%u enc=%u dec=%u sub=%u new=%u rej=%u "
 +                  "put=%u scan=%u nrm=%u mis=%u emp=%u asm=%u "
-+                  "dcall=%u derr=%u tgt=%u",
++                  "dcall=%u derr=%u tgt=%u "
++                  "ein=%u ebeg=%u epau=%u eemp=%u eus=%u",
 +                  addr,
 +                  stream->counters.captured, stream->counters.encoded,
 +                  stream->counters.decoded, stream->counters.render_submit,
@@ -477,13 +498,17 @@ index bef30bdb..0ab1643e 100644
 +                  stream->counters.scan_normal, stream->counters.scan_missing,
 +                  stream->counters.scan_empty, stream->counters.assembled,
 +                  stream->counters.decode_call, stream->counters.decode_err,
-+                  stream->counters.delay_target));
++                  stream->counters.delay_target,
++                  stream->counters.enc_input, stream->counters.enc_begin,
++                  stream->counters.enc_skip_paused,
++                  stream->counters.enc_skip_empty,
++                  stream->counters.enc_usec));
 +    }
 +
      /* First check, unless RTCP is 'urgent', just init rtcp_last_tx. */
      if (stream->rtcp_last_tx.u64 == 0 && !early) {
          pj_get_timestamp(&stream->rtcp_last_tx);
-@@ -683,6 +729,7 @@ static pj_status_t on_stream_rx_rtp(pjmedia_stream_common *c_strm,
+@@ -683,6 +734,7 @@ static pj_status_t on_stream_rx_rtp(pjmedia_stream_common *c_strm,
          PJ_LOG(4,(channel->port.info.name.ptr, "Jitter buffer reset"));
      } else {
          /* Just put the payload into jitter buffer */
@@ -491,7 +516,44 @@ index bef30bdb..0ab1643e 100644
          pjmedia_jbuf_put_frame3(c_strm->jb, payload, payloadlen, 0,
                                  pj_ntohs(hdr->seq), pj_ntohl(hdr->ts), NULL);
  
-@@ -861,6 +908,12 @@ static pj_status_t put_frame(pjmedia_port *port,
+@@ -732,6 +784,7 @@ static pj_status_t put_frame(pjmedia_port *port,
+                              pjmedia_frame *frame)
+ {
+     pjmedia_vid_stream *stream = (pjmedia_vid_stream*) port->port_data.pdata;
++    pj_timestamp enc_t0;
+     pjmedia_stream_common *c_strm = &stream->base;
+     pjmedia_vid_channel *channel = c_strm->enc;
+     pj_status_t status = 0;
+@@ -781,8 +834,11 @@ static pj_status_t put_frame(pjmedia_port *port,
+     /* Get frame length in timestamp unit */
+     rtp_ts_len = stream->frame_ts_len;
+ 
++    ++stream->counters.enc_input;
++
+     /* Don't do anything if stream is paused, except updating RTP timestamp */
+     if (channel->paused) {
++        ++stream->counters.enc_skip_paused;
+         /* Update RTP session's timestamp. */
+         status = pjmedia_rtp_encode_rtp( &channel->rtp, 0, 0, 0, rtp_ts_len,
+                                          NULL, NULL);
+@@ -795,6 +851,7 @@ static pj_status_t put_frame(pjmedia_port *port,
+ 
+     /* Empty video frame? Just update RTP timestamp for now */
+     if (frame->type==PJMEDIA_FRAME_TYPE_VIDEO && frame->size==0) {
++        ++stream->counters.enc_skip_empty;
+         pjmedia_rtp_encode_rtp(&channel->rtp, channel->pt, 1, 0,
+                                rtp_ts_len,  (const void**)&rtphdr,
+                                &rtphdrlen);
+@@ -845,6 +902,8 @@ static pj_status_t put_frame(pjmedia_port *port,
+     }
+ 
+     /* Encode! */
++    ++stream->counters.enc_begin;
++    pj_get_timestamp(&enc_t0);
+     status = pjmedia_vid_codec_encode_begin(stream->codec, &enc_opt, frame,
+                                             channel->buf_size -
+                                                sizeof(pjmedia_rtp_hdr),
+@@ -861,8 +920,20 @@ static pj_status_t put_frame(pjmedia_port *port,
          return status;
      }
  
@@ -503,8 +565,16 @@ index bef30bdb..0ab1643e 100644
 +
      pj_get_timestamp(&initial_time);
  
++    /* How long encode_begin() took. Accumulated rather than logged, so the mean
++     * comes out of two readings and no frame costs a log line. `initial_time` is
++     * read immediately above, so this is the encode call and nothing after it.
++     */
++    stream->counters.enc_usec += pj_elapsed_usec(&enc_t0, &initial_time);
++
      if ((frame_out.bit_info & PJMEDIA_VID_FRM_KEYFRAME)
-@@ -1040,6 +1093,10 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
+                                                   == PJMEDIA_VID_FRM_KEYFRAME)
+     {
+@@ -1040,6 +1111,10 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
       * timestamp are collected.
       */
  
@@ -515,7 +585,7 @@ index bef30bdb..0ab1643e 100644
      /* Check if we got a decodable frame */
      for (cnt=0; ; ) {
          char ptype;
-@@ -1050,6 +1107,7 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
+@@ -1050,6 +1125,7 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
          pjmedia_jbuf_peek_frame(c_strm->jb, cnt, NULL, NULL,
                                  &ptype, NULL, &ts, &seq);
          if (ptype == PJMEDIA_JB_NORMAL_FRAME) {
@@ -523,7 +593,7 @@ index bef30bdb..0ab1643e 100644
              if (stream->last_dec_ts == ts) {
                  /* Remove any late packet (the frame has been decoded) */
                  pjmedia_jbuf_remove_frame(c_strm->jb, 1);
-@@ -1079,12 +1137,18 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
+@@ -1079,12 +1155,18 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
              }
          } else if (ptype == PJMEDIA_JB_ZERO_EMPTY_FRAME) {
              /* No more packet in the jitter buffer */
@@ -542,7 +612,7 @@ index bef30bdb..0ab1643e 100644
      if (got_frame) {
          unsigned i;
  
-@@ -1135,10 +1199,12 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
+@@ -1135,10 +1217,12 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
          }
  
          /* Decode */
@@ -555,7 +625,7 @@ index bef30bdb..0ab1643e 100644
              LOGERR_((channel->port.info.name.ptr, status,
                       "codec decode() error"));
              frame->type = PJMEDIA_FRAME_TYPE_NONE;
-@@ -1148,6 +1214,14 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
+@@ -1148,6 +1232,14 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
          pjmedia_jbuf_remove_frame(c_strm->jb, frm_pkt_cnt);
      }
  
@@ -570,7 +640,7 @@ index bef30bdb..0ab1643e 100644
      /* Learn remote frame rate after successful decoding */
      if (got_frame && frame->type == PJMEDIA_FRAME_TYPE_VIDEO && frame->size)
      {
-@@ -2120,6 +2194,44 @@ PJ_DEF(pj_status_t) pjmedia_vid_stream_get_stat_jbuf(
+@@ -2120,6 +2212,44 @@ PJ_DEF(pj_status_t) pjmedia_vid_stream_get_stat_jbuf(
  }
  
  

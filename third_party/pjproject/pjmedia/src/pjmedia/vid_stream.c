@@ -606,7 +606,8 @@ static void check_tx_rtcp(pjmedia_vid_stream *stream)
         PJ_LOG(4,(c_strm->name.ptr,
                   "vidcnt peer=%s cap=%u enc=%u dec=%u sub=%u new=%u rej=%u "
                   "put=%u scan=%u nrm=%u mis=%u emp=%u asm=%u "
-                  "dcall=%u derr=%u tgt=%u",
+                  "dcall=%u derr=%u tgt=%u "
+                  "ein=%u ebeg=%u epau=%u eemp=%u eus=%u",
                   addr,
                   stream->counters.captured, stream->counters.encoded,
                   stream->counters.decoded, stream->counters.render_submit,
@@ -616,7 +617,11 @@ static void check_tx_rtcp(pjmedia_vid_stream *stream)
                   stream->counters.scan_normal, stream->counters.scan_missing,
                   stream->counters.scan_empty, stream->counters.assembled,
                   stream->counters.decode_call, stream->counters.decode_err,
-                  stream->counters.delay_target));
+                  stream->counters.delay_target,
+                  stream->counters.enc_input, stream->counters.enc_begin,
+                  stream->counters.enc_skip_paused,
+                  stream->counters.enc_skip_empty,
+                  stream->counters.enc_usec));
     }
 
     /* First check, unless RTCP is 'urgent', just init rtcp_last_tx. */
@@ -779,6 +784,7 @@ static pj_status_t put_frame(pjmedia_port *port,
                              pjmedia_frame *frame)
 {
     pjmedia_vid_stream *stream = (pjmedia_vid_stream*) port->port_data.pdata;
+    pj_timestamp enc_t0;
     pjmedia_stream_common *c_strm = &stream->base;
     pjmedia_vid_channel *channel = c_strm->enc;
     pj_status_t status = 0;
@@ -828,8 +834,11 @@ static pj_status_t put_frame(pjmedia_port *port,
     /* Get frame length in timestamp unit */
     rtp_ts_len = stream->frame_ts_len;
 
+    ++stream->counters.enc_input;
+
     /* Don't do anything if stream is paused, except updating RTP timestamp */
     if (channel->paused) {
+        ++stream->counters.enc_skip_paused;
         /* Update RTP session's timestamp. */
         status = pjmedia_rtp_encode_rtp( &channel->rtp, 0, 0, 0, rtp_ts_len,
                                          NULL, NULL);
@@ -842,6 +851,7 @@ static pj_status_t put_frame(pjmedia_port *port,
 
     /* Empty video frame? Just update RTP timestamp for now */
     if (frame->type==PJMEDIA_FRAME_TYPE_VIDEO && frame->size==0) {
+        ++stream->counters.enc_skip_empty;
         pjmedia_rtp_encode_rtp(&channel->rtp, channel->pt, 1, 0,
                                rtp_ts_len,  (const void**)&rtphdr,
                                &rtphdrlen);
@@ -892,6 +902,8 @@ static pj_status_t put_frame(pjmedia_port *port,
     }
 
     /* Encode! */
+    ++stream->counters.enc_begin;
+    pj_get_timestamp(&enc_t0);
     status = pjmedia_vid_codec_encode_begin(stream->codec, &enc_opt, frame,
                                             channel->buf_size -
                                                sizeof(pjmedia_rtp_hdr),
@@ -915,6 +927,12 @@ static pj_status_t put_frame(pjmedia_port *port,
     ++stream->counters.encoded;
 
     pj_get_timestamp(&initial_time);
+
+    /* How long encode_begin() took. Accumulated rather than logged, so the mean
+     * comes out of two readings and no frame costs a log line. `initial_time` is
+     * read immediately above, so this is the encode call and nothing after it.
+     */
+    stream->counters.enc_usec += pj_elapsed_usec(&enc_t0, &initial_time);
 
     if ((frame_out.bit_info & PJMEDIA_VID_FRM_KEYFRAME)
                                                   == PJMEDIA_VID_FRM_KEYFRAME)

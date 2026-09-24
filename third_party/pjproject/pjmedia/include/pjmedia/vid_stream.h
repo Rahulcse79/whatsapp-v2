@@ -385,6 +385,26 @@ typedef struct pjmedia_vid_stream_frame_counters
      */
     pj_uint32_t  render_submit_new;
 
+    /* --- send-path diagnostics ----------------------------------------------
+     *
+     * To place the boundary where ~30 captured frames become ~7 encoded pictures:
+     * before the codec (the encoder is simply not being offered frames) or at it
+     * (it is offered 30 and produces 7).
+     */
+
+    /** Frames handed to the stream's encoding port. The encoder's actual input. */
+    pj_uint32_t  enc_input;
+
+    /** Of those, ones dropped before the codec: stream paused, or an empty frame. */
+    pj_uint32_t  enc_skip_paused;
+    pj_uint32_t  enc_skip_empty;
+
+    /** Calls into the codec. Pairs with `encoded`, which counts those that produced. */
+    pj_uint32_t  enc_begin;
+
+    /** Total microseconds spent inside encode_begin(), for a mean call latency. */
+    pj_uint32_t  enc_usec;
+
     /* --- receive-path diagnostics -------------------------------------------
      *
      * Added to answer one question the stage counters could not: when RTP is
