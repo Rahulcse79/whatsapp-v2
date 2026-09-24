@@ -2,6 +2,7 @@ package com.whatsappv2.data.sip.registration.stack
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -120,5 +121,109 @@ class VideoLegTelemetryTest {
         assertEquals(0, telemetry.leg("call-a", 1).snapshot().keyframeMissing)
         assertEquals(1, telemetry.leg("call-ab", 1).snapshot().keyframeMissing, "a prefix is not a match")
         assertEquals(1, telemetry.leg("call-b", 1).snapshot().keyframeMissing)
+    }
+}
+
+/**
+ * Reading PJSIP's `vidcnt` line, and turning two readings into measured frame rates.
+ *
+ * The rates are the whole point of the native counters, and the one thing that must never
+ * happen is a number that looks like a measurement and is not — a rate across a stream
+ * rebuild, or a negotiated figure wearing a measured one's name.
+ */
+class VideoFrameCounterLineTest {
+
+    private val line =
+        "vidcnt peer=192.168.2.198:26286 cap=1482 enc=1480 dec=1455 sub=1455 rej=0"
+
+    @Test
+    fun `a vidcnt line parses into a reading`() {
+        val r = VideoFrameCounterLine.parse(line, atMillis = 1_000)!!
+
+        assertEquals("192.168.2.198:26286", r.peer)
+        assertEquals(1482, r.captured)
+        assertEquals(1480, r.encoded)
+        assertEquals(1455, r.decoded)
+        assertEquals(1455, r.renderSubmit)
+        assertEquals(0, r.renderReject)
+    }
+
+    @Test
+    fun `every other log line is ignored`() {
+        assertNull(VideoFrameCounterLine.parse("Failed to decode frame", 1_000))
+        assertNull(VideoFrameCounterLine.parse("", 1_000))
+        assertNull(VideoFrameCounterLine.parse("vidcnt peer=1.2.3.4:5 cap=oops", 1_000))
+    }
+
+    @Test
+    fun `two readings become measured frames per second`() {
+        val a = VideoFrameCounterLine.parse(line, atMillis = 0)!!
+        val b = a.copy(
+            atMillis = 5_000,
+            captured = a.captured + 150,
+            encoded = a.encoded + 149,
+            decoded = a.decoded + 147,
+            renderSubmit = a.renderSubmit + 147,
+        )
+
+        val out = videoFrameRateFragment(a, b)
+
+        assertTrue("capture 30.0" in out, out)
+        assertTrue("encode 29.8" in out, out)
+        assertTrue("decode 29.4" in out, out)
+        assertTrue("render-submit 29.4" in out, out)
+    }
+
+    @Test
+    fun `a stalled decoder reads as zero rather than as the negotiated rate`() {
+        // The case the whole phase exists for: RTP still arriving, nothing decoded.
+        val a = VideoFrameCounterLine.parse(line, atMillis = 0)!!
+        val b = a.copy(atMillis = 5_000, captured = a.captured + 150, encoded = a.encoded + 150)
+
+        val out = videoFrameRateFragment(a, b)
+
+        assertTrue("decode 0.0" in out, out)
+        assertTrue("render-submit 0.0" in out, out)
+    }
+
+    @Test
+    fun `counters that went backwards produce no rate at all`() {
+        // A rebuilt stream starts again at zero. Differencing across that boundary would
+        // report a large negative rate, which measures nothing.
+        val a = VideoFrameCounterLine.parse(line, atMillis = 0)!!
+        val b = a.copy(atMillis = 5_000, decoded = 3, renderSubmit = 3)
+
+        assertEquals("", videoFrameRateFragment(a, b))
+    }
+
+    @Test
+    fun `one reading is not a rate`() {
+        val a = VideoFrameCounterLine.parse(line, atMillis = 0)!!
+
+        assertEquals("", videoFrameRateFragment(null, a))
+        assertEquals("", videoFrameRateFragment(a, null))
+        assertEquals("", videoFrameRateFragment(a, a), "no elapsed time is no rate")
+    }
+
+    @Test
+    fun `a device refusing frames is reported, and only when it happened`() {
+        val a = VideoFrameCounterLine.parse(line, atMillis = 0)!!
+        val healthy = a.copy(atMillis = 5_000, decoded = a.decoded + 150, renderSubmit = a.renderSubmit + 150)
+        val refusing = healthy.copy(renderReject = 7)
+
+        assertTrue("render-reject" !in videoFrameRateFragment(a, healthy))
+        assertTrue("render-reject 7" in videoFrameRateFragment(a, refusing))
+    }
+
+    @Test
+    fun `a reading is stored and forgotten by peer`() {
+        val telemetry = VideoLegTelemetry()
+        val r = VideoFrameCounterLine.parse(line, atMillis = 0)!!
+
+        telemetry.recordFrameCounters(r)
+        assertEquals(r, telemetry.framesFor("192.168.2.198:26286"))
+
+        telemetry.forgetFrames("192.168.2.198:26286")
+        assertNull(telemetry.framesFor("192.168.2.198:26286"))
     }
 }

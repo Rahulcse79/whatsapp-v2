@@ -30,11 +30,16 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * ## What it cannot see
  *
- * `pjsua2` exposes no video frame counters, so `capture_fps`, `encode_fps`, `decode_fps`
- * and `render_fps` are **not** reachable from here — `StreamStat` carries RTCP and jitter
- * buffer state and nothing else. They need a native counter in `vid_stream.c`, and that is
- * the one piece of Phase 2 that cannot be done in Kotlin. Everything in this file is what
- * the existing bindings genuinely expose, so none of it is guesswork.
+ * `pjsua2` exposes no video frame counters — `StreamStat` carries RTCP and jitter-buffer
+ * state and nothing else — so capture, encode, decode and render-submission rates cannot
+ * come from the bindings. They are counted natively instead (see the numbered PJSIP patch)
+ * and arrive here as a `vidcnt` line, parsed by [VideoFrameCounterLine].
+ *
+ * What is still **not** measured is actual presentation. The deepest native boundary is
+ * `pjmedia_vid_dev_stream_put_frame()`, which on Android posts the frame to an OpenGL job
+ * queue and returns — so it is render *submission*, and is named that way everywhere. A
+ * tile that is black while `render-submit` advances is a question for the renderer, the
+ * surface or the GPU, which is precisely the boundary this draws.
  */
 internal class VideoLegTelemetry {
 
@@ -100,6 +105,47 @@ internal class VideoLegTelemetry {
         )
     }
 
+    // ------------------------------------------------- native frame counters
+
+    /** The last native counter reading for each leg, by the peer RTP address. */
+    private val frames = ConcurrentHashMap<String, FrameReading>()
+
+    /**
+     * Takes one `vidcnt` line from PJSIP's own log.
+     *
+     * The counters are produced natively because `pjsua2` exposes no video frame
+     * counters at all — `StreamStat` carries RTCP and jitter-buffer state and nothing
+     * else — so the stages between them are invisible from here without this.
+     */
+    fun recordFrameCounters(reading: FrameReading) {
+        frames[reading.peer] = reading
+    }
+
+    /** The last reading for the leg reaching [peer], or null before the first line. */
+    fun framesFor(peer: String): FrameReading? = frames[peer]
+
+    /** Forgets a leg's frame counters. Called when its call ends. */
+    fun forgetFrames(peer: String) {
+        frames -= peer
+    }
+
+    /**
+     * One native reading: raw counters and when they were read.
+     *
+     * Raw and monotonic, never rates. The rate is stated by differencing two readings
+     * over their own elapsed time, because the native emission interval and the trace
+     * interval do not line up and a rate computed against the wrong one is wrong twice.
+     */
+    data class FrameReading(
+        val peer: String,
+        val atMillis: Long,
+        val captured: Long,
+        val encoded: Long,
+        val decoded: Long,
+        val renderSubmit: Long,
+        val renderReject: Long,
+    )
+
     /** A reading of one leg's counters, for differencing against the next. */
     data class Snapshot(
         val streamCreated: Long = 0,
@@ -161,3 +207,75 @@ internal fun videoPipelineTraceFragment(
 
 /** Past this, "how old is the stream" stops explaining anything and is left out. */
 private const val STREAM_AGE_REPORTED_FOR_MILLIS = 60_000L
+
+/**
+ * Reads PJSIP's `vidcnt` line, or returns null for every other line it is shown.
+ *
+ * The line is emitted by the patched `vid_stream.c` once every few seconds per stream:
+ *
+ * ```
+ * vidcnt peer=192.168.2.198:26286 cap=1482 enc=1480 dec=1455 sub=1455 rej=0
+ * ```
+ *
+ * Parsed rather than plumbed through `pjsua2` because exposing a new native struct to
+ * Java means regenerating the SWIG bindings, and the log is a channel that already
+ * exists and already crosses the boundary. The peer RTP address is the join key: the
+ * application sees the same string in `StreamInfo.remoteRtpAddress`.
+ */
+internal object VideoFrameCounterLine {
+
+    private val PATTERN = Regex(
+        """vidcnt peer=(\S+) cap=(\d+) enc=(\d+) dec=(\d+) sub=(\d+) rej=(\d+)""",
+    )
+
+    /** Cheap enough to run on every log line: a substring test before any regex. */
+    fun parse(message: String, atMillis: Long): VideoLegTelemetry.FrameReading? {
+        if (MARKER !in message) return null
+        val m = PATTERN.find(message) ?: return null
+        return VideoLegTelemetry.FrameReading(
+            peer = m.groupValues[1],
+            atMillis = atMillis,
+            captured = m.groupValues[2].toLong(),
+            encoded = m.groupValues[3].toLong(),
+            decoded = m.groupValues[4].toLong(),
+            renderSubmit = m.groupValues[5].toLong(),
+            renderReject = m.groupValues[6].toLong(),
+        )
+    }
+
+    const val MARKER = "vidcnt peer="
+}
+
+/**
+ * `capture=29.8 encode=29.7 decode=29.4 render-submit=29.4` from two native readings.
+ *
+ * Measured, and never the negotiated rate: the trace states the negotiated figure
+ * separately, beside the resolution, so a leg running `@30` while decoding 0.4 frames a
+ * second reads as the fault it is rather than as agreement.
+ *
+ * Null when there is nothing honest to say — one reading, no elapsed time, or counters
+ * that went backwards because the stream was rebuilt and started again at zero.
+ */
+internal fun videoFrameRateFragment(
+    previous: VideoLegTelemetry.FrameReading?,
+    current: VideoLegTelemetry.FrameReading?,
+): String {
+    if (previous == null || current == null) return ""
+    val seconds = (current.atMillis - previous.atMillis) / 1_000.0
+    if (seconds <= 0.0) return ""
+    if (current.decoded < previous.decoded || current.renderSubmit < previous.renderSubmit) return ""
+
+    fun fps(now: Long, before: Long) = String.format("%.1f", (now - before) / seconds)
+
+    return buildString {
+        append(" - capture ").append(fps(current.captured, previous.captured))
+        append(" encode ").append(fps(current.encoded, previous.encoded))
+        append(" decode ").append(fps(current.decoded, previous.decoded))
+        append(" render-submit ").append(fps(current.renderSubmit, previous.renderSubmit))
+        append(" fps")
+        // Only when it happened: a device refusing frames is silent otherwise, and is
+        // the difference between "pjmedia stopped" and "the surface went away".
+        (current.renderReject - previous.renderReject).takeIf { it > 0 }
+            ?.let { append(" render-reject ").append(it) }
+    }
+}

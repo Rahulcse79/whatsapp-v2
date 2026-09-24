@@ -95,7 +95,14 @@ struct pjmedia_vid_stream
     pjmedia_vid_codec_mgr   *codec_mgr;     /**< Codec manager.             */
     pjmedia_vid_stream_info  info;          /**< Stream info.               */
 
+    pjmedia_vid_stream_frame_counters counters;
+                                            /**< Per-stage frame counters, so a
+                                                 stalled tile can be attributed to
+                                                 the stage that stopped first.    */
+
     pj_timestamp             rtcp_last_tx;  /**< Last RTCP tx time.         */
+    pj_timestamp             counters_last_log;
+                                            /**< Last frame-counter emission. */
 
     unsigned                 dec_max_size;  /**< Size of decoded/raw picture*/
     pjmedia_ratio            dec_max_fps;   /**< Max fps of decoding dir.   */
@@ -573,6 +580,37 @@ static void check_tx_rtcp(pjmedia_vid_stream *stream)
               pj_elapsed_msec(&c_strm->rtcp_fb_last_tx, &now) >=
                                             PJMEDIA_RTCP_FB_INTERVAL));
 
+    /* Frame counters, at their own slow interval.
+     *
+     * Emitted here because this function is already the stream's periodic tick and is
+     * already rate limited --- adding a timer would add a thread. One line per stream
+     * every few seconds, never per frame, and only the raw counters: the rate is the
+     * reader's business, and a rate computed here would have to be recomputed there
+     * anyway when the reader's own interval did not line up with this one.
+     *
+     * The peer's RTP address is the join key. It is what identifies a leg to the
+     * application, which sees the same string in `StreamInfo.remoteRtpAddress`, and it
+     * is stable for as long as the stream is --- a renegotiation that moves the port
+     * builds a new stream, whose counters start at zero, which is exactly the
+     * behaviour a rebuilt decoder should have.
+     */
+    if (stream->counters_last_log.u64 == 0) {
+        stream->counters_last_log = now;
+    } else if (pj_elapsed_msec(&stream->counters_last_log, &now) >=
+                                        PJMEDIA_VID_STREAM_COUNTER_LOG_MSEC)
+    {
+        char addr[PJ_INET6_ADDRSTRLEN+10];
+
+        stream->counters_last_log = now;
+        pj_sockaddr_print(&c_strm->rem_rtp_addr, addr, sizeof(addr), 3);
+        PJ_LOG(4,(c_strm->name.ptr,
+                  "vidcnt peer=%s cap=%u enc=%u dec=%u sub=%u rej=%u",
+                  addr,
+                  stream->counters.captured, stream->counters.encoded,
+                  stream->counters.decoded, stream->counters.render_submit,
+                  stream->counters.render_reject));
+    }
+
     /* First check, unless RTCP is 'urgent', just init rtcp_last_tx. */
     if (stream->rtcp_last_tx.u64 == 0 && !early) {
         pj_get_timestamp(&stream->rtcp_last_tx);
@@ -861,6 +899,12 @@ static pj_status_t put_frame(pjmedia_port *port,
         return status;
     }
 
+    /* One frame in, one encoded frame out. Counted where encode_begin() has
+     * already succeeded, so it measures the encoder producing rather than the
+     * camera offering --- the two diverge exactly when the encoder is the fault.
+     */
+    ++stream->counters.encoded;
+
     pj_get_timestamp(&initial_time);
 
     if ((frame_out.bit_info & PJMEDIA_VID_FRM_KEYFRAME)
@@ -1147,6 +1191,14 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
 
         pjmedia_jbuf_remove_frame(c_strm->jb, frm_pkt_cnt);
     }
+
+    /* A decoded picture, counted on the same condition the frame rate estimator
+     * trusts: a decode that returned no picture is not a decoded frame, and
+     * counting the call rather than the result is what would make a black tile
+     * look healthy here.
+     */
+    if (got_frame && frame->type == PJMEDIA_FRAME_TYPE_VIDEO && frame->size)
+        ++stream->counters.decoded;
 
     /* Learn remote frame rate after successful decoding */
     if (got_frame && frame->type == PJMEDIA_FRAME_TYPE_VIDEO && frame->size)
@@ -2117,6 +2169,44 @@ PJ_DEF(pj_status_t) pjmedia_vid_stream_get_stat_jbuf(
 {
     return pjmedia_stream_common_get_stat_jbuf((pjmedia_stream_common *)stream,
                                                state);
+}
+
+
+/*
+ * Get the stream's per-stage frame counters.
+ */
+PJ_DEF(pj_status_t) pjmedia_vid_stream_get_frame_counters(
+                            const pjmedia_vid_stream *stream,
+                            pjmedia_vid_stream_frame_counters *counters)
+{
+    PJ_ASSERT_RETURN(stream && counters, PJ_EINVAL);
+
+    /* A plain copy, and no lock. Each field has one writer on a media thread and
+     * this reader on another; the reader is allowed to see a counter a frame late,
+     * and cannot see a torn one. Taking a lock here would put the telemetry in the
+     * path of the encode and decode it is measuring, which is the one thing it must
+     * never do.
+     */
+    *counters = stream->counters;
+
+    return PJ_SUCCESS;
+}
+
+
+/*
+ * The counter block itself, for the video port that feeds and drains this stream.
+ *
+ * The capture and render stages run inside pjmedia_vid_port, which has no way back to
+ * the stream it is wired to --- so pjsua hands the port this pointer when it connects
+ * the two (see pjsua_vid.c). Returning the block rather than copying it is the whole
+ * point: the port increments the same counters the stream reports, so one line can
+ * carry all five stages of one leg.
+ */
+PJ_DEF(pjmedia_vid_stream_frame_counters*) pjmedia_vid_stream_get_counter_block(
+                            pjmedia_vid_stream *stream)
+{
+    PJ_ASSERT_RETURN(stream, NULL);
+    return &stream->counters;
 }
 
 

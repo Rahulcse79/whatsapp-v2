@@ -1810,6 +1810,18 @@
  *
  * Default : 5
  */
+/**
+ * How often a video stream writes its per-stage frame counters to the log, in
+ * milliseconds. One line per stream, never per frame; the application differences two
+ * readings to state capture/encode/decode/render-submission rates.
+ *
+ * Default: 5000 (5 seconds)
+ */
+#ifndef PJMEDIA_VID_STREAM_COUNTER_LOG_MSEC
+#   define PJMEDIA_VID_STREAM_COUNTER_LOG_MSEC          5000
+#endif
+
+
 #ifndef PJMEDIA_VID_STREAM_START_KEYFRAME_CNT
 #   define PJMEDIA_VID_STREAM_START_KEYFRAME_CNT        5
 #endif

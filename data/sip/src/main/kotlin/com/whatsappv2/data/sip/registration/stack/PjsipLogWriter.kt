@@ -51,9 +51,29 @@ internal class PjsipLogWriter(
      * line, the switch in Settings takes effect on the next message.
      */
     private val enabled: () -> Boolean,
+
+    /**
+     * Where a `vidcnt` line goes.
+     *
+     * Read **before** [enabled], deliberately. The trace is a diagnostic the user turns
+     * on; the frame counters are telemetry the app always wants, and gating them behind
+     * the trace switch would mean the one measurement that can attribute a black tile is
+     * missing from every report that did not think to enable logging first.
+     */
+    private val onFrameCounters: (VideoLegTelemetry.FrameReading) -> Unit = {},
 ) : LogWriter() {
 
     override fun write(entry: LogEntry) {
+        // Before the gate, and cheap: a substring test on every line, a regex only on the
+        // handful that match. Never throws across the JNI boundary — see below.
+        runCatching {
+            val raw = entry.msg.orEmpty()
+            if (VideoFrameCounterLine.MARKER in raw) {
+                VideoFrameCounterLine.parse(raw, System.currentTimeMillis())
+                    ?.let(onFrameCounters)
+            }
+        }
+
         // Before anything is formatted or redacted. PJSIP has already built the string by
         // the time it reaches here, but the redaction pass and the logcat write are ours
         // and are worth skipping when nobody asked for a trace.

@@ -102,6 +102,29 @@ PJ_DECL(pj_status_t) pjmedia_vid_port_create(pj_pool_t *pool,
  * @param user_data     Arbitrary user data, which will be given back in the
  *                      callbacks.
  */
+/* Declared rather than included: vid_stream.h is a heavier header and the only thing
+ * needed here is the name of the type a caller passes through.
+ */
+typedef struct pjmedia_vid_stream_frame_counters pjmedia_vid_stream_frame_counters;
+
+
+/**
+ * Tell this port which stream's frame counters to increment, so the capture and
+ * render-submission stages --- which happen here, not in the stream --- are counted
+ * against the right leg. See #pjmedia_vid_stream_frame_counters.
+ *
+ * pjsua sets this when it connects a port to a stream and clears it (NULL) before the
+ * stream is destroyed, which is what stops a port outliving its stream from writing
+ * into freed memory, and what stops a rebuilt stream inheriting an old one's counts.
+ *
+ * @param vid_port      The video port.
+ * @param counters      The stream's counter block, or NULL to detach.
+ */
+PJ_DECL(void) pjmedia_vid_port_set_counter_block(
+                            pjmedia_vid_port *vid_port,
+                            pjmedia_vid_stream_frame_counters *counters);
+
+
 PJ_DECL(void) pjmedia_vid_port_set_cb(pjmedia_vid_port *vid_port,
                                       const pjmedia_vid_dev_cb *cb,
                                       void *user_data);

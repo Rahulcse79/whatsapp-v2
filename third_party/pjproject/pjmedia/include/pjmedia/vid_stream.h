@@ -320,6 +320,92 @@ PJ_DECL(pj_status_t) pjmedia_vid_stream_reset_stat(pjmedia_vid_stream *stream);
 
 
 /**
+ * Frame counters for one video stream, one per stage of the pipeline.
+ *
+ * These exist to answer a single question that RTP statistics cannot: when a remote
+ * tile goes black, which stage stopped producing first. Counting at every stage makes
+ * that a subtraction rather than a guess --- RTP arriving while #decoded stands still
+ * is a decoder or keyframe problem, #decoded advancing while #render_submit stands
+ * still is a video port or device problem, and so on.
+ *
+ * Monotonic for the life of one stream, and never reset: the caller states rates by
+ * differencing two readings, and a counter that restarts under it would report a rate
+ * that never happened. A rebuilt stream is a new stream with its own counters, which is
+ * what keeps a new decoder from inheriting the history of the one it replaced.
+ *
+ * Plain unsigned words rather than pj_atomic_t, deliberately. Each counter has exactly
+ * one writer --- the capture thread, the encoding thread, the decoding thread, the
+ * renderer's clock --- and one reader that is allowed to be a sample behind. On every
+ * architecture PJSIP runs on, an aligned 32-bit store is not torn, so the cost here is
+ * one add and no barrier, no allocation and no lock on any media thread. This is the
+ * same reasoning, and the same shape, as pjmedia_rtcp_stat's own counters.
+ */
+typedef struct pjmedia_vid_stream_frame_counters
+{
+    /** Frames delivered by the capture device to the video port. */
+    pj_uint32_t  captured;
+
+    /** Frames the encoder accepted and produced output for. */
+    pj_uint32_t  encoded;
+
+    /** Frames the decoder produced a picture from. */
+    pj_uint32_t  decoded;
+
+    /**
+     * Frames handed to the video device for rendering.
+     *
+     * **Submission, not presentation.** On Android this ends at
+     * `andgl_stream_put_frame()`, which posts the frame to an OpenGL job queue and
+     * returns; the draw and the buffer swap happen later on another thread. A count
+     * here therefore proves pjmedia did its part, and a black tile with this counter
+     * advancing is a question for the renderer, the surface or the GPU --- which is
+     * exactly the boundary this counter exists to draw.
+     */
+    pj_uint32_t  render_submit;
+
+    /**
+     * Frames the video device refused.
+     *
+     * The same call site as #render_submit, counted apart. A device that is not running
+     * returns PJ_EINVALIDOP per frame, which is silent otherwise and is precisely the
+     * shape of a surface that went away without pjmedia being told.
+     */
+    pj_uint32_t  render_reject;
+
+} pjmedia_vid_stream_frame_counters;
+
+
+/**
+ * Read a stream's frame counters.
+ *
+ * @param stream        The video stream.
+ * @param counters      Filled with the counters as they stand.
+ *
+ * @return              PJ_SUCCESS on success.
+ */
+PJ_DECL(pj_status_t) pjmedia_vid_stream_get_frame_counters(
+                            const pjmedia_vid_stream *stream,
+                            pjmedia_vid_stream_frame_counters *counters);
+
+
+/**
+ * Get the stream's counter block, so the video port wired to this stream can count
+ * the two stages that happen inside it (capture and render submission).
+ *
+ * The pointer is owned by the stream and is valid for as long as it is. The caller is
+ * pjsua, which connects port and stream and is therefore the only party that knows
+ * they belong together --- and which must clear it again before the stream is
+ * destroyed, so a port that outlives its stream cannot write into freed memory.
+ *
+ * @param stream        The video stream.
+ *
+ * @return              The counter block, or NULL if @a stream is NULL.
+ */
+PJ_DECL(pjmedia_vid_stream_frame_counters*) pjmedia_vid_stream_get_counter_block(
+                            pjmedia_vid_stream *stream);
+
+
+/**
  * Get current jitter buffer state. See also #pjmedia_stream_get_stat()
  *
  * @param stream        The video stream.

@@ -686,7 +686,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
         // single delete in `libDestroy` the only one, and has the director hold a strong
         // reference back so the object stays alive while PJSIP can still call it.
         logConfig.apply {
-            writer = PjsipLogWriter(logger) { traceEnabled }
+            writer = PjsipLogWriter(
+                logger = logger,
+                enabled = { traceEnabled },
+                onFrameCounters = telemetry::recordFrameCounters,
+            )
                 .also { it.swigReleaseOwnership() }
                 .also { logWriter = it }
             msgLogging = SIP_MESSAGE_LOGGING
@@ -2657,6 +2661,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
         /** The counters each stream last reported, so the next read can be stated as a rate. */
         private val rtpCounters = mutableMapOf<Long, RtpCounters>()
 
+        /** The native frame counters each stream last reported, for the same reason. */
+        private val previousFrames = mutableMapOf<Long, VideoLegTelemetry.FrameReading>()
+
         /**
          * `pjsua` has built a stream — and with it a decoder that has no reference frame
          * yet (Phase 2).
@@ -2727,7 +2734,16 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 )
                 leg.previous = pipeline
 
-                logger.info(TAG, "Media trace $callKey $line$fragment")
+                // Measured frame rates, from the native counters, joined to this leg by
+                // the peer RTP address. Stated separately from the negotiated rate that
+                // sits beside the resolution: a leg negotiated at 30 and decoding 0.4 is
+                // the finding, and one number cannot carry both.
+                val peer = stream?.remoteRtpAddress.orEmpty()
+                val frames = peer.takeIf { it.isNotBlank() }?.let(telemetry::framesFor)
+                val rates = videoFrameRateFragment(previousFrames[media.index], frames)
+                if (frames != null) previousFrames[media.index] = frames
+
+                logger.info(TAG, "Media trace $callKey $line$fragment$rates")
             }
         }
 

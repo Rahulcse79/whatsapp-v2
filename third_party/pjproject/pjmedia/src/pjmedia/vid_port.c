@@ -21,6 +21,7 @@
 #include <pjmedia/errno.h>
 #include <pjmedia/event.h>
 #include <pjmedia/vid_codec.h>
+#include <pjmedia/vid_stream.h>
 #include <pj/log.h>
 #include <pj/pool.h>
 
@@ -85,6 +86,13 @@ struct pjmedia_vid_port
     vid_pasv_port           *pasv_port;
     pjmedia_port            *client_port;
     pj_bool_t                destroy_client_port;
+
+    /* The stream's frame counters, when pjsua has told this port which stream it
+     * belongs to. NULL until then, and NULL again before that stream is destroyed,
+     * which is what stops a port outliving its stream from writing into freed
+     * memory. See pjmedia_vid_port_set_counter_block().
+     */
+    pjmedia_vid_stream_frame_counters *counters;
 
     struct {
         pjmedia_converter       *conv;
@@ -713,6 +721,24 @@ on_error:
     return status;
 }
 
+PJ_DEF(void) pjmedia_vid_port_set_counter_block(
+                            pjmedia_vid_port *vid_port,
+                            pjmedia_vid_stream_frame_counters *counters)
+{
+    if (!vid_port)
+        return;
+
+    /* A plain store, deliberately not synchronised against the media threads that
+     * read it. Both transitions are safe as a single word write: setting it makes a
+     * counter start being incremented a frame or two later than it might have, and
+     * clearing it makes one stop a frame or two later. pjsua clears it while the
+     * stream is still alive, so the pointer a media thread may still be holding is
+     * valid memory either way --- which is the property that matters.
+     */
+    vid_port->counters = counters;
+}
+
+
 PJ_DEF(void) pjmedia_vid_port_set_cb(pjmedia_vid_port *vid_port,
                                      const pjmedia_vid_dev_cb *cb,
                                      void *user_data)
@@ -1194,6 +1220,28 @@ static void enc_clock_cb(const pj_timestamp *ts, void *user_data)
         return;
 }
 
+/* Hand a frame to the video device, and count the attempt.
+ *
+ * Submission, not presentation: on Android the device's put_frame() posts the frame
+ * to an OpenGL job queue and returns, so this counts pjmedia having done its part.
+ * A refusal is counted apart because it is otherwise completely silent --- a surface
+ * that has gone away makes the device return PJ_EINVALIDOP once per frame, for ever.
+ */
+static pj_status_t render_submit(pjmedia_vid_port *vp, pjmedia_frame *frame)
+{
+    pj_status_t status = pjmedia_vid_dev_stream_put_frame(vp->strm, frame);
+
+    if (vp->counters) {
+        if (status == PJ_SUCCESS)
+            ++vp->counters->render_submit;
+        else
+            ++vp->counters->render_reject;
+    }
+
+    return status;
+}
+
+
 static void dec_clock_cb(const pj_timestamp *ts, void *user_data)
 {
     /* We are here because user wants us to be active but the stream is
@@ -1215,7 +1263,7 @@ static void dec_clock_cb(const pj_timestamp *ts, void *user_data)
         return;
     
     if (frame.size > 0)
-        status = pjmedia_vid_dev_stream_put_frame(vp->strm, &frame);
+        status = render_submit(vp, &frame);
 }
 
 static pj_status_t vidstream_cap_cb(pjmedia_vid_dev_stream *stream,
@@ -1223,6 +1271,14 @@ static pj_status_t vidstream_cap_cb(pjmedia_vid_dev_stream *stream,
                                     pjmedia_frame *frame)
 {
     pjmedia_vid_port *vp = (pjmedia_vid_port*)user_data;
+
+    /* One frame out of the camera. Counted before anything is done with it, so
+     * it measures the capture device and not what the pipeline then made of it:
+     * capture standing still is a camera fault, capture advancing while `encoded`
+     * does not is an encoder fault, and only separate counters can tell them apart.
+     */
+    if (vp->counters)
+        ++vp->counters->captured;
 
     /* We just store the frame in the buffer. For active role, we let
      * video port's clock to push the frame buffer to the user.
@@ -1407,7 +1463,7 @@ static pj_status_t vid_pasv_port_put_frame(struct pjmedia_port *this_port,
             frame_.size = 0;
 
             /* Send heart beat for updating timestamp or keep-alive. */
-            return pjmedia_vid_dev_stream_put_frame(vp->strm, &frame_);
+            return render_submit(vp, &frame_);
         }
         
         pj_bzero(&frame_, sizeof(frame_));
@@ -1415,8 +1471,7 @@ static pj_status_t vid_pasv_port_put_frame(struct pjmedia_port *this_port,
         if (status != PJ_SUCCESS)
             return status;
 
-        return pjmedia_vid_dev_stream_put_frame(vp->strm, (vp->conv.conv?
-                                                           &frame_: frame));
+        return render_submit(vp, (vp->conv.conv? &frame_: frame));
     } else {
         /* We are passive while the stream is active so we just store the
          * frame in the buffer.
