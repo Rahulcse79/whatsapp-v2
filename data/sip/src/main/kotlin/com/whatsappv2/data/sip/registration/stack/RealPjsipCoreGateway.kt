@@ -61,6 +61,8 @@ import org.pjsip.pjsua2.EpConfig
 import org.pjsip.pjsua2.IpChangeParam
 import org.pjsip.pjsua2.MediaFormatVideo
 import org.pjsip.pjsua2.OnCallMediaEventParam
+import org.pjsip.pjsua2.OnStreamCreatedParam
+import org.pjsip.pjsua2.OnStreamDestroyedParam
 import org.pjsip.pjsua2.OnCallMediaStateParam
 import org.pjsip.pjsua2.OnCallRxReinviteParam
 import org.pjsip.pjsua2.OnCallStateParam
@@ -85,6 +87,7 @@ import org.pjsip.pjsua2.VideoMediaTransmitParam
 import org.pjsip.pjsua2.VideoPreview
 import org.pjsip.pjsua2.VideoWindowHandle
 import org.pjsip.pjsua2.pj_ssl_sock_proto
+import org.pjsip.pjsua2.StreamInfo
 import org.pjsip.pjsua2.StreamStat
 import org.pjsip.pjsua2.pjmedia_dir
 import org.pjsip.pjsua2.pjmedia_event_type
@@ -381,6 +384,12 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     /** Our call key to the director holding its native peer. */
     private val calls = ConcurrentHashMap<String, PjCall>()
+
+    /**
+     * Per-leg pipeline counters (Phase 2). Held here rather than on [PjCall] so a stream
+     * rebuilt under a call keeps its history: the count of rebuilds is the measurement.
+     */
+    private val telemetry = VideoLegTelemetry()
 
     /** The last account config used, so a push-parameter change can re-apply it. */
     private val accountConfigs = ConcurrentHashMap<String, StackAccount>()
@@ -1963,6 +1972,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 // any longer is the leak; releasing it any earlier is a crash.
                 calls -= callKey
                 recorders -= callKey
+                // The counters outlive the streams they measured, but not the call: kept
+                // until here so a rebuild late in the call is still counted, dropped here
+                // so a long session does not accumulate a leg per call that ever existed.
+                telemetry.forget(callKey)
                 // Before the media goes: a conference link into a released port is a
                 // use-after-free in a native bridge, not a stale entry in a map.
                 conference.remove(callKey)
@@ -2379,6 +2392,22 @@ internal class RealPjsipCoreGateway @Inject constructor(
          */
         override fun onCallMediaEvent(prm: OnCallMediaEventParam) {
             val type = runCatching { prm.ev.type }.getOrNull() ?: return
+
+            // Counted before anything is decided about it (Phase 2). This runs on PJSIP's
+            // media thread and `KEYFRAME_MISSING` can arrive per frame, so it is one
+            // atomic increment and never a log write; `traceMedia` reports the deltas.
+            runCatching {
+                val leg = telemetry.leg(callKey, prm.medIdx)
+                when (type) {
+                    pjmedia_event_type.PJMEDIA_EVENT_KEYFRAME_MISSING -> leg.keyframeMissing
+                    pjmedia_event_type.PJMEDIA_EVENT_KEYFRAME_FOUND -> leg.keyframeFound
+                    pjmedia_event_type.PJMEDIA_EVENT_FMT_CHANGED -> leg.formatChanged
+                    pjmedia_event_type.PJMEDIA_EVENT_RX_RTCP_FB -> leg.rtcpFeedbackRx
+                    pjmedia_event_type.PJMEDIA_EVENT_VID_DEV_ERROR -> leg.deviceError
+                    else -> null
+                }?.incrementAndGet()
+            }
+
             if (type != pjmedia_event_type.PJMEDIA_EVENT_FMT_CHANGED) return
             publishVideoSizes()
             // Once more, shortly after. The decoder's format is read synchronously
@@ -2629,6 +2658,30 @@ internal class RealPjsipCoreGateway @Inject constructor(
         private val rtpCounters = mutableMapOf<Long, RtpCounters>()
 
         /**
+         * `pjsua` has built a stream — and with it a decoder that has no reference frame
+         * yet (Phase 2).
+         *
+         * This is the boundary the whole phase exists to timestamp. A session refresh does
+         * **not** reach here; a genuine media re-negotiation does, and so does every new
+         * leg. Correlating it against `kf-missing`/`kf-found` on the same line is what
+         * separates "the decoder was rebuilt and recovered" from "the decoder was rebuilt
+         * and never did".
+         */
+        override fun onStreamCreated(prm: OnStreamCreatedParam) {
+            runCatching {
+                telemetry.leg(callKey, prm.streamIdx).apply {
+                    streamCreated.incrementAndGet()
+                    lastCreatedAtMillis = System.currentTimeMillis()
+                }
+            }
+        }
+
+        /** The other half of [onStreamCreated]: a rebuild is a destroy and a create. */
+        override fun onStreamDestroyed(prm: OnStreamDestroyedParam) {
+            runCatching { telemetry.leg(callKey, prm.streamIdx).streamDestroyed.incrementAndGet() }
+        }
+
+        /**
          * One line per live stream, every [MEDIA_STATISTICS_INTERVAL_MILLIS], carrying the
          * rate since the previous line.
          *
@@ -2654,11 +2707,27 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 val line = rtpTraceLine(
                     kind = kind,
                     codec = stream?.codecName.orEmpty(),
+                    payloadTypes = stream?.let { it.rxPt to it.txPt },
+                    resolution = videoResolutionOrNull(stream),
                     peer = stream?.remoteRtpAddress.orEmpty(),
                     previous = previous,
                     current = current,
                 ) ?: return@forEach
-                logger.info(TAG, "Media trace $callKey $line")
+
+                // The pipeline half of the picture, as deltas over the same interval, and
+                // silent on a leg where nothing happened (see [videoPipelineTraceFragment]).
+                val leg = telemetry.leg(callKey, media.index)
+                val pipeline = leg.snapshot()
+                val fragment = videoPipelineTraceFragment(
+                    previous = leg.previous,
+                    current = pipeline,
+                    millisSinceCreated = leg.lastCreatedAtMillis
+                        .takeIf { it > 0 }
+                        ?.let { now - it },
+                )
+                leg.previous = pipeline
+
+                logger.info(TAG, "Media trace $callKey $line$fragment")
             }
         }
 
@@ -3252,9 +3321,23 @@ private data class RtpCounters(
     val rxPkt: Long,
     val rxBytes: Long,
     val rxLoss: Long,
+    val rxDiscard: Long,
     val txPkt: Long,
     val txBytes: Long,
     val txLoss: Long,
+    /** Microseconds, read as a level rather than a delta — it is already a running mean. */
+    val rxJitterUsec: Long,
+    val rttUsec: Long,
+    /**
+     * How often the jitter buffer was asked for a frame and had none.
+     *
+     * The closest thing `pjsua2` has to "is the far end's picture still advancing": it
+     * rises only when something downstream is *pulling*, so a leg with RTP arriving and
+     * `empty` climbing is one where frames are not reaching the decoder. It is not
+     * `render_fps` and is never presented as it — see [VideoLegTelemetry].
+     */
+    val jbufEmpty: Long,
+    val jbufSize: Long,
 )
 
 /** Everything the trace needs from one stream, read in a single pass over the native object. */
@@ -3263,10 +3346,35 @@ private fun StreamStat.counters(atMillis: Long) = RtpCounters(
     rxPkt = rtcp.rxStat.pkt,
     rxBytes = rtcp.rxStat.bytes,
     rxLoss = rtcp.rxStat.loss,
+    rxDiscard = rtcp.rxStat.discard,
     txPkt = rtcp.txStat.pkt,
     txBytes = rtcp.txStat.bytes,
     txLoss = rtcp.txStat.loss,
+    rxJitterUsec = rtcp.rxStat.jitterUsec.mean.toLong(),
+    rttUsec = rtcp.rttUsec.mean.toLong(),
+    jbufEmpty = jbuf.empty,
+    jbufSize = jbuf.size,
 )
+
+/**
+ * `1280x720` for a video stream, or null when there is nothing to say.
+ *
+ * Read from the **decoder's** format, which is the size of the picture arriving — the one
+ * a black tile is a question about. A stream that carries no video, or whose codec
+ * parameters the stack will not hand over, contributes nothing rather than a zero.
+ */
+private fun videoResolutionOrNull(stream: StreamInfo?): String? = runCatching {
+    val fmt = stream?.vidCodecParam?.decFmt ?: return@runCatching null
+    if (fmt.width <= 0 || fmt.height <= 0) return@runCatching null
+    buildString {
+        append(fmt.width).append('x').append(fmt.height)
+        // The *negotiated* frame rate, which is not the same thing as frames actually
+        // decoded — nothing in `pjsua2` reports that. Stated so the two are never
+        // confused: a leg at `@30` whose picture is frozen is exactly the interesting case.
+        val denum = fmt.fpsDenum
+        if (denum > 0 && fmt.fpsNum > 0) append('@').append(fmt.fpsNum / denum)
+    }
+}.getOrNull()
 
 /**
  * `video H264 - rx 88 pkt/s 812 kbps loss 0 - tx 88 pkt/s 819 kbps loss 0 - peer 1.2.3.4:4002`
@@ -3283,6 +3391,8 @@ private fun StreamStat.counters(atMillis: Long) = RtpCounters(
 private fun rtpTraceLine(
     kind: String,
     codec: String,
+    payloadTypes: Pair<Long, Long>? = null,
+    resolution: String? = null,
     peer: String,
     previous: RtpCounters,
     current: RtpCounters,
@@ -3293,21 +3403,32 @@ private fun rtpTraceLine(
 
     fun perSecond(delta: Long) = (delta / seconds).roundToLong()
     fun kbps(deltaBytes: Long) = (deltaBytes * BITS_PER_BYTE / (BITS_PER_KILOBIT * seconds)).roundToLong()
+    fun millis(usec: Long) = usec / MICROS_PER_MILLI
 
     return buildString {
         append(kind)
         if (codec.isNotBlank()) append(' ').append(codec)
+        // The payload types actually in use, each way. A leg that renegotiated onto a
+        // different number is the one fact a codec name alone hides.
+        payloadTypes?.let { (rx, tx) -> append(" pt ").append(rx).append('/').append(tx) }
+        resolution?.let { append(' ').append(it) }
         append(" - rx ").append(perSecond(current.rxPkt - previous.rxPkt)).append(" pkt/s ")
         append(kbps(current.rxBytes - previous.rxBytes)).append(" kbps loss ")
         append(current.rxLoss - previous.rxLoss)
+        (current.rxDiscard - previous.rxDiscard).takeIf { it > 0 }?.let { append(" discard ").append(it) }
         append(" - tx ").append(perSecond(current.txPkt - previous.txPkt)).append(" pkt/s ")
         append(kbps(current.txBytes - previous.txBytes)).append(" kbps loss ")
         append(current.txLoss - previous.txLoss)
+        append(" - jitter ").append(millis(current.rxJitterUsec)).append("ms rtt ")
+        append(millis(current.rttUsec)).append("ms")
+        append(" - jbuf ").append(current.jbufSize)
+        (current.jbufEmpty - previous.jbufEmpty).takeIf { it > 0 }?.let { append(" empty ").append(it) }
         if (peer.isNotBlank()) append(" - peer ").append(peer)
     }
 }
 
 private const val MILLIS_PER_SECOND = 1_000.0
+private const val MICROS_PER_MILLI = 1_000L
 private const val BITS_PER_BYTE = 8.0
 private const val BITS_PER_KILOBIT = 1_000.0
 
