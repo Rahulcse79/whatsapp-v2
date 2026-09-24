@@ -34,7 +34,7 @@ data class CallActions(
     val onRespondToVideoRequest: (Boolean) -> Unit = {},
 
     /** Hands the stack the views to draw into, and takes them back (Task 52). */
-    val onVideoSurfaces: (remote: Any?, preview: Any?) -> Unit = { _, _ -> },
+    val onVideoSurfaces: (remote: Map<String, Any?>, preview: Any?) -> Unit = { _, _ -> },
     val onReleaseVideoSurfaces: () -> Unit = {},
     val onDisplayRotation: (degrees: Int) -> Unit = {},
 

@@ -125,13 +125,15 @@ internal fun CallVideo(
     // `SurfaceView` needed to be visible at all is gone with it.
     val previewView = remember { TextureView(context) }
 
-    DisposableEffect(remoteView, previewView, call.showsLocalPreview) {
+    DisposableEffect(remoteView, previewView, call.showsLocalPreview, call.callId) {
         // Held here so the two surfaces can be reported together: the stack takes both at
         // once, and one arriving without the other would detach the one already attached.
         var remote: Any? = null
         var preview: Surface? = null
 
-        fun publish() = actions.onVideoSurfaces(remote, preview)
+        // Keyed by this call, because the stack now draws each call into a surface of its
+        // own — a one-to-one call is simply the conference grid with one tile in it.
+        fun publish() = actions.onVideoSurfaces(mapOf(call.callId.value to remote), preview)
 
         val remoteCallback = surfaceCallback { surface ->
             remote = surface
@@ -319,7 +321,7 @@ internal const val MINIMISE_PREVIEW_LABEL = "Minimise your camera"
  * rather than left holding the old — and `surfaceDestroyed` is the null that stops a
  * native write into freed memory.
  */
-private fun surfaceCallback(onSurface: (Any?) -> Unit): SurfaceHolder.Callback =
+internal fun surfaceCallback(onSurface: (Any?) -> Unit): SurfaceHolder.Callback =
     object : SurfaceHolder.Callback {
         override fun surfaceCreated(holder: SurfaceHolder) = onSurface(holder.surface)
 
@@ -340,7 +342,7 @@ private fun surfaceCallback(onSurface: (Any?) -> Unit): SurfaceHolder.Callback =
  * preview window for a layout pass. That rebuild was the cost of every resize while the
  * preview was a `SurfaceView`, whose `surfaceChanged` replaces the buffer.
  */
-private fun surfaceTextureListener(
+internal fun surfaceTextureListener(
     onAvailable: (SurfaceTexture) -> Unit,
     onDestroyed: () -> Unit,
 ): TextureView.SurfaceTextureListener =
@@ -406,7 +408,7 @@ internal enum class RemoteVideoScaling {
  * box needs, and the parent [Box] centres it so the crop is even on both edges. It changes
  * nothing for [VideoLayout.fit], which never returns more than it was given.
  */
-private fun Modifier.videoBounds(box: VideoSize, available: VideoSize, density: Density): Modifier =
+internal fun Modifier.videoBounds(box: VideoSize, available: VideoSize, density: Density): Modifier =
     if (box.isKnown && available.isKnown) {
         with(density) { this@videoBounds.requiredSize(box.width.toDp(), box.height.toDp()) }
     } else {

@@ -155,12 +155,11 @@ internal class VideoConferenceBridge(
             return
         }
 
-        // The canvas is the lowest member key, so the leg that just left may be the one
-        // whose window held the composed picture — and that window goes with its call.
-        // Everyone still here is linked to it, [links] records those links as open, and
-        // nothing above re-points them, so every remaining tile would sit frozen on its
-        // last frame until some unrelated media event happened to remix. [remix] reads
-        // the renderer's slot, sees it has moved, and relinks against the new canvas.
+        // Everyone still here needs a canvas that no longer carries the leg that left.
+        // The plan above closed its links; this re-states what remains against the ports
+        // as they are now, which is also what picks up a member whose own ports moved
+        // while this was happening. Cheap and idempotent, so doing it unconditionally
+        // costs nothing when nothing moved.
         remix()
     }
 

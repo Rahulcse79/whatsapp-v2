@@ -568,8 +568,8 @@ class CallViewModel @Inject constructor(
      * Called from the composable's lifecycle rather than on state change, because the
      * lifetime that matters is the view's, not the call's.
      */
-    fun attachVideoSurfaces(remoteView: Any?, localPreview: Any?) {
-        surfaces.attach(remoteView, localPreview)
+    fun attachVideoSurfaces(remoteViews: Map<String, Any?>, localPreview: Any?) {
+        surfaces.attach(remoteViews, localPreview)
     }
 
     /** Gives the views back. Must run on dispose, or the stack keeps drawing into them. */

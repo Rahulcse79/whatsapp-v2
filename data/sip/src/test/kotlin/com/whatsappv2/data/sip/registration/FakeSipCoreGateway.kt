@@ -292,9 +292,14 @@ internal class FakeSipCoreGateway :
         cameraCaptureChanges += capturing
     }
 
-    override fun setVideoWindows(remoteView: Any?, localPreview: Any?) {
-        videoWindows = remoteView to localPreview
+    override fun setVideoWindows(remoteViews: Map<String, Any?>, localPreview: Any?) {
+        videoWindows = remoteViews.values.firstOrNull() to localPreview
+        remoteVideoWindows = remoteViews
     }
+
+    /** Every surface the screen handed over, by call key — the conference grid's tiles. */
+    var remoteVideoWindows: Map<String, Any?> = emptyMap()
+        private set
 
     val captureRotations: MutableList<Int> = mutableListOf()
 

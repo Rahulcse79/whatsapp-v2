@@ -385,9 +385,17 @@ internal class RealPjsipCoreGateway @Inject constructor(
     @Volatile
     private var pushParameters: StackPushParameters? = null
 
-    /** Surfaces the call screen handed over, applied when a video stream appears. */
+    /**
+     * Surfaces the call screen handed over, one per call, applied when that call's video
+     * stream appears.
+     *
+     * A map rather than a single surface because the conference draws a tile per
+     * participant: every call's decoder renders into its *own* window, and the screen
+     * arranges them. Composing them into one window instead — which is what this used to
+     * do — left the UI with a single picture it could neither label nor size per person.
+     */
     @Volatile
-    private var remoteSurface: Any? = null
+    private var remoteSurfaces: Map<String, Any?> = emptyMap()
 
     @Volatile
     private var previewSurface: Any? = null
@@ -410,31 +418,19 @@ internal class RealPjsipCoreGateway @Inject constructor(
     /**
      * The port [VideoConferenceBridge] means by [ref], or null while it does not exist.
      *
-     * The camera and the renderer are the device's own; a decoder and an encoder belong to
-     * a call and are absent until its video stream is up, which is the ordinary state of a
-     * leg that is still ringing.
+     * The camera is the device's own; a decoder and an encoder belong to a call and are
+     * absent until its video stream is up, which is the ordinary state of a leg that is
+     * still ringing.
      *
-     * The renderer is the window of the call whose surface the screen is actually showing
-     * — [canvasCallKey] — because a conference draws every peer into **one** window. Each
-     * call has a window of its own and pjsua connects that call's decoder to it; left
-     * alone, three calls would draw three pictures into the one Android `Surface` the call
-     * screen supplies and the last writer would win. See [applyVideoWindows].
+     * There is no renderer here any more. The mixer composes a canvas for each *peer* and
+     * nothing for this screen: every call's decoder draws into a window of its own and the
+     * call screen arranges those windows as tiles. See [applyVideoWindows] and [VideoMix].
      */
     private fun videoPortFor(ref: VideoPortRef): VideoPort? = when (ref.role) {
         VideoRole.CAMERA -> localCameraPort()
-        VideoRole.RENDERER -> canvasCallKey()?.let { calls[it]?.rendererPort() }
         VideoRole.DECODER -> calls[ref.callKey]?.decoderPort()
         VideoRole.ENCODER -> calls[ref.callKey]?.encoderPort()
     }
-
-    /**
-     * The call whose window the composed picture is drawn into: the first member, by key.
-     *
-     * Stable rather than arbitrary — a set's iteration order is not something to hang a
-     * surface on, and a canvas that moved between windows on every remix would make the
-     * screen flicker between two half-composed pictures.
-     */
-    private fun canvasCallKey(): String? = videoConference.currentMembers.minOrNull()
 
     /**
      * This device's camera as a bridge source.
@@ -1575,14 +1571,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * Nulls are the important half: a surface PJSIP keeps writing into after the screen
      * has gone is a crash on some devices and a leak of every frame on the rest.
      */
-    override fun setVideoWindows(remoteView: Any?, localPreview: Any?) {
-        remoteSurface = remoteView
+    override fun setVideoWindows(remoteViews: Map<String, Any?>, localPreview: Any?) {
+        remoteSurfaces = remoteViews
         previewSurface = localPreview
         // A surface that has gone takes the last frame's shape with it. Left behind, it
         // would size the *next* call's view to the previous call's picture for as long as
         // it takes the first frame to arrive — a visible wrong-shaped flash at the start
         // of every video call after the first.
-        if (remoteView == null) videoSizeFlow.value = VideoSizes.UNKNOWN
+        if (remoteViews.values.all { it == null }) videoSizeFlow.value = VideoSizes.UNKNOWN
         onPjsip("setVideoWindows") {
             calls.values.forEach {
                 it.applyVideoWindows()
@@ -2164,22 +2160,17 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 if (media.type != pjmedia_type.PJMEDIA_TYPE_VIDEO) return@forEach
                 if (media.status != pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE) return@forEach
 
-                // Incoming video draws into the remote surface; an outgoing-only stream is
-                // this device's own picture and draws into the preview.
+                // Incoming video draws into this call's own surface; an outgoing-only
+                // stream is this device's own picture and draws into the preview.
                 //
-                // While a video conference is mixing there is one composed picture and it
-                // belongs to ONE window — the canvas. Every call still has a window of its
-                // own and pjsua still connects that call's decoder to it, so handing the
-                // screen's single `Surface` to all of them would have three windows
-                // drawing three different pictures into it and the last writer winning.
-                // The others are given null: their window keeps rendering, into nothing.
+                // Its own, which is the whole of the conference grid: pjsua already
+                // connects each call's decoder to a window of its own, so giving each
+                // window the tile the screen laid out for that participant is all the
+                // arrangement anybody has to do. A call the screen has no tile for gets
+                // null and keeps rendering into nothing, which is what a participant
+                // scrolled out of a grid should cost.
                 val decoding = media.dir and pjmedia_dir.PJMEDIA_DIR_DECODING != 0
-                val isCanvas = !videoConference.isActive || callKey == canvasCallKey()
-                val surface = when {
-                    decoding && isCanvas -> remoteSurface
-                    decoding -> null
-                    else -> previewSurface
-                }
+                val surface = if (decoding) remoteSurfaces[callKey] else previewSurface
 
                 runCatching {
                     media.videoWindow.setWindow(
@@ -2227,7 +2218,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
          * going away is the one moment the old shape is certainly wrong.
          */
         fun publishVideoSizes() {
-            if (remoteSurface == null && previewSurface == null) return
+            if (remoteSurfaces[callKey] == null && previewSurface == null) return
             videoSizeFlow.publishVideoSizes(
                 info = infoOrNull(),
                 decodedFormat = { index -> runCatching { getStreamInfo(index).vidCodecParam.decFmt }.getOrNull() },
@@ -2336,19 +2327,6 @@ internal class RealPjsipCoreGateway @Inject constructor(
         fun encoderPort(): VideoPort? = runCatching {
             val index = videoMediaIndex() ?: return null
             PjVideoPort(getEncodingVideoMedia(index))
-        }.getOrNull()
-
-        /**
-         * This call's on-screen window, as a bridge sink.
-         *
-         * Only the call chosen as the canvas is asked for one — see
-         * [RealPjsipCoreGateway.videoPortFor] — because a conference draws everybody into
-         * one window.
-         */
-        fun rendererPort(): VideoPort? = runCatching {
-            val index = videoMediaIndex() ?: return null
-            val info = infoOrNull()?.media?.getOrNull(index) ?: return null
-            PjVideoPort(info.videoWindow.getVideoMedia())
         }.getOrNull()
 
         fun isTransmittingVideo(): Boolean {

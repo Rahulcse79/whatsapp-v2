@@ -19,15 +19,12 @@ internal enum class VideoRole {
 
     /** What we send to one peer. A sink only. */
     ENCODER,
-
-    /** The window on the call screen. A sink only, and there is one. */
-    RENDERER,
 }
 
 /**
  * One port, named by what it is and whose call it belongs to.
  *
- * [CAMERA] and [RENDERER] belong to the device rather than to a call and carry [LOCAL].
+ * [CAMERA] belongs to the device rather than to a call and carries [LOCAL].
  */
 internal data class VideoPortRef(val role: VideoRole, val callKey: String = LOCAL) {
     companion object {
@@ -35,7 +32,6 @@ internal data class VideoPortRef(val role: VideoRole, val callKey: String = LOCA
         const val LOCAL = "<local>"
 
         val camera = VideoPortRef(VideoRole.CAMERA)
-        val renderer = VideoPortRef(VideoRole.RENDERER)
 
         fun decoder(callKey: String) = VideoPortRef(VideoRole.DECODER, callKey)
 
@@ -65,10 +61,7 @@ internal data class VideoMixPlan(
  * The video mix is not a mesh, because a video port is either a source or a sink and never
  * both. Each peer's **encoder** is a sink that must receive this device's camera and every
  * *other* peer's decoder — and never its own, which would send a participant their own face
- * back as a tile beside the others. The local **renderer** is a fourth sink that receives
- * every decoder and no camera, because the camera is already on screen as the floating
- * self-view ([com.whatsappv2.feature.calls.SelfPreview]) and a second copy inside the grid
- * is the duplicate this function exists to prevent.
+ * back as a tile beside the others.
  *
  * So for members `{A, B, C}` the wanted set is:
  *
@@ -76,11 +69,20 @@ internal data class VideoMixPlan(
  * camera    -> encoder(A)   decoder(B) -> encoder(A)   decoder(C) -> encoder(A)
  * camera    -> encoder(B)   decoder(A) -> encoder(B)   decoder(C) -> encoder(B)
  * camera    -> encoder(C)   decoder(A) -> encoder(C)   decoder(B) -> encoder(C)
- * decoder(A) -> renderer    decoder(B) -> renderer     decoder(C) -> renderer
  * ```
  *
- * Twelve links for a four-party call, which is host-and-spokes stated as arithmetic: this
- * device composes a personal canvas for each peer and one for itself.
+ * Nine links for a four-party call: this device composes a personal canvas for each peer,
+ * and none for itself.
+ *
+ * ## Nothing is composed for this screen, deliberately
+ *
+ * Every decoder used to be mixed into one window here as well, and that window was the
+ * call screen. It worked, and it cost the screen everything that makes a video call more
+ * than a video: one picture cannot be labelled with four names, badged where somebody is
+ * muted, or re-laid-out when one of them leaves. pjsua already gives every call a window
+ * of its own, so the screen takes those directly and arranges them itself — see
+ * `RealPjsipCoreGateway.applyVideoWindows` and `ConferenceVideo`. The mixer keeps the half
+ * only it can do: the canvas each *peer* receives.
  *
  * ## The ceiling is the mixer's, and it is silent
  *
@@ -116,8 +118,6 @@ internal object VideoMix {
                 members.forEach { other ->
                     if (other != member) add(VideoLink(VideoPortRef.decoder(other), encoder))
                 }
-                // And every peer onto our own screen.
-                add(VideoLink(VideoPortRef.decoder(member), VideoPortRef.renderer))
             }
         }
     }

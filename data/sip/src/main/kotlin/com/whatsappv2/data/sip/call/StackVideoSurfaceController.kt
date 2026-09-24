@@ -20,13 +20,13 @@ internal class StackVideoSurfaceController @Inject constructor(
     private val gateway: SipVideoGateway,
 ) : VideoSurfaceController {
 
-    override fun attach(remoteView: Any?, localPreview: Any?) {
-        gateway.setVideoWindows(remoteView, localPreview)
+    override fun attach(remoteViews: Map<String, Any?>, localPreview: Any?) {
+        gateway.setVideoWindows(remoteViews, localPreview)
     }
 
     /** Nulls, which is what the stack takes to mean "stop drawing and let go". */
     override fun detach() {
-        gateway.setVideoWindows(remoteView = null, localPreview = null)
+        gateway.setVideoWindows(remoteViews = emptyMap(), localPreview = null)
     }
 
     override fun setDisplayRotation(degrees: Int) {
