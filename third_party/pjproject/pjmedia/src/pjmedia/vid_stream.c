@@ -604,10 +604,11 @@ static void check_tx_rtcp(pjmedia_vid_stream *stream)
         stream->counters_last_log = now;
         pj_sockaddr_print(&c_strm->rem_rtp_addr, addr, sizeof(addr), 3);
         PJ_LOG(4,(c_strm->name.ptr,
-                  "vidcnt peer=%s cap=%u enc=%u dec=%u sub=%u rej=%u",
+                  "vidcnt peer=%s cap=%u enc=%u dec=%u sub=%u new=%u rej=%u",
                   addr,
                   stream->counters.captured, stream->counters.encoded,
                   stream->counters.decoded, stream->counters.render_submit,
+                  stream->counters.render_submit_new,
                   stream->counters.render_reject));
     }
 

@@ -94,6 +94,11 @@ struct pjmedia_vid_port
      */
     pjmedia_vid_stream_frame_counters *counters;
 
+    /* Timestamp of the last frame submitted to the device, so a resubmission of the
+     * same picture can be told from a new one. Owned by the submitting thread.
+     */
+    pj_uint64_t              last_render_ts;
+
     struct {
         pjmedia_converter       *conv;
         void                    *conv_buf;
@@ -1231,11 +1236,27 @@ static pj_status_t render_submit(pjmedia_vid_port *vp, pjmedia_frame *frame)
 {
     pj_status_t status = pjmedia_vid_dev_stream_put_frame(vp->strm, frame);
 
-    if (vp->counters) {
-        if (status == PJ_SUCCESS)
+    /* Only a rendering port submits a remote picture. The same passive put_frame()
+     * path is taken by a capture port feeding the local preview, and counting that
+     * here made `render_submit` exceed `decoded` on a leg that was decoding nothing
+     * --- the preview was being counted as though the remote tile were moving, which
+     * is the one confusion this counter exists to prevent.
+     */
+    if (vp->counters && (vp->dir & PJMEDIA_DIR_RENDER)) {
+        if (status == PJ_SUCCESS) {
             ++vp->counters->render_submit;
-        else
+
+            /* And whether it was a picture we have not submitted before. The port's
+             * clock runs faster than the decoder on purpose, so most submissions are
+             * repeats; only a rising timestamp means the tile actually moved.
+             */
+            if (frame->timestamp.u64 != vp->last_render_ts) {
+                vp->last_render_ts = frame->timestamp.u64;
+                ++vp->counters->render_submit_new;
+            }
+        } else {
             ++vp->counters->render_reject;
+        }
     }
 
     return status;

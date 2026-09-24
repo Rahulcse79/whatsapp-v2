@@ -364,6 +364,28 @@ typedef struct pjmedia_vid_stream_frame_counters
     pj_uint32_t  render_submit;
 
     /**
+     * Submissions that carried a picture the previous one did not.
+     *
+     * The video port's clock submits on its own schedule --- pjmedia deliberately runs
+     * the renderer at 1.5x the decoded rate (see get_frame() in vid_stream.c) --- so it
+     * resubmits the last decoded frame whenever no new one has arrived. #render_submit
+     * therefore counts submissions, and this counts *fresh* ones, by comparing each
+     * frame's timestamp with the previous submission's.
+     *
+     * **Measured, and found not to work as intended.** On this pipeline the frame
+     * reaching the device carries the video port's own timestamp rather than the
+     * decoder's, so every submission looks new and this counter tracks #render_submit
+     * exactly --- including on a leg measured decoding nothing at all (1001 <-> 1005,
+     * 2026-09-25: decode 0.0 fps, render-submit 38.0, new 38.0).
+     *
+     * It is kept because that equality is itself the evidence, and because telling a
+     * repeat from a new picture here would mean reaching into the renderer, which is
+     * out of scope. Until then: `render_submit` proves pjmedia is still submitting, and
+     * only `decoded` proves a new picture was produced.
+     */
+    pj_uint32_t  render_submit_new;
+
+    /**
      * Frames the video device refused.
      *
      * The same call site as #render_submit, counted apart. A device that is not running

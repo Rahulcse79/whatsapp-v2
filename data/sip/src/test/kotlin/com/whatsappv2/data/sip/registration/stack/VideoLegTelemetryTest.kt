@@ -134,7 +134,7 @@ class VideoLegTelemetryTest {
 class VideoFrameCounterLineTest {
 
     private val line =
-        "vidcnt peer=192.168.2.198:26286 cap=1482 enc=1480 dec=1455 sub=1455 rej=0"
+        "vidcnt peer=192.168.2.198:26286 cap=1482 enc=1480 dec=1455 sub=1455 new=1455 rej=0"
 
     @Test
     fun `a vidcnt line parses into a reading`() {
@@ -145,6 +145,7 @@ class VideoFrameCounterLineTest {
         assertEquals(1480, r.encoded)
         assertEquals(1455, r.decoded)
         assertEquals(1455, r.renderSubmit)
+        assertEquals(1455, r.renderSubmitNew)
         assertEquals(0, r.renderReject)
     }
 
@@ -164,6 +165,7 @@ class VideoFrameCounterLineTest {
             encoded = a.encoded + 149,
             decoded = a.decoded + 147,
             renderSubmit = a.renderSubmit + 147,
+            renderSubmitNew = a.renderSubmitNew + 147,
         )
 
         val out = videoFrameRateFragment(a, b)

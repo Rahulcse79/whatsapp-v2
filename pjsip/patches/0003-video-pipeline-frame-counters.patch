@@ -122,10 +122,10 @@ index 32508861..bf7cc25c 100644
                                        const pjmedia_vid_dev_cb *cb,
                                        void *user_data);
 diff --git a/third_party/pjproject/pjmedia/include/pjmedia/vid_stream.h b/third_party/pjproject/pjmedia/include/pjmedia/vid_stream.h
-index f50d3aef..1bdb5e47 100644
+index f50d3aef..9de0820e 100644
 --- a/third_party/pjproject/pjmedia/include/pjmedia/vid_stream.h
 +++ b/third_party/pjproject/pjmedia/include/pjmedia/vid_stream.h
-@@ -319,6 +319,92 @@ PJ_DECL(pj_status_t) pjmedia_vid_stream_get_stat(
+@@ -319,6 +319,114 @@ PJ_DECL(pj_status_t) pjmedia_vid_stream_get_stat(
  PJ_DECL(pj_status_t) pjmedia_vid_stream_reset_stat(pjmedia_vid_stream *stream);
  
  
@@ -174,6 +174,28 @@ index f50d3aef..1bdb5e47 100644
 +    pj_uint32_t  render_submit;
 +
 +    /**
++     * Submissions that carried a picture the previous one did not.
++     *
++     * The video port's clock submits on its own schedule --- pjmedia deliberately runs
++     * the renderer at 1.5x the decoded rate (see get_frame() in vid_stream.c) --- so it
++     * resubmits the last decoded frame whenever no new one has arrived. #render_submit
++     * therefore counts submissions, and this counts *fresh* ones, by comparing each
++     * frame's timestamp with the previous submission's.
++     *
++     * **Measured, and found not to work as intended.** On this pipeline the frame
++     * reaching the device carries the video port's own timestamp rather than the
++     * decoder's, so every submission looks new and this counter tracks #render_submit
++     * exactly --- including on a leg measured decoding nothing at all (1001 <-> 1005,
++     * 2026-09-25: decode 0.0 fps, render-submit 38.0, new 38.0).
++     *
++     * It is kept because that equality is itself the evidence, and because telling a
++     * repeat from a new picture here would mean reaching into the renderer, which is
++     * out of scope. Until then: `render_submit` proves pjmedia is still submitting, and
++     * only `decoded` proves a new picture was produced.
++     */
++    pj_uint32_t  render_submit_new;
++
++    /**
 +     * Frames the video device refused.
 +     *
 +     * The same call site as #render_submit, counted apart. A device that is not running
@@ -219,7 +241,7 @@ index f50d3aef..1bdb5e47 100644
   * Get current jitter buffer state. See also #pjmedia_stream_get_stat()
   *
 diff --git a/third_party/pjproject/pjmedia/src/pjmedia/vid_port.c b/third_party/pjproject/pjmedia/src/pjmedia/vid_port.c
-index 52fe49ab..64dcc44a 100644
+index 52fe49ab..65f56e76 100644
 --- a/third_party/pjproject/pjmedia/src/pjmedia/vid_port.c
 +++ b/third_party/pjproject/pjmedia/src/pjmedia/vid_port.c
 @@ -21,6 +21,7 @@
@@ -230,7 +252,7 @@ index 52fe49ab..64dcc44a 100644
  #include <pj/log.h>
  #include <pj/pool.h>
  
-@@ -86,6 +87,13 @@ struct pjmedia_vid_port
+@@ -86,6 +87,18 @@ struct pjmedia_vid_port
      pjmedia_port            *client_port;
      pj_bool_t                destroy_client_port;
  
@@ -241,10 +263,15 @@ index 52fe49ab..64dcc44a 100644
 +     */
 +    pjmedia_vid_stream_frame_counters *counters;
 +
++    /* Timestamp of the last frame submitted to the device, so a resubmission of the
++     * same picture can be told from a new one. Owned by the submitting thread.
++     */
++    pj_uint64_t              last_render_ts;
++
      struct {
          pjmedia_converter       *conv;
          void                    *conv_buf;
-@@ -713,6 +721,24 @@ on_error:
+@@ -713,6 +726,24 @@ on_error:
      return status;
  }
  
@@ -269,7 +296,7 @@ index 52fe49ab..64dcc44a 100644
  PJ_DEF(void) pjmedia_vid_port_set_cb(pjmedia_vid_port *vid_port,
                                       const pjmedia_vid_dev_cb *cb,
                                       void *user_data)
-@@ -1194,6 +1220,28 @@ static void enc_clock_cb(const pj_timestamp *ts, void *user_data)
+@@ -1194,6 +1225,44 @@ static void enc_clock_cb(const pj_timestamp *ts, void *user_data)
          return;
  }
  
@@ -284,11 +311,27 @@ index 52fe49ab..64dcc44a 100644
 +{
 +    pj_status_t status = pjmedia_vid_dev_stream_put_frame(vp->strm, frame);
 +
-+    if (vp->counters) {
-+        if (status == PJ_SUCCESS)
++    /* Only a rendering port submits a remote picture. The same passive put_frame()
++     * path is taken by a capture port feeding the local preview, and counting that
++     * here made `render_submit` exceed `decoded` on a leg that was decoding nothing
++     * --- the preview was being counted as though the remote tile were moving, which
++     * is the one confusion this counter exists to prevent.
++     */
++    if (vp->counters && (vp->dir & PJMEDIA_DIR_RENDER)) {
++        if (status == PJ_SUCCESS) {
 +            ++vp->counters->render_submit;
-+        else
++
++            /* And whether it was a picture we have not submitted before. The port's
++             * clock runs faster than the decoder on purpose, so most submissions are
++             * repeats; only a rising timestamp means the tile actually moved.
++             */
++            if (frame->timestamp.u64 != vp->last_render_ts) {
++                vp->last_render_ts = frame->timestamp.u64;
++                ++vp->counters->render_submit_new;
++            }
++        } else {
 +            ++vp->counters->render_reject;
++        }
 +    }
 +
 +    return status;
@@ -298,7 +341,7 @@ index 52fe49ab..64dcc44a 100644
  static void dec_clock_cb(const pj_timestamp *ts, void *user_data)
  {
      /* We are here because user wants us to be active but the stream is
-@@ -1215,7 +1263,7 @@ static void dec_clock_cb(const pj_timestamp *ts, void *user_data)
+@@ -1215,7 +1284,7 @@ static void dec_clock_cb(const pj_timestamp *ts, void *user_data)
          return;
      
      if (frame.size > 0)
@@ -307,7 +350,7 @@ index 52fe49ab..64dcc44a 100644
  }
  
  static pj_status_t vidstream_cap_cb(pjmedia_vid_dev_stream *stream,
-@@ -1224,6 +1272,14 @@ static pj_status_t vidstream_cap_cb(pjmedia_vid_dev_stream *stream,
+@@ -1224,6 +1293,14 @@ static pj_status_t vidstream_cap_cb(pjmedia_vid_dev_stream *stream,
  {
      pjmedia_vid_port *vp = (pjmedia_vid_port*)user_data;
  
@@ -322,7 +365,7 @@ index 52fe49ab..64dcc44a 100644
      /* We just store the frame in the buffer. For active role, we let
       * video port's clock to push the frame buffer to the user.
       * The decoding counterpart for passive role and active stream is
-@@ -1407,7 +1463,7 @@ static pj_status_t vid_pasv_port_put_frame(struct pjmedia_port *this_port,
+@@ -1407,7 +1484,7 @@ static pj_status_t vid_pasv_port_put_frame(struct pjmedia_port *this_port,
              frame_.size = 0;
  
              /* Send heart beat for updating timestamp or keep-alive. */
@@ -331,7 +374,7 @@ index 52fe49ab..64dcc44a 100644
          }
          
          pj_bzero(&frame_, sizeof(frame_));
-@@ -1415,8 +1471,7 @@ static pj_status_t vid_pasv_port_put_frame(struct pjmedia_port *this_port,
+@@ -1415,8 +1492,7 @@ static pj_status_t vid_pasv_port_put_frame(struct pjmedia_port *this_port,
          if (status != PJ_SUCCESS)
              return status;
  
@@ -342,7 +385,7 @@ index 52fe49ab..64dcc44a 100644
          /* We are passive while the stream is active so we just store the
           * frame in the buffer.
 diff --git a/third_party/pjproject/pjmedia/src/pjmedia/vid_stream.c b/third_party/pjproject/pjmedia/src/pjmedia/vid_stream.c
-index bef30bdb..fc41dad4 100644
+index bef30bdb..8bf62cd2 100644
 --- a/third_party/pjproject/pjmedia/src/pjmedia/vid_stream.c
 +++ b/third_party/pjproject/pjmedia/src/pjmedia/vid_stream.c
 @@ -95,7 +95,14 @@ struct pjmedia_vid_stream
@@ -360,7 +403,7 @@ index bef30bdb..fc41dad4 100644
  
      unsigned                 dec_max_size;  /**< Size of decoded/raw picture*/
      pjmedia_ratio            dec_max_fps;   /**< Max fps of decoding dir.   */
-@@ -573,6 +580,37 @@ static void check_tx_rtcp(pjmedia_vid_stream *stream)
+@@ -573,6 +580,38 @@ static void check_tx_rtcp(pjmedia_vid_stream *stream)
                pj_elapsed_msec(&c_strm->rtcp_fb_last_tx, &now) >=
                                              PJMEDIA_RTCP_FB_INTERVAL));
  
@@ -388,17 +431,18 @@ index bef30bdb..fc41dad4 100644
 +        stream->counters_last_log = now;
 +        pj_sockaddr_print(&c_strm->rem_rtp_addr, addr, sizeof(addr), 3);
 +        PJ_LOG(4,(c_strm->name.ptr,
-+                  "vidcnt peer=%s cap=%u enc=%u dec=%u sub=%u rej=%u",
++                  "vidcnt peer=%s cap=%u enc=%u dec=%u sub=%u new=%u rej=%u",
 +                  addr,
 +                  stream->counters.captured, stream->counters.encoded,
 +                  stream->counters.decoded, stream->counters.render_submit,
++                  stream->counters.render_submit_new,
 +                  stream->counters.render_reject));
 +    }
 +
      /* First check, unless RTCP is 'urgent', just init rtcp_last_tx. */
      if (stream->rtcp_last_tx.u64 == 0 && !early) {
          pj_get_timestamp(&stream->rtcp_last_tx);
-@@ -861,6 +899,12 @@ static pj_status_t put_frame(pjmedia_port *port,
+@@ -861,6 +900,12 @@ static pj_status_t put_frame(pjmedia_port *port,
          return status;
      }
  
@@ -411,7 +455,7 @@ index bef30bdb..fc41dad4 100644
      pj_get_timestamp(&initial_time);
  
      if ((frame_out.bit_info & PJMEDIA_VID_FRM_KEYFRAME)
-@@ -1148,6 +1192,14 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
+@@ -1148,6 +1193,14 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
          pjmedia_jbuf_remove_frame(c_strm->jb, frm_pkt_cnt);
      }
  
@@ -426,7 +470,7 @@ index bef30bdb..fc41dad4 100644
      /* Learn remote frame rate after successful decoding */
      if (got_frame && frame->type == PJMEDIA_FRAME_TYPE_VIDEO && frame->size)
      {
-@@ -2120,6 +2172,44 @@ PJ_DEF(pj_status_t) pjmedia_vid_stream_get_stat_jbuf(
+@@ -2120,6 +2173,44 @@ PJ_DEF(pj_status_t) pjmedia_vid_stream_get_stat_jbuf(
  }
  
  

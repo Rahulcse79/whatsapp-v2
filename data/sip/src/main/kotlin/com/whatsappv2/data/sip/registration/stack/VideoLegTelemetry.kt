@@ -143,6 +143,8 @@ internal class VideoLegTelemetry {
         val encoded: Long,
         val decoded: Long,
         val renderSubmit: Long,
+        /** Submissions carrying a picture the previous one did not — i.e. real motion. */
+        val renderSubmitNew: Long,
         val renderReject: Long,
     )
 
@@ -225,7 +227,7 @@ private const val STREAM_AGE_REPORTED_FOR_MILLIS = 60_000L
 internal object VideoFrameCounterLine {
 
     private val PATTERN = Regex(
-        """vidcnt peer=(\S+) cap=(\d+) enc=(\d+) dec=(\d+) sub=(\d+) rej=(\d+)""",
+        """vidcnt peer=(\S+) cap=(\d+) enc=(\d+) dec=(\d+) sub=(\d+) new=(\d+) rej=(\d+)""",
     )
 
     /** Cheap enough to run on every log line: a substring test before any regex. */
@@ -239,7 +241,8 @@ internal object VideoFrameCounterLine {
             encoded = m.groupValues[3].toLong(),
             decoded = m.groupValues[4].toLong(),
             renderSubmit = m.groupValues[5].toLong(),
-            renderReject = m.groupValues[6].toLong(),
+            renderSubmitNew = m.groupValues[6].toLong(),
+            renderReject = m.groupValues[7].toLong(),
         )
     }
 
@@ -272,6 +275,9 @@ internal fun videoFrameRateFragment(
         append(" encode ").append(fps(current.encoded, previous.encoded))
         append(" decode ").append(fps(current.decoded, previous.decoded))
         append(" render-submit ").append(fps(current.renderSubmit, previous.renderSubmit))
+        // The one that says whether the tile is actually moving: the port's clock
+        // resubmits the last picture when no new one has been decoded, by design.
+        append(" (new ").append(fps(current.renderSubmitNew, previous.renderSubmitNew)).append(')')
         append(" fps")
         // Only when it happened: a device refusing frames is silent otherwise, and is
         // the difference between "pjmedia stopped" and "the surface went away".
