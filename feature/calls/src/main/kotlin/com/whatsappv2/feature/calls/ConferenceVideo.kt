@@ -15,7 +15,19 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import android.graphics.SurfaceTexture
+import android.view.Surface
+import android.view.TextureView
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -77,17 +89,27 @@ internal fun ConferenceVideo(
     // of it, and would be wrong on a foldable or in split-screen — which is precisely where
     // "adapts to rotation" stops being a rotation question.
     BoxWithConstraints(modifier = modifier.fillMaxSize().testTag(TAG_CONFERENCE_VIDEO)) {
+        // Everybody but this device. The self-view is a draggable overlay and never a
+        // tile (pjsua keeps one preview window per capture device), so the arrangement is
+        // decided by how many *remote* pictures there are. Counting participants instead
+        // gave a two-person conference the three-tile arrangement — one tile too many,
+        // and the wrong shape for every size.
+        val remoteCount = conference.participants.count { !it.isSelf }
         val mode = ConferenceVideoLayout.of(
-            participantCount = conference.participants.size,
+            participantCount = remoteCount,
             // Either picture counts. On `showsRemoteVideo` alone this fell to AudioOnly —
             // which draws nothing — for the whole window between joining the room and the
             // bridge's first composed frame, taking the local preview down with it. A
             // conference the user has just joined with their camera on must show them
             // their own camera while the canvas is still on its way.
             hasVideo = call.showsAnyVideo,
-            // False today, and read from the roster rather than assumed: the model carries
-            // it so the transport can change without this composable being rewritten.
-            perParticipantVideo = false,
+            // Only when the rows are this device's own calls. A host mixing the
+            // conference has a stream per participant and draws the grid; a member holds
+            // one call and receives one composed picture, and drawing a grid from the
+            // roster it was *told* would be a tile per participant bound to a key the
+            // stack has never seen — every one of them black. See
+            // [ConferenceUiState.perParticipantStreams].
+            perParticipantVideo = conference.perParticipantStreams && remoteCount > 0,
             isLandscape = maxWidth > maxHeight,
         )
 
@@ -98,11 +120,23 @@ internal fun ConferenceVideo(
             // Black behind the picture, not the surface colour: a composed grid is
             // letterboxed by definition on a handset, and the bars should read as the
             // edge of the video rather than as a gap in the app.
+            // A tile per participant, arranged here. See [ConferenceVideoGrid].
+            is ConferenceVideoMode.Grid -> ConferenceTiles(
+                call = call,
+                conference = conference,
+                actions = actions,
+                columns = mode.columns,
+                sizes = sizes,
+                onPictureTap = onPictureTap,
+                pictureTapLabel = pictureTapLabel,
+                previewClearance = previewClearance,
+            )
+
+            // One composed picture: a mixed merge still goes through the bridge, which
+            // sends the whole conference as a single stream.
             is ConferenceVideoMode.MixedStream,
-            // Unreachable with a mixing bridge. Rendered as the mixed stream rather than
-            // as an empty box, so a future SFU shows *something* before its tiles are
-            // built rather than a black rectangle nobody can explain.
-            is ConferenceVideoMode.Grid,
+            // Not reached at this participant count. Rendered as the mixed stream rather
+            // than as an empty box, so it shows *something* rather than a black rectangle.
             is ConferenceVideoMode.ActiveSpeaker,
             -> Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
                 CallVideo(
@@ -122,6 +156,127 @@ internal fun ConferenceVideo(
                         .padding(AppTheme.spacing.large),
                 )
             }
+        }
+    }
+}
+
+/**
+ * The grid, the self-view, and the one place their surfaces are handed over together.
+ *
+ * Together, because the stack takes them in one call: the grid publishing its tiles and
+ * the preview publishing itself would each overwrite the other's half. Holding both here
+ * and publishing the pair whenever either changes is what keeps a tile from going black
+ * the moment the camera starts.
+ */
+@Composable
+private fun ConferenceTiles(
+    call: CallDisplay,
+    conference: ConferenceUiState,
+    actions: CallActions,
+    columns: Int,
+    sizes: VideoSizes,
+    onPictureTap: (() -> Unit)?,
+    pictureTapLabel: String?,
+    previewClearance: Int,
+) {
+    val context = LocalContext.current
+    val previewView = remember { TextureView(context) }
+    var remoteSurfaces by remember { mutableStateOf<Map<String, Any?>>(emptyMap()) }
+    var previewSurface by remember { mutableStateOf<Surface?>(null) }
+
+    // Everybody but this device: pjsua keeps one preview window per capture device, so a
+    // tile showing this camera would contend with the floating self-view for it.
+    val remote = conference.participants.filterNot { it.isSelf }
+
+    // Republished whenever either half changes; the stack takes the pair in one call.
+    LaunchedEffect(remoteSurfaces, previewSurface) {
+        actions.onVideoSurfaces(remoteSurfaces, previewSurface)
+    }
+
+    DisposableEffect(call.showsLocalPreview) {
+        val listener = surfaceTextureListener(
+            onAvailable = { texture: SurfaceTexture ->
+                previewSurface?.release()
+                previewSurface = Surface(texture)
+            },
+            onDestroyed = {
+                val gone = previewSurface
+                previewSurface = null
+                gone?.release()
+            },
+        )
+        if (call.showsLocalPreview) {
+            previewView.surfaceTextureListener = listener
+            previewView.surfaceTexture?.let { texture ->
+                previewSurface?.release()
+                previewSurface = Surface(texture)
+            }
+        }
+        onDispose {
+            if (previewView.surfaceTextureListener === listener) {
+                previewView.surfaceTextureListener = null
+            }
+            previewSurface?.release()
+            previewSurface = null
+            actions.onReleaseVideoSurfaces()
+        }
+    }
+
+    // Hoisted here for the same reason [CallVideo] hoists it: the tap that puts an
+    // enlarged self-view away lands *outside* it, on the target below, and that target has
+    // to be able to see and change it.
+    val preview = rememberSelfPreviewState()
+    val previewCoversPicture = call.showsLocalPreview && preview.isMaximised
+
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        ConferenceVideoGrid(
+            participants = remote,
+            columns = columns,
+            // Every shape, so each tile crops its *own* picture to fill its cell. One
+            // shared remote size laid every tile out on whichever stream decoded last.
+            sizes = sizes,
+            onSurfaces = { remoteSurfaces = it },
+        )
+
+        // Between the tiles and the self-view, exactly as in a one-to-one call. Without it
+        // the grid had no tap target at all: the call controls could not be brought back
+        // once they faded, because every tap landed on a tile's `SurfaceView` and stopped
+        // there. Above the preview it would turn every drag of the self-view into a tap;
+        // below the tiles it would never be reached.
+        if (onPictureTap != null || previewCoversPicture) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() },
+                        onClickLabel = if (previewCoversPicture) MINIMISE_PREVIEW_LABEL else pictureTapLabel,
+                        onClick = {
+                            if (call.showsLocalPreview && preview.isMaximised) {
+                                preview.minimise()
+                            } else {
+                                onPictureTap?.invoke()
+                            }
+                        },
+                    )
+                    .testTag(TAG_CONFERENCE_PICTURE_TAP),
+            )
+        }
+
+        ConferenceBadge(
+            conference = conference,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .systemBarsPadding()
+                .padding(AppTheme.spacing.large),
+        )
+        if (call.showsLocalPreview) {
+            SelfPreview(
+                previewView = previewView,
+                localFrame = sizes.local,
+                state = preview,
+                bottomClearance = previewClearance,
+            )
         }
     }
 }
@@ -171,4 +326,5 @@ private fun ConferenceBadge(conference: ConferenceUiState, modifier: Modifier = 
 private const val BADGE_SCRIM = 0.45f
 
 internal const val TAG_CONFERENCE_VIDEO = "conference-video"
+internal const val TAG_CONFERENCE_PICTURE_TAP = "conference-picture-tap"
 internal const val TAG_CONFERENCE_BADGE = "conference-badge"

@@ -403,9 +403,13 @@ interface SipConferenceController {
      * ## What it does not do
      *
      * It does not place calls: every id must already be an established call on this
-     * device. And it is **audio only** — ADR-009's gate measured video at ~135 % of a
-     * core per stream, which does not fit, so a video conference remains a call to the
-     * bridge (ADR-003).
+     * device.
+     *
+     * It is **not** audio only any more. ADR-009's gate measured video at ~135 % of a core
+     * per stream and sent video conferences to the bridge (ADR-003); `pjmedia`'s video
+     * bridge composes a canvas per peer instead, so this mixes the audio and composes the
+     * picture for whichever members are carrying video — see `videoMixable` for who those
+     * are, and [MAX_VIDEO_CONFERENCE] for how many of them fit.
      *
      * @param callIds the calls to mix. At most [MAX_LOCAL_CONFERENCE], which is ADR-009's
      *   measured ceiling rather than a round number.
@@ -416,6 +420,15 @@ interface SipConferenceController {
     /**
      * Moves [callIds] into the bridge at [room], so every participant sees every other
      * (ADR-003).
+     *
+     * ## Nothing in the app calls this any more (2026-09-24)
+     *
+     * Every conference is built on the device now — `pjmedia`'s video bridge composes a
+     * canvas per peer, so neither a merge nor a conference call-back from history dials a
+     * room. This and [joinConference] are the machinery that did, kept because recognising
+     * a room address is still wanted (an old call-log row folds into one conference) and
+     * because a deployment that wants a server-composed conference has not been argued
+     * out of existence — only out of the default path. Removing them is its own change.
      *
      * The video answer to [mixCalls], and a different topology rather than a flag on the
      * same one. [mixCalls] builds a star: this handset holds N-1 legs and mixes them, and
@@ -455,6 +468,33 @@ interface SipConferenceController {
     ): Outcome<CallId, SipError>
 
     /**
+     * Drops one member from the conference, ending **only** their leg.
+     *
+     * ## Why this is not `hangup`
+     *
+     * `hangup` on a mixed call is a device-level control: it fans out across the mix and
+     * ends the whole conference, which is what the big red button should do and what the
+     * user means by pressing it. "Remove this person" is the opposite instruction and had
+     * no way to be expressed — every route to the stack went through the fan-out.
+     *
+     * Nothing else has to be re-planned. The engine's own `endCall` shrinks
+     * [mixedCalls], and both conference bridges drop a leg when its media goes away, so
+     * the audio mix and the picture recompose themselves around the gap. A conference of
+     * three losing one becomes a conference of two; a conference of two losing one becomes
+     * a call, which is [MINIMUM_MIXED] doing its job.
+     *
+     * Only the **focus** can do this, and [hostsConference] is how the screen knows
+     * whether to offer it. In a mesh the removed member is held by every participant, so
+     * ending the one leg here would take them off this screen and nobody else's; the
+     * removal is an edit to the announced membership, and the focus is what announces it.
+     * Every other device then drops its own leg by reconciling against the new roster.
+     *
+     * @param callId the member's leg. Not this device — there is no removing yourself from
+     *   a conference you are hosting, only ending it.
+     */
+    suspend fun removeFromConference(callId: CallId): Outcome<Unit, SipError>
+
+    /**
      * The calls currently mixed on this device by [mixCalls], or empty when there is no
      * local conference.
      *
@@ -465,6 +505,23 @@ interface SipConferenceController {
      * and declines to hold a member. A `StateFlow` so a late reader sees the current set.
      */
     val mixedCalls: StateFlow<Set<CallId>>
+
+    /**
+     * True while this device is the **focus** of the conference it is in.
+     *
+     * In a mesh every participant ends up holding the same legs and drawing the same grid,
+     * so nothing about the call list says which of them built the conference — see
+     * `ConferenceMesh`. Two things still turn on it, and this is the one the screen needs:
+     * [removeFromConference] is the focus's alone, because the focus owns the announced
+     * membership and removing somebody is an edit to *that*. A member dropping its own leg
+     * to a peer would take them off one screen out of four, and the next roster would put
+     * them back.
+     *
+     * False when there is no conference, and false on every member of one. A `StateFlow`
+     * so a screen recreated mid-conference sees the current answer rather than waiting for
+     * the membership to change again.
+     */
+    val hostsConference: StateFlow<Boolean>
 
     companion object {
         /**
@@ -482,16 +539,19 @@ interface SipConferenceController {
         /**
          * The most participants a **video** conference carries, counting this handset.
          *
-         * Four, and it is a product decision rather than a measurement: the bridge composes
-         * what it is given — the `wa-portrait` layout group runs to nine tiles — and the
-         * handset pays for one stream however many people are in the picture. What four
-         * protects is the picture itself. On a 9:20 screen a 2x2 of portrait tiles is four
-         * faces you can recognise; the six- and nine-way layouts are the same canvas cut
-         * into stamps.
+         * Four, and it is now a limit of the mixer as well as a product decision.
+         * `pjmedia`'s `vid_conf` composes at most four sources onto one sink — `vid_conf.c`
+         * declares `pjmedia_rect_size tr_size[4]` and loops `i < transmitter_cnt && i < 4`
+         * — and a fifth source is not refused, not logged, simply never drawn. It is also
+         * the right number for the screen: on a 9:20 display a 2x2 of portrait tiles is
+         * four faces you can recognise, and a nine-way layout is the same canvas cut into
+         * stamps.
          *
-         * Enforced on the merge, which is the only place this app decides a conference's
-         * size. Somebody who dials the room directly is the bridge's business, and the
-         * bridge will compose them.
+         * Counted over the legs **carrying video**, not over the conference: an audio-only
+         * member is not in the picture and costs it nothing, so a five-way conference with
+         * a three-way picture is within this ceiling. [MergeTopology] enforces it on the
+         * merge and `videoMixable` enforces it again on a conference that grew into it one
+         * join at a time.
          */
         const val MAX_VIDEO_CONFERENCE = 4
     }

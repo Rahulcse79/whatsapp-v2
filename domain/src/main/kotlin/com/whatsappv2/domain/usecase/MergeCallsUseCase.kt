@@ -2,37 +2,35 @@ package com.whatsappv2.domain.usecase
 
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.failure
-import com.whatsappv2.core.common.result.map
-import com.whatsappv2.domain.engine.ConferenceRoom
 import com.whatsappv2.domain.engine.MergeTopology
 import com.whatsappv2.domain.engine.SipCallController
 import com.whatsappv2.domain.engine.SipConferenceController
 import com.whatsappv2.domain.engine.SipError
 import com.whatsappv2.domain.model.CallId
-import com.whatsappv2.domain.repository.SipAccountRepository
-import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 
 /**
- * One button, two conferences (ADR-003 and ADR-009).
+ * One button, one conference (ADR-009).
  *
- * Merge means "put these calls together", and how that is done depends on what is in them:
- * audio is mixed on this device, video goes to the bridge. [MergeTopology] decides which,
- * and this runs the decision — so the ViewModel asks for a merge rather than choosing a
- * topology, and the choice itself stays a pure function with a JVM test.
+ * Merge means "put these calls together", and it is always done here on this device:
+ * `pjmedia_conf` mixes the audio and `pjmedia`'s video bridge composes a canvas for each
+ * peer. [MergeTopology] decides whether the merge is possible at all, and this runs the
+ * decision — so the ViewModel asks for a merge rather than reasoning about ceilings, and
+ * the rule itself stays a pure function with a JVM test.
  *
- * ## Why the ViewModel does not do this itself
+ * ## The conference bridge is gone from this path
  *
- * Because resolving the room needs the account, and the account needs a repository the
- * call screen has no other reason to hold. Putting it here keeps `CallViewModel` talking
- * only to things about calls, and puts the one rule that spans both conference mechanisms
- * in one readable place.
+ * Under ADR-003 a merge that carried video sent every leg into a FreeSWITCH room by blind
+ * REFER. Client-side composition replaced that, and the last case still going to the room
+ * — a merge with both video and audio-only legs — went with it: the mixer composes among
+ * the legs that carry video and leaves the rest in the audio mix, which is strictly better
+ * than a dependency on a reachable server for a room that has to exist in a dialplan.
+ *
+ * Nothing here dials a conference room any more, so nothing here needs to know one.
  */
 class MergeCallsUseCase @Inject constructor(
     private val calls: SipCallController,
     private val conferences: SipConferenceController,
-    private val accounts: SipAccountRepository,
-    private val room: ConferenceRoom,
 ) {
 
     /**
@@ -41,57 +39,14 @@ class MergeCallsUseCase @Inject constructor(
      * Everything, not a chosen pair: the phone has one microphone and one camera, so
      * "merge" can only ever mean all of them. Ringing calls are left out and join when
      * they are answered.
-     */
-    suspend operator fun invoke(): Outcome<MergeResult, SipError> {
-        val snapshots = calls.activeCalls.value
-
-        // Resolved before the decision, not after, so "a bridge is configured" means a
-        // room this device can actually address rather than merely a non-blank string.
-        // An account whose domain will not make a URI is not a bridge.
-        //
-        // The account of a call being merged comes first, and the default account is the
-        // fallback: the room has to be on the server the calls are already on, and on a
-        // handset with two accounts the default may not be that one.
-        val account = snapshots.firstOrNull { it.state.isEstablished }
-            ?.let { accounts.findById(it.accountId) }
-            ?: accounts.observeDefaultAccount().first()
-        val roomUri = account?.let { room.uriOn(it.domain) }
-
-        return when (val topology = MergeTopology.of(snapshots, bridgeConfigured = roomUri != null)) {
-            is MergeTopology.Unavailable -> failure(topology.reason.toSipError())
-
-            is MergeTopology.LocalMix ->
-                conferences.mixCalls(topology.callIds).map { MergeResult.Mixed(it) }
-
-            is MergeTopology.Bridge ->
-                // `roomUri` is non-null here by construction: `Bridge` is only ever
-                // returned when `bridgeConfigured` was true, and that *is* this being
-                // non-null. The elvis is a compiler obligation, not a real branch.
-                conferences
-                    .mergeIntoConference(topology.callIds, roomUri ?: return failure(NO_ROOM))
-                    .map { MergeResult.Bridged(it) }
-        }
-    }
-
-    /**
-     * Moves exactly [callIds] into the bridge (ADR-003), for a conference assembled one leg
-     * at a time — a video call-back from history, whose members answer one by one.
      *
-     * [invoke] decides the topology from every call on the device; this does not decide,
-     * because the caller already has: the legs were dialled with video for the purpose of
-     * being bridged. What it shares with [invoke] is the room — resolved the same way, on
-     * the account the legs are on — so there is one place that knows how a room address is
-     * built. One of [callIds] may already be this device's leg into the room; the engine
-     * keeps that leg and sends the others in.
+     * @return the calls actually mixed, which excludes any the stack could not take.
      */
-    suspend fun bridge(callIds: Set<CallId>): Outcome<CallId, SipError> {
-        val snapshots = calls.activeCalls.value
-        val account = snapshots.firstOrNull { it.callId in callIds }
-            ?.let { accounts.findById(it.accountId) }
-            ?: accounts.observeDefaultAccount().first()
-        val roomUri = account?.let { room.uriOn(it.domain) } ?: return failure(NO_ROOM)
-        return conferences.mergeIntoConference(callIds, roomUri)
-    }
+    suspend operator fun invoke(): Outcome<Set<CallId>, SipError> =
+        when (val topology = MergeTopology.of(calls.activeCalls.value)) {
+            is MergeTopology.Unavailable -> failure(topology.reason.toSipError())
+            is MergeTopology.LocalMix -> conferences.mixCalls(topology.callIds)
+        }
 
     private fun MergeTopology.Unavailable.Reason.toSipError(): SipError = when (this) {
         MergeTopology.Unavailable.Reason.NOT_ENOUGH_CALLS ->
@@ -99,38 +54,8 @@ class MergeCallsUseCase @Inject constructor(
 
         MergeTopology.Unavailable.Reason.TOO_MANY_CALLS ->
             SipError.InvalidState(
-                "this device conferences at most ${SipConferenceController.MAX_LOCAL_CONFERENCE} calls",
+                "this device conferences at most ${SipConferenceController.MAX_LOCAL_CONFERENCE} calls, " +
+                    "and shows at most ${SipConferenceController.MAX_VIDEO_CONFERENCE} of them on video",
             )
-
-        MergeTopology.Unavailable.Reason.NO_BRIDGE_CONFIGURED -> NO_ROOM
     }
-
-    private companion object {
-        /**
-         * Named once because two paths report it: the decision that no room is configured,
-         * and the compiler's insistence that the resolved room might be null.
-         *
-         * The sentence says what is missing rather than what failed. A user told "merge
-         * failed" on a video call would try again; one told the conference server is not
-         * set up knows it is not their doing.
-         */
-        val NO_ROOM = SipError.InvalidState(
-            "a video conference needs a conference room, and none is configured",
-        )
-    }
-}
-
-/** What a merge produced, so the screen can follow the right call afterwards. */
-sealed interface MergeResult {
-
-    /** Mixed on this device (ADR-009). The members keep their own call ids. */
-    data class Mixed(val callIds: Set<CallId>) : MergeResult
-
-    /**
-     * Moved into the bridge (ADR-003), which replaced every leg with one call to the room.
-     *
-     * [callId] is this device's leg into the conference, and it is the call the screen
-     * must follow: the legs the user merged are being transferred away and will end.
-     */
-    data class Bridged(val callId: CallId) : MergeResult
 }

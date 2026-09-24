@@ -285,13 +285,13 @@ class PjsipSipEngineConferenceTest {
     }
 
     @Test
-    fun `merging turns video off on every member, because the device cannot mix it`() = runTest {
-        // ADR-009's gate: four members carrying video costs ~540 % of a core against a
-        // 400 % budget, measured on a TC15. Leaving the streams up bought N one-to-one
-        // pictures rather than a conference, and a renegotiation on every leg whenever
-        // anyone was held — which is what collapsed a real conference with
-        // `cause=488 "Incomplete offer/answer"` (2026-09-15). A video conference is the
-        // bridge's job (ADR-003); this one is audio, and now says so on the wire.
+    fun `merging audio-only calls renegotiates nothing`() = runTest {
+        // It used to re-INVITE every member down to audio unconditionally — ADR-009's
+        // gate, applied whether or not the leg had a camera. On an audio conference that
+        // is one pointless re-INVITE per member, and a re-INVITE rebuilds the call's
+        // media ports, which is the very thing the conference bridges then have to
+        // recover from. Video is dropped on the legs that have video and cannot be in
+        // the picture, and on no others.
         val engine = with(fixture) { twoCallsOneHeld() }
         val ids = engine.activeCalls.value.map { it.callId }.toSet()
         fixture.gateway.videoRequests.clear()
@@ -304,16 +304,48 @@ class PjsipSipEngineConferenceTest {
         advanceUntilIdle()
         assertIs<Outcome.Success<Set<CallId>>>(merging.await())
 
-        val dropped = fixture.gateway.videoRequests.filter { !it.second }.map { it.first }.toSet()
+        assertTrue(
+            fixture.gateway.videoRequests.isEmpty(),
+            "no leg had video, so none may be renegotiated: ${fixture.gateway.videoRequests}",
+        )
+        engine.stop()
+    }
+
+    @Test
+    fun `merging legs that carry video composes the picture here and leaves their video up`() = runTest {
+        // The other half of the same rule, and the regression that cost a live
+        // conference on 2026-09-24. Legs carrying video keep it and become the picture;
+        // `pjmedia`'s video bridge composes a canvas per peer, so nothing is REFERred
+        // anywhere and no video is torn down to make a conference possible.
+        val engine = with(fixture) { twoCallsOneHeld() }
+        val ids = engine.activeCalls.value.map { it.callId }.toSet()
+        // The leg that is already connected reports its video; the held one reports its
+        // own as it comes back, which is the resume the merge itself asks for.
+        engine.activeCalls.value
+            .filter { it.state is CallState.Connected }
+            .forEach { fixture.gateway.emitCall(it.callId.value, StackCallState.STREAMS_RUNNING, videoActive = true) }
+        runCurrent()
+        fixture.gateway.videoRequests.clear()
+        fixture.gateway.videoConferenceMemberships.clear()
+
+        val merging = async { engine.mixCalls(ids) }
+        runCurrent()
+        engine.activeCalls.value
+            .filterNot { it.state is CallState.Connected }
+            .forEach { fixture.gateway.emitCall(it.callId.value, StackCallState.STREAMS_RUNNING, videoActive = true) }
+        advanceUntilIdle()
+        assertIs<Outcome.Success<Set<CallId>>>(merging.await())
+
         assertEquals(
             ids.map { it.value }.toSet(),
-            dropped,
-            "every mixed member must be renegotiated to audio",
+            fixture.gateway.videoConferenceMemberships.last(),
+            "every leg carrying video is in the picture",
         )
         assertTrue(
-            fixture.gateway.videoRequests.none { it.second },
-            "and nothing may turn video back on as part of merging",
+            fixture.gateway.videoRequests.none { !it.second },
+            "and none of them is renegotiated down to audio: ${fixture.gateway.videoRequests}",
         )
+        assertTrue(fixture.gateway.blindTransfers.isEmpty(), "no leg was sent to a conference room")
         engine.stop()
     }
 

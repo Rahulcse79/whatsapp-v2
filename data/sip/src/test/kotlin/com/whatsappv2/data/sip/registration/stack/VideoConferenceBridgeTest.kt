@@ -60,7 +60,6 @@ class VideoConferenceBridgeTest {
         val camera = givenPort(VideoPortRef.camera)
         givenMember(a)
         givenMember(b)
-        givenPort(VideoPortRef.renderer)
         val bridge = bridge()
 
         assertEquals(setOf(a, b), bridge.set(setOf(a, b)))
@@ -74,18 +73,14 @@ class VideoConferenceBridgeTest {
             setOf(camera.id, ports[VideoPortRef.decoder(a)]!!.id),
             feeding(VideoPortRef.encoder(b)),
         )
-        // And our own screen gets both peers, without the camera.
-        assertEquals(
-            setOf(ports[VideoPortRef.decoder(a)]!!.id, ports[VideoPortRef.decoder(b)]!!.id),
-            feeding(VideoPortRef.renderer),
-        )
+        // And nothing is composed for our own screen: the call screen draws a tile per
+        // participant from each call's own window.
         assertTrue(bridge.isActive)
     }
 
     @Test
     fun `a member whose video is not up yet joins by itself when it is`() {
         givenPort(VideoPortRef.camera)
-        givenPort(VideoPortRef.renderer)
         givenMember(a)
         val bridge = bridge()
 
@@ -107,7 +102,6 @@ class VideoConferenceBridgeTest {
         // Believing the old links are still open leaves that member in the roster and in
         // nobody's picture — the video form of ADR-009's "RX 0pkt while TX shows".
         givenPort(VideoPortRef.camera)
-        givenPort(VideoPortRef.renderer)
         givenMember(a)
         givenMember(b)
         val bridge = bridge()
@@ -121,13 +115,11 @@ class VideoConferenceBridgeTest {
             rebuilt.id in feeding(VideoPortRef.encoder(a)),
             "the new slot was never linked: ${feeding(VideoPortRef.encoder(a))}",
         )
-        assertTrue(rebuilt.id in feeding(VideoPortRef.renderer))
     }
 
     @Test
     fun `a refused link is deferred, not fatal, and the next remix opens it`() {
         givenPort(VideoPortRef.camera)
-        givenPort(VideoPortRef.renderer)
         givenMember(a)
         givenMember(b)
         ports[VideoPortRef.decoder(b)]!!.refuse = true
@@ -146,7 +138,6 @@ class VideoConferenceBridgeTest {
     fun `a member leaving closes its links and leaves the others alone`() {
         val c = "call-c"
         givenPort(VideoPortRef.camera)
-        givenPort(VideoPortRef.renderer)
         listOf(a, b, c).forEach(::givenMember)
         val bridge = bridge()
         bridge.set(setOf(a, b, c))
@@ -166,7 +157,6 @@ class VideoConferenceBridgeTest {
     @Test
     fun `dropping to one member tears everything down`() {
         givenPort(VideoPortRef.camera)
-        givenPort(VideoPortRef.renderer)
         givenMember(a)
         givenMember(b)
         val bridge = bridge()
@@ -184,7 +174,6 @@ class VideoConferenceBridgeTest {
         // membership and left every link open, so people went on seeing each other after
         // the conference had ended.
         givenPort(VideoPortRef.camera)
-        givenPort(VideoPortRef.renderer)
         givenMember(a)
         givenMember(b)
         val bridge = bridge()
@@ -205,7 +194,6 @@ class VideoConferenceBridgeTest {
         ports[VideoPortRef.encoder(a)] = shared
         ports[VideoPortRef.decoder(a)] = givenPort(VideoPortRef.decoder(a))
         givenMember(b)
-        givenPort(VideoPortRef.renderer)
         val bridge = bridge()
 
         bridge.set(setOf(a, b))
@@ -216,7 +204,6 @@ class VideoConferenceBridgeTest {
     @Test
     fun `setting the same membership twice opens nothing the second time`() {
         givenPort(VideoPortRef.camera)
-        givenPort(VideoPortRef.renderer)
         givenMember(a)
         givenMember(b)
         val bridge = bridge()
@@ -229,22 +216,5 @@ class VideoConferenceBridgeTest {
         assertEquals(opened, ports.values.sumOf { it.sentTo.size }, "remix is not idempotent")
     }
 
-    @Test
-    fun `the renderer is whichever call is the canvas, and only that one`() {
-        // The screen has one Surface. Three windows drawing into it is the last writer
-        // winning, which is why exactly one call's window is the canvas.
-        givenPort(VideoPortRef.camera)
-        val canvas = givenPort(VideoPortRef.renderer)
-        givenMember(a)
-        givenMember(b)
-        val bridge = bridge()
-        bridge.set(setOf(a, b))
 
-        val renderers = ports.filterKeys { it.role == VideoRole.RENDERER }
-        assertEquals(1, renderers.size)
-        assertEquals(
-            setOf(ports[VideoPortRef.decoder(a)]!!.id, ports[VideoPortRef.decoder(b)]!!.id),
-            ports.values.filterTo(mutableSetOf()) { canvas.id in it.sentTo }.mapTo(mutableSetOf()) { it.id },
-        )
-    }
 }

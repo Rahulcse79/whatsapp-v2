@@ -28,7 +28,6 @@ import com.whatsappv2.domain.recording.CallRecorder
 import com.whatsappv2.domain.repository.SipAccountRepository
 import com.whatsappv2.domain.usecase.CallWaitingUseCase
 import com.whatsappv2.domain.usecase.MergeCallsUseCase
-import com.whatsappv2.domain.usecase.MergeResult
 import com.whatsappv2.domain.usecase.TransferCallUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -258,6 +257,8 @@ class CallViewModel @Inject constructor(
         val pendingVideo: PendingVideoRequest?,
         val transfer: TransferUiState,
         val mixed: Set<CallId> = emptySet(),
+        /** True while this device is the conference's focus, so it may drop a member. */
+        val hostsConference: Boolean = false,
         val accounts: List<SipAccount> = emptyList(),
         /** The address book's name for each call's address, where it has one. */
         val contacts: Map<SipUri, Contact> = emptyMap(),
@@ -296,6 +297,7 @@ class CallViewModel @Inject constructor(
             // trade than one extra operator.
         }
             .combine(mixed) { state, mixedNow -> state.copy(mixed = mixedNow) }
+            .combine(conferences.hostsConference) { state, hosts -> state.copy(hostsConference = hosts) }
             .combine(accounts.observeAccounts()) { state, all -> state.copy(accounts = all) }
             .combine(memberContacts()) { state, known -> state.copy(contacts = known) }
             .combine(endedReasons) { state, ended -> state.copy(endedReason = ended[callId]) }
@@ -327,16 +329,30 @@ class CallViewModel @Inject constructor(
                     secondCall = state.secondCallPrompt(callId, call),
                     transfer = state.transfer,
                     recording = state.recording,
-                    // The bridge's roster when there is a bridge, and this device's own
-                    // membership when it is the one mixing — the two never coexist, because
-                    // a merge into the bridge tears the local mix down before it transfers
-                    // anybody.
-                    conference = state.conference?.toUiState(
+                    // This device's own membership first, and an announced roster only
+                    // when there is no local mix to describe.
+                    //
+                    // The order matters now that conferences are a mesh. A member is
+                    // *told* the membership by the focus — a roster keyed by SIP URI,
+                    // which is what `ConferenceUiState.perParticipantStreams` is false for
+                    // — and then dials the other participants and ends up holding a leg to
+                    // each of them. Both descriptions are then true, and only one of them
+                    // is backed by streams this device can actually draw: preferring the
+                    // announced one left every member with the roster's URI-keyed rows, so
+                    // `ConferenceVideo` fell to `MixedStream` and drew one picture over
+                    // three real ones.
+                    conference = localMixRoster(
+                        state.calls,
+                        state.mixed,
+                        state.localParticipant(call),
+                        state.contacts,
+                        canRemoveParticipants = state.hostsConference,
+                    ) ?: state.conference?.toUiState(
                         unknownLabel = UNKNOWN_PARTICIPANT,
                         self = state.localParticipant(call),
                         isMuted = call.state.controlsOrNull?.isMuted == true,
                         contacts = state.contacts,
-                    ) ?: localMixRoster(state.calls, state.mixed, state.localParticipant(call), state.contacts),
+                    ),
                     canMerge = state.calls.count { it.state.isEstablished } >= MIN_MERGEABLE,
                     mixedCallCount = state.mixed.size,
                     pendingActions = busy,
@@ -568,8 +584,8 @@ class CallViewModel @Inject constructor(
      * Called from the composable's lifecycle rather than on state change, because the
      * lifetime that matters is the view's, not the call's.
      */
-    fun attachVideoSurfaces(remoteView: Any?, localPreview: Any?) {
-        surfaces.attach(remoteView, localPreview)
+    fun attachVideoSurfaces(remoteViews: Map<String, Any?>, localPreview: Any?) {
+        surfaces.attach(remoteViews, localPreview)
     }
 
     /** Gives the views back. Must run on dispose, or the stack keeps drawing into them. */
@@ -608,36 +624,18 @@ class CallViewModel @Inject constructor(
      * are left out — they have no media to contribute — and join by themselves when they
      * are answered, because the stack re-plans the mix on every media change.
      *
-     * ## Two conferences behind one button
+     * ## One conference, and the screen does not move
      *
-     * [MergeCallsUseCase] decides which, and the decision is about video: audio is mixed
-     * here on the device (ADR-009) and video goes to the bridge (ADR-003). The screen has
-     * to react differently to each, which is the whole reason the result is a type rather
-     * than a set of ids:
-     *
-     *  - **Mixed** leaves every leg in place, so the merged set is what the stack accepted
-     *    — a member the bridge refused never appears on screen as merged.
-     *  - **Bridged** replaced every leg with a single call to the room, so the screen is
-     *    re-pointed at it. Without that the user would be left watching a leg that is
-     *    being transferred away and is about to end, and the conference they just built
-     *    would appear to have hung up on them.
+     * There used to be two mechanisms behind this button: audio was mixed here and
+     * anything carrying video was REFERred into a FreeSWITCH room, which replaced every
+     * leg with a single call to the room and so forced the screen to re-point at it. The
+     * picture is composed here now, so a merge leaves every leg exactly where it was and
+     * the call the user is looking at is still theirs. [MergeCallsUseCase] returns the
+     * membership the stack accepted; the engine publishes it, so there is nothing to
+     * record here.
      */
     fun merge() {
-        act(CallAction.MERGE) {
-            mergeCalls().also { result ->
-                when (result) {
-                    is Outcome.Failure -> Unit
-                    is Outcome.Success -> when (val merged = result.value) {
-                        // The engine publishes the membership; nothing to record here.
-                        is MergeResult.Mixed -> Unit
-                        // The local mix is over: this device is a member now, not the
-                        // host, and the engine has already emptied the set. The screen
-                        // moves to the leg that is in the room.
-                        is MergeResult.Bridged -> pointAt(merged.callId)
-                    }
-                }
-            }
-        }
+        act(CallAction.MERGE) { mergeCalls() }
     }
 
     /**
@@ -646,6 +644,19 @@ class CallViewModel @Inject constructor(
      * Also re-points the screen, because after a swap the call the user is looking at
      * should be the one they are talking to.
      */
+    /**
+     * Drops one member and leaves the conference running (ADR-009).
+     *
+     * Deliberately not [hangUp], which fans out across the mix and ends the whole
+     * conference — that is what the one big red button under "Conference call" means, and
+     * what the user means by pressing it. This is the small button beside a name, and the
+     * engine keeps the two apart all the way down: see
+     * `SipConferenceController.removeFromConference`.
+     */
+    fun removeParticipant(callId: CallId) {
+        act(CallAction.REMOVE_PARTICIPANT) { conferences.removeFromConference(callId) }
+    }
+
     fun swapTo(callId: CallId) {
         viewModelScope.launch {
             when (val result = callWaiting.swapTo(callId)) {

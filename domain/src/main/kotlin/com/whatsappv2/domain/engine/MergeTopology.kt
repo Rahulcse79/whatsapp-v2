@@ -3,31 +3,37 @@ package com.whatsappv2.domain.engine
 import com.whatsappv2.domain.model.CallId
 
 /**
- * How a merge should be satisfied: on this device, or in the bridge.
+ * Whether a merge can be performed, and with which legs.
  *
- * A type rather than a boolean because the two carry different things — the local mix
- * needs the set of legs, the bridge needs them *and* somewhere to send them — and because
- * a third answer already exists and has to be expressible: there are merges that cannot
- * be performed at all, and reporting one as "false" would put a silent failure on screen.
+ * A type rather than a boolean because there are merges that cannot be performed at all,
+ * and reporting one as "false" would put a silent failure on screen.
+ *
+ * ## There is one conference now, and it is on this device
+ *
+ * This used to choose between two mechanisms: audio was mixed here (ADR-009) and anything
+ * carrying video was REFERred into a FreeSWITCH room (ADR-003). `pjmedia`'s video bridge
+ * removed the reason for the second — it gives every peer's encoder a canvas composed of
+ * this camera and every other peer's decoder, so each participant receives a picture of
+ * everyone else and no server is in the media path at all.
+ *
+ * The bridge survived here for one residual case: a merge with both video and audio-only
+ * legs, on the grounds that a canvas with a hole in it was worse than the room. It is not.
+ * The mixer composes whichever subset it is handed ([SipConferenceController.mixCalls]
+ * composes among the legs that carry video and leaves the rest in the audio mix), while
+ * the room is a dependency on a reachable server, a dialplan entry that has to exist, and
+ * a blind REFER per leg. So every merge is local now, and this type no longer chooses a
+ * mechanism — it decides whether the merge is possible.
  */
 sealed interface MergeTopology {
 
     /**
-     * Mix on the device with `pjmedia_conf` (ADR-009).
+     * Mix on the device with `pjmedia_conf`, and compose the picture with `pjmedia`'s
+     * video bridge (ADR-009).
      *
-     * The answer for an audio conference, and the better one: it needs no server, so it
-     * survives a bridge being unreachable, and it costs ~22 % of a core per participant.
+     * The only way a conference is built. Audio costs ~22 % of a core per participant and
+     * needs no server, so it survives anything being unreachable.
      */
     data class LocalMix(val callIds: Set<CallId>) : MergeTopology
-
-    /**
-     * Move every leg into the conference bridge (ADR-003).
-     *
-     * The answer whenever video is involved — see [SipConferenceController.mergeIntoConference]
-     * for why a device-hosted star cannot show peers to each other at any implementation
-     * quality.
-     */
-    data class Bridge(val callIds: Set<CallId>) : MergeTopology
 
     /**
      * Nothing can be merged, and [reason] says what the user should be told.
@@ -43,52 +49,43 @@ sealed interface MergeTopology {
             /** Fewer than two established calls. */
             NOT_ENOUGH_CALLS,
 
-            /** More participants than this device or the bridge will take. */
+            /** More participants than this device will mix, or than fit the picture. */
             TOO_MANY_CALLS,
-
-            /** Video legs to merge, and no bridge configured to merge them into. */
-            NO_BRIDGE_CONFIGURED,
         }
     }
 
     companion object {
 
         /**
-         * Which topology [calls] need, given whether a bridge is configured.
+         * Whether [calls] can be merged, and which of them.
          *
-         * ## The rule, and why it is this way round
+         * ## Two ceilings, counted over different sets
          *
-         * **Any** video leg sends the whole conference to the bridge, rather than only a
-         * conference that is video throughout. A mixed merge — two video calls and one
-         * audio — has the same defect as an all-video one for every video participant, and
-         * splitting the difference (mix the audio legs here, bridge the video ones) would
-         * be two conferences that cannot hear each other. The bridge takes audio-only
-         * members perfectly well and leaves them off the canvas, which is the behaviour the
-         * `video-required-for-canvas` flag on the `whatsapp-video` profile exists for.
+         * **The conference** is capped at [SipConferenceController.MAX_LOCAL_CONFERENCE] —
+         * ADR-009's measured audio ceiling, and `PJSUA_MAX_CALLS`.
          *
-         * **Video conferences are capped at [SipConferenceController.MAX_VIDEO_CONFERENCE]**,
-         * counting this handset — a tighter ceiling than audio's, and for an unrelated
-         * reason: audio's is CPU, video's is how small a face can be on a phone and still
-         * be a face.
+         * **The picture** is capped at [SipConferenceController.MAX_VIDEO_CONFERENCE]
+         * counting this handset, and that ceiling is counted over **the legs carrying
+         * video**, not over the whole conference. This is the change that makes a mixed
+         * merge work: two people on video and three on audio is a five-way conference with
+         * a three-way picture, which is within both ceilings and was previously refused
+         * for exceeding a video ceiling that had been counted over the audio members too.
          *
-         * **No video means no bridge**, even when one is configured. An audio conference
-         * that works with no server is strictly better than one that depends on a
-         * reachable FreeSWITCH, and ADR-009 reversed ADR-003 for audio precisely to remove
-         * that dependency. Routing audio through the bridge anyway would hand it back.
+         * A merge whose *video* legs overflow the picture is still refused outright rather
+         * than composed for some of them: a participant who is in the call, in the roster
+         * and in nobody's picture is the one outcome `pjmedia`'s silent four-source limit
+         * produces by itself, and the whole reason the ceiling is stated here.
          *
          * A pure function, and separate from both the engine and the ViewModel, because it
-         * is the whole of the policy: which of two very different pieces of machinery runs
-         * when the user presses one button. That is a rule worth enumerating in a JVM test
-         * rather than inferring from a device.
+         * is the whole of the policy behind one button — a rule worth enumerating in a JVM
+         * test rather than inferring from a device.
          *
          * @param calls every call on this device. Only established ones can be merged —
          *   a ringing call has no media to contribute and joins when it is answered.
-         * @param bridgeConfigured whether a conference room address is known.
          * @param maxParticipants the ceiling, from ADR-009's measurement.
          */
         fun of(
             calls: List<CallSnapshot>,
-            bridgeConfigured: Boolean,
             maxParticipants: Int = SipConferenceController.MAX_LOCAL_CONFERENCE,
         ): MergeTopology {
             val established = calls.filter { it.state.isEstablished }
@@ -101,19 +98,15 @@ sealed interface MergeTopology {
                 return Unavailable(Unavailable.Reason.TOO_MANY_CALLS)
             }
 
-            val anyVideo = established.any { it.media.hasVideo }
-            return when {
-                !anyVideo -> LocalMix(ids)
-                !bridgeConfigured -> Unavailable(Unavailable.Reason.NO_BRIDGE_CONFIGURED)
-                // The legs plus this handset: a merge of three others is a conference of
-                // four, which is the ceiling. Checked here rather than against
-                // [maxParticipants] because video's limit is about the picture and audio's
-                // is about the CPU, and they are different numbers for different reasons.
-                ids.size + 1 > SipConferenceController.MAX_VIDEO_CONFERENCE ->
-                    Unavailable(Unavailable.Reason.TOO_MANY_CALLS)
-
-                else -> Bridge(ids)
+            // The video legs plus this handset: three peers on video is a picture of four,
+            // which is the ceiling. Audio-only members are not counted — they are not in
+            // the picture and cost it nothing.
+            val videoLegs = established.count { it.media.hasVideo }
+            if (videoLegs > 0 && videoLegs + 1 > SipConferenceController.MAX_VIDEO_CONFERENCE) {
+                return Unavailable(Unavailable.Reason.TOO_MANY_CALLS)
             }
+
+            return LocalMix(ids)
         }
     }
 }

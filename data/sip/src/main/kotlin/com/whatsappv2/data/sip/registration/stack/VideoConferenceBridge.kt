@@ -15,13 +15,25 @@ import com.whatsappv2.data.sip.call.VideoPortRef
  * differs is [VideoMix]: audio is a full mesh of one port per member, video is a set of
  * personal canvases built from asymmetric source and sink ports. See that file for why.
  *
- * ## No server is involved, and that is the point
+ * ## No server composes the picture, and that is the point
  *
  * Under ADR-003 the conference picture was composed by FreeSWITCH's `mod_conference` in
  * room 3000 and arrived as one stream. This composes it here: every peer's decoder is a
  * source, every peer's encoder is a sink, and the mixer makes each of them a canvas of
- * everyone else. Room 3000 carries no video at all, and video RTP is phone-to-phone —
- * which the dialplan's `bypass_media` for video offers is what makes possible.
+ * everyone else. No conference room is dialled and none carries a picture.
+ *
+ * ## It does **not** require the RTP to leave the server
+ *
+ * Worth stating plainly, because a dialplan change was once made on the opposite belief.
+ * What this class needs is that each leg negotiates a video stream — nothing more. Whether
+ * FreeSWITCH bypasses the media, proxies it, or sits in the path and transcodes is
+ * invisible here: the decoders and encoders are this handset's either way, and the canvas
+ * is built from them.
+ *
+ * That matters because the media path is not free to choose. Server-side Lyra recording
+ * (`freeswitch-lyra`) can only record what reaches the server, so a deployment that
+ * records keeps FreeSWITCH in the path — and this composes exactly the same picture. The
+ * cost of being in the path is the server's codec list, not the conference.
  *
  * ## Opening a link is asynchronous, and the audio bridge's is not
  *
@@ -53,6 +65,14 @@ internal class VideoConferenceBridge(
     private var members: Set<String> = emptySet()
     private var links: Set<VideoLink> = emptySet()
 
+    /**
+     * Whether this device composes a canvas for each peer — see [VideoMix.wanted].
+     *
+     * Held for the reason [ConferenceBridge]'s twin is: [remix] runs from the media-state
+     * callback and has no way to be told the conference's shape at that moment.
+     */
+    private var compose: Boolean = true
+
     /** The bridge slot each end of a link was opened on — see [forgetRebuiltPorts]. */
     private val portIds = mutableMapOf<VideoPortRef, Int>()
 
@@ -67,9 +87,13 @@ internal class VideoConferenceBridge(
      *
      * Idempotent. An empty set is a teardown: [remix] closes every link to get there, and
      * the slot bookkeeping goes with them.
+     *
+     * @param compose false for a mesh, where every peer receives every other peer's
+     *   camera directly and a composed canvas would draw each of them twice.
      */
-    fun set(callKeys: Set<String>): Set<String> {
+    fun set(callKeys: Set<String>, compose: Boolean = true): Set<String> {
         members = callKeys
+        this.compose = compose
         val live = remix()
         if (members.isEmpty()) portIds.clear()
         return live
@@ -86,7 +110,7 @@ internal class VideoConferenceBridge(
     fun remix(): Set<String> {
         val live = members.filterTo(mutableSetOf()) { portOf(VideoPortRef.decoder(it)) != null }
         forgetRebuiltPorts(live)
-        val plan = VideoMix.plan(links, live)
+        val plan = VideoMix.plan(links, live, compose)
         if (plan.isEmpty) return live
 
         val applied = apply(plan)
@@ -141,7 +165,7 @@ internal class VideoConferenceBridge(
         if (!isActive) return
         members = VideoMix.without(members, callKey)
         val live = members.filterTo(mutableSetOf()) { portOf(VideoPortRef.decoder(it)) != null }
-        val plan = VideoMix.plan(links, live)
+        val plan = VideoMix.plan(links, live, compose)
         apply(plan)
         links = links - plan.disconnect
         portIds.keys.filterTo(mutableSetOf()) { it.callKey == callKey }.forEach(portIds::remove)
@@ -152,7 +176,15 @@ internal class VideoConferenceBridge(
             // manage again, and anything this class opened must not outlive the mix.
             closeEverything()
             logger.info(TAG, "Video conference ended; ${members.size} member(s) left")
+            return
         }
+
+        // Everyone still here needs a canvas that no longer carries the leg that left.
+        // The plan above closed its links; this re-states what remains against the ports
+        // as they are now, which is also what picks up a member whose own ports moved
+        // while this was happening. Cheap and idempotent, so doing it unconditionally
+        // costs nothing when nothing moved.
+        remix()
     }
 
     /** Closes every link this bridge opened and forgets the conference. */

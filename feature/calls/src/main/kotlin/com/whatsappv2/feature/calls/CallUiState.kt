@@ -429,6 +429,9 @@ enum class CallAction {
     SWAP,
     RECORD,
     MERGE,
+
+    /** Dropping one member, as opposed to [HANG_UP], which ends the whole conference. */
+    REMOVE_PARTICIPANT,
     ;
 
     /**

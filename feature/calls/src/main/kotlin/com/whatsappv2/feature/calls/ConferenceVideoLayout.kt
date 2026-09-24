@@ -1,5 +1,7 @@
 package com.whatsappv2.feature.calls
 
+import com.whatsappv2.domain.engine.SipConferenceController
+
 /**
  * How a conference's video should be arranged (Task 61, §2.2).
  *
@@ -86,37 +88,63 @@ object ConferenceVideoLayout {
     }
 
     /**
-     * The tightest grid that holds [count] tiles, in the shape the screen is.
+     * The arrangement for [count] **remote** tiles, to the agreed reference.
      *
-     * The shorter run is the square root rounded **down** and the longer one follows from
-     * the count, which is what makes two people one-wide-and-two-tall in portrait rather
-     * than side by side. Rounding up instead gives the short run the larger number — two
-     * people come out 2×1 — and the names stop describing the values.
+     * | tiles | portrait          | what it looks like                         |
+     * |-------|-------------------|--------------------------------------------|
+     * | 1     | 1 x 1             | full screen                                 |
+     * | 2     | 1 col x 2 rows    | stacked, each full width, each half the area|
+     * | 3     | 2 cols x 2 rows   | two across, then one full width             |
+     * | 4     | 2 cols x 2 rows   | 2x2, each tile a quarter of the area        |
      *
-     * In landscape the two are swapped, so four people are 2×2 either way but three are
-     * 1 wide × 3 tall in portrait and 3 wide × 1 tall in landscape — the difference
-     * between three readable faces and three letterboxes.
+     * ## Why two is a column and three is a grid
+     *
+     * It is not the tightest packing, and that is deliberate. Two people side by side on a
+     * 9:20 screen are two narrow slivers; stacked, each gets the full width and half the
+     * height, which is the larger face. From three on there is no arrangement that keeps
+     * the full width, so the grid starts — and once it starts, the last row of an odd
+     * count spreads across rather than leaving a hole beside it.
+     *
+     * It used to compute `columns = floor(sqrt(count))`, which made three tiles **one
+     * column, three rows**: three full-width letterboxes stacked down the screen. Four came
+     * out 2x2 by arithmetic accident, so the defect only showed at the sizes nobody had
+     * screenshotted.
+     *
+     * Landscape is the same table transposed: the run that was down the screen goes across
+     * it, so two people sit side by side and four are still 2x2.
+     *
+     * @param count how many **remote** tiles there are. Not the participant count: this
+     *   device is a draggable self-view, never a tile, so a conference of four draws
+     *   three. Passing the participant count is the off-by-one that made a two-person
+     *   conference use the three-tile arrangement.
      */
-    private fun gridFor(count: Int, isLandscape: Boolean): ConferenceVideoMode.Grid {
-        val short = floorSqrt(count)
-        val long = ceilDiv(count, short)
-
-        // The longer run goes across the longer edge of the screen.
-        return if (isLandscape) {
-            ConferenceVideoMode.Grid(columns = long, rows = short)
+    private fun gridFor(count: Int, isLandscape: Boolean): ConferenceVideoMode.Grid =
+        if (isLandscape) {
+            val rows = if (count <= FULL_WIDTH_LIMIT) 1 else COLUMNS
+            ConferenceVideoMode.Grid(columns = ceilDiv(count, rows), rows = rows)
         } else {
-            ConferenceVideoMode.Grid(columns = short, rows = long)
+            val columns = if (count <= FULL_WIDTH_LIMIT) 1 else COLUMNS
+            ConferenceVideoMode.Grid(columns = columns, rows = ceilDiv(count, columns))
         }
-    }
-
-    /** The largest `n` with `n * n <= value`, without floating point. */
-    private fun floorSqrt(value: Int): Int {
-        var n = 1
-        while ((n + 1) * (n + 1) <= value) n++
-        return n
-    }
 
     private fun ceilDiv(value: Int, by: Int): Int = (value + by - 1) / by
+
+    /**
+     * Up to this many tiles keep the full width of the screen and stack instead.
+     *
+     * Two. See the table above: below three tiles, stacking gives a bigger picture than
+     * splitting the width does.
+     */
+    const val FULL_WIDTH_LIMIT = 2
+
+    /**
+     * Tiles across the short edge once the grid starts.
+     *
+     * Two, which with [SipConferenceController.MAX_VIDEO_CONFERENCE]'s four participants —
+     * three remote tiles plus this device's own preview — makes every tile a quarter of
+     * the conference area at the ceiling.
+     */
+    const val COLUMNS = 2
 
     /**
      * Above this many participants a grid stops being readable on a phone.

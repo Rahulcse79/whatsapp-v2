@@ -54,45 +54,6 @@ object ConferenceJoinPolicy {
         return members.takeIf { it.size >= SipConferenceController.MINIMUM_MIXED && it != mixed }
     }
 
-    /**
-     * The calls to move into the bridge next, or null when there is nothing to do (ADR-003).
-     *
-     * ## The video counterpart of [plan]
-     *
-     * A video conference cannot be mixed here — see `SipConferenceController.mergeIntoConference`
-     * for the measurement — so joining means REFERring the leg into the room. The rule is
-     * [plan]'s with the room leg in the place of the mixed set: a wanted leg is sent in the
-     * moment it is established, together with this device's own leg into the room when
-     * there is one, so the engine resumes that leg and sends only the newcomers.
-     *
-     * ## When it waits
-     *
-     * - **No room yet and one leg.** The first member of a video call-back has answered
-     *   and nobody else has; a conference of two is a call, and the bridge is not dialled
-     *   until a second leg is up.
-     * - **The room is full.** `MAX_VIDEO_CONFERENCE` counts this handset, so at most that
-     *   many minus one are sent in from here. Once a room leg exists the bridge's own
-     *   `max-members` is the ceiling, because this device cannot count who else is inside.
-     *
-     * @param calls every call on the device.
-     * @param wanted the calls somebody asked to have bridged, whatever their state.
-     * @param rooms this device's legs into the conference room, if any — established or not.
-     */
-    fun planBridge(calls: List<CallSnapshot>, wanted: Set<CallId>, rooms: Set<CallId>): Set<CallId>? {
-        val room = calls.firstOrNull { it.callId in rooms && it.state.canJoin }?.callId
-        val ready = calls
-            .filter { it.callId in wanted && it.callId !in rooms && it.state.canJoin }
-            .map { it.callId }
-        if (ready.isEmpty()) return null
-
-        return if (room != null) {
-            ready.toSet() + room
-        } else {
-            ready.take(SipConferenceController.MAX_VIDEO_CONFERENCE - 1).toSet()
-                .takeIf { it.size >= SipConferenceController.MINIMUM_MIXED }
-        }
-    }
-
     /** Established with media that can be started: connected, or held by us and resumable. */
     private val CallState.canJoin: Boolean
         get() = this is CallState.Connected || (this is CallState.Held && by != HoldParty.REMOTE)

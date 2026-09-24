@@ -27,12 +27,18 @@ import kotlinx.coroutines.flow.StateFlow
 interface VideoSurfaceController {
 
     /**
-     * Draws remote video into [remoteView] and the local preview into [localPreview].
+     * Draws each call's remote video into its own surface, and the local preview into
+     * [localPreview].
      *
-     * Either may be null — a call showing only the far end passes null for the preview.
-     * Both are set together because they are released together.
+     * Keyed by call id, because a conference draws a tile per participant and each tile is
+     * a surface of its own: the screen decides the arrangement, and the stack simply
+     * renders each peer where it was told to. A one-to-one call passes a map of one. A
+     * call absent from the map is not drawn.
+     *
+     * [localPreview] may be null — a call showing only the far end passes null for it.
+     * All of them are set together because they are released together.
      */
-    fun attach(remoteView: Any?, localPreview: Any?)
+    fun attach(remoteViews: Map<String, Any?>, localPreview: Any?)
 
     /** Gives both surfaces back. Safe to call when nothing was ever attached. */
     fun detach()
@@ -79,7 +85,7 @@ interface VideoSurfaceController {
 
 /** The controller for a context with no stack. Draws nothing and holds nothing. */
 object NoVideoSurfaces : VideoSurfaceController {
-    override fun attach(remoteView: Any?, localPreview: Any?) = Unit
+    override fun attach(remoteViews: Map<String, Any?>, localPreview: Any?) = Unit
     override fun detach() = Unit
     override fun setDisplayRotation(degrees: Int) = Unit
     override val videoSizes: StateFlow<VideoSizes> = MutableStateFlow(VideoSizes.UNKNOWN)

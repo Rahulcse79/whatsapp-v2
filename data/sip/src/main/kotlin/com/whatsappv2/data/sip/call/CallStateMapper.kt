@@ -113,6 +113,14 @@ internal object CallStateMapper {
         StackCallState.RESUME_FAILED ->
             if (state is CallState.Resuming) CallEvent.ResumeFailed else null
 
+        // A hold the far end refused carries no transition, and that is the whole of the
+        // answer: the call never left `Connected`, because a hold is only reported once
+        // it has been *accepted*. What the event is for is the engine's own bookkeeping —
+        // it settles the hold that was in flight, so the next press of the button sends a
+        // re-INVITE instead of being told one is already on its way. See
+        // [StackCallState.HOLD_FAILED].
+        StackCallState.HOLD_FAILED -> null
+
         // An escalation the far end is asking for (Task 54). No transition: the call is
         // exactly where it was, and stays there until somebody answers the prompt. The
         // engine handles this state by deferring the stack's answer and publishing a

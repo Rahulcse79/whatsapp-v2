@@ -59,7 +59,7 @@ internal interface SipVideoGateway {
      * Both at once, because they are released together: a surface that outlives its call
      * is a texture the stack keeps writing into after the screen has gone.
      */
-    fun setVideoWindows(remoteView: Any?, localPreview: Any?)
+    fun setVideoWindows(remoteViews: Map<String, Any?>, localPreview: Any?)
 
     /**
      * Rotates captured frames to match a screen turned [degrees] clockwise from the

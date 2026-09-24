@@ -164,6 +164,9 @@ internal class FakeSipCoreGateway :
         val accountKey: String,
         val destination: String,
         val videoEnabled: Boolean,
+
+        /** The conference a mesh leg names, or null for an ordinary call. */
+        val conferenceEntity: String? = null,
     )
 
     val addedAccounts: MutableList<StackAccount> = mutableListOf()
@@ -238,8 +241,9 @@ internal class FakeSipCoreGateway :
         accountKey: String,
         destination: String,
         videoEnabled: Boolean,
+        conferenceEntity: String?,
     ) {
-        placedCalls += PlacedCall(callKey, accountKey, destination, videoEnabled)
+        placedCalls += PlacedCall(callKey, accountKey, destination, videoEnabled, conferenceEntity)
     }
 
     override fun answerCall(callKey: String, videoEnabled: Boolean) {
@@ -292,9 +296,14 @@ internal class FakeSipCoreGateway :
         cameraCaptureChanges += capturing
     }
 
-    override fun setVideoWindows(remoteView: Any?, localPreview: Any?) {
-        videoWindows = remoteView to localPreview
+    override fun setVideoWindows(remoteViews: Map<String, Any?>, localPreview: Any?) {
+        videoWindows = remoteViews.values.firstOrNull() to localPreview
+        remoteVideoWindows = remoteViews
     }
+
+    /** Every surface the screen handed over, by call key — the conference grid's tiles. */
+    var remoteVideoWindows: Map<String, Any?> = emptyMap()
+        private set
 
     val captureRotations: MutableList<Int> = mutableListOf()
 
@@ -325,16 +334,37 @@ internal class FakeSipCoreGateway :
     /** Every membership the stack was asked to mix, in order (ADR-009). */
     val conferenceMemberships: MutableList<Set<String>> = mutableListOf()
 
-    override suspend fun setConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String> {
+    /** Every roster announced, as (call key, document), in order. */
+    val announcedRosters: MutableList<Pair<String, String>> = mutableListOf()
+
+    override fun announceRoster(callKey: String, document: String) {
+        announcedRosters += callKey to document
+    }
+
+    /** Whether each mix was asked to relay between members; false is a mesh. */
+    val conferenceRelays: MutableList<Boolean> = mutableListOf()
+
+    override suspend fun setConferenceMembers(
+        callKeys: Set<String>,
+        relay: Boolean,
+    ): Outcome<Set<String>, String> {
         conferenceMemberships += callKeys
+        conferenceRelays += relay
         return success(callKeys)
     }
 
     /** Every membership the stack was asked to compose a picture for (2026-09-22). */
     val videoConferenceMemberships: MutableList<Set<String>> = mutableListOf()
 
-    override suspend fun setVideoConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String> {
+    /** Whether each picture was asked to be composed here; false is a mesh. */
+    val videoConferenceComposes: MutableList<Boolean> = mutableListOf()
+
+    override suspend fun setVideoConferenceMembers(
+        callKeys: Set<String>,
+        compose: Boolean,
+    ): Outcome<Set<String>, String> {
         videoConferenceMemberships += callKeys
+        videoConferenceComposes += compose
         return success(callKeys)
     }
 
@@ -353,13 +383,23 @@ internal class FakeSipCoreGateway :
         transferEventFlow.tryEmit(StackTransferEvent(callKey, state, statusCode))
     }
 
-    /** Emits a conference roster as the bridge would (Task 60). */
+    /**
+     * Emits a conference roster as the bridge would (Task 60), or as a mesh focus does.
+     *
+     * @param mesh true for a roster a focus announced, which tells the receiving device to
+     *   hold a leg to every other participant rather than wait for a composed picture.
+     * @param entity the conference's own address, which in a mesh is the focus's.
+     */
     fun emitConference(
         callKey: String,
         participants: List<StackParticipant> = emptyList(),
         rosterAvailable: Boolean = participants.isNotEmpty(),
+        mesh: Boolean = false,
+        entity: String? = null,
     ) {
-        conferenceEventFlow.tryEmit(StackConferenceEvent(callKey, participants, rosterAvailable))
+        conferenceEventFlow.tryEmit(
+            StackConferenceEvent(callKey, participants, rosterAvailable, entity = entity, mesh = mesh),
+        )
     }
 
     /** Emits a call-state change as the stack would. */
@@ -375,6 +415,8 @@ internal class FakeSipCoreGateway :
         // Encrypted by default: the interesting assertion is the call that is NOT, and a
         // default of false would make every unrelated test look like a security failure.
         mediaEncrypted: Boolean = true,
+        /** The conference a mesh leg's INVITE names, or null for an ordinary call. */
+        conferenceEntity: String? = null,
     ) {
         callEventFlow.tryEmit(
             StackCallEvent(
@@ -385,6 +427,7 @@ internal class FakeSipCoreGateway :
                 state = state,
                 statusCode = statusCode,
                 message = null,
+                conferenceEntity = conferenceEntity,
                 videoOffered = videoOffered,
                 videoActive = videoActive,
                 mediaEncrypted = mediaEncrypted,

@@ -124,6 +124,16 @@ data class ConferenceParticipantRow(
 
     /** The member's address-book photo, when the address book has one. */
     val photoUri: String? = null,
+
+    /**
+     * The call this member is on, when the row is backed by a leg this device holds.
+     *
+     * Null for the local user's own row — there is no leg to yourself — and for a row that
+     * came from an announced roster, where this device knows the member's address and
+     * holds no call to them. It is what the per-member End button acts on, so a row
+     * without one simply is not offered the control: there is nothing it could end.
+     */
+    val callId: CallId? = null,
 )
 
 /** A member's state when it is not simply "in the conference". */
@@ -165,6 +175,33 @@ data class ConferenceUiState(
     val rosterAvailable: Boolean,
     /** True when [participants] is what this device merged into the room, not what the bridge reports. */
     val fromMerge: Boolean = false,
+
+    /**
+     * True when each row is backed by a **call this device holds**, so the screen can
+     * draw one video tile per participant.
+     *
+     * The discriminator between the two rosters, and it is not cosmetic. A local mix
+     * identifies a row by its `CallId`, which is exactly what the video surfaces are
+     * keyed by, so the grid can hand the stack a surface per row. A roster that arrived
+     * from a host identifies rows by **SIP URI** — this device holds one call, to the
+     * host, and has no stream for anybody else. Drawing a grid from that roster produces
+     * a tile per participant, every one of them bound to a key the stack has never heard
+     * of, and every one of them black.
+     *
+     * So the member renders the one composed picture it actually receives until it has
+     * streams of its own. See [ConferenceVideoMode.MixedStream].
+     */
+    val perParticipantStreams: Boolean = false,
+
+    /**
+     * True when this device may drop a member from the conference (`ConferenceMesh`).
+     *
+     * The focus's privilege alone. In a mesh every participant holds a leg to every other,
+     * so a member could certainly hang one up — and it would remove that person from one
+     * screen out of four, until the next roster put them back. Removing somebody is an
+     * edit to the announced membership, and only the focus announces it.
+     */
+    val canRemoveParticipants: Boolean = false,
 ) {
     /** How many people are in the conference, or null when the bridge does not say. */
     val count: Int? get() = participants.size.takeIf { rosterAvailable }
@@ -318,6 +355,7 @@ internal fun localMixRoster(
     mixed: Set<CallId>,
     self: LocalParticipant?,
     contacts: Map<SipUri, Contact> = emptyMap(),
+    canRemoveParticipants: Boolean = false,
 ): ConferenceUiState? {
     if (mixed.size < SipConferenceController.MINIMUM_MIXED) return null
 
@@ -345,6 +383,10 @@ internal fun localMixRoster(
             members.forEach { add(it.participantRow(contacts[it.remote])) }
         },
         rosterAvailable = true,
+        // Every row but the self row is one of this device's own calls, keyed by its
+        // `CallId` — which is what the video surfaces are keyed by. See the field.
+        perParticipantStreams = true,
+        canRemoveParticipants = canRemoveParticipants,
     )
 }
 
@@ -368,6 +410,7 @@ private fun CallSnapshot.participantRow(contact: Contact?): ConferenceParticipan
         detail = address.takeIf { it != name },
         status = memberStatus(),
         photoUri = contact?.photoUri,
+        callId = callId,
     )
 }
 

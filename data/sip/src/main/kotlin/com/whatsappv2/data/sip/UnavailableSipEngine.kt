@@ -118,6 +118,12 @@ class UnavailableSipEngine @Inject constructor() : SipEngine {
     override suspend fun mixCalls(callIds: Set<CallId>): Outcome<Set<CallId>, SipError> =
         failure(SipError.EngineUnavailable)
 
+    override suspend fun removeFromConference(callId: CallId): Outcome<Unit, SipError> =
+        failure(SipError.EngineUnavailable)
+
+    /** No stack, no conference, so nothing to be the focus of. */
+    override val hostsConference: StateFlow<Boolean> = MutableStateFlow(false)
+
     /** And ADR-003's bridge is reached by dialling it, which needs the same stack. */
     override suspend fun mergeIntoConference(
         callIds: Set<CallId>,

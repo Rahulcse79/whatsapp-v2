@@ -462,9 +462,13 @@ private fun DialerTopBar(onBack: () -> Unit, title: String) {
  * screen's decision: a device with no usable camera places an audio call and is told,
  * rather than being shown a dead button it cannot explain.
  *
- * While a live conference is being added to there is no video button at all, and the
- * one button says "Add": a leg mixed into an audio conference has its video dropped the
- * moment it joins, so a video call here would be a promise the room cannot keep.
+ * While a live conference is being added to, both buttons say "Add" — and the video one
+ * is there, which it was not until 2026-09-24. It was hidden because a leg mixed into a
+ * conference had its video dropped the moment it joined, so offering video here would
+ * have been a promise the mix could not keep. The mix composes a picture now, and hiding
+ * the button had become the thing that broke conferences: a participant added to a live
+ * video conference was forced to audio, which made the conference a mixed one, which sent
+ * the next merge to a bridge that no longer exists.
  */
 @Composable
 private fun DialerCallButtons(state: DialerUiState, actions: DialerActions) {
@@ -483,17 +487,16 @@ private fun DialerCallButtons(state: DialerUiState, actions: DialerActions) {
             label = if (state.addingToConference) "Add" else "Call",
             modifier = Modifier.testTag(TAG_CALL),
         )
-        if (!state.addingToConference) {
-            CallActionButton(
-                icon = Icons.Filled.Videocam,
-                contentDescription = "Place video call",
-                onClick = actions.onVideoCall,
-                style = CallActionStyle.ANSWER,
-                enabled = state.canPlaceCall,
-                label = "Video",
-                modifier = Modifier.testTag(TAG_VIDEO_CALL),
-            )
-        }
+        CallActionButton(
+            icon = Icons.Filled.Videocam,
+            contentDescription =
+                if (state.addingToConference) "Add to the conference with video" else "Place video call",
+            onClick = actions.onVideoCall,
+            style = CallActionStyle.ANSWER,
+            enabled = state.canPlaceCall,
+            label = if (state.addingToConference) "Add video" else "Video",
+            modifier = Modifier.testTag(TAG_VIDEO_CALL),
+        )
     }
 }
 

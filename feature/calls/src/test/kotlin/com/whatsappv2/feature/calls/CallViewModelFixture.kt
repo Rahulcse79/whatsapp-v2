@@ -80,8 +80,8 @@ abstract class CallViewModelFixture {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
-    /** The join coordinator, with the same merge the ViewModel is given, so both see one room. */
-    private fun joins() = ConferenceJoinCoordinator(engine, engine, MergeCallsUseCase(engine, engine, accounts, room))
+    /** The join coordinator over the same fake engine the ViewModel mixes through. */
+    private fun joins() = ConferenceJoinCoordinator(engine, engine)
 
     protected fun viewModel() = CallViewModel(
         calls = engine,
@@ -93,7 +93,7 @@ abstract class CallViewModelFixture {
         // they enforce is the thing worth exercising from here (Tasks 55-57).
         transfers = TransferCallUseCase(engine, accounts),
         callWaiting = CallWaitingUseCase(engine, NoCameraAvailable, joins()),
-        mergeCalls = MergeCallsUseCase(engine, engine, accounts, room),
+        mergeCalls = MergeCallsUseCase(engine, engine),
         surfaces = surfaces,
         clock = clock,
         accounts = accounts,

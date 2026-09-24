@@ -48,9 +48,21 @@ class ConferenceVideoLayoutTest {
     }
 
     @Test
-    fun `two people stack in portrait and sit side by side in landscape`() {
+    fun `two tiles stack full width in portrait and sit side by side in landscape`() {
+        // The agreed reference: two remote streams are one column of two rows, each full
+        // width and half the height. Splitting the width instead gives two slivers on a
+        // 9:20 screen; stacking gives the larger face. Landscape is the same table
+        // transposed, where the width is the axis there is room on.
         assertEquals(ConferenceVideoMode.Grid(columns = 1, rows = 2), mode(2))
         assertEquals(ConferenceVideoMode.Grid(columns = 2, rows = 1), mode(2, landscape = true))
+    }
+
+    @Test
+    fun `three tiles are two across and one full width beneath`() {
+        // Three is where the grid starts, and the odd tile spreads across the last row
+        // rather than leaving a hole beside it — `ConferenceVideoGrid` chunks by columns
+        // and gives every tile in a row an equal weight, so a row of one is full width.
+        assertEquals(ConferenceVideoMode.Grid(columns = 2, rows = 2), mode(3))
     }
 
     @Test
@@ -95,8 +107,12 @@ class ConferenceVideoLayoutTest {
     }
 
     @Test
-    fun `nine is still a grid, because three by three is the last readable one`() {
-        assertEquals(ConferenceVideoMode.Grid(columns = 3, rows = 3), mode(9))
+    fun `nine is still a grid, two columns deep`() {
+        // Past the video conference's own ceiling — three remote tiles plus this device —
+        // this is unreachable in practice; what it pins is that the column count does not
+        // start computing itself again.
+        assertEquals(ConferenceVideoMode.Grid(columns = 2, rows = 5), mode(9))
+        assertEquals(ConferenceVideoMode.Grid(columns = 5, rows = 2), mode(9, landscape = true))
     }
 
     @Test

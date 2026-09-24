@@ -62,15 +62,14 @@ class VideoMixTest {
     }
 
     @Test
-    fun `our own screen shows every peer and not our camera`() {
-        // The camera is already on screen as the floating self-view; a second copy inside
-        // the grid is the duplicate the whole arrangement exists to avoid.
+    fun `nothing is composed for our own screen`() {
+        // The screen draws a tile per participant from each call's own window, so the
+        // mixer composes only what a peer cannot compose for itself. A link into a local
+        // renderer here would be a picture the screen could neither label nor lay out.
         val links = VideoMix.wanted(setOf(a, b, c))
 
-        assertEquals(
-            setOf(VideoPortRef.decoder(a), VideoPortRef.decoder(b), VideoPortRef.decoder(c)),
-            sourcesFeeding(links, VideoPortRef.renderer),
-        )
+        val sinks = links.mapTo(mutableSetOf()) { it.to }
+        assertEquals(setOf(a, b, c).mapTo(mutableSetOf()) { VideoPortRef.encoder(it) }, sinks)
     }
 
     @Test
@@ -90,11 +89,11 @@ class VideoMixTest {
     }
 
     @Test
-    fun `a four-party conference is twelve links`() {
-        // Three peers: each encoder takes the camera and two decoders (9), and the
-        // renderer takes three decoders (3). Stated as a number so a change to the shape
-        // of the arrangement has to be deliberate.
-        assertEquals(12, VideoMix.wanted(setOf(a, b, c)).size)
+    fun `a four-party conference is nine links`() {
+        // Three peers, each encoder taking the camera and the two other decoders. Nothing
+        // is composed for this screen. Stated as a number so a change to the shape of the
+        // arrangement has to be deliberate.
+        assertEquals(9, VideoMix.wanted(setOf(a, b, c)).size)
     }
 
     @Test
@@ -155,5 +154,22 @@ class VideoMixTest {
     /** `vid_conf.c`: `tr_size[4]` and `for (i = 0; i < cp->transmitter_cnt && i < 4; ++i)`. */
     private companion object {
         const val VID_CONF_MAX_SOURCES = 4
+    }
+
+    @Test
+    fun `a mesh composes no canvas for anybody`() {
+        // Each peer receives every other peer's camera on its own dialog, so a composed
+        // canvas as well would draw every participant twice — once in their own tile and
+        // once inside somebody else's.
+        assertTrue(VideoMix.wanted(setOf("a", "b", "c"), compose = false).isEmpty())
+    }
+
+    @Test
+    fun `turning composition off closes the canvases that were open`() {
+        val established = VideoMix.wanted(setOf("a", "b"))
+        val plan = VideoMix.plan(established, setOf("a", "b"), compose = false)
+
+        assertTrue(plan.connect.isEmpty())
+        assertEquals(established, plan.disconnect)
     }
 }

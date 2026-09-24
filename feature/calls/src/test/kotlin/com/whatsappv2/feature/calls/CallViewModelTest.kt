@@ -656,18 +656,17 @@ class CallViewModelTest : CallViewModelFixture() {
     }
 
     @Test
-    fun `merging video calls moves the screen to the conference leg`() = runTest {
-        // The defect this pins: a bridged merge replaces every leg with one call to the
-        // room, so a screen still watching a merged leg would show it being transferred
-        // away and then ending — the conference the user just built, apparently hanging up
-        // on them.
+    fun `merging video and audio-only legs mixes here and leaves the screen where it is`() = runTest {
+        // The defect this pins, inverted. A bridged merge used to replace every leg with
+        // one call to room 3000, so the screen had to be re-pointed or the user watched
+        // the conference they had just built apparently hang up on them. Mixed media was
+        // the last case that did it; on 2026-09-24 the room answered 480 and the merge
+        // simply failed. Nothing is transferred now, so the call being watched stays.
         engine.givenRegistered(ACCOUNT)
-        // The room is resolved against the account's domain, so the repository has to
-        // know the account — `givenRegistered` is the engine's business, not its.
         accounts.given(ACCOUNT)
         val first = engine.placeCall(ACCOUNT.id, REMOTE, MediaProfile.AUDIO_VIDEO).getOrNull()!!
         engine.simulateRemoteAnswer(first)
-        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO_VIDEO).getOrNull()!!
+        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO).getOrNull()!!
         engine.simulateRemoteAnswer(second)
 
         val viewModel = viewModel().also { it.watch(first) }
@@ -679,14 +678,10 @@ class CallViewModelTest : CallViewModelFixture() {
             viewModel.merge()
             runCurrent()
 
-            val conference = awaitActive { it.conference != null }
-            // Watching the room, not either merged leg.
-            assertTrue(conference.call.callId != first && conference.call.callId != second)
-            assertEquals(
-                "sip:3000@sip.example.com",
-                engine.conferences.value.single { it.callId == conference.call.callId }
-                    .conferenceUri.render(),
-            )
+            val merged = awaitActive { it.call.isMixed }
+            assertEquals(first, merged.call.callId, "the screen stays on the call it was watching")
+            assertTrue(engine.bridgeMergeRequests.isEmpty(), "no room was dialled")
+            assertTrue(engine.conferences.value.isEmpty(), "this device joined no room")
             cancelAndIgnoreRemainingEvents()
         }
     }

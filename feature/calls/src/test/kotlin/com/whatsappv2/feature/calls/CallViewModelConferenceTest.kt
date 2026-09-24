@@ -140,17 +140,17 @@ class CallViewModelConferenceTest : CallViewModelFixture() {
     }
 
     @Test
-    fun `a conference merged into the bridge lists the people merged, and keeps them after their legs end`() = runTest {
-        // The bridge publishes no roster, and the screen used to say only that. The device
-        // that pressed Merge knows exactly whom it sent into the room, so the roster names
-        // them, the user first — and goes on naming them after the merged legs have been
-        // transferred away and ended, which is a second after Merge. It is a list of what
-        // this device merged, said so, and never a count the bridge did not give.
+    fun `a conference of video and audio-only legs is this device's own, with a full roster`() = runTest {
+        // Mixed media was the last case that reached a FreeSWITCH room, and the room
+        // published no roster — so the screen listed whom this device had *sent* in and
+        // said it was doing that (`fromMerge`, no count). It is mixed here now, which
+        // means the mixer is this device and the roster is not a guess: it is the
+        // membership, complete, in the order the legs were called.
         engine.givenRegistered(ACCOUNT)
         accounts.given(ACCOUNT)
         val first = engine.placeCall(ACCOUNT.id, REMOTE, MediaProfile.AUDIO_VIDEO).getOrNull()!!
         engine.simulateRemoteAnswer(first)
-        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO_VIDEO).getOrNull()!!
+        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO).getOrNull()!!
         engine.simulateRemoteAnswer(second)
         val viewModel = viewModel().also { it.watch(first) }
         runCurrent()
@@ -160,21 +160,17 @@ class CallViewModelConferenceTest : CallViewModelFixture() {
             viewModel.merge()
             runCurrent()
 
-            val merged = awaitActive { it.conference != null }
+            val merged = awaitActive { it.mixedCallCount >= MIN_MIXED_IN_TEST && it.conference != null }
             val roster = merged.conference!!
-            assertTrue(roster.fromMerge, "the list is what this device merged, and says so")
-            assertFalse(roster.rosterAvailable, "the bridge still published nothing")
-            assertNull(roster.count, "no count the bridge did not give")
+            assertTrue(roster.rosterAvailable, "this device is the mixer, so it knows exactly who is here")
+            assertFalse(roster.fromMerge, "not a list of people sent somewhere — a membership")
             assertEquals(listOf("alice", "bob", "1003"), roster.participants.map { it.label })
             assertEquals(listOf(true, false, false), roster.participants.map { it.isSelf })
 
-            // The merged legs end as their transfers complete; the list does not change.
-            engine.simulateTransferSucceeded(first)
-            engine.simulateTransferSucceeded(second)
-            engine.simulateRemoteAnswer(merged.call.callId)
-            runCurrent()
-            val settled = awaitActive { it.call.phase == CallPhase.CONNECTED && it.otherCalls.isEmpty() }
-            assertEquals(listOf("alice", "bob", "1003"), settled.conference!!.participants.map { it.label })
+            // And the legs are still here: nothing was transferred away, so the roster
+            // does not have to outlive calls that are ending.
+            assertTrue(engine.activeCalls.value.any { it.callId == first })
+            assertTrue(engine.activeCalls.value.any { it.callId == second })
             cancelAndIgnoreRemainingEvents()
         }
     }
@@ -207,5 +203,72 @@ class CallViewModelConferenceTest : CallViewModelFixture() {
             )
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    @Test
+    fun `the focus is offered an End button against every member and none against itself`() = runTest {
+        accounts.given(ACCOUNT)
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO).getOrNull()!!
+        engine.simulateRemoteAnswer(second)
+        val viewModel = viewModel().also { it.watch(first) }
+
+        viewModel.uiState.test {
+            awaitActive { it.call.phase == CallPhase.CONNECTED }
+            engine.mixCalls(setOf(first, second))
+            runCurrent()
+
+            val shown = awaitActive { it.mixedCallCount == 2 }
+            val roster = shown.conference!!
+            assertTrue(roster.canRemoveParticipants, "the focus was not offered the control")
+            // Every member's row carries the leg the button acts on; the user's own row
+            // carries none, because there is no leg to yourself to end.
+            assertEquals(
+                listOf(null, first, second),
+                roster.participants.map { it.callId },
+            )
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `a member of somebody else's conference is not offered the control`() = runTest {
+        // Removing somebody is an edit to the announced membership, and only the focus
+        // announces it. A member dropping its own leg would take that person off one
+        // screen out of four, until the next roster put them back.
+        accounts.given(ACCOUNT)
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO).getOrNull()!!
+        engine.simulateRemoteAnswer(second)
+        engine.mixCalls(setOf(first, second))
+        engine.hosting.value = false
+        val viewModel = viewModel().also { it.watch(first) }
+
+        viewModel.uiState.test {
+            val shown = awaitActive { it.conference != null }
+            assertFalse(shown.conference!!.canRemoveParticipants)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `removing a member ends that leg and leaves the conference running`() = runTest {
+        accounts.given(ACCOUNT)
+        val first = placeCall()
+        engine.simulateRemoteAnswer(first)
+        val second = engine.placeCall(ACCOUNT.id, OTHER, MediaProfile.AUDIO).getOrNull()!!
+        engine.simulateRemoteAnswer(second)
+        engine.mixCalls(setOf(first, second))
+        val viewModel = viewModel().also { it.watch(first) }
+        runCurrent()
+
+        viewModel.removeParticipant(second)
+        runCurrent()
+
+        // The deliberate opposite of the big red button, which fans out across the mix.
+        assertEquals(listOf(second), engine.removedFromConference)
+        assertTrue(engine.activeCalls.value.any { it.callId == first }, "removing one member ended the other")
     }
 }

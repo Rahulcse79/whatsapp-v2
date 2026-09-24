@@ -34,7 +34,7 @@ data class CallActions(
     val onRespondToVideoRequest: (Boolean) -> Unit = {},
 
     /** Hands the stack the views to draw into, and takes them back (Task 52). */
-    val onVideoSurfaces: (remote: Any?, preview: Any?) -> Unit = { _, _ -> },
+    val onVideoSurfaces: (remote: Map<String, Any?>, preview: Any?) -> Unit = { _, _ -> },
     val onReleaseVideoSurfaces: () -> Unit = {},
     val onDisplayRotation: (degrees: Int) -> Unit = {},
 
@@ -70,6 +70,16 @@ data class CallActions(
      * so merging can only ever mean all of them.
      */
     val onMerge: () -> Unit = {},
+
+    /**
+     * Drops one member from the conference, leaving the rest of it running (ADR-009).
+     *
+     * The deliberate opposite of [onHangUp], which under "Conference call" ends the whole
+     * thing — one is the big red button and the other is the small one beside a name, and
+     * they must not be the same instruction. Offered on the focus's screen only; see
+     * `ConferenceUiState.canRemoveParticipants`.
+     */
+    val onRemoveParticipant: (CallId) -> Unit = {},
 
     // ------------------------------------------------------------------ recording
     /** Opens the consent dialog. There is no way to start recording that skips it (§2.6). */

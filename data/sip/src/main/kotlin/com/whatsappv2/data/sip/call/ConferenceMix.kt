@@ -57,8 +57,16 @@ internal object ConferenceMix {
      * 56 for the eight ADR-009 declares. Fewer than two members is not a conference and
      * wants no links at all — which is also what makes tearing one down a plan like any
      * other rather than a special case.
+     *
+     * @param relay whether this device carries one member's audio to another. True for
+     *   the star ADR-009 describes, where a member's only path to another member is
+     *   through here. **False for a mesh**, where every pair has a dialog of its own and
+     *   a cross-link would be that pair heard twice — see `ConferenceMesh`. No links at
+     *   all is not a degenerate conference: the microphone and the speaker are wired to
+     *   each call by pjsua itself, per call, and were never this plan's business.
      */
-    fun wanted(members: Set<String>): Set<MixLink> {
+    fun wanted(members: Set<String>, relay: Boolean = true): Set<MixLink> {
+        if (!relay) return emptySet()
         if (members.size < MINIMUM_MEMBERS) return emptySet()
         return buildSet {
             members.forEach { from ->
@@ -73,9 +81,12 @@ internal object ConferenceMix {
      * The difference between what the bridge holds and what [members] needs.
      *
      * @param established the links the gateway believes are open right now.
+     * @param relay see [wanted]. Turning it off on a conference that was relaying
+     *   produces a plan of pure disconnects, which is how a star becomes a mesh without
+     *   a separate teardown.
      */
-    fun plan(established: Set<MixLink>, members: Set<String>): MixPlan {
-        val target = wanted(members)
+    fun plan(established: Set<MixLink>, members: Set<String>, relay: Boolean = true): MixPlan {
+        val target = wanted(members, relay)
         return MixPlan(
             connect = target - established,
             disconnect = established - target,

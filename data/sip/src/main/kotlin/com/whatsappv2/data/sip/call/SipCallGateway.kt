@@ -50,6 +50,10 @@ internal interface SipCallGateway {
      * @param destination a full SIP URI. Resolving a bare extension against the account's
      *   domain happens above, in the use case, where it can be tested.
      * @param videoEnabled Task 51 turns this on; audio calls pass false.
+     * @param conferenceEntity the conference this leg belongs to, sent as
+     *   `X-Coralx-Conference` so the far end can recognise a mesh leg and answer it
+     *   without ringing — see `ConferenceMesh`. Null for every ordinary call, which is
+     *   every call but a mesh one.
      *
      * Returns immediately. The call's fate arrives on [callEvents]: this returning does
      * not mean the far end is ringing, and waiting on it would block the caller for the
@@ -60,6 +64,7 @@ internal interface SipCallGateway {
         accountKey: String,
         destination: String,
         videoEnabled: Boolean,
+        conferenceEntity: String? = null,
     )
 
     /**

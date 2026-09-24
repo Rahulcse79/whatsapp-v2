@@ -48,7 +48,7 @@ class VideoAndTransferTypesTest {
     fun `a context with no renderer accepts surfaces and does nothing with them`() {
         // Safe to call in either order and with nothing attached, which is what a
         // composable's onDispose needs (Task 52).
-        NoVideoSurfaces.attach(remoteView = Any(), localPreview = null)
+        NoVideoSurfaces.attach(remoteViews = mapOf("call-a" to Any()), localPreview = null)
         NoVideoSurfaces.detach()
         NoVideoSurfaces.detach()
         NoVideoSurfaces.setDisplayRotation(90)

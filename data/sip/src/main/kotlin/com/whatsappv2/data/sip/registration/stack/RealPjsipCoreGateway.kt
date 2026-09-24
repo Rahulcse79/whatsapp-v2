@@ -42,6 +42,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withTimeoutOrNull
 import org.pjsip.PjCameraInfo2
 import org.pjsip.pjsua2.Account
@@ -66,11 +67,13 @@ import org.pjsip.pjsua2.OnCallStateParam
 import org.pjsip.pjsua2.OnCallTransferRequestParam
 import org.pjsip.pjsua2.OnCallTransferStatusParam
 import org.pjsip.pjsua2.OnCallTsxStateParam
+import org.pjsip.pjsua2.OnInstantMessageParam
 import org.pjsip.pjsua2.OnIncomingCallParam
 import org.pjsip.pjsua2.OnIpChangeProgressParam
 import org.pjsip.pjsua2.OnVideoMediaOpCompletedParam
 import org.pjsip.pjsua2.OnRegStateParam
 import org.pjsip.pjsua2.SipHeader
+import org.pjsip.pjsua2.SendInstantMessageParam
 import org.pjsip.pjsua2.SipHeaderVector
 import org.pjsip.pjsua2.SipTxOption
 import org.pjsip.pjsua2.TlsConfig
@@ -82,6 +85,7 @@ import org.pjsip.pjsua2.VideoMediaTransmitParam
 import org.pjsip.pjsua2.VideoPreview
 import org.pjsip.pjsua2.VideoWindowHandle
 import org.pjsip.pjsua2.pj_ssl_sock_proto
+import org.pjsip.pjsua2.StreamStat
 import org.pjsip.pjsua2.pjmedia_dir
 import org.pjsip.pjsua2.pjmedia_event_type
 import org.pjsip.pjsua2.pjmedia_orient
@@ -100,12 +104,14 @@ import org.pjsip.pjsua2.pjsua_call_vid_strm_op
 import org.pjsip.pjsua2.pjsua_ip_change_op
 import org.pjsip.pjsua2.pjsua_vid_req_keyframe_method
 import java.io.File
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.roundToLong
 
 /**
  * The real SIP stack, behind the gateway seam (ADR-006).
@@ -383,9 +389,17 @@ internal class RealPjsipCoreGateway @Inject constructor(
     @Volatile
     private var pushParameters: StackPushParameters? = null
 
-    /** Surfaces the call screen handed over, applied when a video stream appears. */
+    /**
+     * Surfaces the call screen handed over, one per call, applied when that call's video
+     * stream appears.
+     *
+     * A map rather than a single surface because the conference draws a tile per
+     * participant: every call's decoder renders into its *own* window, and the screen
+     * arranges them. Composing them into one window instead — which is what this used to
+     * do — left the UI with a single picture it could neither label nor size per person.
+     */
     @Volatile
-    private var remoteSurface: Any? = null
+    private var remoteSurfaces: Map<String, Any?> = emptyMap()
 
     @Volatile
     private var previewSurface: Any? = null
@@ -408,31 +422,19 @@ internal class RealPjsipCoreGateway @Inject constructor(
     /**
      * The port [VideoConferenceBridge] means by [ref], or null while it does not exist.
      *
-     * The camera and the renderer are the device's own; a decoder and an encoder belong to
-     * a call and are absent until its video stream is up, which is the ordinary state of a
-     * leg that is still ringing.
+     * The camera is the device's own; a decoder and an encoder belong to a call and are
+     * absent until its video stream is up, which is the ordinary state of a leg that is
+     * still ringing.
      *
-     * The renderer is the window of the call whose surface the screen is actually showing
-     * — [canvasCallKey] — because a conference draws every peer into **one** window. Each
-     * call has a window of its own and pjsua connects that call's decoder to it; left
-     * alone, three calls would draw three pictures into the one Android `Surface` the call
-     * screen supplies and the last writer would win. See [applyVideoWindows].
+     * There is no renderer here any more. The mixer composes a canvas for each *peer* and
+     * nothing for this screen: every call's decoder draws into a window of its own and the
+     * call screen arranges those windows as tiles. See [applyVideoWindows] and [VideoMix].
      */
     private fun videoPortFor(ref: VideoPortRef): VideoPort? = when (ref.role) {
         VideoRole.CAMERA -> localCameraPort()
-        VideoRole.RENDERER -> canvasCallKey()?.let { calls[it]?.rendererPort() }
         VideoRole.DECODER -> calls[ref.callKey]?.decoderPort()
         VideoRole.ENCODER -> calls[ref.callKey]?.encoderPort()
     }
-
-    /**
-     * The call whose window the composed picture is drawn into: the first member, by key.
-     *
-     * Stable rather than arbitrary — a set's iteration order is not something to hang a
-     * surface on, and a canvas that moved between windows on every remix would make the
-     * screen flicker between two half-composed pictures.
-     */
-    private fun canvasCallKey(): String? = videoConference.currentMembers.minOrNull()
 
     /**
      * This device's camera as a bridge source.
@@ -1271,6 +1273,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
         accountKey: String,
         destination: String,
         videoEnabled: Boolean,
+        conferenceEntity: String?,
     ) {
         onPjsip("placeCall") {
             val account = accounts[accountKey] ?: run {
@@ -1279,7 +1282,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             }
             val call = PjCall(callKey, account)
             calls[callKey] = call
-            call.makeCall(destination, callParams(videoEnabled))
+            call.makeCall(destination, callParams(videoEnabled).withConference(conferenceEntity))
         }
     }
 
@@ -1322,7 +1325,23 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     override fun pauseCall(callKey: String) {
         onPjsip("pauseCall") {
-            calls[callKey]?.setHold(CallOpParam(true))
+            val call = calls[callKey] ?: return@onPjsip
+
+            // Armed before the send, so a refusal that arrives on the very next callback
+            // still finds a hold to settle. Unlike a resume, nothing is published here:
+            // the call has not moved and must not appear to have — `Held` arrives when
+            // the far end *accepts*, which is the whole of `PjsipSipEngine.setHold`'s
+            // contract. This only records that an answer is owed.
+            call.pendingHold.begin()
+            runCatching { call.setHold(CallOpParam(true)) }
+                .onFailure {
+                    // Never left this device. Without this the engine would wait for an
+                    // answer to a request that was never asked, and every later press of
+                    // Hold would be told one was already in flight.
+                    call.pendingHold.cancel()
+                    call.publish(StackCallState.HOLD_FAILED)
+                }
+                .getOrThrow()
         }
     }
 
@@ -1573,14 +1592,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * Nulls are the important half: a surface PJSIP keeps writing into after the screen
      * has gone is a crash on some devices and a leak of every frame on the rest.
      */
-    override fun setVideoWindows(remoteView: Any?, localPreview: Any?) {
-        remoteSurface = remoteView
+    override fun setVideoWindows(remoteViews: Map<String, Any?>, localPreview: Any?) {
+        remoteSurfaces = remoteViews
         previewSurface = localPreview
         // A surface that has gone takes the last frame's shape with it. Left behind, it
         // would size the *next* call's view to the previous call's picture for as long as
         // it takes the first frame to arrive — a visible wrong-shaped flash at the start
         // of every video call after the first.
-        if (remoteView == null) videoSizeFlow.value = VideoSizes.UNKNOWN
+        if (remoteViews.values.all { it == null }) videoSizeFlow.value = VideoSizes.UNKNOWN
         onPjsip("setVideoWindows") {
             calls.values.forEach {
                 it.applyVideoWindows()
@@ -1648,9 +1667,12 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     // -------------------------------------------------------------- conference
 
-    override suspend fun setConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String> {
+    override suspend fun setConferenceMembers(
+        callKeys: Set<String>,
+        relay: Boolean,
+    ): Outcome<Set<String>, String> {
         val answer = CompletableDeferred<Set<String>>()
-        onPjsip("setConferenceMembers") { answer.complete(conference.set(callKeys)) }
+        onPjsip("setConferenceMembers") { answer.complete(conference.set(callKeys, relay)) }
         return withTimeoutOrNull(CONFERENCE_MIX_TIMEOUT_MILLIS) { success(answer.await()) }
             ?: failure("the stack did not answer in $CONFERENCE_MIX_TIMEOUT_MILLIS ms")
     }
@@ -1668,8 +1690,15 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * ceiling here would be a participant who is in the call, in the roster, and in
      * nobody's picture.
      */
-    override suspend fun setVideoConferenceMembers(callKeys: Set<String>): Outcome<Set<String>, String> {
-        if (callKeys.size > VideoMix.MAX_MEMBERS) {
+    override fun announceRoster(callKey: String, document: String) {
+        onPjsip("announceRoster") { calls[callKey]?.announceRoster(document) }
+    }
+
+    override suspend fun setVideoConferenceMembers(
+        callKeys: Set<String>,
+        compose: Boolean,
+    ): Outcome<Set<String>, String> {
+        if (compose && callKeys.size > VideoMix.MAX_MEMBERS) {
             return failure(
                 "a video conference holds ${VideoMix.MAX_PARTICIPANTS} people including this device, " +
                     "and ${callKeys.size + 1} were asked for",
@@ -1677,7 +1706,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
         val answer = CompletableDeferred<Set<String>>()
         onPjsip("setVideoConferenceMembers") {
-            answer.complete(videoConference.set(callKeys))
+            answer.complete(videoConference.set(callKeys, compose))
             // The canvas may have moved to a different call, so the surfaces are
             // re-applied: exactly one window may hold the screen's `Surface`.
             calls.values.forEach { it.applyVideoWindows() }
@@ -1748,14 +1777,75 @@ internal class RealPjsipCoreGateway @Inject constructor(
             release()
         }
 
+        /**
+         * A roster that reached this device **out of dialog**.
+         *
+         * ## Why the call's own callback is not enough
+         *
+         * `ConferenceInfoWriter` sends the roster as an in-dialog MESSAGE, and pjsua
+         * delivers one of those to [PjCall.onInstantMessage]. FreeSWITCH does not forward
+         * it as one. `mod_sofia` terminates the MESSAGE and re-originates it towards the
+         * registered contact as a **new request**: a fresh `Call-ID`, no `To` tag, and its
+         * own `X-FS-Sending-Message` header. pjsua sees no dialog on it, `im_on_rx_request`
+         * takes it, and it arrives here instead — so on the deployment this app actually
+         * ships against, the call-level callback never fired and every member sat waiting
+         * for a conference it had already been told about (measured on 1000/1001/1005,
+         * 2026-09-24 17:09).
+         *
+         * Both paths are kept. A peer-to-peer dialog — a mesh leg whose media bypasses the
+         * server — really does deliver in-dialog, and a server that proxies rather than
+         * re-originates would too.
+         *
+         * The call is found by **who sent it**, because that is the only thing the two
+         * messages still have in common: the re-originated request keeps the original
+         * `From`. A roster from somebody this device is not on a call with is dropped —
+         * there is no conference it could describe.
+         */
+        override fun onInstantMessage(prm: OnInstantMessageParam) {
+            val message = runCatching { prm.rdata.wholeMsg }.getOrNull()
+            if (message.isNullOrEmpty()) return
+            val roster = ConferenceInfoParser.parse(message, selfUri = accountUri(), logger = logger) ?: return
+
+            val from = NameAddr.of(runCatching { prm.fromUri }.getOrNull()).uri
+            val leg = calls.values.firstOrNull { call ->
+                call.accountKey == accountKey && sameSipAddress(call.remoteAddress(), from)
+            }
+            if (leg == null) {
+                logger.debug(TAG, "A conference roster arrived from somebody this device is not talking to")
+                return
+            }
+
+            logger.info(TAG, "Conference roster for ${leg.callKey}: ${roster.participants.size} in the room")
+            conferenceEventFlow.tryEmit(
+                StackConferenceEvent(
+                    callKey = leg.callKey,
+                    participants = roster.participants,
+                    rosterAvailable = true,
+                    entity = roster.entity,
+                    mesh = roster.mesh,
+                ),
+            )
+        }
+
+        /** This account's own address, so the parser can mark the member that is us. */
+        private fun accountUri(): String? = runCatching { info.uri }.getOrNull()
+
         override fun onIncomingCall(prm: OnIncomingCallParam) {
             // The one call this gateway has never seen before, so the one place a key is
             // minted rather than looked up.
             val callKey = UUID.randomUUID().toString()
             val call = PjCall(callKey, this, prm.callId)
             calls[callKey] = call
+            // Read here because here is the only place it exists: the INVITE is gone by
+            // the next callback, and pjsua2 offers no header lookup on a call.
+            val conference = runCatching { prm.rdata.wholeMsg }.getOrNull()?.let(::conferenceHeaderOf)
+            // 180 for a mesh leg too, and deliberately. The engine answers it a moment
+            // later without ringing anything — the ringer is driven by `incomingCalls`,
+            // not by this — and a leg that turns out *not* to be one this device should
+            // answer must still have progressed, or the caller sits on silence until its
+            // own timeout.
             call.sendRinging(callKey, logger)
-            call.publish(StackCallState.INCOMING_RECEIVED)
+            call.publish(StackCallState.INCOMING_RECEIVED, conferenceEntity = conference)
         }
     }
 
@@ -1763,7 +1853,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
     private inner class PjCall : Call {
 
         val callKey: String
-        private val accountKey: String
+
+        /** Which account placed or answered this call — read when a roster has to find it. */
+        val accountKey: String
 
         /** The negotiated audio stream, held so mute and recording can reach it. */
         @Volatile
@@ -1818,6 +1910,15 @@ internal class RealPjsipCoreGateway @Inject constructor(
          */
         val pendingResume = PendingResume()
 
+        /**
+         * Our hold re-INVITE, between going out and being answered.
+         *
+         * Beside [pendingResume] and read in the same callback, for the reason
+         * [PendingHold] gives: PJSIP announces a re-INVITE that succeeded and says
+         * nothing at all about one that did not.
+         */
+        val pendingHold = PendingHold()
+
         constructor(callKey: String, account: PjAccount) : super(account) {
             this.callKey = callKey
             this.accountKey = account.accountKey
@@ -1856,6 +1957,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             if (info.state == pjsip_inv_state.PJSIP_INV_STATE_DISCONNECTED) {
                 logMediaStatistics()
                 pendingResume.cancel()
+                pendingHold.cancel()
                 stopPreview()
                 // Only now. The native peer is finished with this director, and holding it
                 // any longer is the leak; releasing it any earlier is a crash.
@@ -1864,10 +1966,18 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 // Before the media goes: a conference link into a released port is a
                 // use-after-free in a native bridge, not a stale entry in a map.
                 conference.remove(callKey)
+                // And the shape its tile was laid out on. Left behind, a rejoining call
+                // reusing the key would be sized to the picture it sent last time.
+                videoSizeFlow.update { it.copy(remotes = it.remotes - callKey) }
                 // Before the ports go, and for a sharper reason than audio's: a video
                 // connect is queued and runs on a later clock tick, so a link requested a
                 // moment ago could otherwise land on a port freed in between.
                 videoConference.remove(callKey)
+                // And the surfaces with them. The canvas is the lowest member key, so a
+                // conference whose canvas just hung up has moved it to another call — and
+                // that call's window is not holding the screen's `Surface` yet. Relinking
+                // the bridge alone would compose the picture into a window nobody can see.
+                if (videoConference.isActive) calls.values.forEach { it.applyVideoWindows() }
                 audioMedia = null
                 // And freed on the PJSIP thread, after this callback has returned — not
                 // from inside it, where the native frame is still this object's, and not
@@ -1944,6 +2054,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // Media running again is our resume landing; anything else, LOCAL_HOLD
             // restated mid-flight included, leaves it outstanding.
             pendingResume.onMediaState(state)
+            // And media paused by us is our hold landing, which is the other half of the
+            // same rule: the two cannot be outstanding at once, because the FSM will not
+            // let a hold start from a call that is resuming or the reverse.
+            pendingHold.onMediaState(state)
             publish(state, info)
         }
 
@@ -1969,17 +2083,88 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // on this call. See [subscribeToConferenceRoster].
             if (readRosterFrom(tsxState)) return
 
-            if (!pendingResume.isOutstanding) return
+            if (!pendingResume.isOutstanding && !pendingHold.isOutstanding) return
             val tsx = runCatching { tsxState.tsx }.getOrNull() ?: return
-            val refused = pendingResume.refusedBy(
-                isClient = tsx.role == pjsip_role_e.PJSIP_ROLE_UAC,
-                method = tsx.method,
-                statusCode = tsx.statusCode,
-            )
-            if (!refused) return
+            val isClient = tsx.role == pjsip_role_e.PJSIP_ROLE_UAC
 
-            logger.warn(TAG, "Resume refused on $callKey with ${tsx.statusCode}; the call is still held")
-            publish(StackCallState.RESUME_FAILED)
+            if (pendingResume.refusedBy(isClient, tsx.method, tsx.statusCode)) {
+                logger.warn(TAG, "Resume refused on $callKey with ${tsx.statusCode}; the call is still held")
+                publish(StackCallState.RESUME_FAILED)
+                return
+            }
+            if (pendingHold.refusedBy(isClient, tsx.method, tsx.statusCode)) {
+                // The call is exactly where it was — connected — so nothing moves. What
+                // this publishes is the *settlement*: without it the engine waits forever
+                // for an answer that has already been refused, and the Hold button never
+                // sends another re-INVITE. See [PendingHold].
+                logger.warn(TAG, "Hold refused on $callKey with ${tsx.statusCode}; the call is still connected")
+                publish(StackCallState.HOLD_FAILED)
+            }
+        }
+
+        /**
+         * The roster a **host** sent us, in this call's own dialog.
+         *
+         * ## The member's half of a device-mixed conference
+         *
+         * A member holds one leg and receives one composed picture, so left to itself it
+         * cannot tell a conference from an ordinary call: it showed neither a badge nor a
+         * participant list, and cropped the host's canvas to fill a portrait screen so the
+         * outer column of the picture was off the edge (TC15, 2026-09-24). The host is the
+         * only thing that knows the membership, so the host says so — see
+         * [ConferenceInfoWriter] for why a MESSAGE and not a subscription.
+         *
+         * The document is fed to the same [ConferenceInfoParser] that reads a server's,
+         * from the same raw bytes, and published on the same flow. Nothing above this
+         * knows or cares which end composed the room.
+         *
+         * Anything that is not a conference-info document is ignored in silence — this
+         * callback is every in-dialog MESSAGE, and a peer is entitled to send others.
+         */
+        override fun onInstantMessage(prm: OnInstantMessageParam) {
+            // The whole message, because that is what the parser reads: it matches on the
+            // content type in the headers before it will hand a body to an XML parser.
+            val message = runCatching { prm.rdata.wholeMsg }.getOrNull()
+            if (message.isNullOrEmpty()) return
+
+            val roster = ConferenceInfoParser.parse(message, selfUri = selfUri(), logger = logger) ?: return
+
+            logger.info(TAG, "Conference roster from the host on $callKey: ${roster.participants.size} in the room")
+            conferenceEventFlow.tryEmit(
+                StackConferenceEvent(
+                    callKey = callKey,
+                    participants = roster.participants,
+                    rosterAvailable = true,
+                    entity = roster.entity,
+                    mesh = roster.mesh,
+                ),
+            )
+        }
+
+        /** The far end's bare address, for matching a roster that arrived out of dialog. */
+        fun remoteAddress(): String? = NameAddr.of(infoOrNull()?.remoteUri).uri.takeIf { it.isNotBlank() }
+
+        /**
+         * Tells this member who is in the conference (RFC 4575 over an in-dialog MESSAGE).
+         *
+         * The host's half of [onInstantMessage]. Sent on every membership change, in full,
+         * for the reason [StackConferenceEvent] gives: a delta against a roster the other
+         * end may not have is how a participant list ends up naming somebody who left.
+         *
+         * Failure is logged and swallowed. A member whose handset refuses the MESSAGE —
+         * an older build, a peer that is not this app at all — is a member without a
+         * participant list, which is exactly what they had before this existed. It is not
+         * a reason to disturb a call that is otherwise working.
+         */
+        fun announceRoster(document: String) {
+            runCatching {
+                sendInstantMessage(
+                    SendInstantMessageParam().apply {
+                        contentType = ConferenceInfoParser.CONTENT_TYPE
+                        content = document
+                    },
+                )
+            }.onFailure { logger.warn(TAG, "Could not send the roster on $callKey: ${it.message}") }
         }
 
         /**
@@ -2048,6 +2233,8 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     callKey = callKey,
                     participants = roster.participants,
                     rosterAvailable = true,
+                    entity = roster.entity,
+                    mesh = roster.mesh,
                 ),
             )
             return true
@@ -2157,22 +2344,17 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 if (media.type != pjmedia_type.PJMEDIA_TYPE_VIDEO) return@forEach
                 if (media.status != pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE) return@forEach
 
-                // Incoming video draws into the remote surface; an outgoing-only stream is
-                // this device's own picture and draws into the preview.
+                // Incoming video draws into this call's own surface; an outgoing-only
+                // stream is this device's own picture and draws into the preview.
                 //
-                // While a video conference is mixing there is one composed picture and it
-                // belongs to ONE window — the canvas. Every call still has a window of its
-                // own and pjsua still connects that call's decoder to it, so handing the
-                // screen's single `Surface` to all of them would have three windows
-                // drawing three different pictures into it and the last writer winning.
-                // The others are given null: their window keeps rendering, into nothing.
+                // Its own, which is the whole of the conference grid: pjsua already
+                // connects each call's decoder to a window of its own, so giving each
+                // window the tile the screen laid out for that participant is all the
+                // arrangement anybody has to do. A call the screen has no tile for gets
+                // null and keeps rendering into nothing, which is what a participant
+                // scrolled out of a grid should cost.
                 val decoding = media.dir and pjmedia_dir.PJMEDIA_DIR_DECODING != 0
-                val isCanvas = !videoConference.isActive || callKey == canvasCallKey()
-                val surface = when {
-                    decoding && isCanvas -> remoteSurface
-                    decoding -> null
-                    else -> previewSurface
-                }
+                val surface = if (decoding) remoteSurfaces[callKey] else previewSurface
 
                 runCatching {
                     media.videoWindow.setWindow(
@@ -2220,7 +2402,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
          * going away is the one moment the old shape is certainly wrong.
          */
         fun publishVideoSizes() {
-            if (remoteSurface == null && previewSurface == null) return
+            if (remoteSurfaces[callKey] == null && previewSurface == null) return
             videoSizeFlow.publishVideoSizes(
                 info = infoOrNull(),
                 decodedFormat = { index -> runCatching { getStreamInfo(index).vidCodecParam.decFmt }.getOrNull() },
@@ -2331,19 +2513,6 @@ internal class RealPjsipCoreGateway @Inject constructor(
             PjVideoPort(getEncodingVideoMedia(index))
         }.getOrNull()
 
-        /**
-         * This call's on-screen window, as a bridge sink.
-         *
-         * Only the call chosen as the canvas is asked for one — see
-         * [RealPjsipCoreGateway.videoPortFor] — because a conference draws everybody into
-         * one window.
-         */
-        fun rendererPort(): VideoPort? = runCatching {
-            val index = videoMediaIndex() ?: return null
-            val info = infoOrNull()?.media?.getOrNull(index) ?: return null
-            PjVideoPort(info.videoWindow.getVideoMedia())
-        }.getOrNull()
-
         fun isTransmittingVideo(): Boolean {
             val info = infoOrNull() ?: return false
             val index = info.media.firstOrNull { media ->
@@ -2366,6 +2535,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             state: StackCallState,
             info: CallInfo? = infoOrNull(),
             remoteUriOverride: String? = null,
+            conferenceEntity: String? = null,
         ) {
             val remote = NameAddr.of(remoteUriOverride ?: info?.remoteUri)
             callEventFlow.tryEmit(
@@ -2382,6 +2552,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     videoOffered = (info?.remVideoCount ?: 0) > 0,
                     videoActive = info?.hasActiveVideo() == true,
                     mediaEncrypted = encryptedAudio(info),
+                    conferenceEntity = conferenceEntity,
                 ),
             )
         }
@@ -2454,12 +2625,50 @@ internal class RealPjsipCoreGateway @Inject constructor(
             runCatching { dump(true, "  ") }.getOrNull()?.takeIf { it.isNotBlank() }?.let { mediaStatistics = it }
         }
 
+        /** The counters each stream last reported, so the next read can be stated as a rate. */
+        private val rtpCounters = mutableMapOf<Long, RtpCounters>()
+
+        /**
+         * One line per live stream, every [MEDIA_STATISTICS_INTERVAL_MILLIS], carrying the
+         * rate since the previous line.
+         *
+         * [snapshotMediaStatistics] keeps the whole dump for the end of the call, which
+         * answers "what did this call look like" and cannot answer "when did it stop" —
+         * the totals of an eight-minute call read exactly the same whether the far end's
+         * video ran for fifty-five seconds or trickled throughout, and a picture that
+         * freezes is entirely that second question. So each sample is also reduced to a
+         * rate and written out as it is taken.
+         *
+         * The peer's RTP address rides along because it is the cheapest possible proof
+         * that media is going phone-to-phone rather than through the bridge (ADR-009).
+         */
+        private fun traceMedia() {
+            val info = infoOrNull() ?: return
+            val now = System.currentTimeMillis()
+            info.media.forEach { media ->
+                val kind = TRACED_MEDIA[media.type] ?: return@forEach
+                if (media.status != pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE) return@forEach
+                val current = runCatching { getStreamStat(media.index).counters(now) }.getOrNull() ?: return@forEach
+                val previous = rtpCounters.put(media.index, current) ?: return@forEach
+                val stream = runCatching { getStreamInfo(media.index) }.getOrNull()
+                val line = rtpTraceLine(
+                    kind = kind,
+                    codec = stream?.codecName.orEmpty(),
+                    peer = stream?.remoteRtpAddress.orEmpty(),
+                    previous = previous,
+                    current = current,
+                ) ?: return@forEach
+                logger.info(TAG, "Media trace $callKey $line")
+            }
+        }
+
         /** Re-arms the periodic snapshot for as long as this call is still the stack's. */
         private fun scheduleMediaStatistics() {
             pjsip.schedule(
                 {
                     if (calls[callKey] !== this) return@schedule
                     snapshotMediaStatistics()
+                    traceMedia()
                     scheduleMediaStatistics()
                 },
                 MEDIA_STATISTICS_INTERVAL_MILLIS,
@@ -2751,6 +2960,59 @@ private const val SIP_ERROR_FLOOR = 300
  * it only for the callee — see the comment there for what each side broke.
  */
 /** One SIP header, named and valued, for a request built by hand. */
+/**
+ * The INVITE's `X-Coralx-Conference`, or null.
+ *
+ * Read off the raw message rather than through pjsua2, which exposes no header lookup on
+ * `SipRxData` — only `wholeMsg`. Folded continuation lines are not handled and do not need
+ * to be: this header is written by [RealPjsipCoreGateway] itself and is one short URI.
+ */
+/**
+ * Whether two SIP addresses name the same peer.
+ *
+ * `user@host`, case-insensitively, with the scheme, port, parameters and any angle
+ * brackets thrown away. The same participant reaches this device as
+ * `sip:1001@192.168.137.123` on a roster and as `<sip:1001@192.168.137.123;transport=udp>`
+ * on a call, and a string comparison says they are different people.
+ */
+internal fun sameSipAddress(one: String?, other: String?): Boolean {
+    if (one.isNullOrBlank() || other.isNullOrBlank()) return false
+    return sipCore(one) == sipCore(other)
+}
+
+private fun sipCore(value: String): String = value.trim()
+    .removePrefix("<").substringBefore(">")
+    .substringAfter("sip:").substringAfter("sips:")
+    .substringBefore(";").substringBefore("?")
+    .lowercase(Locale.ROOT)
+
+internal fun conferenceHeaderOf(rawMessage: String): String? = rawMessage
+    .lineSequence()
+    // The headers end at the first blank line; a body that happened to contain the name
+    // must not be read as one.
+    .takeWhile { it.isNotBlank() }
+    .firstOrNull { it.startsWith("$CONFERENCE_HEADER:", ignoreCase = true) }
+    ?.substringAfter(':')
+    ?.trim()
+    ?.takeIf { it.isNotEmpty() }
+
+/** Adds the mesh marker to an outgoing INVITE, or leaves it exactly as it was. */
+private fun CallOpParam.withConference(entity: String?): CallOpParam = apply {
+    if (entity == null) return@apply
+    txOption = SipTxOption().apply {
+        headers = SipHeaderVector().apply { add(header(CONFERENCE_HEADER, entity)) }
+    }
+}
+
+/**
+ * Names the conference a mesh leg belongs to (see `ConferenceMesh`).
+ *
+ * `X-`, because it is this application's own and not a registered SIP header. A peer that
+ * does not know it ignores it, which is exactly what should happen: the call then rings
+ * like any other rather than being answered by a device that cannot mesh.
+ */
+internal const val CONFERENCE_HEADER = "X-Coralx-Conference"
+
 private fun header(name: String, value: String): SipHeader = SipHeader().apply {
     hName = name
     hValue = value
@@ -2910,9 +3172,14 @@ private fun MutableStateFlow<VideoSizes>.publishVideoSizes(
     logger: Logger,
 ) {
     val current = value
+    val decoded = info?.decodedVideoSize(decodedFormat)
     val updated = VideoSizes(
-        remote = info?.decodedVideoSize(decodedFormat) ?: current.remote,
+        remote = decoded ?: current.remote,
         local = previewSize ?: current.local,
+        // Recorded against the call as well as into `remote`, because a conference lays
+        // each tile out on its own stream's shape and `remote` only ever holds the last
+        // one to publish. See [VideoSizes.remotes].
+        remotes = if (decoded != null) current.remotes + (callKey to decoded) else current.remotes,
     )
     if (updated == current) return
 
@@ -2972,6 +3239,77 @@ private fun CallInfo.decodedVideoSize(decodedFormat: (Long) -> MediaFormatVideo?
             VideoSize(window.w.toInt(), window.h.toInt())
         }.getOrNull()?.takeIf { it.isKnown }
     }
+
+/** The stream kinds the media trace reports, and the word it uses for each. */
+private val TRACED_MEDIA = mapOf(
+    pjmedia_type.PJMEDIA_TYPE_AUDIO to "audio",
+    pjmedia_type.PJMEDIA_TYPE_VIDEO to "video",
+)
+
+/** One stream's cumulative RTP counters at an instant, so that two reads make a rate. */
+private data class RtpCounters(
+    val atMillis: Long,
+    val rxPkt: Long,
+    val rxBytes: Long,
+    val rxLoss: Long,
+    val txPkt: Long,
+    val txBytes: Long,
+    val txLoss: Long,
+)
+
+/** Everything the trace needs from one stream, read in a single pass over the native object. */
+private fun StreamStat.counters(atMillis: Long) = RtpCounters(
+    atMillis = atMillis,
+    rxPkt = rtcp.rxStat.pkt,
+    rxBytes = rtcp.rxStat.bytes,
+    rxLoss = rtcp.rxStat.loss,
+    txPkt = rtcp.txStat.pkt,
+    txBytes = rtcp.txStat.bytes,
+    txLoss = rtcp.txStat.loss,
+)
+
+/**
+ * `video H264 - rx 88 pkt/s 812 kbps loss 0 - tx 88 pkt/s 819 kbps loss 0 - peer 1.2.3.4:4002`
+ *
+ * Rates rather than totals, because the question a frozen picture asks is *when* a stream
+ * stopped and a total cannot answer it. Loss is the loss over the interval for the same
+ * reason: a call that lost thirty packets in its first second reads as lossless for ever
+ * after, which is true and useless.
+ *
+ * Null when both reads share a timestamp, or when a counter went backwards — a stream the
+ * stack rebuilt under us starts a fresh set at zero, and differencing across that boundary
+ * reports a large negative rate, which measures nothing.
+ */
+private fun rtpTraceLine(
+    kind: String,
+    codec: String,
+    peer: String,
+    previous: RtpCounters,
+    current: RtpCounters,
+): String? {
+    val seconds = (current.atMillis - previous.atMillis) / MILLIS_PER_SECOND
+    if (seconds <= 0.0) return null
+    if (current.rxPkt < previous.rxPkt || current.txPkt < previous.txPkt) return null
+
+    fun perSecond(delta: Long) = (delta / seconds).roundToLong()
+    fun kbps(deltaBytes: Long) = (deltaBytes * BITS_PER_BYTE / (BITS_PER_KILOBIT * seconds)).roundToLong()
+
+    return buildString {
+        append(kind)
+        if (codec.isNotBlank()) append(' ').append(codec)
+        append(" - rx ").append(perSecond(current.rxPkt - previous.rxPkt)).append(" pkt/s ")
+        append(kbps(current.rxBytes - previous.rxBytes)).append(" kbps loss ")
+        append(current.rxLoss - previous.rxLoss)
+        append(" - tx ").append(perSecond(current.txPkt - previous.txPkt)).append(" pkt/s ")
+        append(kbps(current.txBytes - previous.txBytes)).append(" kbps loss ")
+        append(current.txLoss - previous.txLoss)
+        if (peer.isNotBlank()) append(" - peer ").append(peer)
+    }
+}
+
+private const val MILLIS_PER_SECOND = 1_000.0
+private const val BITS_PER_BYTE = 8.0
+private const val BITS_PER_KILOBIT = 1_000.0
 
 /** True when a video stream is negotiated and running on this call, in either direction. */
 private fun CallInfo.hasActiveVideo(): Boolean = media.any {

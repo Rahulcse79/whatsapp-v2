@@ -11,12 +11,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 
 /**
- * Which conference a merge builds (ADR-003, ADR-009).
+ * Whether a merge can be built, and out of which legs (ADR-009).
  *
- * The rule decided here is the one that made the feature work at all: a device-hosted star
- * cannot show peers to each other, because a peer holds one leg and can only receive the
- * picture on it. Every case below is an enumeration of that rule rather than a check that
- * some code ran.
+ * Every conference is composed on this device now, so what is enumerated here is the two
+ * ceilings and the sets they are counted over — the conference against ADR-009's eight,
+ * and the picture against `vid_conf`'s four, over the legs carrying video alone. The
+ * cases that used to choose a FreeSWITCH room are gone with the room.
  */
 class MergeTopologyTest {
 
@@ -42,51 +42,71 @@ class MergeTopologyTest {
     fun `two audio calls are mixed on the device`() {
         val topology = MergeTopology.of(
             calls = listOf(call("1002"), call("1003")),
-            bridgeConfigured = true,
         )
 
-        // Configured bridge and all, because audio mixed here needs no server at all —
-        // routing it through one would hand back the dependency ADR-009 removed.
+        // Audio mixed here needs no server at all — routing it through one would hand
+        // back the dependency ADR-009 removed.
         val mix = assertIs<MergeTopology.LocalMix>(topology)
         assertEquals(setOf(CallId("1002"), CallId("1003")), mix.callIds)
     }
 
     @Test
-    fun `two video calls go to the bridge`() {
+    fun `an all-video merge is composed on the device`() {
         val topology = MergeTopology.of(
             calls = listOf(call("1002", video = true), call("1003", video = true)),
-            bridgeConfigured = true,
         )
 
-        val bridge = assertIs<MergeTopology.Bridge>(topology)
-        assertEquals(setOf(CallId("1002"), CallId("1003")), bridge.callIds)
+        // `pjmedia`'s video bridge gives each peer a canvas of this camera and every
+        // other peer, so no room is needed for the picture.
+        val mix = assertIs<MergeTopology.LocalMix>(topology)
+        assertEquals(setOf(CallId("1002"), CallId("1003")), mix.callIds)
     }
 
     @Test
-    fun `one video leg is enough to send the whole conference to the bridge`() {
-        // The defect this prevents: mixing here and bridging there would be two
-        // conferences that cannot hear each other. The bridge takes the audio-only member
-        // happily and leaves them off the canvas.
+    fun `a merge of video and audio-only legs is mixed here, with every leg in it`() {
+        // The case that cost a real conference on 2026-09-24. Two video legs and one
+        // audio leg were sent to a room that answered 480, so three people got nothing;
+        // before that they would have got an audio conference and lost the picture. The
+        // mixer composes among the legs that have a camera and leaves the other in the
+        // audio mix, which is what `videoMixable` then works out — every leg is merged
+        // either way, which is what this asserts.
         val topology = MergeTopology.of(
-            calls = listOf(call("1002", video = true), call("1003"), call("1004")),
-            bridgeConfigured = true,
+            calls = listOf(call("1002", video = true), call("1003", video = true), call("1004")),
         )
 
-        val bridge = assertIs<MergeTopology.Bridge>(topology)
-        assertEquals(setOf(CallId("1002"), CallId("1003"), CallId("1004")), bridge.callIds)
+        val mix = assertIs<MergeTopology.LocalMix>(topology)
+        assertEquals(setOf(CallId("1002"), CallId("1003"), CallId("1004")), mix.callIds)
     }
 
     @Test
-    fun `a video merge with no bridge configured is declined, not downgraded`() {
+    fun `the video ceiling is counted over the video legs, not the conference`() {
+        // Five legs: three on video, two on audio. The conference is inside ADR-009's
+        // eight and the picture is inside `vid_conf`'s four — this handset plus three
+        // cameras — so it is allowed. Counting the video ceiling over all five, which is
+        // what the rule used to do, refused this merge outright.
         val topology = MergeTopology.of(
-            calls = listOf(call("1002", video = true), call("1003", video = true)),
-            bridgeConfigured = false,
+            calls = listOf(
+                call("1002", video = true),
+                call("1003", video = true),
+                call("1004", video = true),
+                call("1005"),
+                call("1006"),
+            ),
         )
 
-        // Declining says what is wrong. Silently dropping to audio would take the cameras
-        // off two people who asked for a video conference and tell them nothing.
-        val unavailable = assertIs<MergeTopology.Unavailable>(topology)
-        assertEquals(MergeTopology.Unavailable.Reason.NO_BRIDGE_CONFIGURED, unavailable.reason)
+        assertIs<MergeTopology.LocalMix>(topology)
+    }
+
+    @Test
+    fun `a merge needs no conference room to be configured`() {
+        val topology = MergeTopology.of(
+            calls = listOf(call("1002", video = true), call("1003", video = true)),
+        )
+
+        // The whole point of composing the picture here: no server, so no dependency on
+        // one being reachable or configured, and no way for a merge to fail for want of
+        // a dialplan entry.
+        assertIs<MergeTopology.LocalMix>(topology)
     }
 
     @Test
@@ -97,7 +117,6 @@ class MergeTopologyTest {
                 call("1003"),
                 call("1005", state = CallState.Outgoing.Calling),
             ),
-            bridgeConfigured = true,
         )
 
         // A ringing call has no media to contribute; it joins when it is answered.
@@ -109,7 +128,6 @@ class MergeTopologyTest {
     fun `one established call is not a conference`() {
         val topology = MergeTopology.of(
             calls = listOf(call("1002"), call("1003", state = CallState.Outgoing.Calling)),
-            bridgeConfigured = true,
         )
 
         val unavailable = assertIs<MergeTopology.Unavailable>(topology)
@@ -118,18 +136,19 @@ class MergeTopologyTest {
 
     @Test
     fun `four video participants are within the ceiling`() {
-        // The size this feature is specified to: the user plus three, which is four legs
-        // into the room. Named so the ceiling changing is a test failure and not a surprise.
+        // The size this feature is specified to: the user plus three. Named so the ceiling
+        // changing is a test failure and not a surprise. Composed on the device, because
+        // the busiest sink then carries three sources — camera plus two decoders — which
+        // is inside `vid_conf`'s four.
         val topology = MergeTopology.of(
             calls = listOf(
                 call("1002", video = true),
                 call("1003", video = true),
                 call("1004", video = true),
             ),
-            bridgeConfigured = true,
         )
 
-        assertIs<MergeTopology.Bridge>(topology)
+        assertIs<MergeTopology.LocalMix>(topology)
     }
 
     @Test
@@ -141,7 +160,6 @@ class MergeTopologyTest {
 
         val video = MergeTopology.of(
             calls = fourLegs.map { call(it, video = true) },
-            bridgeConfigured = true,
         )
         assertEquals(
             MergeTopology.Unavailable.Reason.TOO_MANY_CALLS,
@@ -150,7 +168,6 @@ class MergeTopologyTest {
 
         val audio = MergeTopology.of(
             calls = fourLegs.map { call(it) },
-            bridgeConfigured = true,
         )
         assertIs<MergeTopology.LocalMix>(audio)
     }
@@ -160,7 +177,7 @@ class MergeTopologyTest {
         val tooMany = (1..9).map { call("100$it") }
 
         val unavailable = assertIs<MergeTopology.Unavailable>(
-            MergeTopology.of(tooMany, bridgeConfigured = true),
+            MergeTopology.of(tooMany),
         )
         assertEquals(MergeTopology.Unavailable.Reason.TOO_MANY_CALLS, unavailable.reason)
     }

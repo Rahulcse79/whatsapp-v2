@@ -422,6 +422,7 @@ private fun InCallChrome(
                     // an audio conference there is nothing underneath it and it stays
                     // plain.
                     composedVideo = call.showsRemoteVideo,
+                    onRemoveParticipant = actions.onRemoveParticipant,
                     modifier = Modifier
                         .padding(top = AppTheme.spacing.medium)
                         .weight(1f, fill = false),
