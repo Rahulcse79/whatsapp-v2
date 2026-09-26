@@ -134,7 +134,8 @@ class VideoLegTelemetryTest {
 class VideoFrameCounterLineTest {
 
     private val line =
-        "vidcnt peer=192.168.2.198:26286 cap=1482 enc=1480 dec=1455 sub=1455 new=1455 rej=0"
+        "vidcnt peer=192.168.2.198:26286 cap=1482 enc=1480 encf=1478 ence=2 " +
+            "dec=1455 sub=1455 new=1455 rej=0"
 
     @Test
     fun `a vidcnt line parses into a reading`() {
@@ -143,10 +144,30 @@ class VideoFrameCounterLineTest {
         assertEquals("192.168.2.198:26286", r.peer)
         assertEquals(1482, r.captured)
         assertEquals(1480, r.encoded)
+        assertEquals(1478, r.encodedFrames)
+        assertEquals(2, r.encodedEmpty)
         assertEquals(1455, r.decoded)
         assertEquals(1455, r.renderSubmit)
         assertEquals(1455, r.renderSubmitNew)
         assertEquals(0, r.renderReject)
+    }
+
+    @Test
+    fun `encoded counts calls and encodedFrames counts pictures, and they differ`() {
+        // The distinction this asserts is the one that made a starved encoder look
+        // healthy: encode_begin() returns success with a zero-size frame, so `enc`
+        // read 30/s on an M14 while the component emitted 4.4 pictures/s. Anything
+        // quoting encoder FPS must read encodedFrames.
+        val starved = VideoFrameCounterLine.parse(
+            "vidcnt peer=10.0.0.1:1234 cap=900 enc=900 encf=132 ence=768 dec=130 " +
+                "sub=130 new=130 rej=0",
+            atMillis = 1_000,
+        )!!
+
+        assertEquals(900, starved.encoded)
+        assertEquals(132, starved.encodedFrames)
+        assertEquals(768, starved.encodedEmpty)
+        assertEquals(starved.encoded, starved.encodedFrames + starved.encodedEmpty)
     }
 
     @Test

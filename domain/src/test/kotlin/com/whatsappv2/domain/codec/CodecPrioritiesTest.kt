@@ -157,4 +157,41 @@ class CodecPrioritiesTest {
         assertTrue(result.priorities.isEmpty())
         assertFalse(result.wouldDisableEverything, "an empty preference list is not a fault")
     }
+
+    @Test
+    fun `MediaCodec's VP8 outranks every priority assign can hand out`() {
+        // Two VP8 implementations answer to one account preference — pjmedia's MediaCodec
+        // entry and libvpx's — so `assign` gives them the same number and the winner becomes
+        // whichever pjmedia registered first. That is not a choice. The adapter breaks the
+        // tie by writing MEDIACODEC_VP8 afterwards, which only settles it if the number is
+        // strictly above anything assign can produce, including the first preference at TOP.
+        val video = listOf("VP8/103", "VP8/102", "H264/99")
+        val assigned = CodecPriorities.assign(available = video, preferred = listOf("VP8", "H264"))
+
+        val highestAssignable = assigned.priorities.values.maxOrNull() ?: CodecPriorities.TOP
+        assertTrue(
+            CodecPriorities.MEDIACODEC_VP8 > highestAssignable,
+            "MEDIACODEC_VP8 (${CodecPriorities.MEDIACODEC_VP8}) must beat the highest " +
+                "rank assign produced ($highestAssignable), or the hardware path is chosen " +
+                "by registration order rather than by us",
+        )
+        assertTrue(
+            CodecPriorities.MEDIACODEC_VP8 > CodecPriorities.TOP,
+            "a first preference sits at TOP, so the tiebreak must sit above it",
+        )
+    }
+
+    @Test
+    fun `MediaCodec's VP8 stays inside the range PJSIP accepts`() {
+        // PJSIP's priority is an 8-bit value: 255 is the ceiling and 0 means "never offer
+        // this". TOP is 254 rather than 255 because pjmedia's sort_codecs rewrites a leading
+        // 255 down to 254, which would collapse the tiebreak back into the tie it exists to
+        // settle. That leaves exactly one usable number above TOP, and this asserts it is the
+        // one being used rather than an overflow that reads as DISABLED.
+        assertEquals(255.toShort(), CodecPriorities.MEDIACODEC_VP8)
+        assertTrue(
+            CodecPriorities.MEDIACODEC_VP8 > CodecPriorities.DISABLED,
+            "the hardware VP8 must never be written as the disabled value",
+        )
+    }
 }

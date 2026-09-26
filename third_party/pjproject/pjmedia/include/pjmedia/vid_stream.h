@@ -346,7 +346,21 @@ typedef struct pjmedia_vid_stream_frame_counters
     pj_uint32_t  captured;
 
     /** Frames the encoder accepted and produced output for. */
+    /** encode_begin() calls that returned PJ_SUCCESS, whether or not they
+     *  produced a payload. This is NOT the encoder's frame rate: a starved
+     *  encoder returns success with a zero-size frame, so this counted 30/s
+     *  while the component was emitting 4.4 pictures/s. Use `encoded_frames`
+     *  for the rate and this one only to see how often the pipeline asked.  */
     pj_uint32_t  encoded;
+
+    /** encode_begin() calls that actually produced a payload -- the encoder's
+     *  real output rate, and the number to quote as encoder FPS.            */
+    pj_uint32_t  encoded_frames;
+
+    /** encode_begin() calls that succeeded with nothing to send, i.e.
+     *  `encoded - encoded_frames`, kept explicitly so a starved encoder is
+     *  visible without subtracting two counters in the reader's head.       */
+    pj_uint32_t  encoded_empty;
 
     /** Frames the decoder produced a picture from. */
     pj_uint32_t  decoded;

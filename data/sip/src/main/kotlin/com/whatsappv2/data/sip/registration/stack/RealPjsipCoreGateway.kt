@@ -1177,11 +1177,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
         applyPriorities(
             kind = "Video",
             accountKey = account.key,
-            available = videoRegistry.withoutMediaCodecVp8(),
+            available = videoRegistry,
             preferred = account.videoCodecs,
             alsoRequired = otherVideo,
         ) { id, priority -> videoCodecSetPriority(id, priority) }
-        disableMediaCodecVp8(videoRegistry)
+        preferMediaCodecVp8(videoRegistry)
 
         logger.info(
             TAG,
@@ -1192,21 +1192,36 @@ internal class RealPjsipCoreGateway @Inject constructor(
     }
 
     /**
-     * Switches MediaCodec's VP8 off outright, so it can never be answered.
+     * Puts MediaCodec's VP8 ahead of libvpx's, where the platform has confirmed it works.
      *
-     * Both halves of [withoutMediaCodecVp8] are needed and this is the second. Leaving the
-     * codec out of the ranking only means nothing re-ranks it: pjmedia registered it with a
-     * priority of its own, and a codec with a non-zero priority is in the offer. This is
-     * what takes it out.
+     * This used to switch it off outright. The reason was real — a leg that negotiated it
+     * showed a black picture while RTP flowed — but the cause was not the codec: pjmedia
+     * chose its *decoder* from a hardcoded list of `OMX.*` names, and on Android 15 those
+     * are retired. `AMediaCodec_createCodecByName()` hands back a handle for a retired
+     * name anyway, so the entry registered with a verified Codec2 encoder and a decoder
+     * the platform no longer implements. It opened, and rendered nothing.
      *
-     * Looked up in [registry] rather than written blind, because a build without MediaCodec's
-     * VP8 has nothing to disable and `videoCodecSetPriority` on an unregistered id is an
-     * error worth not raising.
+     * The numbered PJSIP patch now discovers and verifies the decoder the same way it
+     * already did the encoder, and registers the codec only when both halves resolve. So
+     * the blanket disable has become what it was always standing in for: a preference,
+     * applied to a codec whose two halves the platform has confirmed. Where the probe
+     * fails there is no entry to rank and libvpx remains, which is the fallback this
+     * never had before.
+     *
+     * Looked up in [registry] rather than written blind, because a build or a handset
+     * without MediaCodec's VP8 has nothing to rank, and `videoCodecSetPriority` on an
+     * unregistered id is an error worth not raising.
      */
-    private fun Endpoint.disableMediaCodecVp8(registry: List<String>) {
+    private fun Endpoint.preferMediaCodecVp8(registry: List<String>) {
         val id = registry.firstOrNull { it.equals(MEDIACODEC_VP8_ID, ignoreCase = true) } ?: return
-        runCatching { videoCodecSetPriority(id, CodecPriorities.DISABLED) }
-            .onFailure { logger.warn(TAG, "Could not disable $id: ${it.message}") }
+
+        // Ranked one step above libvpx's VP8, not merely enabled. Both answer to the
+        // account's "VP8" preference, so without an explicit order between them the
+        // winner is whichever `pjmedia` happened to register first — and the whole
+        // point of preferring this one is that it is the hardware path on handsets
+        // that have one.
+        runCatching { videoCodecSetPriority(id, CodecPriorities.MEDIACODEC_VP8) }
+            .onFailure { logger.warn(TAG, "Could not rank $id: ${it.message}") }
     }
 
     /** What every account except [exceptKey] needs kept enabled. See [applyCodecs]. */
@@ -3604,8 +3619,6 @@ private fun cameraAfter(manager: VidDevManager, current: Int): Int? {
  * produce nothing is offering the far end a black screen, and the only thing the ordering
  * bought was the hope that nobody would take it.
  */
-private fun List<String>.withoutMediaCodecVp8(): List<String> =
-    filterNot { it.equals(MEDIACODEC_VP8_ID, ignoreCase = true) }
 
 /** `VP8/<PJMEDIA_RTP_PT_VP8_RSV1>`: the id `and_vid_mediacodec.cpp:76` registers its VP8 under. */
 private const val MEDIACODEC_VP8_ID = "VP8/103"

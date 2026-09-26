@@ -140,7 +140,17 @@ internal class VideoLegTelemetry {
         val peer: String,
         val atMillis: Long,
         val captured: Long,
+        /**
+         * `encode_begin()` calls that returned success — **not** the encoder's frame
+         * rate. A starved encoder returns success with a zero-size frame, so this read
+         * 30/s on an M14 while the component emitted 4.4 pictures/s. Use
+         * [encodedFrames] for the rate; this one says how often the pipeline asked.
+         */
         val encoded: Long,
+        /** Calls that produced an actual payload — the encoder's real output rate. */
+        val encodedFrames: Long,
+        /** Calls that succeeded with nothing to send: `encoded - encodedFrames`. */
+        val encodedEmpty: Long,
         val decoded: Long,
         val renderSubmit: Long,
         /** Submissions carrying a picture the previous one did not — i.e. real motion. */
@@ -216,7 +226,7 @@ private const val STREAM_AGE_REPORTED_FOR_MILLIS = 60_000L
  * The line is emitted by the patched `vid_stream.c` once every few seconds per stream:
  *
  * ```
- * vidcnt peer=192.168.2.198:26286 cap=1482 enc=1480 dec=1455 sub=1455 rej=0
+ * vidcnt peer=192.168.2.198:26286 cap=1482 enc=1480 encf=1478 ence=2 dec=1455 sub=1455 rej=0
  * ```
  *
  * Parsed rather than plumbed through `pjsua2` because exposing a new native struct to
@@ -227,7 +237,8 @@ private const val STREAM_AGE_REPORTED_FOR_MILLIS = 60_000L
 internal object VideoFrameCounterLine {
 
     private val PATTERN = Regex(
-        """vidcnt peer=(\S+) cap=(\d+) enc=(\d+) dec=(\d+) sub=(\d+) new=(\d+) rej=(\d+)""",
+        """vidcnt peer=(\S+) cap=(\d+) enc=(\d+) encf=(\d+) ence=(\d+) dec=(\d+) """ +
+            """sub=(\d+) new=(\d+) rej=(\d+)""",
     )
 
     /** Cheap enough to run on every log line: a substring test before any regex. */
@@ -239,10 +250,12 @@ internal object VideoFrameCounterLine {
             atMillis = atMillis,
             captured = m.groupValues[2].toLong(),
             encoded = m.groupValues[3].toLong(),
-            decoded = m.groupValues[4].toLong(),
-            renderSubmit = m.groupValues[5].toLong(),
-            renderSubmitNew = m.groupValues[6].toLong(),
-            renderReject = m.groupValues[7].toLong(),
+            encodedFrames = m.groupValues[4].toLong(),
+            encodedEmpty = m.groupValues[5].toLong(),
+            decoded = m.groupValues[6].toLong(),
+            renderSubmit = m.groupValues[7].toLong(),
+            renderSubmitNew = m.groupValues[8].toLong(),
+            renderReject = m.groupValues[9].toLong(),
         )
     }
 

@@ -61,6 +61,29 @@ object CodecPriorities {
     const val DISABLED: Short = 0
 
     /**
+     * Where MediaCodec's VP8 sits, which is one step above libvpx's.
+     *
+     * Both answer to an account that asked for "VP8", so [assign] gives them the same
+     * rank and the winner becomes whichever `pjmedia` registered first. That is not a
+     * choice, and on a handset with a hardware VP8 it is usually the wrong one: libvpx
+     * encodes 1280x720 in software at 68 ms a frame on an M14, against a Codec2 encoder
+     * sitting unused beside it.
+     *
+     * `TOP + 1` rather than a fixed number, so this stays above the highest rank [assign]
+     * can hand out no matter how the account's list is ordered. It is only ever written
+     * for a codec `pjmedia` actually registered.
+     *
+     * What registration now guarantees, and what it does not. Both halves are discovered
+     * from the platform's own list and each is **created** to prove the component really
+     * exists — which is exactly what a retired `OMX.*` name fails. It is *not* proof that
+     * either half produces output: nothing is configured, started or fed at registration,
+     * deliberately, because doing so wedged the PJSIP thread on an SM-E236B and left the
+     * account unable to register at all. A component that opens and then produces nothing
+     * is caught in the call instead, and condemned so the next call avoids it.
+     */
+    const val MEDIACODEC_VP8: Short = (TOP + 1).toShort()
+
+    /**
      * The lowest priority this assigns to a codec that is still enabled.
      *
      * A codec that only *another* account wants is kept, and kept below everything the
