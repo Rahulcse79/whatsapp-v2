@@ -236,6 +236,7 @@ private fun ConferenceTiles(
             // shared remote size laid every tile out on whichever stream decoded last.
             sizes = sizes,
             onSurfaces = { remoteSurfaces = it },
+            onTileHeight = actions.onRemoteTileHeight,
         )
 
         // Between the tiles and the self-view, exactly as in a one-to-one call. Without it

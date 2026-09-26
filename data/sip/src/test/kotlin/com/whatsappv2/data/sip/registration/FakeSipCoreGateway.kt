@@ -311,6 +311,13 @@ internal class FakeSipCoreGateway :
         captureRotations += degrees
     }
 
+    /** Every tile height the screen has reported, so a test can assert what it measured. */
+    val remoteTileHeights: MutableList<Int> = mutableListOf()
+
+    override fun setRemoteTileHeight(heightPx: Int) {
+        remoteTileHeights += heightPx
+    }
+
     /** Settable, so a test can drive the screen through a resolution change. */
     val videoSizeFlow: MutableStateFlow<VideoSizes> = MutableStateFlow(VideoSizes.UNKNOWN)
 

@@ -29,6 +29,10 @@ internal class StackVideoSurfaceController @Inject constructor(
         gateway.setVideoWindows(remoteViews = emptyMap(), localPreview = null)
     }
 
+    override fun setRemoteTileHeight(heightPx: Int) {
+        gateway.setRemoteTileHeight(heightPx)
+    }
+
     override fun setDisplayRotation(degrees: Int) {
         gateway.setCaptureRotation(degrees)
     }

@@ -115,6 +115,8 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.roundToLong
+import com.whatsappv2.domain.video.DisplayCeiling
+import com.whatsappv2.domain.video.VideoBudget
 
 /**
  * The real SIP stack, behind the gateway seam (ADR-006).
@@ -391,6 +393,24 @@ internal class RealPjsipCoreGateway @Inject constructor(
      */
     private val telemetry = VideoLegTelemetry()
 
+    /**
+     * Thermal and CPU pressure for the adaptive-quality policy.
+     *
+     * Lazy, like everything else that touches a system service from this class: nothing may
+     * be built while the Hilt graph is resolving.
+     */
+    private val devicePressure by lazy { AndroidDevicePressureSource(context) }
+
+    /**
+     * Adaptive video quality (Phase 7). One coordinator for the device, because the encoder,
+     * the radio and — decisively — the video codec parameter it writes are all endpoint-wide.
+     * See [VideoQualityCoordinator].
+     */
+    private val videoQuality by lazy { VideoQualityCoordinator(devicePressure, logger) }
+
+    /** True while the adaptation tick is armed, so it is armed exactly once. */
+    private var videoQualityTicking = false
+
     /** The last account config used, so a push-parameter change can re-apply it. */
     private val accountConfigs = ConcurrentHashMap<String, StackAccount>()
 
@@ -598,7 +618,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
         // a stream created after libStart has already taken its parameters, so
         // configuring later changes nothing until the next call.
         created.tuneOpus(logger)
-        created.tuneVideoCodecs(logger)
+        // The ladder's own starting rung, not a second copy of 1280x720 written here. A
+        // call that opens later asks the coordinator again, so a device that has already
+        // learned it cannot sustain the top rung creates its next stream lower down.
+        created.tuneVideoCodecs(
+            videoQuality.startingSettings(VideoBudget(outgoingVideoLegs = 1)),
+            logger,
+        )
         lyraModelProblem = created.tuneLyra(context, logger)
 
         // All three, once, at startup. PJSIP binds an account to a transport by id,
@@ -1361,6 +1387,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // the far end *accepts*, which is the whole of `PjsipSipEngine.setHold`'s
             // contract. This only records that an answer is owed.
             call.pendingHold.begin()
+            // A hold stops the streams; when they come back their counters start at zero.
+            // The tier is kept -- the device has not changed -- but the measurements behind
+            // it cannot span the gap. See [VideoQualityCoordinator.onMediaRestarted].
+            videoQuality.onMediaRestarted(callKey)
             runCatching { call.setHold(CallOpParam(true)) }
                 .onFailure {
                     // Never left this device. Without this the engine would wait for an
@@ -1398,6 +1428,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // LocalHold.
             call.pendingResume.begin()
             call.publish(StackCallState.RESUMING)
+            videoQuality.onMediaRestarted(callKey)
 
             runCatching {
                 call.reinvite(call.info.resumeParams())
@@ -1483,7 +1514,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
     override fun setVideoEnabled(callKey: String, enabled: Boolean) {
         onPjsip("setVideoEnabled") {
             val call = calls[callKey] ?: return@onPjsip
+            // Video off and on again is a new stream and a new encoder, so the old stream's
+            // rates describe nothing about it. The tier survives; the evidence does not.
+            videoQuality.onMediaRestarted(callKey)
             call.applyVideoEnabled(enabled, call.infoOrNull())
+            if (enabled) ensureVideoQualityTicking()
         }
     }
 
@@ -1620,6 +1655,21 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * Nulls are the important half: a surface PJSIP keeps writing into after the screen
      * has gone is a crash on some devices and a leak of every frame on the rest.
      */
+    /**
+     * The measured tile height from the call screen, for the adaptive-quality ceiling.
+     *
+     * Not posted to the executor: `onDisplayCeiling` writes one field that the tick reads,
+     * the write is atomic for a reference, and a tile size that arrives a tick late costs
+     * nothing. Posting would put a layout callback on the media thread's queue on every
+     * rotation and every participant change, which is the more expensive answer to a
+     * problem that does not exist.
+     */
+    override fun setRemoteTileHeight(heightPx: Int) {
+        videoQuality.onDisplayCeiling(
+            if (heightPx > 0) DisplayCeiling(heightPx) else DisplayCeiling.UNCONSTRAINED,
+        )
+    }
+
     override fun setVideoWindows(remoteViews: Map<String, Any?>, localPreview: Any?) {
         remoteSurfaces = remoteViews
         previewSurface = localPreview
@@ -1995,6 +2045,8 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 // until here so a rebuild late in the call is still counted, dropped here
                 // so a long session does not accumulate a leg per call that ever existed.
                 telemetry.forget(callKey)
+                // And the adaptation history keyed on the same leg, for the same reason.
+                videoQuality.onCallEnded(callKey)
                 // Before the media goes: a conference link into a released port is a
                 // use-after-free in a native bridge, not a stale entry in a map.
                 conference.remove(callKey)
@@ -2040,6 +2092,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 statisticsScheduled = true
                 scheduleMediaStatistics()
             }
+            // Idempotent: the tick arms once for the device, not once per call, and stops
+            // itself when no call is sending video any more.
+            ensureVideoQualityTicking()
 
             info.media.forEachIndexed { index, media ->
                 when {
@@ -2796,6 +2851,174 @@ internal class RealPjsipCoreGateway @Inject constructor(
         fun infoOrNull(): CallInfo? = runCatching { info }.getOrNull()
     }
 
+    // ------------------------------------------------- adaptive video quality (Phase 7)
+
+    /**
+     * Arms the adaptive-quality tick, once.
+     *
+     * Armed from [PjCall.onCallMediaState] rather than from `libStart`, so an app with no
+     * call running has no timer at all — the same reasoning as everything else scheduled
+     * here, and it matters on a handset where a two-second wake-up would otherwise run for
+     * the life of the process.
+     */
+    private fun ensureVideoQualityTicking() {
+        if (videoQualityTicking) return
+        videoQualityTicking = true
+        scheduleVideoQuality()
+    }
+
+    /** Re-arms the tick for as long as some call is still sending video. */
+    private fun scheduleVideoQuality() {
+        pjsip.schedule(
+            {
+                val legs = videoLegSamples()
+                if (legs.isEmpty()) {
+                    // Nothing is transmitting video. Stop the timer, and distinguish the two
+                    // reasons that can be true: a call still up with its video paused (hold,
+                    // or video switched off) keeps the tier, because the unhold or the switch
+                    // back on is the stream build that applies it. Only when every call has
+                    // gone is the tier discarded, so the next call measures the device afresh.
+                    videoQualityTicking = false
+                    if (calls.isEmpty()) videoQuality.onNoCalls() else videoQuality.onVideoPaused()
+                    return@schedule
+                }
+                runCatching { videoQuality.onSample(legs, System.currentTimeMillis()) }
+                    .onSuccess { action -> action?.let(::applyVideoQuality) }
+                    .onFailure { logger.warn(TAG, "Video quality tick failed: ${it.message}") }
+                scheduleVideoQuality()
+            },
+            VIDEO_QUALITY_TICK_MILLIS,
+            TimeUnit.MILLISECONDS,
+        )
+    }
+
+    /**
+     * One telemetry sample per call that is currently *sending* video.
+     *
+     * Sending, not merely negotiating: a leg whose direction excludes encoding costs this
+     * device no encoder and no uplink, so counting it would divide the aggregate budget by a
+     * leg that is not spending any of it. That is also what makes the count a participant
+     * count in the sense the policy means — [VideoBudget.outgoingVideoLegs].
+     *
+     * The self-preview is never here. It is a capture window rendered locally and has no
+     * stream, no RTP and no peer, which is exactly why the brief says not to count it.
+     */
+    private fun videoLegSamples(): List<VideoLegTelemetrySample> {
+        val now = System.currentTimeMillis()
+        return calls.values.mapNotNull { call ->
+            val info = call.infoOrNull() ?: return@mapNotNull null
+            // Only a call that is actually up. A call still in `calls` while it tears down
+            // was measured being counted as a second outgoing leg on a one-to-one call,
+            // which switched the policy to the conference ladder for no reason
+            // (`reason=CALL_SHAPE_CHANGED ... legs=2` during a second call, 2026-09-27).
+            if (info.state != pjsip_inv_state.PJSIP_INV_STATE_CONFIRMED) return@mapNotNull null
+            val media = info.media.firstOrNull {
+                it.type == pjmedia_type.PJMEDIA_TYPE_VIDEO &&
+                    it.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE &&
+                    (it.dir == pjmedia_dir.PJMEDIA_DIR_ENCODING ||
+                        it.dir == pjmedia_dir.PJMEDIA_DIR_ENCODING_DECODING)
+            } ?: return@mapNotNull null
+
+            val stat = runCatching { call.getStreamStat(media.index) }.getOrNull()
+                ?: return@mapNotNull null
+            val stream = runCatching { call.getStreamInfo(media.index) }.getOrNull()
+            val peer = stream?.remoteRtpAddress.orEmpty()
+
+            VideoLegTelemetrySample(
+                callKey = call.callKey,
+                rtp = VideoRtpSample(
+                    atMillis = now,
+                    txPkt = stat.rtcp.txStat.pkt,
+                    txBytes = stat.rtcp.txStat.bytes,
+                    // The far end's account of what it did not receive, which is the only
+                    // honest measure of *our* outbound loss -- our own tx counters cannot
+                    // know what fell off the wire after we sent it.
+                    txLoss = stat.rtcp.rxStat.loss,
+                    rxPkt = stat.rtcp.rxStat.pkt,
+                    rxLoss = stat.rtcp.rxStat.loss,
+                    // `last`, not `mean`. `MathStat.mean` is a running mean over the whole
+                    // stream and never decays, so one transient spike poisons it for the rest
+                    // of the call: measured on a 13-minute soak reporting an identical
+                    // `rtt=485.02 jitter=120.28` on every sample for eleven minutes -- frozen,
+                    // not observed -- and on the peer an `rtt=10326.0` that blocked every
+                    // upgrade to the end of the call. A lifetime mean cannot express "the
+                    // network has recovered", which is exactly what the policy needs to hear.
+                    //
+                    // `last` is one sample and is noisy; that is what the policy's own EWMA is
+                    // for, and a noisy current value smoothed is strictly better than a smooth
+                    // stale one. The *trace* line keeps using the mean, deliberately: a
+                    // human reading a call summary wants the average, and the policy wants now.
+                    rxJitterUsec = stat.rtcp.rxStat.jitterUsec.last.toLong(),
+                    rttUsec = stat.rtcp.rttUsec.last.toLong(),
+                    // PLI and NACK arrivals, counted by the telemetry callbacks rather than
+                    // by RTCP -- `StreamStat` does not carry feedback counts.
+                    feedbackRx = telemetry.leg(call.callKey, media.index).rtcpFeedbackRx.get(),
+                ),
+                frames = peer.takeIf { it.isNotBlank() }?.let(telemetry::framesFor),
+                // What the *running* encoder was configured for, read off the stream rather
+                // than taken from the policy's tier. The two differ by design: a tier change
+                // is a standing decision that the next stream build picks up, so between the
+                // decision and that build the stream is still running the old rate. Measuring
+                // against the policy's tier would then score a healthy encoder against a rate
+                // it was never asked for -- optimistically after a downgrade, which would
+                // stall further adaptation exactly when it was needed.
+                configuredFps = runCatching {
+                    stream?.vidCodecParam?.encFmt?.fpsNum?.toInt()?.takeIf { it > 0 }
+                }.getOrNull(),
+            )
+        }
+    }
+
+    /**
+     * Records the tier the policy has chosen, by writing it where the next stream will read it.
+     *
+     * One step, and deliberately only one: the endpoint's video codec parameter for the codec
+     * these calls actually negotiated. A stream built after this reads it back through
+     * `pjmedia_vid_codec_mgr_get_default_param` (see `pjmedia_vid_stream_info_from_sdp`), so
+     * the next call, the next video-on, the next unhold and the next mesh leg all come up at
+     * the new tier.
+     *
+     * **No re-INVITE, and that is a measured decision rather than an omission** — see
+     * [VideoQualityAction.appliesTo], which carries the failure it caused. No keyframe either:
+     * nothing changed on the wire, so there is no reference chain to resynchronise. Phase 3's
+     * decoder-start rule is therefore untouched by this phase — a rebuilt decoder still
+     * refuses inter-frames until it has a keyframe, and nothing here builds one.
+     *
+     * Only the negotiated codecs are written, never every registered one. Startup tuning
+     * writes them all because there the negotiated codec is not yet known; mid-call it is,
+     * and touching a codec carrying somebody else's mesh leg is blast radius with nothing to
+     * buy. Writing all of them was itself measured moving a negotiated payload type.
+     */
+    private fun applyVideoQuality(action: VideoQualityAction) {
+        val running = endpoint ?: return
+
+        val negotiated = action.appliesTo.mapNotNullTo(mutableSetOf()) { callKey ->
+            val call = calls[callKey] ?: return@mapNotNullTo null
+            val info = call.infoOrNull() ?: return@mapNotNullTo null
+            val video = info.media.firstOrNull { it.type == pjmedia_type.PJMEDIA_TYPE_VIDEO }
+                ?: return@mapNotNullTo null
+            // `codecId` is `name/payload-type` ("VP8/103") while `StreamInfo.codecName` is the
+            // bare name, so the id is reassembled from the name and the transmit payload type.
+            runCatching {
+                val stream = call.getStreamInfo(video.index)
+                stream.codecName.takeIf { it.isNotBlank() }?.let { "$it/${stream.txPt}" }
+            }.getOrNull()
+        }
+        if (negotiated.isEmpty()) {
+            logger.debug(TAG, "Video quality not recorded: no negotiated video codec to write")
+            return
+        }
+        runCatching { running.tuneVideoCodecs(action.settings, logger, only = negotiated) }
+            .onSuccess {
+                logger.info(
+                    TAG,
+                    "Video quality now ${action.transition.to} for ${negotiated.joinToString()} " +
+                        "- takes effect on the next stream build",
+                )
+            }
+            .onFailure { logger.warn(TAG, "Video quality not recorded: ${it.message}") }
+    }
+
     private fun callParams(videoEnabled: Boolean) = CallOpParam(true).apply {
         opt = CallSetting().apply {
             audioCount = 1
@@ -3004,10 +3227,22 @@ internal class RealPjsipCoreGateway @Inject constructor(
         /** An FEC hint, not a measurement: how much redundancy to carry. */
         const val OPUS_EXPECTED_LOSS_PCT = 5L
 
-        const val VIDEO_WIDTH = 1280L
-        const val VIDEO_HEIGHT = 720L
-        const val VIDEO_FPS = 30
-        const val VIDEO_AVG_BPS = 1_500_000L
+        /**
+         * How often the adaptive-quality policy is sampled.
+         *
+         * Five seconds, matching `PJMEDIA_VID_STREAM_COUNTER_LOG_MSEC` — the interval the
+         * native frame counters are emitted at. The two are deliberately the same number:
+         * sampling faster than the counters arrive produces ticks carrying no new encoder
+         * evidence, and sampling slower throws evidence away.
+         *
+         * RTCP is the exception and is read fresh on every tick, in-process, so loss, RTT
+         * and jitter are as current as this interval however the counters are doing.
+         *
+         * `AdaptiveVideoThresholds.downgradeWindowMillis` is two of these. Moving one
+         * without the other changes how quickly quality reacts, so they are documented
+         * against each other in both places.
+         */
+        const val VIDEO_QUALITY_TICK_MILLIS = 5_000L
 
         /** `PJSUA_DTMF_METHOD_SIP_INFO`; RFC 2833 is method 0 and is `dialDtmf`'s default. */
         const val DTMF_METHOD_SIP_INFO = 1
@@ -3519,17 +3754,23 @@ private fun Endpoint.tuneOpus(logger: Logger) {
  * carry it. Applied per codec inside `runCatching` so one codec rejecting a format
  * does not cost the others theirs.
  */
-private fun Endpoint.tuneVideoCodecs(logger: Logger) {
+private fun Endpoint.tuneVideoCodecs(
+    settings: VideoEncoderSettings,
+    logger: Logger,
+    only: Set<String>? = null,
+) {
     videoCodecEnum2().forEach { info ->
+        // Null means every registered codec, which is right at startup and wrong mid-call.
+        if (only != null && info.codecId !in only) return@forEach
         runCatching {
             val param = getVideoCodecParam(info.codecId)
             param.encFmt.apply {
-                width = RealPjsipCoreGateway.VIDEO_WIDTH
-                height = RealPjsipCoreGateway.VIDEO_HEIGHT
-                fpsNum = RealPjsipCoreGateway.VIDEO_FPS
+                width = settings.width
+                height = settings.height
+                fpsNum = settings.fps
                 fpsDenum = 1
-                avgBps = RealPjsipCoreGateway.VIDEO_AVG_BPS
-                maxBps = VIDEO_MAX_BPS
+                avgBps = settings.avgBps
+                maxBps = settings.maxBps
             }
             setVideoCodecParam(info.codecId, param)
         }.onFailure {

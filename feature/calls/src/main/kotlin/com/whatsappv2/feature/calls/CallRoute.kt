@@ -74,6 +74,7 @@ fun CallRoute(
             onVideoSurfaces = viewModel::attachVideoSurfaces,
             onReleaseVideoSurfaces = viewModel::detachVideoSurfaces,
             onDisplayRotation = viewModel::reportDisplayRotation,
+            onRemoteTileHeight = viewModel::reportRemoteTileHeight,
             // None of these take a call id any more. They used to close over the route's
             // `callId`, on the reasoning that the screen looks at exactly one call — true
             // at any instant, but which one changes: a second call, a swap, or the active

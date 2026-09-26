@@ -156,6 +156,27 @@ internal class VideoLegTelemetry {
         /** Submissions carrying a picture the previous one did not — i.e. real motion. */
         val renderSubmitNew: Long,
         val renderReject: Long,
+        /**
+         * Frames handed to the stream's encoding port — the encoder's actual input.
+         *
+         * Against [captured] this is where Phase 3 placed the 30-to-7 drop: frames the
+         * camera produced that never reached the encoding port at all. Adaptive quality
+         * reads the same boundary, which is why these fields are parsed rather than
+         * plumbed — the native line has emitted them since Phase 2.
+         */
+        val encoderInput: Long = 0,
+        /** Calls into the codec. Pairs with [encoded], which counts those that returned. */
+        val encodeBegin: Long = 0,
+        /** Total microseconds inside `encode_begin()`. Over [encodeBegin], a mean latency. */
+        val encodeMicros: Long = 0,
+        /** Scans of the jitter buffer, and the ones that found a gap. */
+        val scans: Long = 0,
+        val scansMissing: Long = 0,
+        /** Scans that found enough distinct timestamps to assemble a whole picture. */
+        val assembled: Long = 0,
+        /** Calls into the decoder, and those that returned an error. */
+        val decodeCalls: Long = 0,
+        val decodeErrors: Long = 0,
     )
 
     /** A reading of one leg's counters, for differencing against the next. */
@@ -241,6 +262,20 @@ internal object VideoFrameCounterLine {
             """sub=(\d+) new=(\d+) rej=(\d+)""",
     )
 
+    /**
+     * The rest of the line, matched separately so the two halves can fail independently.
+     *
+     * A build whose native half predates these counters still yields a usable
+     * [VideoLegTelemetry.FrameReading] from [PATTERN] alone, with the extra fields left at
+     * zero — and adaptive quality then simply has less to go on rather than nothing. One
+     * regex over the whole line would have made the older format unparseable instead.
+     */
+    private val PIPELINE_PATTERN = Regex(
+        """put=(\d+) scan=(\d+) nrm=(\d+) mis=(\d+) emp=(\d+) asm=(\d+) """ +
+            """dcall=(\d+) derr=(\d+) tgt=(\d+) """ +
+            """ein=(\d+) ebeg=(\d+) epau=(\d+) eemp=(\d+) eus=(\d+)""",
+    )
+
     /** Cheap enough to run on every log line: a substring test before any regex. */
     fun parse(message: String, atMillis: Long): VideoLegTelemetry.FrameReading? {
         if (MARKER !in message) return null
@@ -256,6 +291,30 @@ internal object VideoFrameCounterLine {
             renderSubmit = m.groupValues[7].toLong(),
             renderSubmitNew = m.groupValues[8].toLong(),
             renderReject = m.groupValues[9].toLong(),
+        ).withPipelineCounters(message)
+    }
+
+    /**
+     * Folds in the second half of the line when it is there.
+     *
+     * Field order follows the native format string exactly: `put scan nrm mis emp asm
+     * dcall derr tgt ein ebeg epau eemp eus`. Only the ones a policy or a trace actually
+     * reads are carried over; `nrm`, `emp`, `epau` and `tgt` are matched so the positions
+     * stay aligned and deliberately not stored, because nothing reads them from Kotlin.
+     */
+    private fun VideoLegTelemetry.FrameReading.withPipelineCounters(
+        message: String,
+    ): VideoLegTelemetry.FrameReading {
+        val p = PIPELINE_PATTERN.find(message) ?: return this
+        return copy(
+            scans = p.groupValues[2].toLong(),
+            scansMissing = p.groupValues[4].toLong(),
+            assembled = p.groupValues[6].toLong(),
+            decodeCalls = p.groupValues[7].toLong(),
+            decodeErrors = p.groupValues[8].toLong(),
+            encoderInput = p.groupValues[10].toLong(),
+            encodeBegin = p.groupValues[11].toLong(),
+            encodeMicros = p.groupValues[14].toLong(),
         )
     }
 
