@@ -20,6 +20,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -92,6 +93,7 @@ internal fun ConferenceVideoGrid(
     sizes: VideoSizes,
     onSurfaces: (Map<String, Any?>) -> Unit,
     modifier: Modifier = Modifier,
+    onTileHeight: (Int) -> Unit = {},
 ) {
     val context = LocalContext.current
     val ids = participants.map { it.id }
@@ -145,6 +147,15 @@ internal fun ConferenceVideoGrid(
 
     BoxWithConstraints(modifier = modifier.fillMaxSize().testTag(TAG_CONFERENCE_GRID)) {
         val rows = participants.chunked(columns.coerceAtLeast(1))
+
+        // How tall one tile is, for the adaptive-quality display ceiling. Taken from the
+        // constraints rather than measured per tile: the rows share the height evenly by
+        // `weight(1f)`, so this is the same number the layout will arrive at, and it is
+        // known before the tiles draw rather than one frame after. Reported only when it
+        // actually changes -- a rotation or somebody joining -- because the receiver of
+        // this is the media stack, not the composition.
+        val tileHeightPx = if (rows.isEmpty()) 0 else constraints.maxHeight / rows.size
+        LaunchedEffect(tileHeightPx) { onTileHeight(tileHeightPx) }
         Column(
             modifier = Modifier.fillMaxSize().padding(AppTheme.spacing.small),
             verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),

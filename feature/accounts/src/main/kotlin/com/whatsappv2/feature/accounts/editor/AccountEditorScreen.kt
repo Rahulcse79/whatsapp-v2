@@ -43,6 +43,7 @@ import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.validation.AccountField
 import com.whatsappv2.domain.validation.AccountViolation
 import com.whatsappv2.domain.validation.SipAccountDraft
+import com.whatsappv2.domain.validation.withTransport
 
 /**
  * The account form.
@@ -194,7 +195,9 @@ private fun TransportSection(
     onDraftChange: ((SipAccountDraft) -> SipAccountDraft) -> Unit,
 ) {
     SectionHeader("Transport and NAT")
-    TransportChips(state.draft.transport) { value -> onDraftChange { it.copy(transport = value) } }
+    // `withTransport`, not `copy(transport = …)`: the port has to follow the transport or
+    // an account moved from UDP to TLS keeps 5060 and dials the registrar's plaintext port.
+    TransportChips(state.draft.transport) { value -> onDraftChange { it.withTransport(value) } }
     Field(
         label = "Port",
         value = state.draft.port,

@@ -388,6 +388,29 @@ static void on_rx_rtcp( void *data,
         pj_timestamp ntp = {0}, ts = {0};
         ntp = c_strm->rtcp.rx_lsr_ntp;
         ts.u32.lo = c_strm->rtcp.rx_lsr_ts;
+
+        /* The reference pair, as it arrives from the wire.
+         *
+         * ref_ntp and ref_ts must belong to the same sender and the same RTP
+         * timeline as the frames later handed to update_pts: the NTP half
+         * anchors the wall clock, the RTP half anchors the media clock, and
+         * av_sync's diff is (frame_pts - this ref_ts). A reference from a
+         * different SSRC, or one left over from a previous stream generation,
+         * makes that difference meaningless while staying positive -- which is
+         * the only thing update_pts checks. SSRC is printed so the association
+         * is checkable rather than assumed. */
+        {
+            static unsigned sr_seen;
+            if (sr_seen++ % 10 == 0) {
+                PJ_LOG(3, (c_strm->port.info.name.ptr,
+                    "RTCP-SR ref: peer_ssrc=0x%08x | ntp_sec=%u ntp_frac=%u "
+                    "| rtp_ts=%u | n=%u",
+                    c_strm->rtcp.peer_ssrc,
+                    ntp.u32.hi, ntp.u32.lo,
+                    c_strm->rtcp.rx_lsr_ts,
+                    sr_seen));
+            }
+        }
         pjmedia_av_sync_update_ref(c_strm->av_sync_media, &ntp, &ts);
     }
 }

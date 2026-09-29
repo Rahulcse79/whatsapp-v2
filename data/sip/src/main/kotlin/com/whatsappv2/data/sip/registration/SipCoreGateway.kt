@@ -90,6 +90,20 @@ internal interface SipCoreGateway : TransportRebinder {
      */
     fun setTraceEnabled(enabled: Boolean)
 
+    /**
+     * Turns SIP TLS server-certificate verification on or off.
+     *
+     * Unlike [setTraceEnabled] this cannot be a gate on a callback: `verifyServer` is part
+     * of the TLS **listener's** configuration, fixed when the listener is created, and
+     * OpenSSL reads it when it builds the `SSL_CTX` for each connection. Changing it
+     * therefore means standing a new listener up in place of the old one and letting the
+     * TLS accounts re-register through it, which is what the implementation does.
+     *
+     * Off by default. See `AppSettings.verifyTlsCertificates` for what that gives up and
+     * why the choice is the user's.
+     */
+    fun setTlsCertificateVerification(verify: Boolean)
+
     fun stop()
 }
 

@@ -88,6 +88,16 @@ class DataStoreAppSettingsRepositoryTest {
     }
 
     @Test
+    fun `TLS certificate verification is off until someone turns it on`() = runTest {
+        // Deliberate and documented on AppSettings: the registrars this app is pointed at
+        // present certificates that cannot pass a check (a wildcard one, and a self-signed
+        // one with no SubjectAltName), so a client that insisted would refuse to register.
+        // The guarantee this test protects is that the default is a *choice the user can
+        // reverse*, not a value that drifts.
+        assertFalse(repository().currentSettings().verifyTlsCertificates)
+    }
+
+    @Test
     fun `settings survive a new repository instance`() = runTest {
         // Standing in for process death: the second instance shares no state with the
         // first except what actually reached disk.
@@ -97,6 +107,7 @@ class DataStoreAppSettingsRepositoryTest {
             setPreferredAudioRoute(PreferredAudioRoute.SPEAKER)
             setThemeMode(ThemeMode.DARK)
             setSipTraceEnabled(true)
+            setVerifyTlsCertificates(true)
             setCallHistoryRetention(CallHistoryRetention.ofDays(NINETY))
         }
 
@@ -109,6 +120,9 @@ class DataStoreAppSettingsRepositoryTest {
         // that must not quietly go back to following the phone.
         assertEquals(ThemeMode.DARK, reloaded.themeMode)
         assertTrue(reloaded.sipTraceEnabled)
+        // A security setting that silently reverted on restart would be worse than one
+        // that was never offered: the user believes it is on.
+        assertTrue(reloaded.verifyTlsCertificates)
         assertEquals(NINETY, reloaded.callHistoryRetention.days)
     }
 

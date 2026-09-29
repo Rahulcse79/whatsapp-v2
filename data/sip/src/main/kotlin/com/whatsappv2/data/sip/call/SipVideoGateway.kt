@@ -69,6 +69,14 @@ internal interface SipVideoGateway {
     fun setCaptureRotation(degrees: Int)
 
     /**
+     * How tall one remote tile is, in pixels. Zero means unconstrained.
+     *
+     * Feeds the adaptive-quality policy's display ceiling — see
+     * `VideoSurfaceController.setRemoteTileHeight`, which carries the reasoning.
+     */
+    fun setRemoteTileHeight(heightPx: Int)
+
+    /**
      * The shapes of the decoded remote picture and of this device's own preview. See
      * `VideoSurfaceController.videoSizes` for why anybody needs them — in short, PJSIP's
      * renderer stretches rather than fitting, so the *views* have to be the right shape.

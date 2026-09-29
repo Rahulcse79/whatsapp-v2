@@ -39,6 +39,7 @@ class SettingsScreenTest {
         onTrace: (Boolean) -> Unit = {},
         onTheme: (ThemeMode) -> Unit = {},
         onRetention: (CallHistoryRetention) -> Unit = {},
+        onVerifyTls: (Boolean) -> Unit = {},
         backgroundAccess: BackgroundAccessLink? = null,
     ) {
         compose.setContent {
@@ -51,6 +52,7 @@ class SettingsScreenTest {
                         onAudioRouteChange = {},
                         onThemeModeChange = onTheme,
                         onSipTraceChange = onTrace,
+                        onVerifyTlsChange = onVerifyTls,
                         onRetentionChange = onRetention,
                     ),
                     links = SettingsLinks(onOpenAccounts = {}, backgroundAccess = backgroundAccess),

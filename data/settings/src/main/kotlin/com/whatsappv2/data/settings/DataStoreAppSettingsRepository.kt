@@ -67,6 +67,9 @@ class DataStoreAppSettingsRepository @Inject constructor(
     override suspend fun setSipTraceEnabled(enabled: Boolean) =
         edit { it[SIP_TRACE] = enabled }
 
+    override suspend fun setVerifyTlsCertificates(verify: Boolean) =
+        edit { it[VERIFY_TLS] = verify }
+
     override suspend fun setCallHistoryRetention(retention: CallHistoryRetention) =
         edit { it[HISTORY_RETENTION_DAYS] = retention.days }
 
@@ -88,6 +91,7 @@ class DataStoreAppSettingsRepository @Inject constructor(
             ?: AppSettings.DEFAULT.preferredAudioRoute,
         themeMode = this[THEME_MODE]?.toEnumOrNull<ThemeMode>() ?: AppSettings.DEFAULT.themeMode,
         sipTraceEnabled = this[SIP_TRACE] ?: AppSettings.DEFAULT.sipTraceEnabled,
+        verifyTlsCertificates = this[VERIFY_TLS] ?: AppSettings.DEFAULT.verifyTlsCertificates,
         // Through `ofDays`, so a value written by a build with a longer maximum — or
         // corrupted to something absurd — is clamped rather than used to compute a cutoff
         // that would delete the wrong rows.
@@ -106,6 +110,7 @@ class DataStoreAppSettingsRepository @Inject constructor(
         val AUDIO_ROUTE = stringPreferencesKey("preferred_audio_route")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val SIP_TRACE = booleanPreferencesKey("sip_trace_enabled")
+        val VERIFY_TLS = booleanPreferencesKey("verify_tls_certificates")
         val HISTORY_RETENTION_DAYS = intPreferencesKey("call_history_retention_days")
     }
 }

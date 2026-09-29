@@ -1084,6 +1084,20 @@ static pj_status_t setup_vid_capture(pjsua_call_media *call_med)
     /* Done */
     inc_vid_win(wid);
     call_med->strm.v.cap_win_id = wid;
+
+    /* The capture half of the association (see the renderer's, below).
+     *
+     * One caveat is recorded rather than hidden: a capture *window* can be shared
+     * between calls, so in a mesh the last stream to be set up owns the `captured`
+     * counter and the others read zero for it. `encoded` is per stream and is the
+     * authoritative send-side count; `captured` answers "is the camera producing at
+     * all", which is a device-wide question anyway.
+     */
+    pjmedia_vid_port_set_counter_block(
+        pjsua_var.win[wid].vp_cap,
+        call_med->strm.v.stream?
+            pjmedia_vid_stream_get_counter_block(call_med->strm.v.stream): NULL);
+
     PJ_LOG(4,(THIS_FILE, "Call %d media %d: video capture set up with "
                          "dev %d, wid=%d", call_med->call->index,
                          call_med->idx, call_med->strm.v.cap_dev, wid));
@@ -1358,6 +1372,17 @@ pj_status_t pjsua_vid_channel_update(pjsua_call_media *call_med,
             /* Done */
             inc_vid_win(wid);
             call_med->strm.v.rdr_win_id = wid;
+
+            /* Tell the renderer which stream's counters it is feeding. The capture
+             * and render-submission stages happen inside the video port, which has
+             * no way back to the stream, so this association is the only thing that
+             * lets one telemetry line carry all five stages of one leg. Set here,
+             * where the window and the stream are known to belong together, and
+             * cleared in stop_video_stream() before the stream is destroyed.
+             */
+            pjmedia_vid_port_set_counter_block(
+                w->vp_rend,
+                pjmedia_vid_stream_get_counter_block(call_med->strm.v.stream));
             PJSUA_UNLOCK();
             pj_log_pop_indent();
         }
@@ -1429,6 +1454,21 @@ void pjsua_vid_stop_stream(pjsua_call_media *call_med)
     /* Unsubscribe events first, otherwise the event callbacks
      * can be called and access already destroyed objects.
      */
+    /* Detach the frame counters before anything is torn down.
+     *
+     * The stream owns the block and is about to be destroyed, so a port left
+     * pointing at it would increment freed memory on its next frame. Clearing it
+     * here is also what stops a rebuilt stream inheriting the counts of the one it
+     * replaces: the new stream brings its own block, and a window that is reused
+     * between them is re-pointed rather than accumulated onto.
+     */
+    if (call_med->strm.v.cap_win_id != PJSUA_INVALID_ID)
+        pjmedia_vid_port_set_counter_block(
+            pjsua_var.win[call_med->strm.v.cap_win_id].vp_cap, NULL);
+    if (call_med->strm.v.rdr_win_id != PJSUA_INVALID_ID)
+        pjmedia_vid_port_set_counter_block(
+            pjsua_var.win[call_med->strm.v.rdr_win_id].vp_rend, NULL);
+
     if (call_med->strm.v.cap_win_id != PJSUA_INVALID_ID) {
         pjsua_vid_win *w = &pjsua_var.win[call_med->strm.v.cap_win_id];
 

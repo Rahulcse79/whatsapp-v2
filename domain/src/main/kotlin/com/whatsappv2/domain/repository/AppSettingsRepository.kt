@@ -49,6 +49,14 @@ interface AppSettingsRepository {
      */
     suspend fun setSipTraceEnabled(enabled: Boolean)
 
+    /**
+     * Turns SIP TLS server-certificate verification on or off.
+     *
+     * Off by default; see [com.whatsappv2.domain.model.AppSettings.verifyTlsCertificates]
+     * for what that costs and why the deployments this app targets need the choice.
+     */
+    suspend fun setVerifyTlsCertificates(verify: Boolean)
+
     /** How long the call log is kept. Takes effect on the next prune, not retroactively undone. */
     suspend fun setCallHistoryRetention(retention: CallHistoryRetention)
 }

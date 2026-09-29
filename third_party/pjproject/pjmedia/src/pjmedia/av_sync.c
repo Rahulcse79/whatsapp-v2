@@ -50,6 +50,10 @@ struct pjmedia_av_sync_media
     /* Delay adjustment requested to this media */
     pj_int32_t               last_adj_delay_req; /* Last requested delay    */
     unsigned                 adj_delay_req_cnt;  /* Request counter         */
+
+    /* Phase 3 probe */
+    unsigned                 probe_pts_calls;
+    pj_timestamp             probe_last_pts;
 };
 
 
@@ -65,6 +69,13 @@ struct pjmedia_av_sync
 
     /* Maximum NTP time of all media */
     pj_timestamp             max_ntp;
+
+    /* Phase 3 probe: which media last supplied max_ntp, and how many pts
+     * updates each side has made. max_ntp is the only value compared ACROSS
+     * clock domains -- audio at 16000 and video at 90000 both convert their own
+     * RTP delta into NTP before it is stored -- so naming its owner is what
+     * distinguishes a genuine lag from one side's conversion being wrong. */
+    const char              *max_ntp_owner;
 
     /* Some media cannot catch up, request for slow down, in milliseconds */
     unsigned                 slowdown_req_ms;
@@ -333,8 +344,48 @@ PJ_DEF(pj_status_t) pjmedia_av_sync_update_pts(
             media->setting.name, pts->u64));
 
     /* Update last presentation time */
-    media->last_ntp = media->ref_ntp;
-    ntp_add_ts(&media->last_ntp, diff, media->setting.clock_rate);
+    {
+        /* The raw chain, before anything is derived.
+         *
+         * Everything downstream is a difference of two NTP values that were
+         * each produced from a DIFFERENT clock domain: audio converts its RTP
+         * delta by 16000, video by 90000. At the int32 ceiling of `diff` those
+         * two produce wildly different NTP offsets -- 2^31 ticks is 6.6 hours
+         * of video but 37 hours of audio -- so a single bad delta on the audio
+         * side moves max_ntp far into the future and makes the video look hours
+         * behind. This prints the operands, not the conclusion. */
+        pj_timestamp before_ntp = media->ref_ntp;
+
+        media->last_ntp = media->ref_ntp;
+        ntp_add_ts(&media->last_ntp, diff, media->setting.clock_rate);
+        ++media->probe_pts_calls;
+        media->probe_last_pts = *pts;
+
+        if (media->probe_pts_calls <= 3 ||
+            media->probe_pts_calls % 500 == 0 ||
+            diff > (pj_int32_t)(media->setting.clock_rate * 10))
+        {
+            PJ_LOG(3, (media->av_sync->setting.name,
+                "raw[%s] clk=%u | ref_ntp=%u.%08u ref_ts=%llu pts=%llu | "
+                "diff=%d (0x%08x) raw_pts_lo=%u raw_ref_lo=%u | "
+                "ntp_add=%llu -> last_ntp=%u.%08u | max_ntp=%u.%08u owner=%s "
+                "| calls=%u",
+                media->setting.name, media->setting.clock_rate,
+                before_ntp.u32.hi, before_ntp.u32.lo,
+                (unsigned long long)media->ref_ts.u64,
+                (unsigned long long)pts->u64,
+                diff, (unsigned)diff,
+                pts->u32.lo, media->ref_ts.u32.lo,
+                (unsigned long long)(((pj_uint64_t)(unsigned)diff << 32) /
+                                     media->setting.clock_rate),
+                media->last_ntp.u32.hi, media->last_ntp.u32.lo,
+                media->av_sync->max_ntp.u32.hi,
+                media->av_sync->max_ntp.u32.lo,
+                media->av_sync->max_ntp_owner?
+                    media->av_sync->max_ntp_owner : "(none)",
+                media->probe_pts_calls));
+        }
+    }
 
     /* Get NTP timestamp of the earliest media */
     pj_grp_lock_acquire(avs->grp_lock);
@@ -346,6 +397,7 @@ PJ_DEF(pj_status_t) pjmedia_av_sync_update_pts(
         /* Yes, it is the fastest, update the max timestamp */
         pj_grp_lock_acquire(avs->grp_lock);
         avs->max_ntp = media->last_ntp;
+        avs->max_ntp_owner = media->setting.name;
         pj_grp_lock_release(avs->grp_lock);
 
         /* Check if there is any request to slow down */
@@ -369,6 +421,31 @@ PJ_DEF(pj_status_t) pjmedia_av_sync_update_pts(
         /* First, check the lag from the fastest. */
         pj_sub_timestamp(&ntp_diff, &media->last_ntp);
         ms_diff = ntp_to_ms(&ntp_diff);
+
+        /* The cross-domain comparison itself, with both sides named.
+         *
+         * ntp_diff is max_ntp (whichever media set it) minus THIS media's
+         * last_ntp. Printed whenever the lag is beyond the tolerable window,
+         * which is exactly the condition that turns into a delay request --
+         * so this fires on the event and not on healthy frames. ntp_to_ms
+         * multiplies u32.hi by 1000 in 32-bit, so a hi above ~4.29e6 seconds
+         * wraps there too; the raw hi/lo are printed so that is checkable
+         * rather than assumed. */
+        if (ms_diff > PJMEDIA_AVSYNC_MAX_TOLERABLE_LAG_MSEC) {
+            PJ_LOG(3, (avs->setting.name,
+                "lag[%s] max_ntp=%u.%08u (owner=%s) - last_ntp=%u.%08u "
+                "=> ntp_diff=%u.%08u | ms_diff=%u (%.2f h) | clk=%u "
+                "last_req=%d req_cnt=%u streaming=%d",
+                media->setting.name,
+                max_ntp.u32.hi, max_ntp.u32.lo,
+                avs->max_ntp_owner? avs->max_ntp_owner : "(none)",
+                media->last_ntp.u32.hi, media->last_ntp.u32.lo,
+                ntp_diff.u32.hi, ntp_diff.u32.lo,
+                ms_diff, ms_diff / 3600000.0,
+                media->setting.clock_rate,
+                media->last_adj_delay_req, media->adj_delay_req_cnt,
+                avs->setting.is_streaming));
+        }
 
         /* For streaming, smoothen (apply weight of 9 for current lag),
          * and round down the lag to the nearest 10.
@@ -453,6 +530,14 @@ PJ_DEF(pj_status_t) pjmedia_av_sync_update_pts(
 
         media->last_adj_delay_req = -(pj_int32_t)ms_req;
         media->adj_delay_req_cnt++;
+
+        if (ms_req > (unsigned)PJMEDIA_AVSYNC_MAX_TOLERABLE_LAG_MSEC * 4) {
+            PJ_LOG(3, (avs->setting.name,
+                "req[%s] speed-up %u ms (ms_diff=%u, streaming=%d) -> "
+                "adjust_delay=%d  <-- this is what vid_stream converts",
+                media->setting.name, ms_req, ms_diff,
+                avs->setting.is_streaming, media->last_adj_delay_req));
+        }
 
         TRACE_((avs->setting.name,
                 "%s is requested to speed up #%d by %dms",

@@ -61,6 +61,8 @@ import org.pjsip.pjsua2.EpConfig
 import org.pjsip.pjsua2.IpChangeParam
 import org.pjsip.pjsua2.MediaFormatVideo
 import org.pjsip.pjsua2.OnCallMediaEventParam
+import org.pjsip.pjsua2.OnStreamCreatedParam
+import org.pjsip.pjsua2.OnStreamDestroyedParam
 import org.pjsip.pjsua2.OnCallMediaStateParam
 import org.pjsip.pjsua2.OnCallRxReinviteParam
 import org.pjsip.pjsua2.OnCallStateParam
@@ -70,6 +72,7 @@ import org.pjsip.pjsua2.OnCallTsxStateParam
 import org.pjsip.pjsua2.OnInstantMessageParam
 import org.pjsip.pjsua2.OnIncomingCallParam
 import org.pjsip.pjsua2.OnIpChangeProgressParam
+import org.pjsip.pjsua2.OnTransportStateParam
 import org.pjsip.pjsua2.OnVideoMediaOpCompletedParam
 import org.pjsip.pjsua2.OnRegStateParam
 import org.pjsip.pjsua2.SipHeader
@@ -85,6 +88,7 @@ import org.pjsip.pjsua2.VideoMediaTransmitParam
 import org.pjsip.pjsua2.VideoPreview
 import org.pjsip.pjsua2.VideoWindowHandle
 import org.pjsip.pjsua2.pj_ssl_sock_proto
+import org.pjsip.pjsua2.StreamInfo
 import org.pjsip.pjsua2.StreamStat
 import org.pjsip.pjsua2.pjmedia_dir
 import org.pjsip.pjsua2.pjmedia_event_type
@@ -97,6 +101,7 @@ import org.pjsip.pjsua2.pjsip_inv_state
 import org.pjsip.pjsua2.pjsip_role_e
 import org.pjsip.pjsua2.pjsip_ssl_method
 import org.pjsip.pjsua2.pjsip_status_code
+import org.pjsip.pjsua2.pjsip_transport_state
 import org.pjsip.pjsua2.pjsip_transport_type_e
 import org.pjsip.pjsua2.pjsua_call_flag
 import org.pjsip.pjsua2.pjsua_call_media_status
@@ -112,6 +117,8 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.roundToLong
+import com.whatsappv2.domain.video.DisplayCeiling
+import com.whatsappv2.domain.video.VideoBudget
 
 /**
  * The real SIP stack, behind the gateway seam (ADR-006).
@@ -373,6 +380,15 @@ internal class RealPjsipCoreGateway @Inject constructor(
     @Volatile
     private var traceEnabled: Boolean = false
 
+    /**
+     * Whether the TLS listener checks the server's certificate.
+     *
+     * Off until Settings says otherwise, matching `AppSettings.DEFAULT`. Read by
+     * [tlsTransportConfig] every time a listener is built, so the value in force when the
+     * listener is created is the one OpenSSL applies to its connections.
+     */
+    private var verifyTlsCertificates: Boolean = false
+
     /** Transport ids by the token the domain uses — `UDP`, `TCP`, `TLS`. */
     private val transports = ConcurrentHashMap<String, Int>()
 
@@ -381,6 +397,30 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     /** Our call key to the director holding its native peer. */
     private val calls = ConcurrentHashMap<String, PjCall>()
+
+    /**
+     * Per-leg pipeline counters (Phase 2). Held here rather than on [PjCall] so a stream
+     * rebuilt under a call keeps its history: the count of rebuilds is the measurement.
+     */
+    private val telemetry = VideoLegTelemetry()
+
+    /**
+     * Thermal and CPU pressure for the adaptive-quality policy.
+     *
+     * Lazy, like everything else that touches a system service from this class: nothing may
+     * be built while the Hilt graph is resolving.
+     */
+    private val devicePressure by lazy { AndroidDevicePressureSource(context) }
+
+    /**
+     * Adaptive video quality (Phase 7). One coordinator for the device, because the encoder,
+     * the radio and — decisively — the video codec parameter it writes are all endpoint-wide.
+     * See [VideoQualityCoordinator].
+     */
+    private val videoQuality by lazy { VideoQualityCoordinator(devicePressure, logger) }
+
+    /** True while the adaptation tick is armed, so it is armed exactly once. */
+    private var videoQualityTicking = false
 
     /** The last account config used, so a push-parameter change can re-apply it. */
     private val accountConfigs = ConcurrentHashMap<String, StackAccount>()
@@ -553,6 +593,49 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 if (prm.status == PJSIP_STATUS_OK) return
                 logger.warn(TAG, "Video bridge op ${prm.opType} failed with status ${prm.status}")
             }
+
+            /**
+             * What actually happened to a TLS connection (2026-09-29).
+             *
+             * Every TLS failure reaches the user as the same thing: a registration that
+             * ends `503`, rendered as "the server is unavailable". A missing CA file, a
+             * certificate signed by somebody nobody trusts, an expired one, a peer on the
+             * wrong port that never answers the ClientHello, and a certificate that is
+             * perfectly valid but issued for a different name all look identical from
+             * there — and four of those five are fixed in completely different places.
+             *
+             * `TlsInfo` carries what PJSIP already knows and threw away: the negotiated
+             * protocol and cipher, and `verifyMsgs`, which is OpenSSL's own list of the
+             * reasons verification failed. Logging it costs one callback and turns "TLS
+             * does not work" into a line that names the cause.
+             *
+             * Only failures are logged in full. A connected transport gets one line with
+             * the protocol and cipher, which is what you want when the question is
+             * whether TLS 1.2 or 1.3 was settled on.
+             */
+            override fun onTransportState(prm: OnTransportStateParam) {
+                val tls = prm.tlsInfo ?: return
+                if (!tls.established && prm.state != pjsip_transport_state.PJSIP_TP_STATE_DISCONNECTED) {
+                    return
+                }
+
+                val peer = tls.remoteAddr.orEmpty()
+                if (prm.state == pjsip_transport_state.PJSIP_TP_STATE_DISCONNECTED ||
+                    tls.verifyStatus != 0L
+                ) {
+                    val reasons = runCatching {
+                        (0 until tls.verifyMsgs.size).map { tls.verifyMsgs[it] }
+                    }.getOrDefault(emptyList())
+                    logger.error(
+                        TAG,
+                        "TLS to $peer failed: status=0x${tls.verifyStatus.toString(HEX)}" +
+                            " lastError=${prm.lastError}" +
+                            if (reasons.isEmpty()) "" else " (${reasons.joinToString("; ")})",
+                    )
+                } else {
+                    logger.info(TAG, "TLS to $peer established: ${tls.cipherName}")
+                }
+            }
         }
         logger.info(TAG, "start: Endpoint constructed (JNI bindings loaded)")
 
@@ -589,7 +672,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
         // a stream created after libStart has already taken its parameters, so
         // configuring later changes nothing until the next call.
         created.tuneOpus(logger)
-        created.tuneVideoCodecs(logger)
+        // The ladder's own starting rung, not a second copy of 1280x720 written here. A
+        // call that opens later asks the coordinator again, so a device that has already
+        // learned it cannot sustain the top rung creates its next stream lower down.
+        created.tuneVideoCodecs(
+            videoQuality.startingSettings(VideoBudget(outgoingVideoLegs = 1)),
+            logger,
+        )
         lyraModelProblem = created.tuneLyra(context, logger)
 
         // All three, once, at startup. PJSIP binds an account to a transport by id,
@@ -677,7 +766,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
         // single delete in `libDestroy` the only one, and has the director hold a strong
         // reference back so the object stays alive while PJSIP can still call it.
         logConfig.apply {
-            writer = PjsipLogWriter(logger) { traceEnabled }
+            writer = PjsipLogWriter(
+                logger = logger,
+                enabled = { traceEnabled },
+                onFrameCounters = telemetry::recordFrameCounters,
+            )
                 .also { it.swigReleaseOwnership() }
                 .also { logWriter = it }
             msgLogging = SIP_MESSAGE_LOGGING
@@ -724,8 +817,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
      */
     private fun tlsTransportConfig(): TransportConfig = TransportConfig().apply {
         tlsConfig = TlsConfig().apply {
-            verifyServer = true
-            trustStore.caBundle()?.let { bundle -> caListFile = bundle.absolutePath }
+            verifyServer = verifyTlsCertificates
+            // Built even when verification is off. The setting can be turned on while the
+            // stack is running, and a bundle that is already on disk is one less thing
+            // that has to succeed at the moment somebody is trying to make TLS strict.
+            trustStore.refreshBundle()?.let { bundle -> caListFile = bundle.absolutePath }
 
             method = pjsip_ssl_method.PJSIP_SSLV23_METHOD
             proto = (
@@ -853,6 +949,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             }
 
             accountConfigs[account.key] = account
+            ensureTrustAnchors(account.transport)
             val config = account.toAccountConfig(
                 transportParam = transportUriParameter(account.transport),
                 pushParameters = pushParameters,
@@ -1039,6 +1136,65 @@ internal class RealPjsipCoreGateway @Inject constructor(
     }
 
     /**
+     * Turns TLS certificate verification on or off, without an app restart.
+     *
+     * This one **is** posted to the PJSIP thread, unlike [setTraceEnabled], because it is
+     * not a flag anybody reads later — it is baked into a listener at the moment the
+     * listener is created. `pjsip_tls_setting` belongs to the `pjsip_tpfactory`, and
+     * OpenSSL builds its `SSL_CTX` from that copy for every connection the factory
+     * accepts. Writing the field alone would change nothing until the next cold start.
+     *
+     * So the old listener is closed and a new one takes its place. That is safe here for
+     * a reason worth stating: this gateway never pins `sipConfig.transportId` (see
+     * [AccountConfigFactory]), so no account holds a reference to the listener being
+     * replaced — PJSIP resolves a transport per request from the `;transport=tls` URI
+     * parameter, and the next REGISTER simply resolves to the new one.
+     *
+     * Existing TLS connections are **not** torn down by closing their factory — see
+     * [closeEstablishedTlsConnections], which is what actually drops them, and the handset
+     * measurement that proved re-registration alone was not enough. Accounts on UDP and
+     * TCP are left alone; nothing about them changed, and dropping their bindings would
+     * cost calls for a setting that does not apply to them.
+     */
+    override fun setTlsCertificateVerification(verify: Boolean) {
+        onPjsip("setTlsCertificateVerification") {
+            if (verifyTlsCertificates == verify) return@onPjsip
+            verifyTlsCertificates = verify
+            logger.info(TAG, "TLS certificate verification ${if (verify) "on" else "off"}")
+
+            // Before libStart there is no listener yet; `start` will read the new value
+            // when it builds one, which is the whole of the work in that case.
+            val running = endpoint ?: return@onPjsip
+
+            transports[TRANSPORT_TLS]?.let { old ->
+                runCatching { running.transportClose(old) }.onFailure { failure ->
+                    logger.warn(TAG, "Closing the old TLS listener failed: ${failure.message}")
+                }
+            }
+            val rebuilt = runCatching {
+                running.transportCreate(pjsip_transport_type_e.PJSIP_TRANSPORT_TLS, tlsTransportConfig())
+            }.onFailure { failure ->
+                logger.error(TAG, "Could not stand the TLS listener back up", failure)
+            }.getOrNull() ?: run {
+                transports.remove(TRANSPORT_TLS)
+                return@onPjsip
+            }
+            transports[TRANSPORT_TLS] = rebuilt
+            running.closeEstablishedTlsConnections(keep = rebuilt)
+
+            accountConfigs.filterValues { it.transport.equals(TRANSPORT_TLS, ignoreCase = true) }
+                .keys
+                .forEach { key ->
+                    accounts[key]?.let { account ->
+                        runCatching { account.setRegistration(true) }.onFailure {
+                            logger.debug(TAG, "REGISTER for $key not sent after the TLS change: ${it.message}")
+                        }
+                    }
+                }
+        }
+    }
+
+    /**
      * Re-registers an account the stack already holds — and stands one back up when it does
      * not.
      *
@@ -1068,6 +1224,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 logger.info(TAG, "Refresh of $accountKey folded into the IP change PJSIP is handling")
                 return@onPjsip
             }
+
+            // Before either branch below: both of them end in a REGISTER, and a TLS one
+            // needs the trust anchors to be on disk when the socket is created.
+            accountConfigs[accountKey]?.let { stored -> ensureTrustAnchors(stored.transport) }
 
             val account = accounts[accountKey]
             if (account == null) {
@@ -1116,23 +1276,73 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
     }
 
+
     /**
-     * The `;transport=` URI parameter for an account's transport, or `""` for UDP.
+     * Drops the TLS connections that were opened under the previous verification policy.
      *
-     * UDP is SIP's default transport (RFC 3261 §18.1.1), so naming it adds nothing and
-     * costs the ability to upgrade an oversized request — a URI that says `transport=udp`
-     * is a URI PJSIP will keep on UDP even when the message no longer fits a datagram.
+     * Closing the listener is not enough, and the first attempt at this shipped believing
+     * it was. `lis_destroy` in `sip_transport_tls.c` destroys the *factory* and nothing
+     * else: the connections it accepted are separate `pjsip_transport`s with their own
+     * ids and their own copy of the settings, and they outlive it. Turning verification on
+     * therefore appeared to do nothing — the account re-registered immediately, over the
+     * connection it already had, under the old policy. Measured that way on a handset: the
+     * switch logged "on" and the TLS accounts reported 200 OK within a second, with no new
+     * handshake attempted at all.
      *
-     * TCP and TLS must be named, because nothing else would select them: neither the
-     * registrar URI nor the account id carries the information otherwise, and the
-     * alternative — pinning `sipConfig.transportId` — silently sends nothing.
+     * So every established TLS transport is closed here, and only the listener just built
+     * is spared. The re-REGISTER that follows then has nothing to reuse and opens a fresh
+     * connection, which is the one that gets the new policy.
+     *
+     * Best-effort per transport. A close that fails is logged and the rest still go: a
+     * connection that would not shut down is a worse reason to leave the others on the old
+     * policy than it is to carry on.
      */
-    private fun transportUriParameter(transport: String): String =
-        when (transport.uppercase()) {
-            TRANSPORT_TCP -> ";transport=tcp"
-            TRANSPORT_TLS -> ";transport=tls"
-            else -> ""
+    private fun Endpoint.closeEstablishedTlsConnections(keep: Int) {
+        val ids = runCatching {
+            val enumerated = transportEnum()
+            (0 until enumerated.size).map { enumerated[it] }
+        }.getOrElse { failure ->
+            logger.warn(TAG, "Could not enumerate transports after the TLS change: ${failure.message}")
+            return
         }
+
+        ids.filter { id -> id != keep && isTlsTransport(id) }
+            .forEach { id ->
+                runCatching { transportClose(id) }.onFailure { failure ->
+                    logger.debug(TAG, "TLS transport $id did not close: ${failure.message}")
+                }
+            }
+    }
+
+    /** Whether a transport id names a TLS one, as PJSIP reports its type. */
+    private fun Endpoint.isTlsTransport(id: Int): Boolean = runCatching {
+        transportGetInfo(id).typeName.contains(TRANSPORT_TLS, ignoreCase = true)
+    }.getOrDefault(false)
+
+    /**
+     * Makes sure the TLS trust anchors are on disk before an account that needs them
+     * tries to use them.
+     *
+     * The bundle's path is fixed into the TLS listener when the stack starts, and OpenSSL
+     * re-reads that path on every connection (`init_ossl_ctx`, `ssl_sock_ossl.c:1297`).
+     * A bundle the platform has since deleted therefore breaks every handshake while
+     * leaving the listener, the account and the transport all looking healthy — see
+     * [PjsipTrustStore] for the fourteen-hour outage that shape produced.
+     *
+     * Restoring the file at the same path is the entire repair: nothing has to be torn
+     * down, because the next `SSL_CTX` will read what is there at the time. Cheap enough
+     * to do on every TLS registration — [PjsipTrustStore.ensureBundle] rebuilds only when
+     * the file is actually gone.
+     */
+    private fun ensureTrustAnchors(transport: String) {
+        if (!transport.equals(TRANSPORT_TLS, ignoreCase = true)) return
+        if (trustStore.ensureBundle() == null) {
+            logger.error(
+                TAG,
+                "No CA bundle for a TLS account; the handshake will fail rather than skip verification",
+            )
+        }
+    }
 
     /**
      * The account's codec preferences, as PJSIP priorities (§5.1, §5.2).
@@ -1164,11 +1374,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
         applyPriorities(
             kind = "Video",
             accountKey = account.key,
-            available = videoRegistry.withoutMediaCodecVp8(),
+            available = videoRegistry,
             preferred = account.videoCodecs,
             alsoRequired = otherVideo,
         ) { id, priority -> videoCodecSetPriority(id, priority) }
-        disableMediaCodecVp8(videoRegistry)
+        preferMediaCodecVp8(videoRegistry)
 
         logger.info(
             TAG,
@@ -1179,21 +1389,59 @@ internal class RealPjsipCoreGateway @Inject constructor(
     }
 
     /**
-     * Switches MediaCodec's VP8 off outright, so it can never be answered.
+     * Puts MediaCodec's VP8 ahead of libvpx's, where the platform has confirmed it works.
      *
-     * Both halves of [withoutMediaCodecVp8] are needed and this is the second. Leaving the
-     * codec out of the ranking only means nothing re-ranks it: pjmedia registered it with a
-     * priority of its own, and a codec with a non-zero priority is in the offer. This is
-     * what takes it out.
+     * This used to switch it off outright. The reason was real — a leg that negotiated it
+     * showed a black picture while RTP flowed — but the cause was not the codec: pjmedia
+     * chose its *decoder* from a hardcoded list of `OMX.*` names, and on Android 15 those
+     * are retired. `AMediaCodec_createCodecByName()` hands back a handle for a retired
+     * name anyway, so the entry registered with a verified Codec2 encoder and a decoder
+     * the platform no longer implements. It opened, and rendered nothing.
      *
-     * Looked up in [registry] rather than written blind, because a build without MediaCodec's
-     * VP8 has nothing to disable and `videoCodecSetPriority` on an unregistered id is an
-     * error worth not raising.
+     * The numbered PJSIP patch now discovers and verifies the decoder the same way it
+     * already did the encoder, and registers the codec only when both halves resolve. So
+     * the blanket disable has become what it was always standing in for: a preference,
+     * applied to a codec whose two halves the platform has confirmed. Where the probe
+     * fails there is no entry to rank and libvpx remains, which is the fallback this
+     * never had before.
+     *
+     * Looked up in [registry] rather than written blind, because a build or a handset
+     * without MediaCodec's VP8 has nothing to rank, and `videoCodecSetPriority` on an
+     * unregistered id is an error worth not raising.
      */
-    private fun Endpoint.disableMediaCodecVp8(registry: List<String>) {
+    private fun Endpoint.preferMediaCodecVp8(registry: List<String>) {
         val id = registry.firstOrNull { it.equals(MEDIACODEC_VP8_ID, ignoreCase = true) } ?: return
-        runCatching { videoCodecSetPriority(id, CodecPriorities.DISABLED) }
-            .onFailure { logger.warn(TAG, "Could not disable $id: ${it.message}") }
+
+        // Ranked one step above libvpx's VP8, not merely enabled. Both answer to the
+        // account's "VP8" preference, so without an explicit order between them the
+        // winner is whichever `pjmedia` happened to register first — and the whole
+        // point of preferring this one is that it is the hardware path on handsets
+        // that have one.
+        runCatching { videoCodecSetPriority(id, CodecPriorities.MEDIACODEC_VP8) }
+            .onFailure { logger.warn(TAG, "Could not rank $id: ${it.message}") }
+
+        // And the other VP8 is switched off, so an offer carries VP8 exactly once.
+        //
+        // Ranking alone leaves both in the offer, and two entries for one encoding is a
+        // trap rather than a choice. They are byte-identical on the wire — `a=rtpmap:102
+        // VP8/90000` beside `a=rtpmap:103 VP8/90000` — so a peer cannot tell them apart and
+        // the second buys nothing; what it costs is that the receive payload type comes from
+        // the *first* offered format (`stream_info.c:114`) while the transmit one comes from
+        // the answer. Any answer naming the other number splits them, and a split payload
+        // type is a stream whose depacketiser discards every packet that arrives. See
+        // [CodecPriorities.MEDIACODEC_VP8] for the three-party mesh this cost two tiles on.
+        //
+        // Interop is not narrowed by this: `pjmedia_sdp_neg_fmt_match` matches a dynamic
+        // payload type by encoding name and clock rate rather than by number
+        // (`sdp_neg.c:2287-2321`), so a peer offering VP8 as 102 is still matched by the
+        // entry kept here and still answered on the peer's own number. And where the
+        // MediaCodec probe registered nothing there is no [id] and this method has already
+        // returned, which leaves libvpx exactly as it was — the fallback it is meant to be.
+        CodecPriorities.duplicatesOf(keep = id, available = registry).forEach { other ->
+            runCatching { videoCodecSetPriority(other, CodecPriorities.DISABLED) }
+                .onSuccess { logger.info(TAG, "VP8 is offered once, as $id; $other is off") }
+                .onFailure { logger.warn(TAG, "Could not switch off $other: ${it.message}") }
+        }
     }
 
     /** What every account except [exceptKey] needs kept enabled. See [applyCodecs]. */
@@ -1282,7 +1530,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
             }
             val call = PjCall(callKey, account)
             calls[callKey] = call
-            call.makeCall(destination, callParams(videoEnabled).withConference(conferenceEntity))
+            call.makeCall(
+                destination.withTransportOf(accountConfigs[accountKey]?.transport),
+                callParams(videoEnabled).withConference(conferenceEntity),
+            )
         }
     }
 
@@ -1333,6 +1584,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // the far end *accepts*, which is the whole of `PjsipSipEngine.setHold`'s
             // contract. This only records that an answer is owed.
             call.pendingHold.begin()
+            // A hold stops the streams; when they come back their counters start at zero.
+            // The tier is kept -- the device has not changed -- but the measurements behind
+            // it cannot span the gap. See [VideoQualityCoordinator.onMediaRestarted].
+            videoQuality.onMediaRestarted(callKey)
             runCatching { call.setHold(CallOpParam(true)) }
                 .onFailure {
                     // Never left this device. Without this the engine would wait for an
@@ -1370,6 +1625,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // LocalHold.
             call.pendingResume.begin()
             call.publish(StackCallState.RESUMING)
+            videoQuality.onMediaRestarted(callKey)
 
             runCatching {
                 call.reinvite(call.info.resumeParams())
@@ -1455,7 +1711,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
     override fun setVideoEnabled(callKey: String, enabled: Boolean) {
         onPjsip("setVideoEnabled") {
             val call = calls[callKey] ?: return@onPjsip
+            // Video off and on again is a new stream and a new encoder, so the old stream's
+            // rates describe nothing about it. The tier survives; the evidence does not.
+            videoQuality.onMediaRestarted(callKey)
             call.applyVideoEnabled(enabled, call.infoOrNull())
+            if (enabled) ensureVideoQualityTicking()
         }
     }
 
@@ -1592,6 +1852,21 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * Nulls are the important half: a surface PJSIP keeps writing into after the screen
      * has gone is a crash on some devices and a leak of every frame on the rest.
      */
+    /**
+     * The measured tile height from the call screen, for the adaptive-quality ceiling.
+     *
+     * Not posted to the executor: `onDisplayCeiling` writes one field that the tick reads,
+     * the write is atomic for a reference, and a tile size that arrives a tick late costs
+     * nothing. Posting would put a layout callback on the media thread's queue on every
+     * rotation and every participant change, which is the more expensive answer to a
+     * problem that does not exist.
+     */
+    override fun setRemoteTileHeight(heightPx: Int) {
+        videoQuality.onDisplayCeiling(
+            if (heightPx > 0) DisplayCeiling(heightPx) else DisplayCeiling.UNCONSTRAINED,
+        )
+    }
+
     override fun setVideoWindows(remoteViews: Map<String, Any?>, localPreview: Any?) {
         remoteSurfaces = remoteViews
         previewSurface = localPreview
@@ -1963,6 +2238,12 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 // any longer is the leak; releasing it any earlier is a crash.
                 calls -= callKey
                 recorders -= callKey
+                // The counters outlive the streams they measured, but not the call: kept
+                // until here so a rebuild late in the call is still counted, dropped here
+                // so a long session does not accumulate a leg per call that ever existed.
+                telemetry.forget(callKey)
+                // And the adaptation history keyed on the same leg, for the same reason.
+                videoQuality.onCallEnded(callKey)
                 // Before the media goes: a conference link into a released port is a
                 // use-after-free in a native bridge, not a stale entry in a map.
                 conference.remove(callKey)
@@ -2008,6 +2289,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 statisticsScheduled = true
                 scheduleMediaStatistics()
             }
+            // Idempotent: the tick arms once for the device, not once per call, and stops
+            // itself when no call is sending video any more.
+            ensureVideoQualityTicking()
 
             info.media.forEachIndexed { index, media ->
                 when {
@@ -2379,6 +2663,22 @@ internal class RealPjsipCoreGateway @Inject constructor(
          */
         override fun onCallMediaEvent(prm: OnCallMediaEventParam) {
             val type = runCatching { prm.ev.type }.getOrNull() ?: return
+
+            // Counted before anything is decided about it (Phase 2). This runs on PJSIP's
+            // media thread and `KEYFRAME_MISSING` can arrive per frame, so it is one
+            // atomic increment and never a log write; `traceMedia` reports the deltas.
+            runCatching {
+                val leg = telemetry.leg(callKey, prm.medIdx)
+                when (type) {
+                    pjmedia_event_type.PJMEDIA_EVENT_KEYFRAME_MISSING -> leg.keyframeMissing
+                    pjmedia_event_type.PJMEDIA_EVENT_KEYFRAME_FOUND -> leg.keyframeFound
+                    pjmedia_event_type.PJMEDIA_EVENT_FMT_CHANGED -> leg.formatChanged
+                    pjmedia_event_type.PJMEDIA_EVENT_RX_RTCP_FB -> leg.rtcpFeedbackRx
+                    pjmedia_event_type.PJMEDIA_EVENT_VID_DEV_ERROR -> leg.deviceError
+                    else -> null
+                }?.incrementAndGet()
+            }
+
             if (type != pjmedia_event_type.PJMEDIA_EVENT_FMT_CHANGED) return
             publishVideoSizes()
             // Once more, shortly after. The decoder's format is read synchronously
@@ -2628,6 +2928,33 @@ internal class RealPjsipCoreGateway @Inject constructor(
         /** The counters each stream last reported, so the next read can be stated as a rate. */
         private val rtpCounters = mutableMapOf<Long, RtpCounters>()
 
+        /** The native frame counters each stream last reported, for the same reason. */
+        private val previousFrames = mutableMapOf<Long, VideoLegTelemetry.FrameReading>()
+
+        /**
+         * `pjsua` has built a stream — and with it a decoder that has no reference frame
+         * yet (Phase 2).
+         *
+         * This is the boundary the whole phase exists to timestamp. A session refresh does
+         * **not** reach here; a genuine media re-negotiation does, and so does every new
+         * leg. Correlating it against `kf-missing`/`kf-found` on the same line is what
+         * separates "the decoder was rebuilt and recovered" from "the decoder was rebuilt
+         * and never did".
+         */
+        override fun onStreamCreated(prm: OnStreamCreatedParam) {
+            runCatching {
+                telemetry.leg(callKey, prm.streamIdx).apply {
+                    streamCreated.incrementAndGet()
+                    lastCreatedAtMillis = System.currentTimeMillis()
+                }
+            }
+        }
+
+        /** The other half of [onStreamCreated]: a rebuild is a destroy and a create. */
+        override fun onStreamDestroyed(prm: OnStreamDestroyedParam) {
+            runCatching { telemetry.leg(callKey, prm.streamIdx).streamDestroyed.incrementAndGet() }
+        }
+
         /**
          * One line per live stream, every [MEDIA_STATISTICS_INTERVAL_MILLIS], carrying the
          * rate since the previous line.
@@ -2654,11 +2981,37 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 val line = rtpTraceLine(
                     kind = kind,
                     codec = stream?.codecName.orEmpty(),
+                    payloadTypes = stream?.let { it.rxPt to it.txPt },
+                    resolution = videoResolutionOrNull(stream),
                     peer = stream?.remoteRtpAddress.orEmpty(),
+                    remote = remoteAddress(),
                     previous = previous,
                     current = current,
                 ) ?: return@forEach
-                logger.info(TAG, "Media trace $callKey $line")
+
+                // The pipeline half of the picture, as deltas over the same interval, and
+                // silent on a leg where nothing happened (see [videoPipelineTraceFragment]).
+                val leg = telemetry.leg(callKey, media.index)
+                val pipeline = leg.snapshot()
+                val fragment = videoPipelineTraceFragment(
+                    previous = leg.previous,
+                    current = pipeline,
+                    millisSinceCreated = leg.lastCreatedAtMillis
+                        .takeIf { it > 0 }
+                        ?.let { now - it },
+                )
+                leg.previous = pipeline
+
+                // Measured frame rates, from the native counters, joined to this leg by
+                // the peer RTP address. Stated separately from the negotiated rate that
+                // sits beside the resolution: a leg negotiated at 30 and decoding 0.4 is
+                // the finding, and one number cannot carry both.
+                val peer = stream?.remoteRtpAddress.orEmpty()
+                val frames = peer.takeIf { it.isNotBlank() }?.let(telemetry::framesFor)
+                val rates = videoFrameRateFragment(previousFrames[media.index], frames)
+                if (frames != null) previousFrames[media.index] = frames
+
+                logger.info(TAG, "Media trace $callKey $line$fragment$rates")
             }
         }
 
@@ -2694,6 +3047,174 @@ internal class RealPjsipCoreGateway @Inject constructor(
          * fractionally after the native object goes.
          */
         fun infoOrNull(): CallInfo? = runCatching { info }.getOrNull()
+    }
+
+    // ------------------------------------------------- adaptive video quality (Phase 7)
+
+    /**
+     * Arms the adaptive-quality tick, once.
+     *
+     * Armed from [PjCall.onCallMediaState] rather than from `libStart`, so an app with no
+     * call running has no timer at all — the same reasoning as everything else scheduled
+     * here, and it matters on a handset where a two-second wake-up would otherwise run for
+     * the life of the process.
+     */
+    private fun ensureVideoQualityTicking() {
+        if (videoQualityTicking) return
+        videoQualityTicking = true
+        scheduleVideoQuality()
+    }
+
+    /** Re-arms the tick for as long as some call is still sending video. */
+    private fun scheduleVideoQuality() {
+        pjsip.schedule(
+            {
+                val legs = videoLegSamples()
+                if (legs.isEmpty()) {
+                    // Nothing is transmitting video. Stop the timer, and distinguish the two
+                    // reasons that can be true: a call still up with its video paused (hold,
+                    // or video switched off) keeps the tier, because the unhold or the switch
+                    // back on is the stream build that applies it. Only when every call has
+                    // gone is the tier discarded, so the next call measures the device afresh.
+                    videoQualityTicking = false
+                    if (calls.isEmpty()) videoQuality.onNoCalls() else videoQuality.onVideoPaused()
+                    return@schedule
+                }
+                runCatching { videoQuality.onSample(legs, System.currentTimeMillis()) }
+                    .onSuccess { action -> action?.let(::applyVideoQuality) }
+                    .onFailure { logger.warn(TAG, "Video quality tick failed: ${it.message}") }
+                scheduleVideoQuality()
+            },
+            VIDEO_QUALITY_TICK_MILLIS,
+            TimeUnit.MILLISECONDS,
+        )
+    }
+
+    /**
+     * One telemetry sample per call that is currently *sending* video.
+     *
+     * Sending, not merely negotiating: a leg whose direction excludes encoding costs this
+     * device no encoder and no uplink, so counting it would divide the aggregate budget by a
+     * leg that is not spending any of it. That is also what makes the count a participant
+     * count in the sense the policy means — [VideoBudget.outgoingVideoLegs].
+     *
+     * The self-preview is never here. It is a capture window rendered locally and has no
+     * stream, no RTP and no peer, which is exactly why the brief says not to count it.
+     */
+    private fun videoLegSamples(): List<VideoLegTelemetrySample> {
+        val now = System.currentTimeMillis()
+        return calls.values.mapNotNull { call ->
+            val info = call.infoOrNull() ?: return@mapNotNull null
+            // Only a call that is actually up. A call still in `calls` while it tears down
+            // was measured being counted as a second outgoing leg on a one-to-one call,
+            // which switched the policy to the conference ladder for no reason
+            // (`reason=CALL_SHAPE_CHANGED ... legs=2` during a second call, 2026-09-27).
+            if (info.state != pjsip_inv_state.PJSIP_INV_STATE_CONFIRMED) return@mapNotNull null
+            val media = info.media.firstOrNull {
+                it.type == pjmedia_type.PJMEDIA_TYPE_VIDEO &&
+                    it.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE &&
+                    (it.dir == pjmedia_dir.PJMEDIA_DIR_ENCODING ||
+                        it.dir == pjmedia_dir.PJMEDIA_DIR_ENCODING_DECODING)
+            } ?: return@mapNotNull null
+
+            val stat = runCatching { call.getStreamStat(media.index) }.getOrNull()
+                ?: return@mapNotNull null
+            val stream = runCatching { call.getStreamInfo(media.index) }.getOrNull()
+            val peer = stream?.remoteRtpAddress.orEmpty()
+
+            VideoLegTelemetrySample(
+                callKey = call.callKey,
+                rtp = VideoRtpSample(
+                    atMillis = now,
+                    txPkt = stat.rtcp.txStat.pkt,
+                    txBytes = stat.rtcp.txStat.bytes,
+                    // The far end's account of what it did not receive, which is the only
+                    // honest measure of *our* outbound loss -- our own tx counters cannot
+                    // know what fell off the wire after we sent it.
+                    txLoss = stat.rtcp.rxStat.loss,
+                    rxPkt = stat.rtcp.rxStat.pkt,
+                    rxLoss = stat.rtcp.rxStat.loss,
+                    // `last`, not `mean`. `MathStat.mean` is a running mean over the whole
+                    // stream and never decays, so one transient spike poisons it for the rest
+                    // of the call: measured on a 13-minute soak reporting an identical
+                    // `rtt=485.02 jitter=120.28` on every sample for eleven minutes -- frozen,
+                    // not observed -- and on the peer an `rtt=10326.0` that blocked every
+                    // upgrade to the end of the call. A lifetime mean cannot express "the
+                    // network has recovered", which is exactly what the policy needs to hear.
+                    //
+                    // `last` is one sample and is noisy; that is what the policy's own EWMA is
+                    // for, and a noisy current value smoothed is strictly better than a smooth
+                    // stale one. The *trace* line keeps using the mean, deliberately: a
+                    // human reading a call summary wants the average, and the policy wants now.
+                    rxJitterUsec = stat.rtcp.rxStat.jitterUsec.last.toLong(),
+                    rttUsec = stat.rtcp.rttUsec.last.toLong(),
+                    // PLI and NACK arrivals, counted by the telemetry callbacks rather than
+                    // by RTCP -- `StreamStat` does not carry feedback counts.
+                    feedbackRx = telemetry.leg(call.callKey, media.index).rtcpFeedbackRx.get(),
+                ),
+                frames = peer.takeIf { it.isNotBlank() }?.let(telemetry::framesFor),
+                // What the *running* encoder was configured for, read off the stream rather
+                // than taken from the policy's tier. The two differ by design: a tier change
+                // is a standing decision that the next stream build picks up, so between the
+                // decision and that build the stream is still running the old rate. Measuring
+                // against the policy's tier would then score a healthy encoder against a rate
+                // it was never asked for -- optimistically after a downgrade, which would
+                // stall further adaptation exactly when it was needed.
+                configuredFps = runCatching {
+                    stream?.vidCodecParam?.encFmt?.fpsNum?.toInt()?.takeIf { it > 0 }
+                }.getOrNull(),
+            )
+        }
+    }
+
+    /**
+     * Records the tier the policy has chosen, by writing it where the next stream will read it.
+     *
+     * One step, and deliberately only one: the endpoint's video codec parameter for the codec
+     * these calls actually negotiated. A stream built after this reads it back through
+     * `pjmedia_vid_codec_mgr_get_default_param` (see `pjmedia_vid_stream_info_from_sdp`), so
+     * the next call, the next video-on, the next unhold and the next mesh leg all come up at
+     * the new tier.
+     *
+     * **No re-INVITE, and that is a measured decision rather than an omission** — see
+     * [VideoQualityAction.appliesTo], which carries the failure it caused. No keyframe either:
+     * nothing changed on the wire, so there is no reference chain to resynchronise. Phase 3's
+     * decoder-start rule is therefore untouched by this phase — a rebuilt decoder still
+     * refuses inter-frames until it has a keyframe, and nothing here builds one.
+     *
+     * Only the negotiated codecs are written, never every registered one. Startup tuning
+     * writes them all because there the negotiated codec is not yet known; mid-call it is,
+     * and touching a codec carrying somebody else's mesh leg is blast radius with nothing to
+     * buy. Writing all of them was itself measured moving a negotiated payload type.
+     */
+    private fun applyVideoQuality(action: VideoQualityAction) {
+        val running = endpoint ?: return
+
+        val negotiated = action.appliesTo.mapNotNullTo(mutableSetOf()) { callKey ->
+            val call = calls[callKey] ?: return@mapNotNullTo null
+            val info = call.infoOrNull() ?: return@mapNotNullTo null
+            val video = info.media.firstOrNull { it.type == pjmedia_type.PJMEDIA_TYPE_VIDEO }
+                ?: return@mapNotNullTo null
+            // `codecId` is `name/payload-type` ("VP8/103") while `StreamInfo.codecName` is the
+            // bare name, so the id is reassembled from the name and the transmit payload type.
+            runCatching {
+                val stream = call.getStreamInfo(video.index)
+                stream.codecName.takeIf { it.isNotBlank() }?.let { "$it/${stream.txPt}" }
+            }.getOrNull()
+        }
+        if (negotiated.isEmpty()) {
+            logger.debug(TAG, "Video quality not recorded: no negotiated video codec to write")
+            return
+        }
+        runCatching { running.tuneVideoCodecs(action.settings, logger, only = negotiated) }
+            .onSuccess {
+                logger.info(
+                    TAG,
+                    "Video quality now ${action.transition.to} for ${negotiated.joinToString()} " +
+                        "- takes effect on the next stream build",
+                )
+            }
+            .onFailure { logger.warn(TAG, "Video quality not recorded: ${it.message}") }
     }
 
     private fun callParams(videoEnabled: Boolean) = CallOpParam(true).apply {
@@ -2839,6 +3360,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
         const val TRANSPORT_TCP = "TCP"
         const val TRANSPORT_TLS = "TLS"
 
+        /** `verifyStatus` is a bit mask, and hex is the only base it reads in. */
+        const val HEX = 16
+
         /**
          * Media tuning (§5.2). Starting points chosen from PJSIP's own guidance, not
          * measurements - P-7 is where they meet a handset.
@@ -2904,10 +3428,22 @@ internal class RealPjsipCoreGateway @Inject constructor(
         /** An FEC hint, not a measurement: how much redundancy to carry. */
         const val OPUS_EXPECTED_LOSS_PCT = 5L
 
-        const val VIDEO_WIDTH = 1280L
-        const val VIDEO_HEIGHT = 720L
-        const val VIDEO_FPS = 30
-        const val VIDEO_AVG_BPS = 1_500_000L
+        /**
+         * How often the adaptive-quality policy is sampled.
+         *
+         * Five seconds, matching `PJMEDIA_VID_STREAM_COUNTER_LOG_MSEC` — the interval the
+         * native frame counters are emitted at. The two are deliberately the same number:
+         * sampling faster than the counters arrive produces ticks carrying no new encoder
+         * evidence, and sampling slower throws evidence away.
+         *
+         * RTCP is the exception and is read fresh on every tick, in-process, so loss, RTT
+         * and jitter are as current as this interval however the counters are doing.
+         *
+         * `AdaptiveVideoThresholds.downgradeWindowMillis` is two of these. Moving one
+         * without the other changes how quickly quality reacts, so they are documented
+         * against each other in both places.
+         */
+        const val VIDEO_QUALITY_TICK_MILLIS = 5_000L
 
         /** `PJSUA_DTMF_METHOD_SIP_INFO`; RFC 2833 is method 0 and is `dialDtmf`'s default. */
         const val DTMF_METHOD_SIP_INFO = 1
@@ -3252,9 +3788,23 @@ private data class RtpCounters(
     val rxPkt: Long,
     val rxBytes: Long,
     val rxLoss: Long,
+    val rxDiscard: Long,
     val txPkt: Long,
     val txBytes: Long,
     val txLoss: Long,
+    /** Microseconds, read as a level rather than a delta — it is already a running mean. */
+    val rxJitterUsec: Long,
+    val rttUsec: Long,
+    /**
+     * How often the jitter buffer was asked for a frame and had none.
+     *
+     * The closest thing `pjsua2` has to "is the far end's picture still advancing": it
+     * rises only when something downstream is *pulling*, so a leg with RTP arriving and
+     * `empty` climbing is one where frames are not reaching the decoder. It is not
+     * `render_fps` and is never presented as it — see [VideoLegTelemetry].
+     */
+    val jbufEmpty: Long,
+    val jbufSize: Long,
 )
 
 /** Everything the trace needs from one stream, read in a single pass over the native object. */
@@ -3263,10 +3813,35 @@ private fun StreamStat.counters(atMillis: Long) = RtpCounters(
     rxPkt = rtcp.rxStat.pkt,
     rxBytes = rtcp.rxStat.bytes,
     rxLoss = rtcp.rxStat.loss,
+    rxDiscard = rtcp.rxStat.discard,
     txPkt = rtcp.txStat.pkt,
     txBytes = rtcp.txStat.bytes,
     txLoss = rtcp.txStat.loss,
+    rxJitterUsec = rtcp.rxStat.jitterUsec.mean.toLong(),
+    rttUsec = rtcp.rttUsec.mean.toLong(),
+    jbufEmpty = jbuf.empty,
+    jbufSize = jbuf.size,
 )
+
+/**
+ * `1280x720` for a video stream, or null when there is nothing to say.
+ *
+ * Read from the **decoder's** format, which is the size of the picture arriving — the one
+ * a black tile is a question about. A stream that carries no video, or whose codec
+ * parameters the stack will not hand over, contributes nothing rather than a zero.
+ */
+private fun videoResolutionOrNull(stream: StreamInfo?): String? = runCatching {
+    val fmt = stream?.vidCodecParam?.decFmt ?: return@runCatching null
+    if (fmt.width <= 0 || fmt.height <= 0) return@runCatching null
+    buildString {
+        append(fmt.width).append('x').append(fmt.height)
+        // The *negotiated* frame rate, which is not the same thing as frames actually
+        // decoded — nothing in `pjsua2` reports that. Stated so the two are never
+        // confused: a leg at `@30` whose picture is frozen is exactly the interesting case.
+        val denum = fmt.fpsDenum
+        if (denum > 0 && fmt.fpsNum > 0) append('@').append(fmt.fpsNum / denum)
+    }
+}.getOrNull()
 
 /**
  * `video H264 - rx 88 pkt/s 812 kbps loss 0 - tx 88 pkt/s 819 kbps loss 0 - peer 1.2.3.4:4002`
@@ -3283,7 +3858,20 @@ private fun StreamStat.counters(atMillis: Long) = RtpCounters(
 private fun rtpTraceLine(
     kind: String,
     codec: String,
+    payloadTypes: Pair<Long, Long>? = null,
+    resolution: String? = null,
     peer: String,
+    /**
+     * Who is on the other end, as `user@host` from the call's `remoteUri`.
+     *
+     * Not the same thing as [peer], and the difference is the whole reason this exists. On
+     * this deployment every leg's RTP goes through the B2BUA, so [peer] is the *server's*
+     * address on every stream — three concurrent video legs of a four-party mesh all read
+     * `192.168.2.192:<port>` and are indistinguishable from one another in the log. Without
+     * the SIP identity there is no way to say which participant a directional media path
+     * belongs to, and therefore no way to build a per-pair matrix out of these lines.
+     */
+    remote: String? = null,
     previous: RtpCounters,
     current: RtpCounters,
 ): String? {
@@ -3293,21 +3881,34 @@ private fun rtpTraceLine(
 
     fun perSecond(delta: Long) = (delta / seconds).roundToLong()
     fun kbps(deltaBytes: Long) = (deltaBytes * BITS_PER_BYTE / (BITS_PER_KILOBIT * seconds)).roundToLong()
+    fun millis(usec: Long) = usec / MICROS_PER_MILLI
 
     return buildString {
         append(kind)
         if (codec.isNotBlank()) append(' ').append(codec)
+        // The payload types actually in use, each way. A leg that renegotiated onto a
+        // different number is the one fact a codec name alone hides.
+        payloadTypes?.let { (rx, tx) -> append(" pt ").append(rx).append('/').append(tx) }
+        // Immediately after the codec, because it is the field a reader joins on.
+        remote?.takeIf { it.isNotBlank() }?.let { append(" with ").append(it) }
+        resolution?.let { append(' ').append(it) }
         append(" - rx ").append(perSecond(current.rxPkt - previous.rxPkt)).append(" pkt/s ")
         append(kbps(current.rxBytes - previous.rxBytes)).append(" kbps loss ")
         append(current.rxLoss - previous.rxLoss)
+        (current.rxDiscard - previous.rxDiscard).takeIf { it > 0 }?.let { append(" discard ").append(it) }
         append(" - tx ").append(perSecond(current.txPkt - previous.txPkt)).append(" pkt/s ")
         append(kbps(current.txBytes - previous.txBytes)).append(" kbps loss ")
         append(current.txLoss - previous.txLoss)
+        append(" - jitter ").append(millis(current.rxJitterUsec)).append("ms rtt ")
+        append(millis(current.rttUsec)).append("ms")
+        append(" - jbuf ").append(current.jbufSize)
+        (current.jbufEmpty - previous.jbufEmpty).takeIf { it > 0 }?.let { append(" empty ").append(it) }
         if (peer.isNotBlank()) append(" - peer ").append(peer)
     }
 }
 
 private const val MILLIS_PER_SECOND = 1_000.0
+private const val MICROS_PER_MILLI = 1_000L
 private const val BITS_PER_BYTE = 8.0
 private const val BITS_PER_KILOBIT = 1_000.0
 
@@ -3367,17 +3968,23 @@ private fun Endpoint.tuneOpus(logger: Logger) {
  * carry it. Applied per codec inside `runCatching` so one codec rejecting a format
  * does not cost the others theirs.
  */
-private fun Endpoint.tuneVideoCodecs(logger: Logger) {
+private fun Endpoint.tuneVideoCodecs(
+    settings: VideoEncoderSettings,
+    logger: Logger,
+    only: Set<String>? = null,
+) {
     videoCodecEnum2().forEach { info ->
+        // Null means every registered codec, which is right at startup and wrong mid-call.
+        if (only != null && info.codecId !in only) return@forEach
         runCatching {
             val param = getVideoCodecParam(info.codecId)
             param.encFmt.apply {
-                width = RealPjsipCoreGateway.VIDEO_WIDTH
-                height = RealPjsipCoreGateway.VIDEO_HEIGHT
-                fpsNum = RealPjsipCoreGateway.VIDEO_FPS
+                width = settings.width
+                height = settings.height
+                fpsNum = settings.fps
                 fpsDenum = 1
-                avgBps = RealPjsipCoreGateway.VIDEO_AVG_BPS
-                maxBps = VIDEO_MAX_BPS
+                avgBps = settings.avgBps
+                maxBps = settings.maxBps
             }
             setVideoCodecParam(info.codecId, param)
         }.onFailure {
@@ -3467,8 +4074,6 @@ private fun cameraAfter(manager: VidDevManager, current: Int): Int? {
  * produce nothing is offering the far end a black screen, and the only thing the ordering
  * bought was the hope that nobody would take it.
  */
-private fun List<String>.withoutMediaCodecVp8(): List<String> =
-    filterNot { it.equals(MEDIACODEC_VP8_ID, ignoreCase = true) }
 
 /** `VP8/<PJMEDIA_RTP_PT_VP8_RSV1>`: the id `and_vid_mediacodec.cpp:76` registers its VP8 under. */
 private const val MEDIACODEC_VP8_ID = "VP8/103"

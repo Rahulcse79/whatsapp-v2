@@ -95,7 +95,14 @@ struct pjmedia_vid_stream
     pjmedia_vid_codec_mgr   *codec_mgr;     /**< Codec manager.             */
     pjmedia_vid_stream_info  info;          /**< Stream info.               */
 
+    pjmedia_vid_stream_frame_counters counters;
+                                            /**< Per-stage frame counters, so a
+                                                 stalled tile can be attributed to
+                                                 the stage that stopped first.    */
+
     pj_timestamp             rtcp_last_tx;  /**< Last RTCP tx time.         */
+    pj_timestamp             counters_last_log;
+                                            /**< Last frame-counter emission. */
 
     unsigned                 dec_max_size;  /**< Size of decoded/raw picture*/
     pjmedia_ratio            dec_max_fps;   /**< Max fps of decoding dir.   */
@@ -105,6 +112,20 @@ struct pjmedia_vid_stream
                                             /**< Decoding additional delay
                                                  for sync (in frames).      */
     unsigned                 dec_max_delay; /**< Decoding max delay (in ts).*/
+
+    /* Phase 3 receive-path probe.
+     *
+     * delay_target (dec_delay_cnt + dec_add_delay_cnt) is the equality the scan
+     * loop must hit to release a picture, and on an M14 it was observed at
+     * 1,803,619 while assembly sat frozen. These record how it got there: the
+     * av-sync adjustment's inputs and outputs, said every time the value
+     * actually moves, and the state of the scan that first failed to assemble.
+     * None of them changes behaviour. */
+    unsigned                 probe_avsync_calls;  /* adjustments attempted    */
+    unsigned                 probe_avsync_moved;  /* ...that changed the cnt  */
+    unsigned                 probe_stall_scans;   /* scans with no got_frame  */
+    pj_bool_t                probe_stall_said;    /* first stall reported     */
+    unsigned                 probe_last_target;   /* delay_target last scan   */
     pjmedia_event            fmt_event;     /**< Buffered fmt_changed event
                                                  to avoid deadlock          */
     pjmedia_event            miss_keyframe_event;
@@ -573,6 +594,53 @@ static void check_tx_rtcp(pjmedia_vid_stream *stream)
               pj_elapsed_msec(&c_strm->rtcp_fb_last_tx, &now) >=
                                             PJMEDIA_RTCP_FB_INTERVAL));
 
+    /* Frame counters, at their own slow interval.
+     *
+     * Emitted here because this function is already the stream's periodic tick and is
+     * already rate limited --- adding a timer would add a thread. One line per stream
+     * every few seconds, never per frame, and only the raw counters: the rate is the
+     * reader's business, and a rate computed here would have to be recomputed there
+     * anyway when the reader's own interval did not line up with this one.
+     *
+     * The peer's RTP address is the join key. It is what identifies a leg to the
+     * application, which sees the same string in `StreamInfo.remoteRtpAddress`, and it
+     * is stable for as long as the stream is --- a renegotiation that moves the port
+     * builds a new stream, whose counters start at zero, which is exactly the
+     * behaviour a rebuilt decoder should have.
+     */
+    if (stream->counters_last_log.u64 == 0) {
+        stream->counters_last_log = now;
+    } else if (pj_elapsed_msec(&stream->counters_last_log, &now) >=
+                                        PJMEDIA_VID_STREAM_COUNTER_LOG_MSEC)
+    {
+        char addr[PJ_INET6_ADDRSTRLEN+10];
+
+        stream->counters_last_log = now;
+        pj_sockaddr_print(&c_strm->rem_rtp_addr, addr, sizeof(addr), 3);
+        PJ_LOG(4,(c_strm->name.ptr,
+                  "vidcnt peer=%s cap=%u enc=%u encf=%u ence=%u dec=%u "
+                  "sub=%u new=%u rej=%u "
+                  "put=%u scan=%u nrm=%u mis=%u emp=%u asm=%u "
+                  "dcall=%u derr=%u tgt=%u "
+                  "ein=%u ebeg=%u epau=%u eemp=%u eus=%u",
+                  addr,
+                  stream->counters.captured, stream->counters.encoded,
+                  stream->counters.encoded_frames,
+                  stream->counters.encoded_empty,
+                  stream->counters.decoded, stream->counters.render_submit,
+                  stream->counters.render_submit_new,
+                  stream->counters.render_reject,
+                  stream->counters.jbuf_put, stream->counters.scan,
+                  stream->counters.scan_normal, stream->counters.scan_missing,
+                  stream->counters.scan_empty, stream->counters.assembled,
+                  stream->counters.decode_call, stream->counters.decode_err,
+                  stream->counters.delay_target,
+                  stream->counters.enc_input, stream->counters.enc_begin,
+                  stream->counters.enc_skip_paused,
+                  stream->counters.enc_skip_empty,
+                  stream->counters.enc_usec));
+    }
+
     /* First check, unless RTCP is 'urgent', just init rtcp_last_tx. */
     if (stream->rtcp_last_tx.u64 == 0 && !early) {
         pj_get_timestamp(&stream->rtcp_last_tx);
@@ -683,6 +751,7 @@ static pj_status_t on_stream_rx_rtp(pjmedia_stream_common *c_strm,
         PJ_LOG(4,(channel->port.info.name.ptr, "Jitter buffer reset"));
     } else {
         /* Just put the payload into jitter buffer */
+        ++stream->counters.jbuf_put;
         pjmedia_jbuf_put_frame3(c_strm->jb, payload, payloadlen, 0,
                                 pj_ntohs(hdr->seq), pj_ntohl(hdr->ts), NULL);
 
@@ -732,6 +801,7 @@ static pj_status_t put_frame(pjmedia_port *port,
                              pjmedia_frame *frame)
 {
     pjmedia_vid_stream *stream = (pjmedia_vid_stream*) port->port_data.pdata;
+    pj_timestamp enc_t0;
     pjmedia_stream_common *c_strm = &stream->base;
     pjmedia_vid_channel *channel = c_strm->enc;
     pj_status_t status = 0;
@@ -781,8 +851,11 @@ static pj_status_t put_frame(pjmedia_port *port,
     /* Get frame length in timestamp unit */
     rtp_ts_len = stream->frame_ts_len;
 
+    ++stream->counters.enc_input;
+
     /* Don't do anything if stream is paused, except updating RTP timestamp */
     if (channel->paused) {
+        ++stream->counters.enc_skip_paused;
         /* Update RTP session's timestamp. */
         status = pjmedia_rtp_encode_rtp( &channel->rtp, 0, 0, 0, rtp_ts_len,
                                          NULL, NULL);
@@ -795,6 +868,7 @@ static pj_status_t put_frame(pjmedia_port *port,
 
     /* Empty video frame? Just update RTP timestamp for now */
     if (frame->type==PJMEDIA_FRAME_TYPE_VIDEO && frame->size==0) {
+        ++stream->counters.enc_skip_empty;
         pjmedia_rtp_encode_rtp(&channel->rtp, channel->pt, 1, 0,
                                rtp_ts_len,  (const void**)&rtphdr,
                                &rtphdrlen);
@@ -845,6 +919,8 @@ static pj_status_t put_frame(pjmedia_port *port,
     }
 
     /* Encode! */
+    ++stream->counters.enc_begin;
+    pj_get_timestamp(&enc_t0);
     status = pjmedia_vid_codec_encode_begin(stream->codec, &enc_opt, frame,
                                             channel->buf_size -
                                                sizeof(pjmedia_rtp_hdr),
@@ -861,7 +937,31 @@ static pj_status_t put_frame(pjmedia_port *port,
         return status;
     }
 
+    /* Three different questions, three counters.
+     *
+     * `encoded` counts encode_begin() returning success. That is NOT the
+     * encoder's frame rate and reading it as one is a mistake this comment
+     * exists to prevent: a starved encoder returns PJ_SUCCESS with a zero-size
+     * frame, so on an M14 this read 30/s while the component was emitting 4.4
+     * pictures/s and the true figure only showed up in the codec's own ledger.
+     *
+     * `encoded_frames` is the rate -- calls that produced an actual payload.
+     * `encoded_empty` is the difference, kept explicitly so starvation is
+     * visible without arithmetic.
+     */
+    ++stream->counters.encoded;
+    if (frame_out.size > 0)
+        ++stream->counters.encoded_frames;
+    else
+        ++stream->counters.encoded_empty;
+
     pj_get_timestamp(&initial_time);
+
+    /* How long encode_begin() took. Accumulated rather than logged, so the mean
+     * comes out of two readings and no frame costs a log line. `initial_time` is
+     * read immediately above, so this is the encode call and nothing after it.
+     */
+    stream->counters.enc_usec += pj_elapsed_usec(&enc_t0, &initial_time);
 
     if ((frame_out.bit_info & PJMEDIA_VID_FRM_KEYFRAME)
                                                   == PJMEDIA_VID_FRM_KEYFRAME)
@@ -1040,6 +1140,10 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
      * timestamp are collected.
      */
 
+    ++stream->counters.scan;
+    stream->counters.delay_target = stream->dec_delay_cnt +
+                                    stream->dec_add_delay_cnt;
+
     /* Check if we got a decodable frame */
     for (cnt=0; ; ) {
         char ptype;
@@ -1050,6 +1154,7 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
         pjmedia_jbuf_peek_frame(c_strm->jb, cnt, NULL, NULL,
                                 &ptype, NULL, &ts, &seq);
         if (ptype == PJMEDIA_JB_NORMAL_FRAME) {
+            ++stream->counters.scan_normal;
             if (stream->last_dec_ts == ts) {
                 /* Remove any late packet (the frame has been decoded) */
                 pjmedia_jbuf_remove_frame(c_strm->jb, 1);
@@ -1079,11 +1184,60 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
             }
         } else if (ptype == PJMEDIA_JB_ZERO_EMPTY_FRAME) {
             /* No more packet in the jitter buffer */
+            ++stream->counters.scan_empty;
             break;
+        } else {
+            ++stream->counters.scan_missing;
         }
 
         ++cnt;
     }
+
+    if (got_frame)
+        ++stream->counters.assembled;
+
+    /* The scan that did not assemble, with the numbers that say why.
+     *
+     * The distinction this draws is the whole question: a scan that walked
+     * NORMAL frames and counted distinct timestamps (frm_cnt) but never reached
+     * delay_target is a picture being WITHHELD by the delay gate -- the packets
+     * are present and decodable. A scan whose frames were MISSING, or which
+     * found the buffer empty immediately, is a different fault upstream.
+     *
+     * Said once at the first stall, then rate limited, because if the gate is
+     * unreachable this runs at the pull rate for the rest of the call. */
+    if (!got_frame) {
+        ++stream->probe_stall_scans;
+        if (!stream->probe_stall_said ||
+            stream->probe_stall_scans % 300 == 0)
+        {
+            pjmedia_jb_state jb_st;
+            unsigned target = stream->dec_delay_cnt +
+                              stream->dec_add_delay_cnt;
+
+            pjmedia_jbuf_get_state(c_strm->jb, &jb_st);
+            PJ_LOG(3,(channel->port.info.name.ptr,
+                      "%sscan no frame: walked=%u distinct_ts=%u "
+                      "delay_target=%u (base=%u add=%u) | jb size=%u max=%u "
+                      "prefetch=%u burst=%u | normal=%u missing=%u empty=%u "
+                      "asm=%u put=%u | first_ts=%u first_seq=%d stalls=%u",
+                      stream->probe_stall_said? "" : "FIRST ",
+                      cnt, frm_cnt, target,
+                      stream->dec_delay_cnt, stream->dec_add_delay_cnt,
+                      jb_st.size, jb_st.max_count, jb_st.prefetch,
+                      jb_st.burst,
+                      stream->counters.scan_normal,
+                      stream->counters.scan_missing,
+                      stream->counters.scan_empty,
+                      stream->counters.assembled,
+                      stream->counters.jbuf_put,
+                      frm_ts, frm_first_seq,
+                      stream->probe_stall_scans));
+            stream->probe_stall_said = PJ_TRUE;
+        }
+    }
+    stream->probe_last_target = stream->dec_delay_cnt +
+                                stream->dec_add_delay_cnt;
 
     if (got_frame) {
         unsigned i;
@@ -1135,10 +1289,12 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
         }
 
         /* Decode */
+        ++stream->counters.decode_call;
         status = pjmedia_vid_codec_decode(stream->codec, frm_pkt_cnt,
                                           stream->rx_frames,
                                           (unsigned)frame->size, frame);
         if (status != PJ_SUCCESS) {
+            ++stream->counters.decode_err;
             LOGERR_((channel->port.info.name.ptr, status,
                      "codec decode() error"));
             frame->type = PJMEDIA_FRAME_TYPE_NONE;
@@ -1147,6 +1303,14 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
 
         pjmedia_jbuf_remove_frame(c_strm->jb, frm_pkt_cnt);
     }
+
+    /* A decoded picture, counted on the same condition the frame rate estimator
+     * trusts: a decode that returned no picture is not a decoded frame, and
+     * counting the call rather than the result is what would make a black tile
+     * look healthy here.
+     */
+    if (got_frame && frame->type == PJMEDIA_FRAME_TYPE_VIDEO && frame->size)
+        ++stream->counters.decoded;
 
     /* Learn remote frame rate after successful decoding */
     if (got_frame && frame->type == PJMEDIA_FRAME_TYPE_VIDEO && frame->size)
@@ -1205,7 +1369,25 @@ static pj_status_t decode_frame(pjmedia_vid_stream *stream,
                 {
                     pjmedia_event *event = &stream->fmt_event;
 
-                    /* Update max fps of decoding dir */
+                    /* Update max fps of decoding dir.
+                     *
+                     * The ratio is what every av-sync delay conversion divides
+                     * and multiplies by, and the two branches above produce very
+                     * different REPRESENTATIONS of the same rate: a divisible
+                     * ts_diff gives num=fps/denum=1, an indivisible one gives
+                     * num=clock_rate (90000) with denum=ts_diff. The guard only
+                     * checks the ratio, so a 90000/2999 that reads as "30fps"
+                     * passes -- and then target_delay_ms * num overflows int.
+                     * This prints both terms, not the ratio. */
+                    PJ_LOG(3,(c_strm->port.info.name.ptr,
+                              "fps learned: ts_diff=%u clock=%u -> %d/%d "
+                              "(ratio=%d) | was %d/%d | base_delay=%u",
+                              ts_diff, stream->info.codec_info.clock_rate,
+                              new_fps.num, new_fps.denum,
+                              new_fps.num / new_fps.denum,
+                              stream->dec_max_fps.num,
+                              stream->dec_max_fps.denum,
+                              stream->dec_delay_cnt));
                     stream->dec_max_fps = vfd->fps;
 
                     /* Use the buffered format changed event:
@@ -1336,36 +1518,137 @@ static pj_status_t get_frame(pjmedia_port *port,
             int target_delay_ms, cur_delay_ms, target_delay_cnt;
             unsigned last_add_delay_cnt;
 
-            /* Apply delay request */
-            last_add_delay_cnt = stream->dec_add_delay_cnt;
-            cur_delay_ms = (stream->dec_delay_cnt+stream->dec_add_delay_cnt) *
-                           1000 *
-                           stream->dec_max_fps.denum /
-                           stream->dec_max_fps.num;
-            target_delay_ms = cur_delay_ms + delay_req_ms;
-            target_delay_cnt = target_delay_ms * stream->dec_max_fps.num /
-                               stream->dec_max_fps.denum / 1000;
-            if (target_delay_cnt <= (int)stream->dec_delay_cnt)
-                stream->dec_add_delay_cnt = 0;
-            else
-                stream->dec_add_delay_cnt = target_delay_cnt -
-                                            stream->dec_delay_cnt;
-
-            /* Just for safety (never see in tests), target delay should not
-             * exceed 5 seconds.
+            /* Apply delay request.
+             *
+             * Bounded BEFORE it is converted, in BOTH directions, and converted
+             * in 64-bit. The previous order did the arithmetic first and checked
+             * `target_delay_ms > 5000` afterwards, which failed twice over on a
+             * request of -47,828,720 ms measured on an M14 (2026-09-25):
+             *
+             *   - the guard is one-sided, so a large NEGATIVE target sails past
+             *     it; and
+             *   - `target_delay_ms * dec_max_fps.num` had already overflowed
+             *     signed 32-bit by then. -47,828,609 * 45 = -2,152,287,405,
+             *     which wraps to +2,142,679,891 and divides down to a
+             *     dec_add_delay_cnt of 2,142,674.
+             *
+             * delay_target (dec_delay_cnt + dec_add_delay_cnt) is the EQUALITY
+             * the scan loop must reach to release a picture, so a value larger
+             * than the jitter buffer can hold stops assembly for the rest of the
+             * call -- with the buffer full of decodable frames. dec_delay_cnt is
+             * already clamped to jb max_count * 4/5 at both its write sites;
+             * dec_add_delay_cnt never was, and that asymmetry is what this
+             * restores.
+             *
+             * Requests inside the policy are applied exactly as before.
              */
-            if (target_delay_ms > 5000) {
-                stream->dec_add_delay_cnt = last_add_delay_cnt;
-                PJ_LOG(5,(c_strm->port.info.name.ptr,
-                          "Ignored avsync request for excessive delay"
-                          " (current=%dms, target=%dms)!",
-                          cur_delay_ms, target_delay_ms));
+            last_add_delay_cnt = stream->dec_add_delay_cnt;
+
+            if (delay_req_ms > PJMEDIA_VID_STREAM_MAX_DELAY_ADJ_MSEC ||
+                delay_req_ms < -PJMEDIA_VID_STREAM_MAX_DELAY_ADJ_MSEC)
+            {
+                /* Outside the policy the old code already meant to enforce.
+                 * Rejected before any conversion, so nothing can overflow, and
+                 * the current delay is left untouched rather than replaced by a
+                 * number derived from a bad input. */
+                PJ_LOG(3,(c_strm->port.info.name.ptr,
+                          "Ignored out-of-range avsync delay request "
+                          "(%dms, policy +/-%dms); keeping delay at (%u+%u) "
+                          "frames",
+                          delay_req_ms,
+                          PJMEDIA_VID_STREAM_MAX_DELAY_ADJ_MSEC,
+                          stream->dec_delay_cnt,
+                          stream->dec_add_delay_cnt));
+            } else {
+                /* 64-bit throughout: dec_max_fps.num is the RTP clock rate
+                 * (90000) whenever the learned ratio was not an exact divisor,
+                 * so `ms * num` reaches 2^31 at only ~23.9 seconds of delay --
+                 * well inside a range the policy above still admits. */
+                pj_int64_t cur64, target_ms64, target_cnt64;
+                pj_int64_t max_cnt64;
+                pjmedia_jb_state jb_st;
+
+                cur64 = ((pj_int64_t)stream->dec_delay_cnt +
+                         stream->dec_add_delay_cnt) * 1000 *
+                        stream->dec_max_fps.denum /
+                        stream->dec_max_fps.num;
+                target_ms64 = cur64 + delay_req_ms;
+                target_cnt64 = target_ms64 * stream->dec_max_fps.num /
+                               stream->dec_max_fps.denum / 1000;
+
+                /* Clamped to the same capacity bound dec_delay_cnt already
+                 * respects, BEFORE narrowing to unsigned. Past this the sum can
+                 * never exceed what the buffer can present, so the scan's
+                 * equality remains reachable by construction. */
+                pjmedia_jbuf_get_state(c_strm->jb, &jb_st);
+                max_cnt64 = (pj_int64_t)jb_st.max_count * 4/5;
+                if (target_cnt64 < 0)
+                    target_cnt64 = 0;
+                if (target_cnt64 > max_cnt64)
+                    target_cnt64 = max_cnt64;
+
+                cur_delay_ms = (int)cur64;
+                target_delay_ms = (int)target_ms64;
+                target_delay_cnt = (int)target_cnt64;
+
+                if (target_delay_cnt <= (int)stream->dec_delay_cnt)
+                    stream->dec_add_delay_cnt = 0;
+                else
+                    stream->dec_add_delay_cnt = target_delay_cnt -
+                                                stream->dec_delay_cnt;
+
+                /* The original upper bound, kept and now reachable only by a
+                 * request the policy already admitted. */
+                if (target_delay_ms > PJMEDIA_VID_STREAM_MAX_DELAY_ADJ_MSEC) {
+                    stream->dec_add_delay_cnt = last_add_delay_cnt;
+                    PJ_LOG(5,(c_strm->port.info.name.ptr,
+                              "Ignored avsync request for excessive delay"
+                              " (current=%dms, target=%dms)!",
+                              cur_delay_ms, target_delay_ms));
+                }
             }
 
+            /* Every input and output of the arithmetic above, said whenever
+             * the value actually moves.
+             *
+             * delay_target is what the scan loop at "Is it time to decode?"
+             * must reach by EQUALITY before it will release a picture, so a
+             * value larger than the jitter buffer can ever hold stops assembly
+             * for the rest of the call. This says which term ran away and what
+             * it was computed from -- req is what av-sync asked for, fps is the
+             * ratio every conversion goes through, and cur/target are the
+             * intermediates in milliseconds before the conversion back to
+             * frames. */
+            ++stream->probe_avsync_calls;
+            if (stream->probe_avsync_calls % 200 == 1) {
+                PJ_LOG(3,(c_strm->port.info.name.ptr,
+                          "avsync alive: calls=%u moved=%u req=%dms fps=%d/%d "
+                          "cur=%dms target=%dms target_cnt=%d add=%u base=%u",
+                          stream->probe_avsync_calls,
+                          stream->probe_avsync_moved, delay_req_ms,
+                          stream->dec_max_fps.num, stream->dec_max_fps.denum,
+                          cur_delay_ms, target_delay_ms, target_delay_cnt,
+                          stream->dec_add_delay_cnt,
+                          stream->dec_delay_cnt));
+            }
             if (stream->dec_add_delay_cnt != last_add_delay_cnt) {
-                PJ_LOG(5,(c_strm->port.info.name.ptr,
-                          "Adjust video minimal delay to (%d+%d) frames",
-                          stream->dec_delay_cnt, stream->dec_add_delay_cnt));
+                pjmedia_jb_state jb_st;
+                pjmedia_jbuf_get_state(c_strm->jb, &jb_st);
+                ++stream->probe_avsync_moved;
+                PJ_LOG(3,(c_strm->port.info.name.ptr,
+                          "avsync delay: req=%dms fps=%d/%d | cur=%dms "
+                          "target=%dms target_cnt=%d | add %u -> %u, base=%u, "
+                          "delay_target=%u | jb size=%u max=%u | calls=%u "
+                          "moved=%u",
+                          delay_req_ms,
+                          stream->dec_max_fps.num, stream->dec_max_fps.denum,
+                          cur_delay_ms, target_delay_ms, target_delay_cnt,
+                          last_add_delay_cnt, stream->dec_add_delay_cnt,
+                          stream->dec_delay_cnt,
+                          stream->dec_delay_cnt + stream->dec_add_delay_cnt,
+                          jb_st.size, jb_st.max_count,
+                          stream->probe_avsync_calls,
+                          stream->probe_avsync_moved));
             }
 
             /* When requested to speed-up, try to skip frames */
@@ -2117,6 +2400,44 @@ PJ_DEF(pj_status_t) pjmedia_vid_stream_get_stat_jbuf(
 {
     return pjmedia_stream_common_get_stat_jbuf((pjmedia_stream_common *)stream,
                                                state);
+}
+
+
+/*
+ * Get the stream's per-stage frame counters.
+ */
+PJ_DEF(pj_status_t) pjmedia_vid_stream_get_frame_counters(
+                            const pjmedia_vid_stream *stream,
+                            pjmedia_vid_stream_frame_counters *counters)
+{
+    PJ_ASSERT_RETURN(stream && counters, PJ_EINVAL);
+
+    /* A plain copy, and no lock. Each field has one writer on a media thread and
+     * this reader on another; the reader is allowed to see a counter a frame late,
+     * and cannot see a torn one. Taking a lock here would put the telemetry in the
+     * path of the encode and decode it is measuring, which is the one thing it must
+     * never do.
+     */
+    *counters = stream->counters;
+
+    return PJ_SUCCESS;
+}
+
+
+/*
+ * The counter block itself, for the video port that feeds and drains this stream.
+ *
+ * The capture and render stages run inside pjmedia_vid_port, which has no way back to
+ * the stream it is wired to --- so pjsua hands the port this pointer when it connects
+ * the two (see pjsua_vid.c). Returning the block rather than copying it is the whole
+ * point: the port increments the same counters the stream reports, so one line can
+ * carry all five stages of one leg.
+ */
+PJ_DEF(pjmedia_vid_stream_frame_counters*) pjmedia_vid_stream_get_counter_block(
+                            pjmedia_vid_stream *stream)
+{
+    PJ_ASSERT_RETURN(stream, NULL);
+    return &stream->counters;
 }
 
 

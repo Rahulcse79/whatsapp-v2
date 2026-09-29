@@ -1716,6 +1716,27 @@
 
 
 /**
+ * Maximum absolute A/V sync delay adjustment the video stream will accept, in
+ * milliseconds. A request outside this range is rejected before it is converted
+ * into a frame count.
+ *
+ * This names the bound the stream already applied one-sidedly as a literal
+ * 5000. It has to be a policy rather than a sanity check because the value is
+ * converted to a frame count and then compared for EQUALITY by the jitter
+ * buffer scan: a target the buffer cannot reach stops assembly for the rest of
+ * the call. pjmedia_av_sync can legitimately emit very large requests when the
+ * RTCP-SR reference and the media's own timestamps belong to different RTP
+ * timelines, in which case pj_timestamp_diff32 truncates a large negative delta
+ * into a large positive one.
+ *
+ * Default: 5000 (the value the original one-sided check used).
+ */
+#ifndef PJMEDIA_VID_STREAM_MAX_DELAY_ADJ_MSEC
+#   define PJMEDIA_VID_STREAM_MAX_DELAY_ADJ_MSEC    5000
+#endif
+
+
+/**
  * Maximum video payload size. Note that this must not be greater than
  * PJMEDIA_MAX_MTU.
  *
@@ -1810,6 +1831,18 @@
  *
  * Default : 5
  */
+/**
+ * How often a video stream writes its per-stage frame counters to the log, in
+ * milliseconds. One line per stream, never per frame; the application differences two
+ * readings to state capture/encode/decode/render-submission rates.
+ *
+ * Default: 5000 (5 seconds)
+ */
+#ifndef PJMEDIA_VID_STREAM_COUNTER_LOG_MSEC
+#   define PJMEDIA_VID_STREAM_COUNTER_LOG_MSEC          5000
+#endif
+
+
 #ifndef PJMEDIA_VID_STREAM_START_KEYFRAME_CNT
 #   define PJMEDIA_VID_STREAM_START_KEYFRAME_CNT        5
 #endif

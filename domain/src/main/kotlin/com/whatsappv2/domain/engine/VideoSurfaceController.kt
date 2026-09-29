@@ -44,6 +44,26 @@ interface VideoSurfaceController {
     fun detach()
 
     /**
+     * How tall one remote tile is, in pixels, so quality is not spent on detail the tile
+     * cannot show (Phase 7).
+     *
+     * Sending 720p into a tile 480 pixels tall costs encode time, radio and the far end's
+     * decode budget on pixels that are scaled away before anybody sees them; in a
+     * four-party mesh that waste is paid three times over. The stack cannot work the
+     * number out for itself — it knows the participant count but not the viewport — so the
+     * screen reports it from its own layout.
+     *
+     * Zero, or never called, means unconstrained. That is the right default rather than a
+     * failure: a one-to-one call draws the remote full screen, where the top of the ladder
+     * is exactly what should be sent, and a conference that has not laid out yet should
+     * not be capped on a guess.
+     *
+     * It is a *cap on climbing* and never a reason to drop: see `DisplayCeiling`, which
+     * also records why this device's own layout is a sound proxy for the far end's.
+     */
+    fun setRemoteTileHeight(heightPx: Int)
+
+    /**
      * Which way up the screen is, as the display's rotation in degrees clockwise from the
      * device's natural orientation: 0, 90, 180 or 270.
      *
@@ -87,6 +107,7 @@ interface VideoSurfaceController {
 object NoVideoSurfaces : VideoSurfaceController {
     override fun attach(remoteViews: Map<String, Any?>, localPreview: Any?) = Unit
     override fun detach() = Unit
+    override fun setRemoteTileHeight(heightPx: Int) = Unit
     override fun setDisplayRotation(degrees: Int) = Unit
     override val videoSizes: StateFlow<VideoSizes> = MutableStateFlow(VideoSizes.UNKNOWN)
 }

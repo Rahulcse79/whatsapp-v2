@@ -73,6 +73,7 @@ fun SettingsScreen(
             onAudioRouteChange = viewModel::setPreferredAudioRoute,
             onThemeModeChange = viewModel::setThemeMode,
             onSipTraceChange = viewModel::setSipTraceEnabled,
+            onVerifyTlsChange = viewModel::setVerifyTlsCertificates,
             onRetentionChange = viewModel::setCallHistoryRetention,
         )
     }
@@ -93,11 +94,12 @@ data class SettingsActions(
     val onAudioRouteChange: (PreferredAudioRoute) -> Unit,
     val onThemeModeChange: (ThemeMode) -> Unit,
     val onSipTraceChange: (Boolean) -> Unit,
+    val onVerifyTlsChange: (Boolean) -> Unit,
     val onRetentionChange: (CallHistoryRetention) -> Unit,
 ) {
     companion object {
         /** For previews and tests that are not about what a change does. */
-        val NONE = SettingsActions({}, {}, {}, {}, {}, {})
+        val NONE = SettingsActions({}, {}, {}, {}, {}, {}, {})
     }
 }
 
@@ -223,6 +225,13 @@ private fun SettingsContent(
                 selected = state.settings.preferredAudioRoute,
                 labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
                 onSelect = actions.onAudioRouteChange,
+            )
+        }
+
+        SettingsCard {
+            TlsVerificationToggle(
+                enabled = state.settings.verifyTlsCertificates,
+                onChange = actions.onVerifyTlsChange,
             )
         }
 
@@ -513,6 +522,42 @@ private fun SipTraceToggle(enabled: Boolean, onChange: (Boolean) -> Unit) {
             // nothing about what they are exposing.
             text = "Writes SIP signalling to the device log for diagnosis. Passwords and " +
                 "authentication headers are always removed. Debug builds only.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * Whether a TLS registrar's certificate is checked.
+ *
+ * The supporting text names the trade rather than the feature. "Verify certificates" on
+ * its own reads as a tidiness option somebody can leave alone; what is actually being
+ * chosen is whether an encrypted connection is also an authenticated one, and the only
+ * honest way to offer that is to say what is lost when it is off.
+ */
+@Composable
+private fun TlsVerificationToggle(enabled: Boolean, onChange: (Boolean) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.small)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Verify TLS certificates", style = MaterialTheme.typography.titleMedium)
+            Switch(checked = enabled, onCheckedChange = onChange)
+        }
+        Text(
+            text = if (enabled) {
+                "On. A TLS registrar must present a certificate this phone trusts, issued " +
+                    "for the address being dialled. A server whose certificate is " +
+                    "self-signed, expired, or issued for another name will not register."
+            } else {
+                "Off. TLS still encrypts, but the server is not checked, so anyone who can " +
+                    "reach the connection can present any certificate and read or change " +
+                    "the signalling. Turn this on unless your server's certificate cannot " +
+                    "pass the check."
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

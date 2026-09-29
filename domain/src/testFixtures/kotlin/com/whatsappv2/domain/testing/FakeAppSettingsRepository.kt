@@ -42,6 +42,10 @@ class FakeAppSettingsRepository(
         settings.value = settings.value.copy(sipTraceEnabled = enabled)
     }
 
+    override suspend fun setVerifyTlsCertificates(verify: Boolean) {
+        settings.value = settings.value.copy(verifyTlsCertificates = verify)
+    }
+
     override suspend fun setCallHistoryRetention(retention: CallHistoryRetention) {
         settings.value = settings.value.copy(callHistoryRetention = retention)
     }

@@ -598,6 +598,17 @@ class CallViewModel @Inject constructor(
         surfaces.setDisplayRotation(degrees)
     }
 
+    /**
+     * How tall one conference tile is, so quality is not spent on pixels the tile discards.
+     *
+     * Only the conference grid reports it. A one-to-one call draws the remote full screen,
+     * where the top of the ladder is exactly what should be sent, and leaving it
+     * unconstrained there is the correct answer rather than a gap.
+     */
+    fun reportRemoteTileHeight(heightPx: Int) {
+        surfaces.setRemoteTileHeight(heightPx)
+    }
+
     // ---------------------------------------------------------------- call waiting
 
     /**

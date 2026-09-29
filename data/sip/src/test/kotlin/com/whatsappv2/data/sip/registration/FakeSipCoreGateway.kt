@@ -227,6 +227,13 @@ internal class FakeSipCoreGateway :
         traceEnabled = enabled
     }
 
+    /** Every value the engine pushed, in order, so a test can assert it was not churned. */
+    val tlsVerificationChanges = mutableListOf<Boolean>()
+
+    override fun setTlsCertificateVerification(verify: Boolean) {
+        tlsVerificationChanges += verify
+    }
+
     override fun setNetworkReachable(reachable: Boolean) {
         reachabilitySignals += reachable
     }
@@ -309,6 +316,13 @@ internal class FakeSipCoreGateway :
 
     override fun setCaptureRotation(degrees: Int) {
         captureRotations += degrees
+    }
+
+    /** Every tile height the screen has reported, so a test can assert what it measured. */
+    val remoteTileHeights: MutableList<Int> = mutableListOf()
+
+    override fun setRemoteTileHeight(heightPx: Int) {
+        remoteTileHeights += heightPx
     }
 
     /** Settable, so a test can drive the screen through a resolution change. */

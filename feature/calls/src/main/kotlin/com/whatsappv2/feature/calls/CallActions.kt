@@ -38,6 +38,15 @@ data class CallActions(
     val onReleaseVideoSurfaces: () -> Unit = {},
     val onDisplayRotation: (degrees: Int) -> Unit = {},
 
+    /**
+     * How tall one conference tile measured, in pixels (Phase 7).
+     *
+     * Not a user action like the rest of this type, but it travels the same path for the
+     * same reason: it is something the *screen* knows and the media stack does not, and
+     * threading it separately would mean a second bridge doing one thing.
+     */
+    val onRemoteTileHeight: (heightPx: Int) -> Unit = {},
+
     // ------------------------------------------------------------------ transfer
     val onStartTransfer: () -> Unit = {},
     val onTransferTargetChanged: (String) -> Unit = {},

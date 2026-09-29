@@ -65,6 +65,11 @@ dependencies {
     testImplementation(testFixtures(project(":domain")))
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
+    // PjsipTrustStore writes into the app's own storage, so its regression test needs a
+    // real Context for filesDir and cacheDir. Robolectric supplies both without a device;
+    // it does NOT supply AndroidCAStore, which is why the certificate collector is a seam.
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core.ktx)
 
     // Task 33. Only artifacts the catalog already pins: the integration suite cannot run
     // in `ci.yml` at all - it needs a device and a reachable registrar. androidx.test:runner
