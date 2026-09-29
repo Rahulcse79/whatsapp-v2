@@ -112,6 +112,38 @@ data class AppSettings(
     val sipTraceEnabled: Boolean = false,
 
     /**
+     * Whether a SIP TLS server's certificate is checked before the connection is used.
+     *
+     * **Off on a fresh install, and that is a deliberate, informed choice rather than an
+     * oversight.** With it off, TLS still negotiates and still encrypts — what is given up
+     * is *authentication*: the app no longer confirms that the certificate is issued by
+     * somebody it trusts, or that it was issued for the host being dialled. An attacker
+     * able to sit on the path can therefore present any certificate at all and read or
+     * alter the signalling. On an untrusted network that is the whole of the protection.
+     *
+     * The reason it defaults off is that the deployments this app is pointed at do not
+     * have certificates that can pass a check, and a client that refuses to register is
+     * useless to their operators:
+     *
+     *  - One registrar presents a **wildcard** certificate (`*.example.net`). PJSIP
+     *    compares names for exact equality and refuses wildcards outright for SIP, citing
+     *    RFC 5922 §7.2 — so a certificate most of the internet accepts can never match.
+     *  - A lab server presents a **self-signed certificate with no SubjectAltName at all**
+     *    (`CN=FreeSWITCH`) while being addressed by IP. Nothing in it names the host, so
+     *    no amount of trust configuration makes the identity match.
+     *
+     * Both are fixed by issuing the server a certificate that names the host it is reached
+     * by. Until then this switch is what lets an operator run TLS at all, and turning it
+     * **on** is what makes that TLS worth something — which is why it is offered rather
+     * than decided here.
+     *
+     * Enforcement still fails closed when it is on: if no CA bundle can be produced,
+     * `PjsipTrustStore` returns nothing and the handshake fails rather than silently
+     * skipping the check.
+     */
+    val verifyTlsCertificates: Boolean = false,
+
+    /**
      * How long the call log is kept before old entries are removed.
      *
      * One setting for the whole log, and deliberately not one per kind: a call is a call,

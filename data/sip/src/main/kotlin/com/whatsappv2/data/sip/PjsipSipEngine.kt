@@ -539,6 +539,16 @@ internal class PjsipSipEngine @Inject constructor(
                 .collect { gateway.setTraceEnabled(it) }
         }
         collectors += scope.launch {
+            // Same shape as the trace switch, different cost to get wrong: this one stands
+            // the TLS listener back up, so `distinctUntilChanged` is load-bearing rather
+            // than tidy - every duplicate emission would replace a working listener and
+            // re-register every TLS account behind it.
+            settings.observeSettings()
+                .map { it.verifyTlsCertificates }
+                .distinctUntilChanged()
+                .collect { gateway.setTlsCertificateVerification(it) }
+        }
+        collectors += scope.launch {
             gateway.registrationEvents.collect { event ->
                 val id = AccountId(event.accountKey)
                 val expiry = requestedExpiry[event.accountKey] ?: DEFAULT_EXPIRY_SECONDS

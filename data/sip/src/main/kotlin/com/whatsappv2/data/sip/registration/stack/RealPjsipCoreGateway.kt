@@ -380,6 +380,15 @@ internal class RealPjsipCoreGateway @Inject constructor(
     @Volatile
     private var traceEnabled: Boolean = false
 
+    /**
+     * Whether the TLS listener checks the server's certificate.
+     *
+     * Off until Settings says otherwise, matching `AppSettings.DEFAULT`. Read by
+     * [tlsTransportConfig] every time a listener is built, so the value in force when the
+     * listener is created is the one OpenSSL applies to its connections.
+     */
+    private var verifyTlsCertificates: Boolean = false
+
     /** Transport ids by the token the domain uses — `UDP`, `TCP`, `TLS`. */
     private val transports = ConcurrentHashMap<String, Int>()
 
@@ -808,7 +817,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
      */
     private fun tlsTransportConfig(): TransportConfig = TransportConfig().apply {
         tlsConfig = TlsConfig().apply {
-            verifyServer = true
+            verifyServer = verifyTlsCertificates
+            // Built even when verification is off. The setting can be turned on while the
+            // stack is running, and a bundle that is already on disk is one less thing
+            // that has to succeed at the moment somebody is trying to make TLS strict.
             trustStore.refreshBundle()?.let { bundle -> caListFile = bundle.absolutePath }
 
             method = pjsip_ssl_method.PJSIP_SSLV23_METHOD
@@ -1124,6 +1136,65 @@ internal class RealPjsipCoreGateway @Inject constructor(
     }
 
     /**
+     * Turns TLS certificate verification on or off, without an app restart.
+     *
+     * This one **is** posted to the PJSIP thread, unlike [setTraceEnabled], because it is
+     * not a flag anybody reads later — it is baked into a listener at the moment the
+     * listener is created. `pjsip_tls_setting` belongs to the `pjsip_tpfactory`, and
+     * OpenSSL builds its `SSL_CTX` from that copy for every connection the factory
+     * accepts. Writing the field alone would change nothing until the next cold start.
+     *
+     * So the old listener is closed and a new one takes its place. That is safe here for
+     * a reason worth stating: this gateway never pins `sipConfig.transportId` (see
+     * [AccountConfigFactory]), so no account holds a reference to the listener being
+     * replaced — PJSIP resolves a transport per request from the `;transport=tls` URI
+     * parameter, and the next REGISTER simply resolves to the new one.
+     *
+     * Existing TLS connections are **not** torn down by closing their factory, and that is
+     * why the TLS accounts are re-registered afterwards: a connection opened under the old
+     * policy keeps the old policy for as long as it lives, and re-registering is what
+     * replaces it with one opened under the new one. Accounts on UDP and TCP are left
+     * alone; nothing about them changed, and dropping their bindings would cost calls for
+     * a setting that does not apply to them.
+     */
+    override fun setTlsCertificateVerification(verify: Boolean) {
+        onPjsip("setTlsCertificateVerification") {
+            if (verifyTlsCertificates == verify) return@onPjsip
+            verifyTlsCertificates = verify
+            logger.info(TAG, "TLS certificate verification ${if (verify) "on" else "off"}")
+
+            // Before libStart there is no listener yet; `start` will read the new value
+            // when it builds one, which is the whole of the work in that case.
+            val running = endpoint ?: return@onPjsip
+
+            transports[TRANSPORT_TLS]?.let { old ->
+                runCatching { running.transportClose(old) }.onFailure { failure ->
+                    logger.warn(TAG, "Closing the old TLS listener failed: ${failure.message}")
+                }
+            }
+            val rebuilt = runCatching {
+                running.transportCreate(pjsip_transport_type_e.PJSIP_TRANSPORT_TLS, tlsTransportConfig())
+            }.onFailure { failure ->
+                logger.error(TAG, "Could not stand the TLS listener back up", failure)
+            }.getOrNull() ?: run {
+                transports.remove(TRANSPORT_TLS)
+                return@onPjsip
+            }
+            transports[TRANSPORT_TLS] = rebuilt
+
+            accountConfigs.filterValues { it.transport.equals(TRANSPORT_TLS, ignoreCase = true) }
+                .keys
+                .forEach { key ->
+                    accounts[key]?.let { account ->
+                        runCatching { account.setRegistration(true) }.onFailure {
+                            logger.debug(TAG, "REGISTER for $key not sent after the TLS change: ${it.message}")
+                        }
+                    }
+                }
+        }
+    }
+
+    /**
      * Re-registers an account the stack already holds — and stands one back up when it does
      * not.
      *
@@ -1205,17 +1276,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
     }
 
-    /**
-     * The `;transport=` URI parameter for an account's transport, or `""` for UDP.
-     *
-     * UDP is SIP's default transport (RFC 3261 §18.1.1), so naming it adds nothing and
-     * costs the ability to upgrade an oversized request — a URI that says `transport=udp`
-     * is a URI PJSIP will keep on UDP even when the message no longer fits a datagram.
-     *
-     * TCP and TLS must be named, because nothing else would select them: neither the
-     * registrar URI nor the account id carries the information otherwise, and the
-     * alternative — pinning `sipConfig.transportId` — silently sends nothing.
-     */
+
     /**
      * Makes sure the TLS trust anchors are on disk before an account that needs them
      * tries to use them.
@@ -1240,13 +1301,6 @@ internal class RealPjsipCoreGateway @Inject constructor(
             )
         }
     }
-
-    private fun transportUriParameter(transport: String): String =
-        when (transport.uppercase()) {
-            TRANSPORT_TCP -> ";transport=tcp"
-            TRANSPORT_TLS -> ";transport=tls"
-            else -> ""
-        }
 
     /**
      * The account's codec preferences, as PJSIP priorities (§5.1, §5.2).
@@ -1434,7 +1488,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
             }
             val call = PjCall(callKey, account)
             calls[callKey] = call
-            call.makeCall(destination, callParams(videoEnabled).withConference(conferenceEntity))
+            call.makeCall(
+                destination.withTransportOf(accountConfigs[accountKey]?.transport),
+                callParams(videoEnabled).withConference(conferenceEntity),
+            )
         }
     }
 

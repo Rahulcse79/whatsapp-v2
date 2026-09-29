@@ -1255,6 +1255,37 @@ class PjsipSipEngineTest : PjsipSipEngineFixture() {
         engine.stop()
     }
 
+    @Test
+    fun `the TLS verification switch reaches the stack, and only when it changes`() = runTest {
+        // The same class of defect as the trace switch above: a control that writes to
+        // DataStore and is read by nothing. This one costs more when it is wrong in the
+        // other direction too - the gateway stands a new TLS listener up on every call, so
+        // a duplicated emission would replace a working listener and re-register every TLS
+        // account behind it for no reason.
+        val engine = engine(this)
+        engine.start()
+        runCurrent()
+        // The default reaches the stack once, and says off. Asserted rather than skipped:
+        // the gateway's own field also starts false, so "nothing was pushed" and "off was
+        // pushed" look identical from the outside and only one of them is the contract.
+        assertEquals(listOf(false), gateway.tlsVerificationChanges)
+
+        settings.setVerifyTlsCertificates(true)
+        runCurrent()
+        assertEquals(true, gateway.tlsVerificationChanges.last())
+
+        val afterOn = gateway.tlsVerificationChanges.size
+        settings.setVerifyTlsCertificates(true)
+        runCurrent()
+        assertEquals(afterOn, gateway.tlsVerificationChanges.size, "an unchanged setting must not rebuild the listener")
+
+        settings.setVerifyTlsCertificates(false)
+        runCurrent()
+        assertEquals(false, gateway.tlsVerificationChanges.last())
+
+        engine.stop()
+    }
+
     // ------------------------------------------------- the link (Task 30, DoD 6)
 
     @Test

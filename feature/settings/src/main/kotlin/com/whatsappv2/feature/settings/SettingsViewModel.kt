@@ -57,6 +57,9 @@ class SettingsViewModel @Inject constructor(
     fun setSipTraceEnabled(enabled: Boolean) =
         viewModelScope.launch { repository.setSipTraceEnabled(enabled) }
 
+    fun setVerifyTlsCertificates(verify: Boolean) =
+        viewModelScope.launch { repository.setVerifyTlsCertificates(verify) }
+
     fun setCallHistoryRetention(retention: CallHistoryRetention) =
         viewModelScope.launch { repository.setCallHistoryRetention(retention) }
 
