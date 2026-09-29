@@ -55,7 +55,7 @@ class JoinConferenceUseCase @Inject constructor(
                 ?: return failure(PlaceCallError.UnknownAccount(accountOverride))
         }
 
-        val uri = DialledTarget.resolve(input, account.domain)
+        val uri = DialledTarget.resolve(input, account.domain, account.dialledPort)
             ?: return failure(PlaceCallError.InvalidTarget(input))
 
         val media = (MediaProfile.of(audio = true, video = withVideo) ?: MediaProfile.AUDIO)

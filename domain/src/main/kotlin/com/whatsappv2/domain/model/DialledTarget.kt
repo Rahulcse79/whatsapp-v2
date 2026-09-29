@@ -22,8 +22,22 @@ object DialledTarget {
      * that makes dialling `1001` work at all, since a SIP URI has no meaning without one.
      * Anything that already looks like a URI is parsed as written, so a call to another
      * domain is not silently rewritten to this account's.
+     *
+     * ## [accountPort]
+     *
+     * The account's own port — `SipAccount.dialledPort` — and **only** for the branch that
+     * supplies the account's domain. Set it to 5070 and calls go to 5070; leave it at 5060
+     * and they go to 5060. There is no default-is-special rule to remember.
+     *
+     * It is the fix for a real asymmetry: registration put the port on its request URI
+     * through `SipAccount.effectiveRegistrar`, and a call never did, so an account on a
+     * server listening on 5070 registered on 5070 and then sent every INVITE to 5060.
+     *
+     * The other two branches are deliberately untouched. A destination the user spelled
+     * out — `sip:1004@elsewhere` or `1004@elsewhere` — names its own host, and imposing
+     * this account's port on somebody else's server is a guess, not a completion.
      */
-    fun resolve(input: String, accountDomain: String): SipUri? {
+    fun resolve(input: String, accountDomain: String, accountPort: Int? = null): SipUri? {
         val trimmed = input.trim()
         if (trimmed.isEmpty()) return null
 
@@ -31,7 +45,7 @@ object DialledTarget {
             trimmed.startsWith(SIP_SCHEME) || trimmed.startsWith(SIPS_SCHEME) -> trimmed
             // A user@host with no scheme — the host is explicit, only the scheme is not.
             trimmed.contains('@') -> "$SIP_SCHEME$trimmed"
-            else -> "$SIP_SCHEME$trimmed@$accountDomain"
+            else -> "$SIP_SCHEME$trimmed@$accountDomain${accountPort?.let { ":$it" }.orEmpty()}"
         }
         return SipUri.parse(qualified).getOrNull()
     }

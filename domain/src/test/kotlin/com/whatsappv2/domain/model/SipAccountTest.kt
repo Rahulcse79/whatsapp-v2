@@ -92,6 +92,23 @@ class SipAccountTest {
     }
 
     @Test
+    fun `the port calls are sent to is the port the account is set to`() {
+        // The defect: registration had the port through `effectiveRegistrar`, calls did
+        // not, so an account on 5070 registered on 5070 and then dialled 5060.
+        assertEquals(5070, account(port = 5070).dialledPort)
+        assertEquals(5080, account(port = 5080, transport = Transport.TLS).dialledPort)
+    }
+
+    @Test
+    fun `an unset port still resolves to the transport default for calls`() {
+        // Stated rather than omitted: "the port you set is the port calls go to" is a rule
+        // with no exception, and one a single log line can confirm.
+        assertEquals(5060, account(transport = Transport.UDP).dialledPort)
+        assertEquals(5060, account(transport = Transport.TCP).dialledPort)
+        assertEquals(5061, account(transport = Transport.TLS).dialledPort)
+    }
+
+    @Test
     fun `an explicit registrar overrides the domain`() {
         val registrar = checkNotNull(HostPort.parse("registrar.example.com:5070").getOrNull())
         assertEquals("registrar.example.com:5070", account(registrar = registrar).effectiveRegistrar)

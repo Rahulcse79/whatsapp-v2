@@ -109,7 +109,7 @@ class PlaceCallUseCase @Inject constructor(
                 ?: return failure(PlaceCallError.UnknownAccount(accountOverride))
         }
 
-        val target = DialledTarget.resolve(input, account.domain)
+        val target = DialledTarget.resolve(input, account.domain, account.dialledPort)
             ?: return failure(PlaceCallError.InvalidTarget(input))
 
         // Before the INVITE, not after it fails. See [ensureRegistered].
