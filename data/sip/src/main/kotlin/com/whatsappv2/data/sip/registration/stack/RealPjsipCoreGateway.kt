@@ -72,6 +72,7 @@ import org.pjsip.pjsua2.OnCallTsxStateParam
 import org.pjsip.pjsua2.OnInstantMessageParam
 import org.pjsip.pjsua2.OnIncomingCallParam
 import org.pjsip.pjsua2.OnIpChangeProgressParam
+import org.pjsip.pjsua2.OnTransportStateParam
 import org.pjsip.pjsua2.OnVideoMediaOpCompletedParam
 import org.pjsip.pjsua2.OnRegStateParam
 import org.pjsip.pjsua2.SipHeader
@@ -100,6 +101,7 @@ import org.pjsip.pjsua2.pjsip_inv_state
 import org.pjsip.pjsua2.pjsip_role_e
 import org.pjsip.pjsua2.pjsip_ssl_method
 import org.pjsip.pjsua2.pjsip_status_code
+import org.pjsip.pjsua2.pjsip_transport_state
 import org.pjsip.pjsua2.pjsip_transport_type_e
 import org.pjsip.pjsua2.pjsua_call_flag
 import org.pjsip.pjsua2.pjsua_call_media_status
@@ -582,6 +584,49 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 if (prm.status == PJSIP_STATUS_OK) return
                 logger.warn(TAG, "Video bridge op ${prm.opType} failed with status ${prm.status}")
             }
+
+            /**
+             * What actually happened to a TLS connection (2026-09-29).
+             *
+             * Every TLS failure reaches the user as the same thing: a registration that
+             * ends `503`, rendered as "the server is unavailable". A missing CA file, a
+             * certificate signed by somebody nobody trusts, an expired one, a peer on the
+             * wrong port that never answers the ClientHello, and a certificate that is
+             * perfectly valid but issued for a different name all look identical from
+             * there — and four of those five are fixed in completely different places.
+             *
+             * `TlsInfo` carries what PJSIP already knows and threw away: the negotiated
+             * protocol and cipher, and `verifyMsgs`, which is OpenSSL's own list of the
+             * reasons verification failed. Logging it costs one callback and turns "TLS
+             * does not work" into a line that names the cause.
+             *
+             * Only failures are logged in full. A connected transport gets one line with
+             * the protocol and cipher, which is what you want when the question is
+             * whether TLS 1.2 or 1.3 was settled on.
+             */
+            override fun onTransportState(prm: OnTransportStateParam) {
+                val tls = prm.tlsInfo ?: return
+                if (!tls.established && prm.state != pjsip_transport_state.PJSIP_TP_STATE_DISCONNECTED) {
+                    return
+                }
+
+                val peer = tls.remoteAddr.orEmpty()
+                if (prm.state == pjsip_transport_state.PJSIP_TP_STATE_DISCONNECTED ||
+                    tls.verifyStatus != 0L
+                ) {
+                    val reasons = runCatching {
+                        (0 until tls.verifyMsgs.size).map { tls.verifyMsgs[it] }
+                    }.getOrDefault(emptyList())
+                    logger.error(
+                        TAG,
+                        "TLS to $peer failed: status=0x${tls.verifyStatus.toString(HEX)}" +
+                            " lastError=${prm.lastError}" +
+                            if (reasons.isEmpty()) "" else " (${reasons.joinToString("; ")})",
+                    )
+                } else {
+                    logger.info(TAG, "TLS to $peer established: ${tls.cipherName}")
+                }
+            }
         }
         logger.info(TAG, "start: Endpoint constructed (JNI bindings loaded)")
 
@@ -764,7 +809,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
     private fun tlsTransportConfig(): TransportConfig = TransportConfig().apply {
         tlsConfig = TlsConfig().apply {
             verifyServer = true
-            trustStore.caBundle()?.let { bundle -> caListFile = bundle.absolutePath }
+            trustStore.refreshBundle()?.let { bundle -> caListFile = bundle.absolutePath }
 
             method = pjsip_ssl_method.PJSIP_SSLV23_METHOD
             proto = (
@@ -892,6 +937,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             }
 
             accountConfigs[account.key] = account
+            ensureTrustAnchors(account.transport)
             val config = account.toAccountConfig(
                 transportParam = transportUriParameter(account.transport),
                 pushParameters = pushParameters,
@@ -1108,6 +1154,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 return@onPjsip
             }
 
+            // Before either branch below: both of them end in a REGISTER, and a TLS one
+            // needs the trust anchors to be on disk when the socket is created.
+            accountConfigs[accountKey]?.let { stored -> ensureTrustAnchors(stored.transport) }
+
             val account = accounts[accountKey]
             if (account == null) {
                 val stored = accountConfigs[accountKey]
@@ -1166,6 +1216,31 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * registrar URI nor the account id carries the information otherwise, and the
      * alternative — pinning `sipConfig.transportId` — silently sends nothing.
      */
+    /**
+     * Makes sure the TLS trust anchors are on disk before an account that needs them
+     * tries to use them.
+     *
+     * The bundle's path is fixed into the TLS listener when the stack starts, and OpenSSL
+     * re-reads that path on every connection (`init_ossl_ctx`, `ssl_sock_ossl.c:1297`).
+     * A bundle the platform has since deleted therefore breaks every handshake while
+     * leaving the listener, the account and the transport all looking healthy — see
+     * [PjsipTrustStore] for the fourteen-hour outage that shape produced.
+     *
+     * Restoring the file at the same path is the entire repair: nothing has to be torn
+     * down, because the next `SSL_CTX` will read what is there at the time. Cheap enough
+     * to do on every TLS registration — [PjsipTrustStore.ensureBundle] rebuilds only when
+     * the file is actually gone.
+     */
+    private fun ensureTrustAnchors(transport: String) {
+        if (!transport.equals(TRANSPORT_TLS, ignoreCase = true)) return
+        if (trustStore.ensureBundle() == null) {
+            logger.error(
+                TAG,
+                "No CA bundle for a TLS account; the handshake will fail rather than skip verification",
+            )
+        }
+    }
+
     private fun transportUriParameter(transport: String): String =
         when (transport.uppercase()) {
             TRANSPORT_TCP -> ";transport=tcp"
@@ -1248,6 +1323,29 @@ internal class RealPjsipCoreGateway @Inject constructor(
         // that have one.
         runCatching { videoCodecSetPriority(id, CodecPriorities.MEDIACODEC_VP8) }
             .onFailure { logger.warn(TAG, "Could not rank $id: ${it.message}") }
+
+        // And the other VP8 is switched off, so an offer carries VP8 exactly once.
+        //
+        // Ranking alone leaves both in the offer, and two entries for one encoding is a
+        // trap rather than a choice. They are byte-identical on the wire — `a=rtpmap:102
+        // VP8/90000` beside `a=rtpmap:103 VP8/90000` — so a peer cannot tell them apart and
+        // the second buys nothing; what it costs is that the receive payload type comes from
+        // the *first* offered format (`stream_info.c:114`) while the transmit one comes from
+        // the answer. Any answer naming the other number splits them, and a split payload
+        // type is a stream whose depacketiser discards every packet that arrives. See
+        // [CodecPriorities.MEDIACODEC_VP8] for the three-party mesh this cost two tiles on.
+        //
+        // Interop is not narrowed by this: `pjmedia_sdp_neg_fmt_match` matches a dynamic
+        // payload type by encoding name and clock rate rather than by number
+        // (`sdp_neg.c:2287-2321`), so a peer offering VP8 as 102 is still matched by the
+        // entry kept here and still answered on the peer's own number. And where the
+        // MediaCodec probe registered nothing there is no [id] and this method has already
+        // returned, which leaves libvpx exactly as it was — the fallback it is meant to be.
+        CodecPriorities.duplicatesOf(keep = id, available = registry).forEach { other ->
+            runCatching { videoCodecSetPriority(other, CodecPriorities.DISABLED) }
+                .onSuccess { logger.info(TAG, "VP8 is offered once, as $id; $other is off") }
+                .onFailure { logger.warn(TAG, "Could not switch off $other: ${it.message}") }
+        }
     }
 
     /** What every account except [exceptKey] needs kept enabled. See [applyCodecs]. */
@@ -2787,6 +2885,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     payloadTypes = stream?.let { it.rxPt to it.txPt },
                     resolution = videoResolutionOrNull(stream),
                     peer = stream?.remoteRtpAddress.orEmpty(),
+                    remote = remoteAddress(),
                     previous = previous,
                     current = current,
                 ) ?: return@forEach
@@ -3161,6 +3260,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
         const val TRANSPORT_UDP = "UDP"
         const val TRANSPORT_TCP = "TCP"
         const val TRANSPORT_TLS = "TLS"
+
+        /** `verifyStatus` is a bit mask, and hex is the only base it reads in. */
+        const val HEX = 16
 
         /**
          * Media tuning (§5.2). Starting points chosen from PJSIP's own guidance, not
@@ -3660,6 +3762,17 @@ private fun rtpTraceLine(
     payloadTypes: Pair<Long, Long>? = null,
     resolution: String? = null,
     peer: String,
+    /**
+     * Who is on the other end, as `user@host` from the call's `remoteUri`.
+     *
+     * Not the same thing as [peer], and the difference is the whole reason this exists. On
+     * this deployment every leg's RTP goes through the B2BUA, so [peer] is the *server's*
+     * address on every stream — three concurrent video legs of a four-party mesh all read
+     * `192.168.2.192:<port>` and are indistinguishable from one another in the log. Without
+     * the SIP identity there is no way to say which participant a directional media path
+     * belongs to, and therefore no way to build a per-pair matrix out of these lines.
+     */
+    remote: String? = null,
     previous: RtpCounters,
     current: RtpCounters,
 ): String? {
@@ -3677,6 +3790,8 @@ private fun rtpTraceLine(
         // The payload types actually in use, each way. A leg that renegotiated onto a
         // different number is the one fact a codec name alone hides.
         payloadTypes?.let { (rx, tx) -> append(" pt ").append(rx).append('/').append(tx) }
+        // Immediately after the codec, because it is the field a reader joins on.
+        remote?.takeIf { it.isNotBlank() }?.let { append(" with ").append(it) }
         resolution?.let { append(' ').append(it) }
         append(" - rx ").append(perSecond(current.rxPkt - previous.rxPkt)).append(" pkt/s ")
         append(kbps(current.rxBytes - previous.rxBytes)).append(" kbps loss ")
