@@ -1150,12 +1150,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * replaced — PJSIP resolves a transport per request from the `;transport=tls` URI
      * parameter, and the next REGISTER simply resolves to the new one.
      *
-     * Existing TLS connections are **not** torn down by closing their factory, and that is
-     * why the TLS accounts are re-registered afterwards: a connection opened under the old
-     * policy keeps the old policy for as long as it lives, and re-registering is what
-     * replaces it with one opened under the new one. Accounts on UDP and TCP are left
-     * alone; nothing about them changed, and dropping their bindings would cost calls for
-     * a setting that does not apply to them.
+     * Existing TLS connections are **not** torn down by closing their factory — see
+     * [closeEstablishedTlsConnections], which is what actually drops them, and the handset
+     * measurement that proved re-registration alone was not enough. Accounts on UDP and
+     * TCP are left alone; nothing about them changed, and dropping their bindings would
+     * cost calls for a setting that does not apply to them.
      */
     override fun setTlsCertificateVerification(verify: Boolean) {
         onPjsip("setTlsCertificateVerification") {
@@ -1181,6 +1180,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 return@onPjsip
             }
             transports[TRANSPORT_TLS] = rebuilt
+            running.closeEstablishedTlsConnections(keep = rebuilt)
 
             accountConfigs.filterValues { it.transport.equals(TRANSPORT_TLS, ignoreCase = true) }
                 .keys
@@ -1276,6 +1276,48 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
     }
 
+
+    /**
+     * Drops the TLS connections that were opened under the previous verification policy.
+     *
+     * Closing the listener is not enough, and the first attempt at this shipped believing
+     * it was. `lis_destroy` in `sip_transport_tls.c` destroys the *factory* and nothing
+     * else: the connections it accepted are separate `pjsip_transport`s with their own
+     * ids and their own copy of the settings, and they outlive it. Turning verification on
+     * therefore appeared to do nothing — the account re-registered immediately, over the
+     * connection it already had, under the old policy. Measured that way on a handset: the
+     * switch logged "on" and the TLS accounts reported 200 OK within a second, with no new
+     * handshake attempted at all.
+     *
+     * So every established TLS transport is closed here, and only the listener just built
+     * is spared. The re-REGISTER that follows then has nothing to reuse and opens a fresh
+     * connection, which is the one that gets the new policy.
+     *
+     * Best-effort per transport. A close that fails is logged and the rest still go: a
+     * connection that would not shut down is a worse reason to leave the others on the old
+     * policy than it is to carry on.
+     */
+    private fun Endpoint.closeEstablishedTlsConnections(keep: Int) {
+        val ids = runCatching {
+            val enumerated = transportEnum()
+            (0 until enumerated.size).map { enumerated[it] }
+        }.getOrElse { failure ->
+            logger.warn(TAG, "Could not enumerate transports after the TLS change: ${failure.message}")
+            return
+        }
+
+        ids.filter { id -> id != keep && isTlsTransport(id) }
+            .forEach { id ->
+                runCatching { transportClose(id) }.onFailure { failure ->
+                    logger.debug(TAG, "TLS transport $id did not close: ${failure.message}")
+                }
+            }
+    }
+
+    /** Whether a transport id names a TLS one, as PJSIP reports its type. */
+    private fun Endpoint.isTlsTransport(id: Int): Boolean = runCatching {
+        transportGetInfo(id).typeName.contains(TRANSPORT_TLS, ignoreCase = true)
+    }.getOrDefault(false)
 
     /**
      * Makes sure the TLS trust anchors are on disk before an account that needs them
