@@ -110,11 +110,11 @@ class AdaptiveVideoPolicyTest {
     // ------------------------------------------------------------- staying put
 
     @Test
-    fun `a healthy one-to-one call starts at 720p30 and stays there`() {
+    fun `a healthy one-to-one call starts at the top rung and stays there`() {
         val policy = policy()
         assertEquals(VideoQualityTier.HIGH, policy.current.tier)
-        assertEquals(1280, policy.current.width)
-        assertEquals(30, policy.current.fps)
+        assertEquals(640, policy.current.width)
+        assertEquals(15, policy.current.fps)
 
         val moves = policy.drive(healthy(), millis = 120_000, clock = clock())
 
@@ -164,7 +164,7 @@ class AdaptiveVideoPolicyTest {
         assertTrue(moves.isNotEmpty(), "12% loss must cost quality")
         val first = moves.first()
         assertEquals(VideoQualityTier.HIGH, first.from.tier)
-        assertEquals(VideoQualityTier.MEDIUM_HIGH, first.to.tier)
+        assertEquals(VideoQualityTier.MEDIUM, first.to.tier)
         assertEquals(VideoQualityReason.NETWORK_LOSS, first.reason)
     }
 
@@ -190,10 +190,11 @@ class AdaptiveVideoPolicyTest {
     @Test
     fun `encode latency alone is enough, even at a plausible frame rate`() {
         val policy = policy()
-        // 0.80 of 30 fps is 24 -- above the fps threshold -- but 68.5 ms a frame cannot
-        // produce 30 whatever the counters say, and that contradiction is the finding.
+        // 0.80 of the configured rate is above the fps threshold -- but 102 ms a frame cannot
+        // produce 20 whatever the counters say, and that contradiction is the finding. The
+        // number tracks the top rung's frame budget: 50 ms at 20 fps, and this is twice it.
         val slow = healthy().copy(
-            encoder = EncoderConditions(actualFpsRatio = 0.80, latencyMillis = 68.5),
+            encoder = EncoderConditions(actualFpsRatio = 0.80, latencyMillis = 102.0),
         )
         val moves = policy.drive(slow, millis = 30_000, clock = clock())
         assertEquals(VideoQualityReason.ENCODER_PRESSURE, moves.first().reason)
@@ -219,7 +220,9 @@ class AdaptiveVideoPolicyTest {
     fun `critical thermal skips rungs instead of stepping politely`() {
         val policy = policy()
         val critical = healthy().copy(
-            budget = VideoBudget(outgoingVideoLegs = 1, aggregateCeilingBps = 400_000),
+            // Tight enough that only the floor is affordable, so "skipped a rung" is what is
+            // being asserted rather than "stepped once and the budget did the rest".
+            budget = VideoBudget(outgoingVideoLegs = 1, aggregateCeilingBps = 150_000),
             device = DevicePressure(thermal = ThermalPressure.CRITICAL, cpuLoad = 0.95),
         )
         val moves = policy.drive(critical, millis = 20_000, clock = clock())
@@ -376,9 +379,9 @@ class AdaptiveVideoPolicyTest {
 
         val moves = policy.drive(awful, millis = 120_000, clock = c)
 
-        // Three rungs to fall, and it must take at least two cooldowns to fall them.
+        // Two rungs to fall, and it must take at least one cooldown to fall them.
         assertEquals(VideoQualityTier.LOW, policy.current.tier)
-        assertEquals(3, moves.size, "expected exactly three steps down, got $moves")
+        assertEquals(2, moves.size, "expected exactly two steps down, got $moves")
         moves.zipWithNext { earlier, later ->
             assertTrue(
                 later.atMillis - earlier.atMillis >= thresholds.cooldownMillis,
@@ -460,8 +463,8 @@ class AdaptiveVideoPolicyTest {
 
         assertEquals(VideoQualityTier.HIGH, policy.current.tier)
         assertTrue(moves.all { it.reason == VideoQualityReason.SUSTAINED_HEALTH })
-        // Three rungs from LOW to HIGH on the one-to-one ladder, never more.
-        assertEquals(3, moves.size, "expected exactly three upward steps, got $moves")
+        // Two rungs from LOW to HIGH on the one-to-one ladder, never more.
+        assertEquals(2, moves.size, "expected exactly two upward steps, got $moves")
     }
 
     // ------------------------------------------------------------- oscillation
@@ -532,20 +535,24 @@ class AdaptiveVideoPolicyTest {
     // --------------------------------------------------- shape, budget, tiles
 
     @Test
-    fun `the two ladders are different and a conference never offers 720p30`() {
-        assertEquals(1280, VideoQualityProfiles.oneToOne.top.width)
-        assertEquals(30, VideoQualityProfiles.oneToOne.top.fps)
+    fun `the ladders get quieter as the call gets busier, and none of them offers 720p`() {
+        assertEquals(640, VideoQualityProfiles.oneToOne.top.width)
+        assertEquals(15, VideoQualityProfiles.oneToOne.top.fps)
 
-        assertEquals(960, VideoQualityProfiles.conference.top.width)
-        assertEquals(24, VideoQualityProfiles.conference.top.fps)
+        assertEquals(480, VideoQualityProfiles.threeParty.top.width)
+        assertEquals(15, VideoQualityProfiles.threeParty.top.fps)
+
+        assertEquals(320, VideoQualityProfiles.fourParty.top.width)
+        assertEquals(15, VideoQualityProfiles.fourParty.top.fps)
 
         assertTrue(
-            VideoQualityProfiles.conference.profiles.none { it.width > 960 },
-            "a conference must never send 720p",
+            listOf(
+                VideoQualityProfiles.oneToOne,
+                VideoQualityProfiles.threeParty,
+                VideoQualityProfiles.fourParty,
+            ).flatMap { it.profiles }.none { it.width > 640 },
+            "nothing above 360p is a rung any ladder offers: smooth before sharp",
         )
-        // MEDIUM_HIGH is a one-to-one rung only -- see its doc.
-        assertNull(VideoQualityProfiles.conference.profile(VideoQualityTier.MEDIUM_HIGH))
-        assertNotNull(VideoQualityProfiles.oneToOne.profile(VideoQualityTier.MEDIUM_HIGH))
     }
 
     @Test
@@ -553,15 +560,15 @@ class AdaptiveVideoPolicyTest {
         val policy = policy()
         val c = clock()
         policy.drive(healthy(), millis = 40_000, clock = c)
-        assertEquals(1280, policy.current.width)
+        assertEquals(640, policy.current.width)
 
         c[0] += tick
-        val joined = policy.sample(healthy(shape = CallShape.CONFERENCE, legs = 3), c[0])
+        val joined = policy.sample(healthy(shape = CallShape.FOUR_PARTY, legs = 3), c[0])
 
         assertNotNull(joined, "a shape change must be applied immediately")
         assertEquals(VideoQualityReason.CALL_SHAPE_CHANGED, joined.reason)
-        assertEquals(CallShape.CONFERENCE, policy.shape)
-        assertTrue(policy.current.width <= 960, "a three-party call must leave 720p at once")
+        assertEquals(CallShape.FOUR_PARTY, policy.shape)
+        assertTrue(policy.current.width <= 320, "a four-party call must leave 360p at once")
     }
 
     @Test
@@ -574,7 +581,7 @@ class AdaptiveVideoPolicyTest {
         val before = policy.current
 
         c[0] += tick
-        policy.sample(healthy(shape = CallShape.CONFERENCE, legs = 3), c[0])
+        policy.sample(healthy(shape = CallShape.FOUR_PARTY, legs = 3), c[0])
 
         assertTrue(
             policy.current.pixelRate <= before.pixelRate,
@@ -584,9 +591,9 @@ class AdaptiveVideoPolicyTest {
 
     @Test
     fun `a participant leaving lets quality recover, but only through the upgrade window`() {
-        val policy = policy(shape = CallShape.CONFERENCE, legs = 3)
+        val policy = policy(shape = CallShape.FOUR_PARTY, legs = 3)
         val c = clock()
-        policy.drive(healthy(shape = CallShape.CONFERENCE, legs = 3), millis = 40_000, clock = c)
+        policy.drive(healthy(shape = CallShape.FOUR_PARTY, legs = 3), millis = 40_000, clock = c)
 
         val before = policy.current
         c[0] += tick
@@ -607,14 +614,14 @@ class AdaptiveVideoPolicyTest {
 
     @Test
     fun `a budget that no longer affords the tier drops it without waiting for a collapse`() {
-        val policy = policy(shape = CallShape.CONFERENCE, legs = 1)
+        val policy = policy(shape = CallShape.FOUR_PARTY, legs = 1)
         val c = clock()
-        policy.drive(healthy(shape = CallShape.CONFERENCE, legs = 1), millis = 40_000, clock = c)
+        policy.drive(healthy(shape = CallShape.FOUR_PARTY, legs = 1), millis = 40_000, clock = c)
         val before = policy.current
 
         // Three legs share the same aggregate: the allowance per leg falls to a third.
-        val squeezed = healthy(shape = CallShape.CONFERENCE, legs = 3).copy(
-            budget = VideoBudget(outgoingVideoLegs = 3, aggregateCeilingBps = 1_200_000),
+        val squeezed = healthy(shape = CallShape.FOUR_PARTY, legs = 3).copy(
+            budget = VideoBudget(outgoingVideoLegs = 3, aggregateCeilingBps = 300_000),
         )
         val moves = policy.drive(squeezed, millis = 20_000, clock = c)
 

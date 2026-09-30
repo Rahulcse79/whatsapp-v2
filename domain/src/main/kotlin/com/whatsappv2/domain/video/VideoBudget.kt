@@ -66,10 +66,13 @@ data class VideoBudget(
         /**
          * Total outgoing video across every leg, 3 Mbit/s.
          *
-         * Sized from the mesh rather than from the link: three legs at the conference top
-         * rung's target is 2.55 Mbit/s, so 3 Mbit/s admits a four-party call at 540p24
-         * with room for the rate controller to breathe, and divides to 1 Mbit/s a leg.
-         * A one-to-one call has one leg and is bounded by [HARD_CEILING_BPS] instead.
+         * Sized from the mesh rather than from the link, and left where it was when the
+         * ladders were lowered on 2026-09-27: three legs at the four-party top rung's target
+         * is now 1.5 Mbit/s, half the ceiling, which is deliberate headroom rather than slack
+         * to be reclaimed. It divides to 1 Mbit/s a leg, so the aggregate stops being the
+         * binding constraint and the tier is chosen by what the encoder can actually deliver
+         * — which is the thing that was limiting these handsets. A one-to-one call has one
+         * leg and is bounded by [HARD_CEILING_BPS] instead.
          */
         const val AGGREGATE_CEILING_BPS = 3_000_000
 
