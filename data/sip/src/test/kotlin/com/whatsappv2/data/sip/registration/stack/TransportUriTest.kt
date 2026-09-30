@@ -84,6 +84,36 @@ class TransportUriTest {
         assertEquals(typed, typed.withTransportOf("TLS"))
     }
 
+    // --------------------------------------------------------- name-addr form
+
+    @Test
+    fun `a dial target is handed to PJSIP as a name-addr`() {
+        // Angle brackets are the whole fix for the 404 at 192.168.7.14:5070: PJSIP only
+        // builds a name_addr when the text already starts with `<`, and a `To:` without
+        // brackets was not resolved by that registrar even though the extension was
+        // registered. See `asNameAddr`.
+        assertEquals(
+            "<sip:1004@192.168.7.14:5070>",
+            "sip:1004@192.168.7.14:5070".asNameAddr(),
+        )
+    }
+
+    @Test
+    fun `the transport parameter stays inside the brackets`() {
+        // Outside them it would be a header parameter, not a URI parameter, and would
+        // stop selecting the transport.
+        assertEquals(
+            "<sip:1004@192.168.7.14:5070;transport=tls>",
+            "sip:1004@192.168.7.14:5070".withTransportOf("TLS").asNameAddr(),
+        )
+    }
+
+    @Test
+    fun `a target that is already a name-addr is not wrapped twice`() {
+        assertEquals("<sip:1004@host>", "<sip:1004@host>".asNameAddr())
+        assertEquals("\"1004\" <sip:1004@host>", "\"1004\" <sip:1004@host>".asNameAddr())
+    }
+
     @Test
     fun `an account the stack does not know leaves the target untouched`() {
         // No transport to speak for. Inventing one here would be a guess on the single

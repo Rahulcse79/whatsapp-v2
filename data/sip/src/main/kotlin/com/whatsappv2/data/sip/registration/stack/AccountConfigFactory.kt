@@ -48,7 +48,14 @@ internal fun StackAccount.toAccountConfig(
         // The transport is selected by the URI parameter, which is what RFC 3261 §19.1.1
         // defines it for — NOT by pinning `sipConfig.transportId`. See the note below on
         // why the pinned form sent nothing at all.
-        idUri = "sip:$username@$domain$transportParam"
+        // A name-addr, not a bare URI, and that is what puts the angle brackets on the
+        // `From` of every INVITE this account places. `pjsip_dlg_create_uac` parses this
+        // string with option `0`, and PJSIP only builds a `pjsip_name_addr` when the text
+        // already starts with `<` — so a bare `sip:…` here produced `From: sip:1005@host`
+        // and a registrar that could not resolve it answered 404 on a live deployment.
+        // See `TransportUri.asNameAddr` for the capture. REGISTER was never affected,
+        // because `pjsua_acc` re-parses this with PJSIP_PARSE_URI_AS_NAMEADDR.
+        idUri = "<sip:$username@$domain$transportParam>"
 
         regConfig.registrarUri = registrarUri + transportParam
         regConfig.timeoutSec = expirySeconds.toLong()

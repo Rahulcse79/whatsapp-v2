@@ -1531,7 +1531,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             val call = PjCall(callKey, account)
             calls[callKey] = call
             call.makeCall(
-                destination.withTransportOf(accountConfigs[accountKey]?.transport),
+                destination.withTransportOf(accountConfigs[accountKey]?.transport).asNameAddr(),
                 callParams(videoEnabled).withConference(conferenceEntity),
             )
         }

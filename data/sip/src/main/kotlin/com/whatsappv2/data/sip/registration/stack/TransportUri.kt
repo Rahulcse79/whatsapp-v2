@@ -62,3 +62,39 @@ internal fun String.withTransportOf(transport: String?): String {
 
 /** Enough to recognise a transport the caller already chose. */
 private const val TRANSPORT_PARAM = ";transport="
+
+/**
+ * The URI as a SIP **name-addr** — `<sip:…>` — which is how it must reach PJSIP if the
+ * header built from it is to carry angle brackets.
+ *
+ * ## The 404 this closes
+ *
+ * `pjsip_dlg_create_uac` parses both the local and the remote URI with option `0`
+ * (`sip_dialog.c:262`, `:297`), and `int_parse_uri_or_name_addr` only produces a
+ * `pjsip_name_addr` when the text already begins with `<` or `"` (`sip_parser.c:163`).
+ * A bare `sip:1004@host` therefore becomes a plain URI and prints **without** brackets,
+ * while REGISTER comes out bracketed because `pjsua_acc` parses the account id with
+ * `PJSIP_PARSE_URI_AS_NAMEADDR` (`pjsua_acc.c:325`). That is the whole reason one message
+ * had brackets and the other did not.
+ *
+ * RFC 3261 §20 permits the bare form and defines how to read it, so this was legal — and
+ * it still did not work. Captured against the deployment at 192.168.7.14:5070, every
+ * INVITE this app sent was answered `404 Not Found` while the extension was demonstrably
+ * registered (`200 OK … REGISTER to=<sip:1004@192.168.7.14>` in the same capture), and a
+ * MicroSIP client on the same server reached the same kind of destination with `200 OK`.
+ * The messages differed in one thing:
+ *
+ *     ours      To: sip:1004@192.168.7.14        -> 404
+ *     MicroSIP  To: <sip:74972@192.168.7.14>     -> 200
+ *
+ * Every 404 in that capture has an unbracketed `To`; every success has a bracketed one.
+ * So the server does not implement §20's disambiguation, and the fix is to send the form
+ * it — and every other client on it — actually parses.
+ *
+ * Idempotent: a URI that already is a name-addr, or that carries a display name, is
+ * returned untouched rather than wrapped twice.
+ */
+internal fun String.asNameAddr(): String {
+    val trimmed = trim()
+    return if (trimmed.startsWith("<") || trimmed.startsWith("\"")) trimmed else "<$trimmed>"
+}
