@@ -51,9 +51,9 @@ class CodecPrioritiesTest {
             preferred = listOf("opus", "PCMU", "PCMA"),
         )
 
-        assertEquals(254.toShort(), result.priorities.getValue("opus/48000/2"))
-        assertEquals(253.toShort(), result.priorities.getValue("PCMU/8000/1"))
-        assertEquals(252.toShort(), result.priorities.getValue("PCMA/8000/1"))
+        assertEquals(CodecPriorities.TOP, result.priorities.getValue("opus/48000/2"))
+        assertEquals(below(1), result.priorities.getValue("PCMU/8000/1"))
+        assertEquals(below(2), result.priorities.getValue("PCMA/8000/1"))
         assertFalse(result.wouldDisableEverything)
     }
 
@@ -76,7 +76,7 @@ class CodecPrioritiesTest {
             alsoRequired = setOf("opus"),
         )
 
-        assertEquals(254.toShort(), result.priorities.getValue("PCMU/8000/1"))
+        assertEquals(CodecPriorities.TOP, result.priorities.getValue("PCMU/8000/1"))
         assertEquals(
             CodecPriorities.KEPT_FOR_ANOTHER_ACCOUNT,
             result.priorities.getValue("opus/48000/2"),
@@ -94,8 +94,8 @@ class CodecPrioritiesTest {
             preferred = listOf("OPUS", "PCMU"),
         )
 
-        assertEquals(254.toShort(), result.priorities.getValue("opus/48000/2"))
-        assertEquals(253.toShort(), result.priorities.getValue("pcmu/8000/1"))
+        assertEquals(CodecPriorities.TOP, result.priorities.getValue("opus/48000/2"))
+        assertEquals(below(1), result.priorities.getValue("pcmu/8000/1"))
         assertTrue(result.unmatchedPreferences.isEmpty())
     }
 
@@ -110,7 +110,7 @@ class CodecPrioritiesTest {
         )
 
         assertEquals(listOf("H264"), result.unmatchedPreferences)
-        assertEquals(254.toShort(), result.priorities.getValue("VP8/102"))
+        assertEquals(CodecPriorities.TOP, result.priorities.getValue("VP8/102"))
         assertFalse(result.wouldDisableEverything)
     }
 
@@ -126,9 +126,9 @@ class CodecPrioritiesTest {
             preferred = listOf("VP8", "H264"),
         )
 
-        assertEquals(254.toShort(), result.priorities.getValue("VP8/102"))
-        assertEquals(253.toShort(), result.priorities.getValue("VP8/103"))
-        assertEquals(252.toShort(), result.priorities.getValue("H264/99"))
+        assertEquals(CodecPriorities.TOP, result.priorities.getValue("VP8/102"))
+        assertEquals(below(1), result.priorities.getValue("VP8/103"))
+        assertEquals(below(2), result.priorities.getValue("H264/99"))
         assertEquals(CodecPriorities.DISABLED, result.priorities.getValue("VP9/106"))
         assertEquals(
             result.priorities.filterValues { it > 0 }.size,
@@ -182,16 +182,102 @@ class CodecPrioritiesTest {
     }
 
     @Test
-    fun `MediaCodec's VP8 stays inside the range PJSIP accepts`() {
-        // PJSIP's priority is an 8-bit value: 255 is the ceiling and 0 means "never offer
-        // this". TOP is 254 rather than 255 because pjmedia's sort_codecs rewrites a leading
-        // 255 down to 254, which would collapse the tiebreak back into the tie it exists to
-        // settle. That leaves exactly one usable number above TOP, and this asserts it is the
-        // one being used rather than an overflow that reads as DISABLED.
-        assertEquals(255.toShort(), CodecPriorities.MEDIACODEC_VP8)
+    fun `the tiebreak survives the rewrite pjmedia performs on a leading 255`() {
+        // The assertion this replaces pinned MEDIACODEC_VP8 to 255 and called it "the one
+        // usable number above TOP". It is not usable: 255 is precisely the value pjmedia's
+        // `sort_codecs` rewrites, and it rewrites it to 254 -- which was TOP. So the tiebreak
+        // landed back on the number it was meant to beat, and an account asking for H264
+        // before VP8 got a tie between H264 and the hardware VP8. The M23's audit read
+        // `VP8/103@254, H264/99@254` (2026-09-27) and the offer that came out of it put
+        // libvpx's VP8 first, which cost a resumed mesh leg every decoded frame.
+        //
+        // So the rule is not "inside 0..255", it is "strictly below the value that gets
+        // rewritten", and it has to hold for TOP as well as for the tiebreak.
+        assertTrue(
+            CodecPriorities.MEDIACODEC_VP8 < REWRITTEN_BY_PJMEDIA,
+            "MEDIACODEC_VP8 (${CodecPriorities.MEDIACODEC_VP8}) is rewritten by sort_codecs, " +
+                "which lands it back on ${REWRITTEN_BY_PJMEDIA - 1}",
+        )
+        assertTrue(
+            CodecPriorities.TOP < CodecPriorities.MEDIACODEC_VP8,
+            "TOP (${CodecPriorities.TOP}) must leave the tiebreak a number of its own",
+        )
         assertTrue(
             CodecPriorities.MEDIACODEC_VP8 > CodecPriorities.DISABLED,
             "the hardware VP8 must never be written as the disabled value",
         )
+    }
+
+    @Test
+    fun `the hardware VP8 wins however the account orders its video preferences`() {
+        // The case the M23 was in and the M14 was not. Both handsets ran the same build; the
+        // only difference was the account's list, and that was enough to decide whether the
+        // hardware VP8 led the offer. Both orders are asserted here, because one of them
+        // passing is what hid this.
+        listOf(listOf("VP8", "H264"), listOf("H264", "VP8")).forEach { preferred ->
+            val assigned = CodecPriorities.assign(
+                available = listOf("VP8/103", "VP8/102", "H264/99"),
+                preferred = preferred,
+            )
+            val highest = assigned.priorities.values.max()
+            assertTrue(
+                CodecPriorities.MEDIACODEC_VP8 > highest,
+                "with preferences $preferred the tiebreak (${CodecPriorities.MEDIACODEC_VP8}) " +
+                    "does not beat $highest, so the offer's leading video format is decided " +
+                    "by pjmedia's registration order rather than by us",
+            )
+        }
+    }
+
+    @Test
+    fun `the other VP8 is named for switching off, so an offer carries VP8 once`() {
+        // What ranking alone could not do. Both entries stayed in the offer, and the receive
+        // payload type comes from the first offered format while the transmit one comes from
+        // the answer -- so an answer naming the other number left a stream whose depacketiser
+        // dropped every packet. Measured on an M23 resuming a three-party mesh leg, 2026-09-27:
+        // RTP in at 19-90 pkt/s with zero loss, jitter buffer empty, decode 0.0.
+        val registry = listOf("VP8/103", "VP8/102", "H264/99", "VP9/106")
+
+        val off = CodecPriorities.duplicatesOf(keep = "VP8/103", available = registry)
+
+        assertEquals(listOf("VP8/102"), off, "the duplicate VP8 was not named")
+    }
+
+    @Test
+    fun `nothing is switched off when the preferred codec is not registered`() {
+        // The fallback case, and the reason this is a list rather than a boolean: a build or a
+        // handset where the MediaCodec probe registered nothing has only libvpx's VP8, and
+        // switching that off would leave no VP8 at all.
+        val off = CodecPriorities.duplicatesOf(
+            keep = "VP8/103",
+            available = listOf("VP8/102", "H264/99"),
+        )
+
+        assertTrue(off.isEmpty(), "libvpx's VP8 was switched off with nothing to replace it: $off")
+    }
+
+    @Test
+    fun `a codec sharing no encoding name is left alone`() {
+        // Matching is on the encoding, not on "everything else": H264 and VP9 are different
+        // codecs and a peer can tell them apart, so they are not duplicates of anything.
+        val off = CodecPriorities.duplicatesOf(
+            keep = "VP8/103",
+            available = listOf("VP8/103", "H264/99", "VP9/106"),
+        )
+
+        assertTrue(off.isEmpty(), "a codec that is not a second VP8 was named: $off")
+    }
+
+    /** Where `assign` puts the preference [steps] places down the account's list. */
+    private fun below(steps: Int): Short = (CodecPriorities.TOP - steps).toShort()
+
+    /**
+     * The one priority pjmedia does not store as written.
+     *
+     * `sort_codecs` rewrites a leading 255 down to 254 after sorting, so 255 is not a rank a
+     * caller can use to mean "above everything" -- see the test above.
+     */
+    private companion object {
+        const val REWRITTEN_BY_PJMEDIA = 255
     }
 }
