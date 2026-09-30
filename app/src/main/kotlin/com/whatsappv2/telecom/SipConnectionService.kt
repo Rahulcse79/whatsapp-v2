@@ -151,28 +151,25 @@ internal class SipConnectionService : ConnectionService() {
      * Empties the static registry, because it does not die with this instance.
      *
      * Telecom destroys this service when it holds no more connections, so in the ordinary
-     * case both maps are already empty and this is a no-op. What it exists for is the case
-     * where they are not: entries left behind are `Connection`s the platform has already
-     * torn its side of, and they would sit in a **static** map for the life of the process
-     * — answering [liveCallIds] with calls that do not exist, which is precisely the
-     * question a rebuilt screen asks after a process death.
+     * case the registry is already empty and this is a no-op. What it exists for is the case
+     * where it is not: entries left behind are `Connection`s the platform has already torn
+     * its side of, and they would sit in a **static** map for the life of the process —
+     * answering [liveCallIds] with calls that do not exist, which is precisely the question
+     * a rebuilt screen asks after a process death.
      *
      * They are not `destroy()`ed on the way out. Telecom has unbound by the time this runs
      * and the binder behind each one is gone; the call's real state lives in the FSM and
      * the SIP stack, which is where it was always the source of truth.
-     *
-     * Waiters are released rather than dropped. A caller suspended in
-     * `TelecomCallRegistry.awaitDecision` would otherwise sit until its own timeout for an
-     * answer that can no longer come.
      */
     override fun onDestroy() {
-        val orphans = connections.keys.toList()
+        val orphans = releaseOnUnbind()
         if (orphans.isNotEmpty()) {
             logger.warn(TAG, "Telecom destroyed the service holding ${orphans.size} connection(s)")
         }
-        connections.clear()
-
-        pending.keys.toList().forEach { callId -> pending.remove(callId)?.complete(false) }
+        val waiting = unanswered()
+        if (waiting > 0) {
+            logger.info(TAG, "Telecom unbound with $waiting placement(s) unanswered; they wait for the rebind")
+        }
         super.onDestroy()
     }
 
@@ -245,10 +242,61 @@ internal class SipConnectionService : ConnectionService() {
             abandoned += callId
         }
 
-        /** True when this call was given up on; clears the mark, since ids are used once. */
-        private fun wasAbandoned(callId: CallId): Boolean = abandoned.remove(callId)
+        /**
+         * True when this call was given up on; clears the mark, since ids are used once.
+         *
+         * `internal` rather than private so `SipConnectionServiceRegistryTest` can assert the
+         * mark exists: it is what cancels a late connection, and an absent mark is invisible
+         * from outside until a phantom call turns up in `dumpsys telecom`.
+         */
+        internal fun wasAbandoned(callId: CallId): Boolean = abandoned.remove(callId)
 
-        private fun settle(callId: CallId, created: Boolean) {
+        /**
+         * Drops the connections an unbinding took with it, and **leaves placements alone**.
+         *
+         * ## An unbind is not an answer
+         *
+         * Telecom unbinds this service the moment it holds no connections and binds it again
+         * for the next one, which makes the gap between `placeCall` and
+         * [onCreateOutgoingConnection] a gap in which the service does not exist. A placement
+         * already accepted is still coming; the destroy says nothing about it.
+         *
+         * This used to complete every waiter with `false`, reasoning that an answer could no
+         * longer arrive. It could, and the cost of pretending otherwise was a call the phone
+         * could not make for the rest of the process. Measured on an M14, 2026-09-27: 1005
+         * left a three-party mesh, the mesh promoted its surviving leg to Telecom, Telecom
+         * unbound 16 ms later because the leg that *ended* had been holding the only
+         * connection, and this method reported the promotion refused. `TelecomCallRegistry`
+         * reads `false` as a refusal, and a refusal does not [forget] the id — so when Telecom
+         * rebound 450 ms later and asked for the connection it had already agreed to,
+         * [wasAbandoned] was false and a real one was handed back. Nothing would ever report
+         * that connection active or ended, because the engine had given up on the promotion.
+         * It sat `DIALING` in `dumpsys telecom` against one live call, and
+         * `isOutgoingCallPermitted` answered false to everything after it: the rejoin of the
+         * participant who had just left could not send an INVITE, twice, eight minutes apart.
+         *
+         * So a waiter now survives the unbind. If the rebind comes, the placement completes
+         * for real; if it never comes, `awaitDecision`'s own timeout is what gives up — and
+         * that path does [forget] the id, which is what cancels a connection arriving late.
+         *
+         * @return the ids that outlived the binding, for the caller to log.
+         */
+        fun releaseOnUnbind(): List<CallId> {
+            val orphans = connections.keys.toList()
+            connections.clear()
+            return orphans
+        }
+
+        /** How many placements are still waiting for Telecom to answer. */
+        fun unanswered(): Int = pending.size
+
+        /**
+         * Hands a waiting caller Telecom's answer.
+         *
+         * `internal` rather than private so a test can stand in for the rebind — the thing
+         * [releaseOnUnbind] now leaves a waiter alive for.
+         */
+        internal fun settle(callId: CallId, created: Boolean) {
             pending.remove(callId)?.complete(created)
         }
 
