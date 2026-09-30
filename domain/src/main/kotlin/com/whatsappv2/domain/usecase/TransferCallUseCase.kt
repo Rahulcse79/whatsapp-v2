@@ -145,7 +145,7 @@ class TransferCallUseCase @Inject constructor(
     private suspend fun resolve(callId: CallId, input: String): SipUri? {
         val call = calls.activeCalls.value.firstOrNull { it.callId == callId } ?: return null
         val account = accounts.findById(call.accountId) ?: return null
-        return DialledTarget.resolve(input, account.domain)
+        return DialledTarget.resolve(input, account.domain, account.dialledPort)
     }
 
     /** Which of the two reasons [resolve] returned null, so the screen can say which. */

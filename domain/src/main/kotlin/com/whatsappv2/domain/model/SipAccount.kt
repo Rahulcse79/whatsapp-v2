@@ -111,6 +111,33 @@ data class SipAccount(
     val effectiveRegistrar: String
         get() = registrar?.render() ?: "$domain:$effectivePort"
 
+    /**
+     * The port a dialled call must be sent to — [effectivePort], stated rather than implied.
+     *
+     * ## The defect this closes
+     *
+     * [effectiveRegistrar] already puts the port on the REGISTER's request URI, so an
+     * account whose server listens on 5070 registered on 5070 perfectly well. A *call* was
+     * built somewhere else entirely: `DialledTarget` completed `1004` into
+     * `sip:1004@<domain>` from the domain alone, and a SIP URI carrying no port means the
+     * transport's default — so the account registered on 5070 and then sent every INVITE
+     * to **5060**. Reported from a handset against 192.168.7.14:5070.
+     *
+     * ## Why the default is written out too
+     *
+     * `sip:x@host` and `sip:x@host:5060` are the same address, so this could have omitted
+     * the port whenever it matched the transport's default and changed nothing on the
+     * wire. It does not, deliberately. "The port you set is the port calls go to" is a
+     * rule with no exception to remember and one that can be checked by reading a single
+     * log line; the shorter form buys nothing and costs the next person an hour working
+     * out why 5060 is missing from a URI when 5070 is present.
+     *
+     * Contrast `;transport=udp`, which really is omitted — there the default has a
+     * *functional* difference, because naming it stops PJSIP escalating an oversized
+     * request to TCP (RFC 3261 §18.1.1). A port has no such side effect.
+     */
+    val dialledPort: Int get() = effectivePort
+
     /** The AOR this account registers: `sip:username@domain` (`sips:` under TLS). */
     val addressOfRecord: String
         get() = "${if (transport == Transport.TLS) SipScheme.SIPS.token else SipScheme.SIP.token}:$username@$domain"

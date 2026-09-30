@@ -137,6 +137,49 @@ class MediaAndTargetTest {
     }
 
     @Test
+    fun `the account port is carried onto a bare extension`() {
+        // The defect: an account on a server listening on 5070 registered on 5070 -
+        // `effectiveRegistrar` puts the port on the REGISTER - and then sent every INVITE
+        // to 5060, because a dialled extension was completed from the domain alone and a
+        // SIP URI with no port means the transport's default. Reported from a handset
+        // against 192.168.7.14:5070.
+        val target = DialledTarget.resolve("1004", "192.168.7.14", accountPort = 5070)
+
+        assertEquals("sip:1004@192.168.7.14:5070", target?.render())
+    }
+
+    @Test
+    fun `a default port is written out too, so the rule has no exception`() {
+        assertEquals(
+            "sip:1002@sip.example.com:5060",
+            DialledTarget.resolve("1002", "sip.example.com", accountPort = 5060)?.render(),
+        )
+    }
+
+    @Test
+    fun `a caller with no account port still gets the old bare URI`() {
+        // ConferenceRoom matches on user and host and has no account to ask.
+        assertEquals(
+            "sip:1002@sip.example.com",
+            DialledTarget.resolve("1002", "sip.example.com")?.render(),
+        )
+    }
+
+    @Test
+    fun `the account port is never imposed on a host the user named`() {
+        // Both spellings give their own host. Appending this account's port to somebody
+        // else's server is a guess, not a completion.
+        assertEquals(
+            "sip:1002@other.example.com",
+            DialledTarget.resolve("sip:1002@other.example.com", "sip.example.com", 5070)?.render(),
+        )
+        assertEquals(
+            "sip:1002@other.example.com",
+            DialledTarget.resolve("1002@other.example.com", "sip.example.com", 5070)?.render(),
+        )
+    }
+
+    @Test
     fun `blank input resolves to nothing`() {
         assertNull(DialledTarget.resolve("", "sip.example.com"))
         assertNull(DialledTarget.resolve("   ", "sip.example.com"))
