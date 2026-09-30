@@ -70,7 +70,7 @@ class TransferCallUseCaseTest {
 
         // Dialling 1002 and transferring to 1002 must mean the same address (Task 55).
         val transfer = engine.invocations.last { it.operation == FakeSipEngine.Operation.TRANSFER }
-        assertTrue(transfer.detail.endsWith("sip:1002@sip.example.com"))
+        assertTrue(transfer.detail.endsWith("sip:1002@sip.example.com:5060"))
     }
 
     @Test

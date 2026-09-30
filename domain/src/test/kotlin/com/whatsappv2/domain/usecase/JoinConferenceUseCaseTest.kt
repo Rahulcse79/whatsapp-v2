@@ -62,7 +62,7 @@ class JoinConferenceUseCaseTest {
         val result = useCase(engine)("3000")
 
         assertIs<Outcome.Success<CallId>>(result)
-        assertEquals("sip:3000@sip.example.com", engine.conferences.value.single().conferenceUri.render())
+        assertEquals("sip:3000@sip.example.com:5060", engine.conferences.value.single().conferenceUri.render())
     }
 
     @Test

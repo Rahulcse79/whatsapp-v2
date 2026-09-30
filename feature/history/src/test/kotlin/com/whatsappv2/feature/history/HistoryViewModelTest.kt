@@ -241,7 +241,7 @@ class HistoryViewModelTest {
         viewModel().onCallBack(entry)
         advanceUntilIdle()
 
-        assertEquals("sip:1003@192.168.0.101", lastPlacedCall())
+        assertEquals("sip:1003@192.168.0.101:5060", lastPlacedCall())
     }
 
     @Test
@@ -290,7 +290,11 @@ class HistoryViewModelTest {
         viewModel().onCallBack(conference)
         advanceUntilIdle()
         assertEquals(
-            listOf("sip:1001@sip.example.com", "sip:1005@sip.example.com", "sip:1002@sip.example.com"),
+            listOf(
+                "sip:1001@sip.example.com:5060",
+                "sip:1005@sip.example.com:5060",
+                "sip:1002@sip.example.com:5060",
+            ),
             engine.activeCalls.value.map { it.remote.render() },
             "everyone is dialled before anyone has answered",
         )
@@ -328,13 +332,13 @@ class HistoryViewModelTest {
             .filter { it.operation == FakeSipEngine.Operation.PLACE_CALL }
             .map { it.detail }
         assertEquals(
-            listOf("sip:1004@sip.example.com", "sip:1005@sip.example.com"),
+            listOf("sip:1004@sip.example.com:5060", "sip:1005@sip.example.com:5060"),
             dialled,
             "both members with video, and nothing else — no room is dialled",
         )
         assertTrue(engine.bridgeMergeRequests.isEmpty(), "no leg was REFERred anywhere")
         assertEquals(
-            setOf("sip:1004@sip.example.com", "sip:1005@sip.example.com"),
+            setOf("sip:1004@sip.example.com:5060", "sip:1005@sip.example.com:5060"),
             engine.mixedCalls.value.mapTo(HashSet()) { id ->
                 engine.activeCalls.value.single { it.callId == id }.remote.render()
             },

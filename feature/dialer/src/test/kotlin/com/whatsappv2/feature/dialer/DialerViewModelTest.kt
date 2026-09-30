@@ -102,7 +102,7 @@ class DialerViewModelTest {
         viewModel.onCall()
         runCurrent()
 
-        assertEquals("sip:1001@sip.example.com", lastDialled())
+        assertEquals("sip:1001@sip.example.com:5061", lastDialled())
     }
 
     @Test
@@ -169,7 +169,7 @@ class DialerViewModelTest {
         viewModel.onCall()
         runCurrent()
 
-        assertEquals("sip:1001@home.example.com", lastDialled())
+        assertEquals("sip:1001@home.example.com:5061", lastDialled())
     }
 
     // ------------------------------------------------- choosing an account
@@ -300,7 +300,7 @@ class DialerViewModelTest {
         viewModel.onCall()
         runCurrent()
 
-        assertEquals("sip:1001@only.example.com", lastDialled())
+        assertEquals("sip:1001@only.example.com:5061", lastDialled())
     }
 
     @Test
