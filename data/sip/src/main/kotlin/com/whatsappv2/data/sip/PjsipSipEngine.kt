@@ -2064,8 +2064,33 @@ internal class PjsipSipEngine @Inject constructor(
         }
     }
 
-    /** Forgets the mesh, so the next conference starts from nothing. */
+    /**
+     * Forgets the mesh, so the next conference starts from nothing.
+     *
+     * ## The surviving leg stops being a conference too
+     *
+     * A mesh of one is a call, and the screen has to say so. The screen renders a
+     * [ConferenceSession] — `ConferenceSession.toUiState` turns its announced `participants`
+     * into the list, or its `invited` when no roster arrived — and [endCall] only removes the
+     * session belonging to the leg that *ended*. The leg that survives keeps its own session,
+     * and that session still names everybody who was ever in the room.
+     *
+     * Measured on a TC15, 2026-09-27: 1005 left a three-party mesh, this engine logged
+     * "Mesh: down to one leg; this is a call again", FreeSWITCH dropped to one pair, media
+     * followed correctly — and the handset still read "3 people in this conference" eight
+     * minutes later. Everything below the UI had converged; the roster had not, because
+     * nothing told the surviving session it was no longer part of a conference.
+     *
+     * Scoped to the mesh's own legs rather than clearing every session, and the legs are
+     * read *before* the mesh is forgotten because [meshLegs] needs it. A dial-in room
+     * (ADR-003) keeps its session: that conference is real and still running, and this
+     * method is only ever reached when a *mesh* existed.
+     */
     private fun closeMesh() {
+        meshConference.value?.let { mesh ->
+            val legs = meshLegs(mesh).keys
+            conferenceSessions.update { all -> all.filterNot { it.callId in legs } }
+        }
         meshConference.value = null
         meshDialling.clear()
     }
