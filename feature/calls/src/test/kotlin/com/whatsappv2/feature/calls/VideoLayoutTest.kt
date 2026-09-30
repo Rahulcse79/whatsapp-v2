@@ -406,4 +406,63 @@ class VideoLayoutTest {
         /** Integer rounding moves the ratio by a fraction of a pixel's worth. */
         const val RATIO_TOLERANCE = 0.01f
     }
+
+    @Test
+    fun `neither fit nor cover ever scales the axes by different amounts`() {
+        // The whole requirement, as a property rather than as examples: a picture may be
+        // letterboxed, it may be cropped, it may be made any size at all -- but the scale
+        // applied to width and the scale applied to height must be the same number, or the
+        // subject is distorted. Non-uniform scaling is the definition of a stretch.
+        //
+        // Every ladder resolution this app negotiates, against tile shapes a conference grid
+        // actually produces: square, tall, wide, and the two-across-then-one row heights.
+        val frames = listOf(
+            VideoSize(192, 108), VideoSize(256, 144), VideoSize(320, 180),
+            VideoSize(480, 270), VideoSize(640, 360), VideoSize(960, 540),
+            VideoSize(1280, 720), VideoSize(1088, 612), VideoSize(720, 1280),
+        )
+        val tiles = listOf(
+            VideoSize(540, 540), VideoSize(540, 960), VideoSize(1080, 600),
+            VideoSize(1080, 2208), VideoSize(360, 640), VideoSize(1920, 1080),
+        )
+
+        frames.forEach { frame ->
+            tiles.forEach { tile ->
+                listOf("fit" to VideoLayout.fit(frame, tile), "cover" to VideoLayout.cover(frame, tile))
+                    .forEach { (name, box) ->
+                        val scaleX = box.width.toDouble() / frame.width
+                        val scaleY = box.height.toDouble() / frame.height
+                        // A pixel of integer rounding at each axis, no more. The tolerance is
+                        // relative because a 1-px error on a 108-px frame is a larger ratio
+                        // than the same error on 1280.
+                        val tolerance = 2.0 / minOf(frame.width, frame.height)
+                        assertTrue(
+                            kotlin.math.abs(scaleX - scaleY) <= tolerance,
+                            "$name stretched $frame into $tile: x=$scaleX y=$scaleY (box $box)",
+                        )
+                    }
+            }
+        }
+    }
+
+    @Test
+    fun `fit keeps the whole frame inside the tile and cover fills it`() {
+        // The difference between the two, stated once: contain never exceeds the tile in
+        // either axis, cover never falls short in either. Both preserve the ratio; what
+        // differs is whether the leftover is bars or is cropped away.
+        val frame = VideoSize(640, 360)
+        val portraitTile = VideoSize(540, 960)
+
+        val contained = VideoLayout.fit(frame, portraitTile)
+        assertTrue(
+            contained.width <= portraitTile.width && contained.height <= portraitTile.height,
+            "fit must not exceed the tile: $contained in $portraitTile",
+        )
+
+        val covered = VideoLayout.cover(frame, portraitTile)
+        assertTrue(
+            covered.width >= portraitTile.width && covered.height >= portraitTile.height,
+            "cover must not fall short of the tile: $covered in $portraitTile",
+        )
+    }
 }

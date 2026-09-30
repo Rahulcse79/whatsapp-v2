@@ -16,6 +16,40 @@ class VideoAndTransferTypesTest {
     private val bob = requireNotNull(SipUri.parse("sip:bob@example.com").getOrNull())
 
     @Test
+    fun `a conference tile is never given another participant's aspect ratio`() {
+        // The stretching bug this exists to stop. `remote` is whichever call decoded most
+        // recently, so an unconditional fallback handed a tile whose own shape had not
+        // arrived yet somebody else's -- a real shape, and the wrong one. The renderer scales
+        // each stream to the shape of the view it is given, so a 16:9 peer drawn into a box
+        // built for a 9:16 one comes out as a column.
+        val sizes = VideoSizes(
+            remote = VideoSize(720, 1280),
+            remotes = mapOf("call-a" to VideoSize(640, 360)),
+        )
+
+        assertEquals(VideoSize(640, 360), sizes.remoteFor("call-a"), "a known tile keeps its own shape")
+        assertEquals(
+            VideoSize.UNKNOWN, sizes.remoteFor("call-b"),
+            "an unknown tile must not borrow the 720x1280 shape of another participant",
+        )
+    }
+
+    @Test
+    fun `a one-to-one call still guesses before its first frame, because the guess is its own`() {
+        // The narrow case the fallback is kept for: nothing has decoded yet, so `remote` is
+        // the only shape there is and a frame later it will be this very call's. Sizing the
+        // view to nothing here is a visible flash at the start of every call.
+        val sizes = VideoSizes(remote = VideoSize(640, 360))
+
+        assertEquals(VideoSize(640, 360), sizes.remoteFor("call-a"))
+    }
+
+    @Test
+    fun `an empty sizes object reports nothing rather than a made-up shape`() {
+        assertEquals(VideoSize.UNKNOWN, VideoSizes.UNKNOWN.remoteFor("call-a"))
+    }
+
+    @Test
     fun `a video request redacts the caller's address`() {
         val request = VideoRequest(callId, bob, fromDisplayName = "Bob", receivedAtEpochMillis = 1)
 
