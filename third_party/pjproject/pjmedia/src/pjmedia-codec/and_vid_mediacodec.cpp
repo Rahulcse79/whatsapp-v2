@@ -442,17 +442,74 @@ typedef struct and_media_codec_data
     unsigned                     trace_in_ev;    /* bounded event counters  */
     unsigned                     trace_out_ev;
 
-    /* Cleared whenever the decoder is started, set by the first keyframe fed
-     * to it. A VP8 decoder that has just been created holds no reference
-     * frame, so an inter-frame is not decodable by it -- and feeding one is not
-     * merely useless, it kills the component: c2.android.vp8.decoder accepted a
+    /* Whether the decoder holds the reference picture the SENDER believes it
+     * holds. Cleared whenever the decoder is started, set by a complete
+     * keyframe, and -- since 2026-09-30 -- cleared again by any picture this
+     * file refuses to hand over.
+     *
+     * ## The start rule, which came first
+     *
+     * A VP8 decoder that has just been created holds no reference frame, so an
+     * inter-frame is not decodable by it -- and feeding one is not merely
+     * useless, it kills the component: c2.android.vp8.decoder accepted a
      * 7126-byte inter-frame as the first input of a decoder recreated by a
      * video off/on and then stopped responding entirely, returning no buffer
      * for any further index and reporting C2_CORRUPTED (2026-09-26). A fresh
      * call happens to open on a keyframe, which is why this only showed up on
-     * recreation and, intermittently, on a call joining mid-GOP. */
+     * recreation and, intermittently, on a call joining mid-GOP.
+     *
+     * ## Why a start rule was not enough
+     *
+     * The checks below are careful never to hand the decoder a partial picture:
+     * a missing frame start, an interior RTP hole, a truncated tail and an
+     * input buffer that could not be taken all drop the picture entire. That is
+     * correct, and on its own it is exactly half of the problem, because the
+     * decoder's reference is a chain: the picture that was dropped was the one
+     * the NEXT inter-frame is coded against. Dropping one picture and then
+     * feeding the next is handing the decoder a difference against a frame it
+     * does not have.
+     *
+     * The component does not refuse that. It decodes it, returns a picture, and
+     * the error propagates into every inter-frame after it -- so the stream
+     * reads healthy at every counter a black tile would trip (RTP arriving,
+     * jitter buffer draining, decode fps non-zero, a frame reaching the
+     * renderer) while the picture is macroblock rubble. Measured in a
+     * three-party mesh on 2026-09-30: one tile persistently mosaic for minutes,
+     * its neighbour on the same handset perfectly clean, audio unaffected.
+     *
+     * Nothing recovered it because nothing required a keyframe: this flag was
+     * set once, at the first keyframe of the stream, and never cleared again
+     * for the life of the decoder. So the start rule -- "no inter-frames until
+     * a keyframe" -- was enforced exactly once, when it was needed after every
+     * loss.
+     *
+     * Clearing it on a drop makes the same rule the recovery rule. While it is
+     * false the checks below refuse dependent inter-frames and the picture-less
+     * decode publishes PJMEDIA_EVENT_KEYFRAME_MISSING, which is what
+     * `vid_stream` turns into a bounded RTCP-FB PLI; it goes true again only for
+     * a keyframe that has already passed every completeness check, so a keyframe
+     * that itself lost a packet leaves the stream in recovery rather than
+     * ending it. No new request path, no new timer, and no PLI this file sends
+     * itself.
+     *
+     * It does not depend on the PLI arriving. The encoder is configured with
+     * `i-frame-interval` = KEYFRAME_INTERVAL = 1 second, so a keyframe is coming
+     * regardless; the PLI only makes it sooner. A tile therefore holds its last
+     * good picture for up to a second instead of decoding rubble for minutes.
+     */
     pj_bool_t                    dec_seen_keyframe;
     unsigned                     vp8_frames_drop_no_keyframe;
+
+    /* Recovery bookkeeping, per stream because this struct is per codec.
+     *
+     * `dec_ref_losses` counts chain breaks, `dec_ref_recoveries` the keyframes
+     * that ended them; the two are equal on a healthy stream that has finished
+     * recovering, and a gap between them is a stream still waiting. `_at` is
+     * stamped at the loss so the recovery can report how long it took, which is
+     * the number that says whether the bound is a second or a minute. */
+    unsigned                     dec_ref_losses;
+    unsigned                     dec_ref_recoveries;
+    pj_timestamp                 dec_ref_lost_at;
 
     unsigned                     vp8_frames_complete;
     unsigned                     vp8_frames_drop_missing_head;
@@ -920,8 +977,16 @@ static pj_status_t configure_decoder(and_media_codec_data *and_media_data) {
         return PJMEDIA_CODEC_EFAILED;
     }
     and_media_data->dec_started = PJ_TRUE;
-    /* A new decoder has no reference frame; it must be given a keyframe first. */
+    /* A new decoder has no reference frame; it must be given a keyframe first.
+     * The recovery counters start with it, because they describe THIS decoder:
+     * a recreation is a new chain, not a continuation of the old one, and
+     * carrying the old numbers across would make the first keyframe after a
+     * recreation look like a recovery from a loss that belonged to a component
+     * that no longer exists. */
     and_media_data->dec_seen_keyframe = PJ_FALSE;
+    and_media_data->dec_ref_losses = 0;
+    and_media_data->dec_ref_recoveries = 0;
+    and_media_data->dec_ref_lost_at.u64 = 0;
 
     /* The configuration as actually applied, named rather than assumed.
      * "the component was created" and "the component was configured to decode
@@ -2887,6 +2952,85 @@ static pj_bool_t and_media_get_input_buffer(
     return PJ_TRUE;
 }
 
+/*
+ * Declare the decoder's reference chain broken, so the next inter-frames are
+ * withheld until a keyframe restores it.
+ *
+ * Called from every path that refuses a picture. A picture this file drops is a
+ * picture the sender COUNTED ON the decoder having: the next inter-frame is a
+ * difference against it. Feeding that difference to a decoder that never saw
+ * the base is what turns one lost packet into minutes of macroblock rubble --
+ * see [dec_seen_keyframe] for the measurement.
+ *
+ * Idempotent, and deliberately so: a burst of loss drops several pictures in a
+ * row and only the first of them breaks anything. The counter therefore counts
+ * BREAKS rather than dropped pictures (the drop counters already do that), and
+ * the timestamp is the moment the chain broke rather than the last picture that
+ * found it broken -- which is what makes the recovery duration below the real
+ * outage rather than the last frame of it.
+ *
+ * It sends nothing. The picture-less decode that follows is what publishes
+ * PJMEDIA_EVENT_KEYFRAME_MISSING, and `vid_stream` is what turns that into an
+ * RTCP-FB PLI, already bounded to two packets per event and already rate
+ * limited at the sender by PJMEDIA_VID_STREAM_MIN_KEYFRAME_INTERVAL_MSEC. A
+ * request path here would be a second one.
+ */
+static void vp8_reference_lost(struct and_media_codec_data *and_media_data,
+                               const char *why)
+{
+    if (!and_media_data->dec_seen_keyframe)
+        return;
+
+    and_media_data->dec_seen_keyframe = PJ_FALSE;
+    ++and_media_data->dec_ref_losses;
+    pj_get_timestamp(&and_media_data->dec_ref_lost_at);
+
+    PJ_LOG(4, (THIS_FILE, "Reference lost: %s. Inter-frames are withheld until "
+               "a keyframe | losses=%u recoveries=%u",
+               why, and_media_data->dec_ref_losses,
+               and_media_data->dec_ref_recoveries));
+}
+
+/*
+ * The keyframe that ends a recovery, and how long the stream was without one.
+ *
+ * Reports the duration rather than a bare "recovered", because the bound is the
+ * thing under test: a keyframe that arrives in 60 ms came from the PLI, one that
+ * arrives in ~1000 ms came from the encoder's own i-frame interval, and one that
+ * takes longer than that means keyframes are being lost too and the stream is
+ * still the defect. Nothing here enforces a bound; it measures one.
+ *
+ * Silent for the FIRST keyframe of a decoder, which is a start rather than a
+ * recovery -- that case has its own line and no duration to report.
+ */
+static void vp8_reference_regained(struct and_media_codec_data *and_media_data,
+                                   unsigned bytes)
+{
+    pj_timestamp now;
+    unsigned msec;
+
+    and_media_data->dec_seen_keyframe = PJ_TRUE;
+
+    if (and_media_data->dec_ref_lost_at.u64 == 0) {
+        PJ_LOG(4, (THIS_FILE, "Decoder reference acquired: first keyframe, "
+                   "%u bytes", bytes));
+        return;
+    }
+
+    pj_get_timestamp(&now);
+    msec = pj_elapsed_msec(&and_media_data->dec_ref_lost_at, &now);
+    and_media_data->dec_ref_lost_at.u64 = 0;
+    ++and_media_data->dec_ref_recoveries;
+
+    PJ_LOG(4, (THIS_FILE, "Decoder reference regained: keyframe of %u bytes "
+               "after %u ms without one | losses=%u recoveries=%u "
+               "inter-frames withheld=%u",
+               bytes, msec, and_media_data->dec_ref_losses,
+               and_media_data->dec_ref_recoveries,
+               and_media_data->vp8_frames_drop_no_keyframe));
+}
+
+
 static pj_status_t and_media_decode(pjmedia_vid_codec *codec,
                                 struct and_media_codec_data *and_media_data,
                                 pj_uint8_t *input_buf, unsigned buf_size,
@@ -2955,6 +3099,8 @@ static pj_status_t and_media_decode(pjmedia_vid_codec *codec,
                           (unsigned)and_media_data->dec_input_buf_max_size));
             }
             and_media_data->dec_input_buf_len = 0;
+            vp8_reference_lost(and_media_data,
+                               "picture exceeded the component's input buffer");
             return status;
         }
 
@@ -3826,6 +3972,7 @@ static pj_status_t decode_vpx(pjmedia_vid_codec *codec,
                                and_media_data->vp8_frames_drop_missing_head,
                                and_media_data->vp8_frames_drop_incomplete));
                 }
+                vp8_reference_lost(and_media_data, "picture had no frame start");
                 return PJ_SUCCESS;
             }
 
@@ -3842,6 +3989,8 @@ static pj_status_t decode_vpx(pjmedia_vid_codec *codec,
                                    and_media_data->vp8_frames_drop_missing_head,
                                    and_media_data->vp8_frames_drop_incomplete));
                     }
+                    vp8_reference_lost(and_media_data,
+                                       "picture had an RTP hole");
                     return PJ_SUCCESS;
                 }
             }
@@ -3893,7 +4042,19 @@ static pj_status_t decode_vpx(pjmedia_vid_codec *codec,
                         if (total < need)
                             sized_ok = PJ_FALSE;
 
-                        /* And the decoder must start on a keyframe. */
+                        /* And the decoder must be holding the reference this
+                         * picture is coded against -- which is true at the
+                         * start of a stream only for a keyframe, and true
+                         * again after a loss only for a keyframe. See
+                         * [dec_seen_keyframe].
+                         *
+                         * Placed after `sized_ok`, deliberately: a keyframe is
+                         * only allowed to end a recovery once it has passed
+                         * every completeness check above, so a keyframe that
+                         * itself lost packets leaves the stream in recovery
+                         * rather than restoring a reference the decoder does
+                         * not actually have. That is the one ordering in this
+                         * block that matters. */
                         if (sized_ok && !and_media_data->dec_seen_keyframe) {
                             if (!is_key) {
                                 ++and_media_data->vp8_frames_drop_no_keyframe;
@@ -3901,17 +4062,19 @@ static pj_status_t decode_vpx(pjmedia_vid_codec *codec,
                                         % 100 == 1)
                                 {
                                     PJ_LOG(4, (THIS_FILE, "Dropped picture: "
-                                        "decoder has no reference yet and this "
-                                        "is an inter-frame (%u bytes); waiting "
-                                        "for a keyframe | no-key-drops=%u",
+                                        "decoder has no trusted reference and "
+                                        "this is an inter-frame (%u bytes); "
+                                        "waiting for a keyframe | "
+                                        "no-key-drops=%u losses=%u "
+                                        "recoveries=%u",
                                         total, and_media_data
-                                            ->vp8_frames_drop_no_keyframe));
+                                            ->vp8_frames_drop_no_keyframe,
+                                        and_media_data->dec_ref_losses,
+                                        and_media_data->dec_ref_recoveries));
                                 }
                                 return PJ_SUCCESS;
                             }
-                            and_media_data->dec_seen_keyframe = PJ_TRUE;
-                            PJ_LOG(4, (THIS_FILE, "Decoder reference acquired: "
-                                       "first keyframe, %u bytes", total));
+                            vp8_reference_regained(and_media_data, total);
                         }
                     }
                 }
@@ -3928,6 +4091,9 @@ static pj_status_t decode_vpx(pjmedia_vid_codec *codec,
                                    and_media_data->vp8_frames_drop_missing_head,
                                    and_media_data->vp8_frames_drop_incomplete));
                     }
+                    vp8_reference_lost(and_media_data,
+                                       "picture was truncated short of its "
+                                       "declared first partition");
                     return PJ_SUCCESS;
                 }
             }
@@ -3954,6 +4120,8 @@ static pj_status_t decode_vpx(pjmedia_vid_codec *codec,
             if (status != PJ_SUCCESS) {
                 PJ_LOG(4,(THIS_FILE, "Unpacketize error packet size[%d]",
                           packet_size));
+                vp8_reference_lost(and_media_data,
+                                   "a packet would not unpacketize");
                 return status;
             }
 
@@ -3963,6 +4131,8 @@ static pj_status_t decode_vpx(pjmedia_vid_codec *codec,
             and_media_data->dec_total_pay += packet_size;
             if (whole_len + packet_size > and_media_data->dec_buf_size) {
                 PJ_LOG(4,(THIS_FILE, "Decoding buffer overflow [2]"));
+                vp8_reference_lost(and_media_data,
+                                   "picture exceeded the decoding buffer");
                 return PJMEDIA_CODEC_EFRMTOOSHORT;
             }
 
@@ -3972,8 +4142,14 @@ static pj_status_t decode_vpx(pjmedia_vid_codec *codec,
                                   (pj_uint8_t *)packets[i].buf + desc_len,
                                   packet_size, 0, &packets[0].timestamp,
                                   write_output, output);
-            if (status != PJ_SUCCESS)
+            if (status != PJ_SUCCESS) {
+                /* Part of this picture may already be inside the component, and
+                 * the rest never will be. Either way the decoder no longer
+                 * holds what the next inter-frame is coded against. */
+                vp8_reference_lost(and_media_data,
+                                   "the decoder rejected part of a picture");
                 return status;
+            }
 
             if (and_media_data->dec_pic_broken) {
                 /* A packet's bytes never made it in. Anything already buffered
@@ -3991,6 +4167,9 @@ static pj_status_t decode_vpx(pjmedia_vid_codec *codec,
                 }
                 and_media_data->dec_input_buf_len = 0;
                 and_media_data->dec_pic_broken = PJ_FALSE;
+                vp8_reference_lost(and_media_data,
+                                   "a packet never reached the decoder input "
+                                   "buffer");
                 return PJ_SUCCESS;
             }
 
