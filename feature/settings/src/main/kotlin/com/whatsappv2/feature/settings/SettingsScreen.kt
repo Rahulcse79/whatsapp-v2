@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.BatteryAlert
@@ -28,9 +29,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -38,6 +42,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.whatsappv2.core.designsystem.component.AppDropdownField
 import com.whatsappv2.core.designsystem.component.AppTopBar
+import com.whatsappv2.core.designsystem.component.ConfirmDialog
 import com.whatsappv2.core.designsystem.preview.PreviewSurface
 import com.whatsappv2.core.designsystem.preview.ThemePreviews
 import com.whatsappv2.core.designsystem.theme.AppTheme
@@ -75,6 +80,7 @@ fun SettingsScreen(
             onSipTraceChange = viewModel::setSipTraceEnabled,
             onVerifyTlsChange = viewModel::setVerifyTlsCertificates,
             onRetentionChange = viewModel::setCallHistoryRetention,
+            onChatSignOut = { viewModel.signOutOfChat() },
         )
     }
 
@@ -96,6 +102,8 @@ data class SettingsActions(
     val onSipTraceChange: (Boolean) -> Unit,
     val onVerifyTlsChange: (Boolean) -> Unit,
     val onRetentionChange: (CallHistoryRetention) -> Unit,
+    /** Confirmed first by the screen — see [ChatAccountRow]. */
+    val onChatSignOut: () -> Unit = {},
 ) {
     companion object {
         /** For previews and tests that are not about what a change does. */
@@ -183,7 +191,7 @@ private fun SettingsContent(
             .padding(AppTheme.spacing.large),
         verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.large),
     ) {
-        LinkCards(links)
+        IdentityCards(chatAccount = state.chatAccount, links = links, actions = actions)
 
         Text("App settings", style = MaterialTheme.typography.titleLarge)
 
@@ -201,32 +209,7 @@ private fun SettingsContent(
             )
         }
 
-        SettingsCard {
-            ChoiceGroup(
-                title = "DTMF",
-                description = "RFC 4733 sends digits in the media stream and survives " +
-                    "transcoding. SIP INFO is a fallback for gateways that cannot.",
-                options = DtmfMode.entries,
-                selected = state.settings.dtmfMode,
-                labelOf = { if (it == DtmfMode.RFC_4733) "RFC 4733" else "SIP INFO" },
-                onSelect = actions.onDtmfModeChange,
-            )
-        }
-
-        SettingsCard {
-            EncryptionGroup(selected = state.settings.defaultSrtpPolicy, onSelect = actions.onSrtpPolicyChange)
-        }
-
-        SettingsCard {
-            ChoiceGroup(
-                title = "Audio route",
-                description = "Where calls start. Automatic follows a connected headset.",
-                options = PreferredAudioRoute.entries,
-                selected = state.settings.preferredAudioRoute,
-                labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
-                onSelect = actions.onAudioRouteChange,
-            )
-        }
+        CallCards(state = state, actions = actions)
 
         SettingsCard {
             TlsVerificationToggle(
@@ -255,6 +238,61 @@ private fun SettingsContent(
         // this one sits beside keeps it, which is where somebody writing a bug report
         // already knows to look.
         AppVersionFooter()
+    }
+}
+
+/**
+ * The three cards that govern what a call does: digits, encryption, and where it comes out.
+ *
+ * Grouped because they are one subject, and because the body above them is a list of cards
+ * whose length is the only thing that makes it hard to read.
+ */
+@Composable
+private fun CallCards(state: SettingsUiState, actions: SettingsActions) {
+    SettingsCard {
+        ChoiceGroup(
+            title = "DTMF",
+            description = "RFC 4733 sends digits in the media stream and survives " +
+                "transcoding. SIP INFO is a fallback for gateways that cannot.",
+            options = DtmfMode.entries,
+            selected = state.settings.dtmfMode,
+            labelOf = { if (it == DtmfMode.RFC_4733) "RFC 4733" else "SIP INFO" },
+            onSelect = actions.onDtmfModeChange,
+        )
+    }
+
+    SettingsCard {
+        EncryptionGroup(selected = state.settings.defaultSrtpPolicy, onSelect = actions.onSrtpPolicyChange)
+    }
+
+    SettingsCard {
+        ChoiceGroup(
+            title = "Audio route",
+            description = "Where calls start. Automatic follows a connected headset.",
+            options = PreferredAudioRoute.entries,
+            selected = state.settings.preferredAudioRoute,
+            labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
+            onSelect = actions.onAudioRouteChange,
+        )
+    }
+}
+
+/**
+ * Who this app is signed in as, above the preferences.
+ *
+ * The SIP accounts row and the chat account row answer the same question about two
+ * different services, so they sit together. The chat one is absent when nobody is signed
+ * in: its only action is Sign out, and a Sign out with no account cannot do anything.
+ */
+@Composable
+private fun IdentityCards(
+    chatAccount: ChatAccountUiState?,
+    links: SettingsLinks?,
+    actions: SettingsActions,
+) {
+    LinkCards(links)
+    chatAccount?.let { account ->
+        SettingsCard { ChatAccountRow(account = account, onSignOut = actions.onChatSignOut) }
     }
 }
 
@@ -460,6 +498,69 @@ private fun AccountsRow(onClick: () -> Unit) {
     }
 }
 
+/**
+ * The signed-in chat identity, and the one thing that can be done about it.
+ *
+ * ## It confirms, and the confirmation is here rather than in the ViewModel
+ *
+ * Signing out clears the session and the token, and the only way back is to type a
+ * password again — so it is guarded. Whether to confirm is a UI decision, which is why
+ * `ConfirmDialog` is raised here and `signOutOfChat()` is called only on the way out of it.
+ *
+ * ## The server address is shown and cannot be edited
+ *
+ * Decision D1: the URL is an identity, not a preference. It is captured on the sign-in
+ * screen beside the credentials it belongs to and saved only when they work. Editable
+ * here, it could be changed to a host the stored session never came from, and the result
+ * would look to a user like an account that had broken by itself.
+ */
+@Composable
+private fun ChatAccountRow(account: ChatAccountUiState, onSignOut: () -> Unit) {
+    var confirming by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = AppTheme.spacing.small)
+            .testTag(TAG_CHAT_ACCOUNT),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.medium),
+    ) {
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.Chat,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Chat account", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "${account.identity} · ${account.serverOrigin}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        TextButton(onClick = { confirming = true }, modifier = Modifier.testTag(TAG_CHAT_SIGN_OUT)) {
+            Text("Sign out")
+        }
+    }
+
+    if (confirming) {
+        ConfirmDialog(
+            title = "Sign out of chat?",
+            message = "You will need your password to sign in again. Calls are not affected.",
+            confirmLabel = "Sign out",
+            destructive = true,
+            onConfirm = {
+                confirming = false
+                onSignOut()
+            },
+            onDismiss = { confirming = false },
+        )
+    }
+}
+
+internal const val TAG_CHAT_ACCOUNT = "settings-chat-account"
+internal const val TAG_CHAT_SIGN_OUT = "settings-chat-sign-out"
 internal const val TAG_ACCOUNTS = "settings-accounts"
 internal const val TAG_BACKGROUND_ACCESS = "settings-background-access"
 

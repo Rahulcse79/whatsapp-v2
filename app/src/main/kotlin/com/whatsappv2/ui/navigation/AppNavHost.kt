@@ -25,11 +25,13 @@ import com.whatsappv2.feature.accounts.AccountEditorRoute
 import com.whatsappv2.feature.accounts.AccountSavedMessage
 import com.whatsappv2.feature.accounts.AccountsRoute
 import com.whatsappv2.feature.accounts.status.RegistrationIndicatorRoute
+import com.whatsappv2.feature.chat.ChatContactsRoute
+import com.whatsappv2.feature.chat.ChatSignInRoute
+import com.whatsappv2.feature.chat.ChatsRoute
 import com.whatsappv2.feature.dialer.DialerScreen
 import com.whatsappv2.feature.history.HistoryRoute
 import com.whatsappv2.feature.recordings.RecordingsRoute
 import com.whatsappv2.feature.settings.SettingsScreen
-import com.whatsappv2.ui.chats.ChatsPlaceholderScreen
 
 /**
  * The navigation graph.
@@ -135,10 +137,16 @@ private fun NavGraphBuilder.callRoutes(
     // All three routes that can start a video call share one gate. One launcher is
     // enough: only one destination is on screen to press it.
     composable(AppDestination.CHATS.route) {
-        // A real destination behind a placeholder, so the module another team is building
-        // replaces a composable rather than negotiating an app shell (Task: item 8). The
-        // gear is the one way into settings; it travels with the route, not the placeholder.
-        ChatsPlaceholderScreen(
+        // What the placeholder promised whoever replaced it: the module inherits the route,
+        // the gear and the registration indicator, and this is a one-import, one-call swap.
+        // `ChatsPlaceholderScreen` stays in the tree unreferenced until phase 3 is soaked —
+        // reverting this change is then a one-line edit rather than a file to restore.
+        ChatsRoute(
+            // Sign-in gates this TAB, not the app (decision D4). A signed-out user gets a
+            // prompt here and a fully working Calls tab beside it; putting a login in front
+            // of the whole app would make placing a call need a chat account.
+            onSignIn = { navController.navigate(AppDestination.CHAT_SIGN_IN.route) },
+            onNewConversation = { navController.navigate(AppDestination.CHAT_CONTACTS.route) },
             onOpenSettings = { navController.navigate(AppDestination.SETTINGS.route) },
             registrationIndicator = {
                 // Straight to the account list, not to Settings and then the list: the
@@ -147,6 +155,25 @@ private fun NavGraphBuilder.callRoutes(
                     onManageAccounts = { navController.navigate(AppDestination.ACCOUNTS.route) },
                 )
             },
+        )
+    }
+
+    composable(AppDestination.CHAT_SIGN_IN.route) {
+        ChatSignInRoute(
+            // Pops rather than navigating to Chats: the tab is what is underneath, and
+            // navigating would put a second copy of it on the stack for Back to walk through.
+            onSignedIn = { navController.popBackStack() },
+            onBack = { navController.popBackStack() },
+        )
+    }
+
+    composable(AppDestination.CHAT_CONTACTS.route) {
+        ChatContactsRoute(
+            // Opening the thread is phase 3. Until then choosing somebody returns to Chats,
+            // which is honest: there is no conversation screen to land on yet, and pushing
+            // one that says "coming soon" would be a screen built to be deleted.
+            onConversationOpened = { navController.popBackStack() },
+            onBack = { navController.popBackStack() },
         )
     }
 

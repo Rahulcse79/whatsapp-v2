@@ -63,7 +63,7 @@ class AppRootNavigationTest {
         compose.setContent { WhatsAppV2Theme { AppRoot() } }
 
         compose.onNodeWithTag(tabTag(AppDestination.CHATS)).assertIsSelected()
-        compose.onNodeWithText("Messages are coming").assertIsDisplayed()
+        compose.onNodeWithText(CHATS_SIGNED_OUT).assertIsDisplayed()
     }
 
     @Test
@@ -72,7 +72,7 @@ class AppRootNavigationTest {
 
         compose.onNodeWithTag(tabTag(AppDestination.CHATS)).performClick()
         compose.waitForIdle()
-        compose.onNodeWithText("Messages are coming").assertIsDisplayed()
+        compose.onNodeWithText(CHATS_SIGNED_OUT).assertIsDisplayed()
         compose.onNodeWithTag(tabTag(AppDestination.CHATS)).assertIsSelected()
 
         compose.onNodeWithTag(tabTag(AppDestination.HISTORY)).performClick()
@@ -186,6 +186,23 @@ class AppRootNavigationTest {
         compose.waitForIdle()
 
         compose.onNodeWithText("App settings").assertIsDisplayed()
+    }
+
+    private companion object {
+        /**
+         * What the Chats tab shows with nobody signed in to chat.
+         *
+         * It used to read "Messages are coming", from `ChatsPlaceholderScreen`. That screen
+         * has been replaced by `:feature:chat`'s `ChatsRoute`, which the placeholder's own
+         * KDoc always said would happen — the route, the gear and the registration
+         * indicator are unchanged, only what is drawn beneath them.
+         *
+         * Signed out is the deterministic state here: the test graph has a real session
+         * store over an empty Robolectric file, so nobody is signed in. That is also the
+         * state this test wants — sign-in gates the TAB, not the app, so the bar must
+         * still switch and the gear must still open Settings with no chat account at all.
+         */
+        const val CHATS_SIGNED_OUT = "Sign in to chat"
     }
 
     /** The one way in: the Chats tab, then the gear in its top bar. */

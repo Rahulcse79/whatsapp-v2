@@ -1,5 +1,7 @@
 package com.whatsappv2.domain.model
 
+import com.whatsappv2.domain.video.VideoFrameRate
+
 /** How DTMF digits are carried (§5.1, DoD 8). */
 enum class DtmfMode {
     /**
@@ -152,6 +154,19 @@ data class AppSettings(
      * by the same rule rather than by two that could drift.
      */
     val callHistoryRetention: CallHistoryRetention = CallHistoryRetention.DEFAULT,
+    /**
+     * The frame rate outgoing video is asked to run at.
+     *
+     * 15 fps on a fresh install, which is where the quality ladders were pinned before this
+     * was a choice — it divides the camera's 30 evenly and is what a four-party mesh on
+     * these handsets sustains on three legs at once. A higher rate is genuinely smoother on
+     * a link that can carry it; 20 and 25 do not divide 30 and arrive as judder even at zero
+     * loss. See [VideoFrameRate], which carries that distinction so Settings can show it.
+     *
+     * It sets what the ladder's rungs mean, not what a call is guaranteed to get:
+     * `AdaptiveVideoPolicy` still steps down under measured pressure.
+     */
+    val videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
 ) {
     companion object {
         /** What a fresh install starts with. */

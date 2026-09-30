@@ -6,6 +6,7 @@ import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.PersonSearch
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.ui.graphics.vector.ImageVector
 
@@ -56,6 +57,27 @@ enum class AppDestination(
     DIALER("dialer", "Dialer", Icons.Filled.Dialpad),
     ACCOUNTS("accounts", "Accounts", Icons.Filled.AccountCircle),
     RECORDINGS("recordings", "Recordings", Icons.Filled.Mic),
+
+    /**
+     * Sign in to chat.
+     *
+     * Reached from the Chats tab, not from Settings, because the server URL is asked here
+     * beside the credentials it belongs to (decision D1). Deliberately **not** top level:
+     * it is somewhere you go, do one thing, and leave — so it gets the push transition
+     * `AppNavHost` already applies to everything that is not a tab.
+     *
+     * It recurs, which is why it is a destination rather than part of `FirstRunGate`:
+     * first-run happens once, signing in happens again every time somebody signs out.
+     */
+    CHAT_SIGN_IN("chat-signin", "Sign in to chat", Icons.AutoMirrored.Filled.Chat),
+
+    /**
+     * The company directory — who this chat account can message.
+     *
+     * **Not the device address book.** That is `:data:contacts`, it never leaves the
+     * device, and architecture rule 9 is what keeps the two apart.
+     */
+    CHAT_CONTACTS("chat-contacts", "New conversation", Icons.Filled.PersonSearch),
     ;
 
     /** True for the two destinations the bottom bar switches between, in bar order. */

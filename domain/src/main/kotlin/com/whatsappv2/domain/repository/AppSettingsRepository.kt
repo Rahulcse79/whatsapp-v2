@@ -6,6 +6,7 @@ import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.ThemeMode
+import com.whatsappv2.domain.video.VideoFrameRate
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -39,6 +40,14 @@ interface AppSettingsRepository {
      * "takes effect next time".
      */
     suspend fun setThemeMode(mode: ThemeMode)
+
+    /**
+     * The frame rate outgoing video is asked to run at.
+     *
+     * Takes effect on calls already running: the coordinator rebuilds its ladder at the new
+     * rate and writes the rung it was already on, so nobody has to hang up to change it.
+     */
+    suspend fun setVideoFrameRate(rate: VideoFrameRate)
 
     /**
      * Turns SIP tracing on or off.

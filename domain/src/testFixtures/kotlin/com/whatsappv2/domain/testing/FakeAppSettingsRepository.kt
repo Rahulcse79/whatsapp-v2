@@ -7,6 +7,7 @@ import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.ThemeMode
 import com.whatsappv2.domain.repository.AppSettingsRepository
+import com.whatsappv2.domain.video.VideoFrameRate
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -36,6 +37,10 @@ class FakeAppSettingsRepository(
 
     override suspend fun setThemeMode(mode: ThemeMode) {
         settings.value = settings.value.copy(themeMode = mode)
+    }
+
+    override suspend fun setVideoFrameRate(rate: VideoFrameRate) {
+        settings.value = settings.value.copy(videoFrameRate = rate)
     }
 
     override suspend fun setSipTraceEnabled(enabled: Boolean) {

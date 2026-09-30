@@ -63,12 +63,21 @@ include(":pjsip:api")
 include(":data:calllog")
 include(":data:contacts")
 
+// The chat SDK (com.chatserver.sdk), vendored as source rather than consumed as an AAR:
+// architecture rule 11 forbids a committed .aar, and source is what lets this build prove
+// what it ships. Its Java is upstream's and is not modified — only its build file was
+// converted to the Kotlin DSL and the version catalog, which CI requires. Only :data:chat
+// may name a type from it; architecture rule 13 is what keeps that true.
+include(":chatsdk")
+include(":data:chat")
+
 include(":feature:dialer")
 include(":feature:calls")
 include(":feature:accounts")
 include(":feature:history")
 include(":feature:settings")
 include(":feature:recordings")
+include(":feature:chat")
 
 // Architecture rules (Task 12). A module of its own so the rules are not buried in
 // :app, and so they run for every module rather than only where they happen to live.

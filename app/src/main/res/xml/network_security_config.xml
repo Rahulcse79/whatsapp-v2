@@ -2,14 +2,36 @@
 <!--
   Transport security for everything Android's own networking stack carries (Task 62, §7).
 
-  ## Cleartext is off, everywhere, in every build
+  ## Cleartext is off by default, and there is still no `debug-overrides` block
 
-  There is no `debug-overrides` block and no per-domain exception, and that is deliberate.
   A debug override is how a permissive trust configuration reaches production: it is added
   to unblock one afternoon's testing against a self-signed PBX, and nothing ever removes
-  it. A deployment that needs to trust its own certificate authority configures one
-  explicitly - see StackAccount.customCaPath - which ADDS a trust anchor rather than
-  disabling validation.
+  it. There is none here and the CI gate refuses one. A deployment that needs to trust its
+  own certificate authority configures one explicitly - see StackAccount.customCaPath -
+  which ADDS a trust anchor rather than disabling validation.
+
+  ## The one exception, and why it is this shape
+
+  This file used to say "no per-domain exception" as well. That stopped being true when the
+  Coral UC platform had to be reached at `http://192.168.250.201`, a lab deployment on a
+  private network whose TLS certificate does not name the address it is served on.
+
+  Three routes were possible and two are worse:
+
+   - A permissive `X509TrustManager` over https. Forbidden outright by section 7 and by the
+     "Assert no permissive TrustManager" gate, and rightly: it disables validation for
+     every host, not one, and it is invisible at the call site.
+   - `cleartextTrafficPermitted="true"` on the base config. That removes the protection
+     from every request the app makes, to reach one server.
+   - What is below: cleartext for **named private-network literals only**.
+
+  The exception is narrow in a way a reader can check, and it is ENFORCED rather than
+  merely intended - the "Assert cleartext traffic is refused" gate now also asserts that
+  every domain in this block is an RFC 1918 address. A public hostname cannot be added to
+  it without the build failing, which is the property that makes a per-domain exception
+  survivable at all.
+
+  The base config is unchanged: everything not named below still refuses cleartext.
 
   ## What this does and does not cover
 
@@ -31,4 +53,15 @@
             <certificates src="system" />
         </trust-anchors>
     </base-config>
+
+    <!--
+      Lab deployments on private networks, reached over plain HTTP.
+
+      RFC 1918 literals only. The CI gate checks every entry here against that, so this
+      list cannot grow a public hostname without failing the build.
+    -->
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- The Coral UC platform under test (services-app). -->
+        <domain includeSubdomains="false">192.168.250.201</domain>
+    </domain-config>
 </network-security-config>

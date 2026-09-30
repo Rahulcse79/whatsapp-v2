@@ -14,6 +14,7 @@ import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.ThemeMode
 import com.whatsappv2.domain.repository.AppSettingsRepository
+import com.whatsappv2.domain.video.VideoFrameRate
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
@@ -64,6 +65,16 @@ class DataStoreAppSettingsRepository @Inject constructor(
 
     override suspend fun setThemeMode(mode: ThemeMode) = edit { it[THEME_MODE] = mode.name }
 
+    /**
+     * Stored as the frame rate's own number rather than its enum name.
+     *
+     * A number is what the setting means, so a value written by a build that offered a rate
+     * this one does not is still readable: `ofFps` returns null and the read below falls
+     * back to the default, rather than a name like `FPS_24` that means nothing at all.
+     */
+    override suspend fun setVideoFrameRate(rate: VideoFrameRate) =
+        edit { it[VIDEO_FRAME_RATE] = rate.fps }
+
     override suspend fun setSipTraceEnabled(enabled: Boolean) =
         edit { it[SIP_TRACE] = enabled }
 
@@ -90,6 +101,8 @@ class DataStoreAppSettingsRepository @Inject constructor(
         preferredAudioRoute = this[AUDIO_ROUTE]?.toEnumOrNull<PreferredAudioRoute>()
             ?: AppSettings.DEFAULT.preferredAudioRoute,
         themeMode = this[THEME_MODE]?.toEnumOrNull<ThemeMode>() ?: AppSettings.DEFAULT.themeMode,
+        videoFrameRate = this[VIDEO_FRAME_RATE]?.let(VideoFrameRate::ofFps)
+            ?: AppSettings.DEFAULT.videoFrameRate,
         sipTraceEnabled = this[SIP_TRACE] ?: AppSettings.DEFAULT.sipTraceEnabled,
         verifyTlsCertificates = this[VERIFY_TLS] ?: AppSettings.DEFAULT.verifyTlsCertificates,
         // Through `ofDays`, so a value written by a build with a longer maximum — or
@@ -109,6 +122,7 @@ class DataStoreAppSettingsRepository @Inject constructor(
         val SRTP_POLICY = stringPreferencesKey("default_srtp_policy")
         val AUDIO_ROUTE = stringPreferencesKey("preferred_audio_route")
         val THEME_MODE = stringPreferencesKey("theme_mode")
+        val VIDEO_FRAME_RATE = intPreferencesKey("video_frame_rate_fps")
         val SIP_TRACE = booleanPreferencesKey("sip_trace_enabled")
         val VERIFY_TLS = booleanPreferencesKey("verify_tls_certificates")
         val HISTORY_RETENTION_DAYS = intPreferencesKey("call_history_retention_days")

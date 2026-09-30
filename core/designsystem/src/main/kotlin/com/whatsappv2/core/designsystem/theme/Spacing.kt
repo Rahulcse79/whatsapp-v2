@@ -144,6 +144,25 @@ data class Sizing(
     val videoPreviewBorder: Dp = 2.dp,
 
     /**
+     * The hairline around a conference tile.
+     *
+     * Half [videoPreviewBorder], and the difference is the point: both cards sit on the
+     * same dark canvas, so the heavier line is what tells the floating self-view apart
+     * from the people it is floating over. A tile also has a name on it and the self-view
+     * does not, but the border is the part that reads before anybody has looked.
+     */
+    val videoTileBorder: Dp = 1.dp,
+
+    /**
+     * The initial-circle a conference tile shows before its stream has a picture.
+     *
+     * Between [avatarSmall] and [avatarLarge]: a quarter-screen tile in a four-party grid
+     * is roughly a list row wide and a good deal taller, so the list avatar disappears in
+     * it and the in-call one crowds it.
+     */
+    val videoTileAvatar: Dp = 56.dp,
+
+    /**
      * Where a row divider starts in a list whose rows lead with a small avatar: past the
      * avatar and its gutters, the way Material lists inset theirs. [avatarSmall] plus a
      * medium gutter each side.

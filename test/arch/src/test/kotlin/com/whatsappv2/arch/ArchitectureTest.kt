@@ -115,4 +115,9 @@ class ArchitectureTest {
     fun `rule 10 - call state is not restored from SavedStateHandle`() {
         assertNoViolations("Rule 10", ArchitectureRules.callStateIsNotRestoredFromSavedState(files))
     }
+
+    @Test
+    fun `rule 13 - the chat SDK stays inside data chat`() {
+        assertNoViolations("Rule 13", ArchitectureRules.chatSdkStaysInDataChat(files))
+    }
 }
