@@ -292,6 +292,57 @@ class PjsipSipEngineMeshTest {
     }
 
     @Test
+    fun `a member whose mesh collapses stops being in a conference`() = runTest {
+        // Modelled from the *member* side, which is the side the defect lived on. A member's
+        // `ConferenceSession` is born from the roster arriving in-dialog on its leg to the
+        // focus -- not from `mixCalls` -- so a focus-side fixture cannot reach it, and the
+        // first attempt at this test passed against the unfixed engine for that reason.
+        //
+        // Measured on a TC15, 2026-09-27: 1005 left a three-party mesh, FreeSWITCH collapsed
+        // to one pair and the media followed, and the surviving member still read "3 people in
+        // this conference" eight minutes later, because nothing retired the session the roster
+        // had opened. `ConferenceSession.toUiState` builds the roster from `invited`, which
+        // still named everybody who was ever in the room.
+        val engine = with(fixture) { registeredEngine() }
+        val toBob = engine.placeCall(fixture.account.id, bob, MediaProfile.AUDIO).getOrNull()!!
+        runCurrent()
+        fixture.gateway.emitCall(toBob.value, StackCallState.CONNECTED, remoteUri = bob.render())
+        runCurrent()
+
+        // The focus announces a three-way mesh on this device's leg to it. That is what opens
+        // the session, and it is also what makes this device dial `carol`.
+        fixture.gateway.emitConference(
+            callKey = toBob.value,
+            participants = listOf(participant(self), participant(bob), participant(carol)),
+            mesh = true,
+            entity = bob.render(),
+        )
+        advanceUntilIdle()
+        val toCarol = fixture.gateway.placedCalls.last { it.destination.contains("carol") }
+        fixture.gateway.emitCall(toCarol.callKey, StackCallState.CONNECTED, remoteUri = carol.render())
+        advanceUntilIdle()
+        assertEquals(
+            1, engine.conferences.value.size,
+            "the roster did not open a session on the member's leg, so this proves nothing",
+        )
+
+        // `carol` leaves. One peer is left, which is a call and not a conference.
+        fixture.gateway.emitCall(toCarol.callKey, StackCallState.ENDED, remoteUri = carol.render(), statusCode = 200)
+        advanceUntilIdle()
+
+        assertTrue(
+            engine.conferences.value.isEmpty(),
+            "the surviving member is still in a conference: ${engine.conferences.value}",
+        )
+        // And the survivor is still a call. Retiring the conference must take the roster and
+        // nothing else with it: `CallSnapshot.isConference` deliberately stays set, because the
+        // call log records what happened, and the leg itself has to stay connected.
+        val survivor = engine.activeCalls.value.single()
+        assertEquals(bob.user, survivor.remote.user, "the wrong leg survived: ${survivor.remote.render()}")
+        assertTrue(survivor.state.isEstablished, "retiring the conference ended the call: ${survivor.state}")
+    }
+
+    @Test
     fun `a second call from somebody already in the conference still rings`() = runTest {
         // The fallback above must not swallow a genuine call. A participant this device
         // already holds a leg to is not awaited, so nothing auto-answers them.

@@ -79,7 +79,7 @@ class PlaceCallUseCaseTest {
 
         val callId = useCase()("1001").getOrNull()
 
-        assertEquals("sip:1001@sip.example.com", targetOf(callId?.value))
+        assertEquals("sip:1001@sip.example.com:5060", targetOf(callId?.value))
     }
 
     @Test
@@ -137,7 +137,7 @@ class PlaceCallUseCaseTest {
         val callId = useCase()("1001").getOrNull()
 
         // Completed against acct-1's domain, which is how we know acct-1 placed it.
-        assertEquals("sip:1001@sip.example.com", targetOf(callId?.value))
+        assertEquals("sip:1001@sip.example.com:5060", targetOf(callId?.value))
     }
 
     @Test
@@ -152,7 +152,7 @@ class PlaceCallUseCaseTest {
 
         val callId = useCase()("1001", accountOverride = AccountId("acct-2")).getOrNull()
 
-        assertEquals("sip:1001@other.example.org", targetOf(callId?.value))
+        assertEquals("sip:1001@other.example.org:5060", targetOf(callId?.value))
     }
 
     @Test
@@ -257,7 +257,7 @@ class PlaceCallUseCaseTest {
             engine.invocations.any { it.operation == FakeSipEngine.Operation.REGISTER },
             "the account was registered first",
         )
-        assertEquals("sip:1001@sip.example.com", targetOf(outcome.getOrNull()?.value))
+        assertEquals("sip:1001@sip.example.com:5060", targetOf(outcome.getOrNull()?.value))
     }
 
     @Test

@@ -46,16 +46,21 @@ object CodecPriorities {
     /**
      * The priority the first preference gets; each next one gets less.
      *
-     * `254` — `PJMEDIA_CODEC_PRIO_NEXT_HIGHER` — and not the nominal maximum of 255. pjmedia's
-     * `sort_codecs` (`vid_codec.c:527`, and the audio twin) rewrites every leading codec at
-     * 255 down to 254 after sorting, so an assignment starting at 255 landed the first two
-     * preferences on the same number: the TC15's audit read `opus@254, G722@254`. Two
-     * codecs on one priority are ordered by an unstable selection sort, which is how two
-     * VP8 implementations swapped places every time an account was saved (2026-09-11).
-     * Starting at 254 keeps every enabled priority distinct, and distinct is what makes the
-     * order the account asked for the order the SDP carries.
+     * Not the nominal maximum of 255. pjmedia's `sort_codecs` (`vid_codec.c:527`, and the
+     * audio twin) rewrites every leading codec at 255 down to 254 after sorting, so an
+     * assignment starting at 255 landed the first two preferences on the same number: the
+     * TC15's audit read `opus@254, G722@254`. Two codecs on one priority are ordered by an
+     * unstable selection sort, which is how two VP8 implementations swapped places every time
+     * an account was saved (2026-09-11). Distinct priorities are what make the order the
+     * account asked for the order the SDP carries.
+     *
+     * `253` rather than `254` since 2026-09-27, to leave [MEDIACODEC_VP8] a number of its own
+     * **after** that rewrite. At 254 it did not: the rewrite lands the tiebreak on 254 too, so
+     * an account whose first video preference was not VP8 produced a tie — the M23's audit read
+     * `VP8/103@254, H264/99@254` while the M14's, whose account asks for VP8 first, read a
+     * clean `254, 253, 252`. See [MEDIACODEC_VP8] for what the tie cost.
      */
-    const val TOP: Short = 254
+    const val TOP: Short = 253
 
     /** PJSIP's "never offer this". */
     const val DISABLED: Short = 0
@@ -72,6 +77,23 @@ object CodecPriorities {
      * `TOP + 1` rather than a fixed number, so this stays above the highest rank [assign]
      * can hand out no matter how the account's list is ordered. It is only ever written
      * for a codec `pjmedia` actually registered.
+     *
+     * ## What the tie cost, measured
+     *
+     * This was 255, which is the one value pjmedia's `sort_codecs` rewrites — down to 254,
+     * which was also [TOP]. So on a handset whose account asks for H264 before VP8, the
+     * hardware VP8 tied with H264 and the offer's video formats came out in an order nobody
+     * chose. On an M23 (2026-09-27) that order was `m=video RTP/AVP 102 99 103`, putting
+     * *libvpx's* VP8 first.
+     *
+     * That is not merely a lost preference. `pjmedia_vid_stream_info_from_sdp` takes the
+     * receive payload type from the **first** format of the local m-line
+     * (`stream_info.c:114`) while the transmit one is matched against the answer, so when the
+     * far end answered `103` the stream came up `rx_pt=102, tx_pt=103`. Every arriving VP8
+     * packet was discarded by the depacketiser: RTP in at 19-90 pkt/s with zero loss, jitter
+     * buffer empty, `decode 0.0` — two black tiles on a three-party mesh, from the moment the
+     * handset resumed from hold until the streams were next rebuilt. [TOP] therefore has to
+     * stay far enough below 255 that this number survives the rewrite intact.
      *
      * What registration now guarantees, and what it does not. Both halves are discovered
      * from the platform's own list and each is **created** to prove the component really
@@ -91,6 +113,32 @@ object CodecPriorities {
      * `1` rather than `0` is the whole distinction between "not my first choice" and "gone".
      */
     const val KEPT_FOR_ANOTHER_ACCOUNT: Short = 1
+
+    /**
+     * The registry entries that duplicate [keep]'s encoding and must therefore be switched off.
+     *
+     * One encoding under two payload types is a trap rather than a choice. Two VP8 entries
+     * are byte-identical on the wire — `a=rtpmap:102 VP8/90000` beside `a=rtpmap:103
+     * VP8/90000` — so a peer cannot tell them apart and the second buys nothing. What it costs
+     * is that `pjmedia_vid_stream_info_from_sdp` takes the receive payload type from the
+     * **first** format of the local m-line (`stream_info.c:114`) while the transmit one is
+     * matched against the answer, so any answer naming the other number splits the two and the
+     * depacketiser then discards every packet that arrives. See [MEDIACODEC_VP8].
+     *
+     * Matched on the encoding name, because the number is the part that varies: which payload
+     * type each implementation gets depends on the order `pjmedia` registered them in.
+     *
+     * Empty when [keep] is not in [available] — there is nothing to prefer, so there is nothing
+     * to switch off, and the other implementation stays exactly as it was.
+     */
+    fun duplicatesOf(keep: String, available: List<String>): List<String> {
+        if (available.none { it.equals(keep, ignoreCase = true) }) return emptyList()
+        val encoding = encodingOf(keep)
+        return available.filter { !it.equals(keep, ignoreCase = true) && encodingOf(it) == encoding }
+    }
+
+    /** A codec id's encoding name, without the payload type or clock rate PJSIP spells it with. */
+    private fun encodingOf(codecId: String): String = codecId.substringBefore('/').lowercase()
 
     /**
      * The result of ranking one registry against one set of preferences.

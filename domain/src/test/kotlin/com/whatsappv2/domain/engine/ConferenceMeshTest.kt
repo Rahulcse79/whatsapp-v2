@@ -59,6 +59,63 @@ class ConferenceMeshTest {
     }
 
     @Test
+    fun `every participant planning independently produces one dialog per pair`() {
+        // Phase 4's topology requirement, as arithmetic rather than as four handsets: for N
+        // participants the mesh must hold exactly N*(N-1)/2 dialogs. Each device runs `plan`
+        // against the same roster knowing nothing about what the others decided, so the count
+        // is only right if the dialling rule is a total order they all compute identically.
+        //
+        // This is the invariant that a duplicate-dialog bug breaks in the direction the UI
+        // cannot show: two dialogs for one pair both carry media, both tiles move, and the
+        // only symptom is doubled audio and twice the encode cost.
+        listOf(3, 4).forEach { size ->
+            val everyone = listOf(self, peerA, peerB, peerC).take(size).toSet()
+
+            val pairsDialled = everyone.flatMap { device ->
+                ConferenceMesh.plan(everyone, device, legs = emptyMap()).dial
+                    .map { peer -> setOf(ConferenceMesh.key(device), ConferenceMesh.key(peer)) }
+            }
+
+            val expected = size * (size - 1) / 2
+            assertEquals(
+                expected, pairsDialled.size,
+                "$size participants must plan exactly $expected dialogs, got ${pairsDialled.size}",
+            )
+            assertEquals(
+                expected, pairsDialled.distinct().size,
+                "$size participants planned the same pair twice: $pairsDialled",
+            )
+            // And every pair is covered -- a missing dialog is a participant in the roster
+            // with no media relationship, which Phase 4 forbids explicitly.
+            val allPairs = everyone.flatMap { a ->
+                everyone.filter { it != a }.map { b -> setOf(ConferenceMesh.key(a), ConferenceMesh.key(b)) }
+            }.distinct()
+            assertEquals(
+                allPairs.toSet(), pairsDialled.toSet(),
+                "some pair of the $size has no dialog planned",
+            )
+        }
+    }
+
+    @Test
+    fun `nobody dials a peer that is already reachable through an open leg`() {
+        // The same invariant one step later: once a pair has its dialog, re-planning must not
+        // add a second one. Phase 4 exercises this by reconciling repeatedly while a
+        // conference settles, and a planner that ignored open legs would add a dialog per
+        // reconciliation rather than per pair.
+        val everyone = setOf(self, peerA, peerB, peerC)
+        val firstRound = ConferenceMesh.plan(everyone, self, legs = emptyMap()).dial
+        val open = firstRound.mapIndexed { i, peer -> CallId("leg-$i") to peer }.toMap()
+
+        val second = ConferenceMesh.plan(everyone, self, legs = open)
+
+        assertTrue(
+            second.dial.isEmpty(),
+            "a settled device must plan no further dialogs, wanted ${second.dial}",
+        )
+    }
+
+    @Test
     fun `never dials itself, however the roster spells this device`() {
         // The focus writes its own address into the roster, and the wire spells it with
         // whatever parameters the transport added. A plan that matched on the whole URI

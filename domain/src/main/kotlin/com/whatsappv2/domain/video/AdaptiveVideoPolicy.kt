@@ -393,16 +393,18 @@ class AdaptiveVideoPolicy(
         healthySinceMillis = null
 
         // The tier is re-derived rather than carried across: the rung named HIGH means a
-        // different picture on each ladder, and MEDIUM_HIGH does not exist on one of them.
+        // different picture on every ladder -- 540p30 at two participants, 360p24 at three,
+        // 360p20 at four -- so the name alone says nothing about the picture.
         //
         // Capped at the picture we were already sending, in BOTH directions. Joining a
         // conference obviously must not raise quality; leaving one must not either, and
         // that half is the easier one to get wrong. A four-party call falling to two has a
         // larger allowance and a taller ladder available the instant the leg closes, and
-        // taking 720p30 there would be an upgrade granted for a hangup rather than earned
-        // by evidence -- the brief's "quality may conservatively recover" is a climb
+        // taking the top of it there would be an upgrade granted for a hangup rather than
+        // earned by evidence -- the brief's "quality may conservatively recover" is a climb
         // through the upgrade window, not a jump. So the shape change lands on a rung no
-        // richer than the current one, and the window does the rest.
+        // richer than the current one, and the window does the rest. This matters at every
+        // membership step now that four, three and two are three different ladders.
         val capped = ladder.bestAffordableNotExceeding(
             pixelRateCeiling = from.pixelRate,
             allowanceBps = raw.budget.allowanceBpsPerLeg,
@@ -445,7 +447,7 @@ class AdaptiveVideoPolicy(
      * stream, and it can be true while the stream is perfectly healthy. Measured on an
      * SM-E236B, 2026-09-27: the platform reported `THERMAL_STATUS_SEVERE` (skin 42.6 C at
      * severity 3, AP 51.7 C) throughout a call that was capturing 30.0 fps, encoding 30.1,
-     * losing 0% and running a 7 ms round trip. Thermal alone walked that call from 720p30
+     * losing 0% and running a 7 ms round trip. Thermal alone walked that call from its top rung
      * to the 360p15 floor in three steps while every measurement said the tier was
      * sustainable — and because that handset's skin status sits at 3 whenever the camera
      * runs, it could never have climbed back. "Best sustainable quality" became "the floor,

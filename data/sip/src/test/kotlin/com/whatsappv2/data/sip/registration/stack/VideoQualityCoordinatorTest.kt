@@ -98,7 +98,7 @@ class VideoQualityCoordinatorTest {
     }
 
     @Test
-    fun `a second video leg makes it a conference immediately`() {
+    fun `a second video leg moves to the three-party ladder immediately`() {
         val coordinator = coordinator()
         var packets = 0L
         var frames = 0L
@@ -106,7 +106,7 @@ class VideoQualityCoordinatorTest {
             packets += 120; frames += 60
             coordinator.onSample(listOf(leg("a", i * tick, packets, frames = frames, encodeBegin = frames)), i * tick)
         }
-        assertEquals(1280, coordinator.current?.width)
+        assertEquals(640, coordinator.current?.width, "a solo call starts at the one-to-one top")
 
         packets += 120; frames += 60
         val action = coordinator.onSample(
@@ -118,7 +118,10 @@ class VideoQualityCoordinatorTest {
         )
 
         assertNotNull(action, "a second leg changes the ladder and must be applied at once")
-        assertTrue(action.settings.width <= 960, "a conference must not keep sending 720p")
+        assertTrue(
+            action.settings.width <= 480,
+            "three parties must not keep sending the one-to-one top rung",
+        )
         // The tier applies to both legs: the codec parameter is endpoint-wide, and each leg
         // picks it up at its next stream build.
         assertEquals(setOf("a", "b"), action.appliesTo)
@@ -282,8 +285,8 @@ class VideoQualityCoordinatorTest {
     fun `the starting tier is the best the budget allows, before any measurement`() {
         val coordinator = coordinator()
         val solo = coordinator.startingSettings(VideoBudget(outgoingVideoLegs = 1))
-        assertEquals(1280, solo.width)
-        assertEquals(30, solo.fps)
+        assertEquals(640, solo.width)
+        assertEquals(15, solo.fps)
 
         // A leg's share of the aggregate, not the profile's own peak.
         val mesh = coordinator.startingSettings(VideoBudget(outgoingVideoLegs = 3))
@@ -295,7 +298,7 @@ class VideoQualityCoordinatorTest {
         val coordinator = coordinator()
         coordinator.onDisplayCeiling(DisplayCeiling(height = 360))
         val settings = coordinator.startingSettings(VideoBudget(outgoingVideoLegs = 3))
-        assertTrue(settings.height <= 540, "720p into a 360px tile is waste: got ${settings.height}")
+        assertTrue(settings.height <= 540, "a picture far over a 360px tile is waste: got ${settings.height}")
     }
 
     @Test

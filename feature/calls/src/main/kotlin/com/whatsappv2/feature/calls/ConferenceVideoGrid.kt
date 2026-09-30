@@ -208,19 +208,34 @@ private fun ParticipantTile(
             .testTag("$TAG_TILE_PREFIX${participant.id}"),
         contentAlignment = Alignment.Center,
     ) {
-        // The surface is given the *frame's* shape, scaled to cover the tile, and the
-        // overflow is clipped by the tile's own rounded corners. PJSIP draws onto a
-        // full-screen quad with fixed texture coordinates and corrects no aspect ratio
-        // whatever: a 16:9 frame in a portrait cell is a face half again as tall as it
-        // should be, which is what these tiles were until now. `cover` rather than `fit`
-        // so a tile is filled edge to edge rather than letterboxed inside an already
-        // small cell.
+        // The surface is given the *frame's own* shape, scaled uniformly to fit inside the
+        // tile. PJSIP draws onto a full-screen quad with fixed texture coordinates and
+        // corrects no aspect ratio whatever, so the shape of the view *is* the shape of the
+        // picture: a 16:9 frame in a portrait cell is a face half again as tall as it should
+        // be unless the view is 16:9 too.
+        //
+        // `fit` rather than `cover`. Cover fills the cell edge to edge and clips the
+        // overflow, which loses the sides of a 16:9 stream in a portrait tile — and in a
+        // conference every pixel is somebody. Contain keeps the whole frame and letterboxes
+        // the remainder against the tile's black, which is the requirement: preserve the
+        // entire original frame, never crop it merely to fill the cell.
+        //
+        // Neither distorts; the difference is what is lost. What *would* distort is giving
+        // the view the tile's shape instead of the frame's, and that is what happens below
+        // when the frame is unknown -- see the 16:9 fallback.
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val available = VideoSize(
                 width = constraints.maxWidth.takeIf { it != Constraints.Infinity } ?: 0,
                 height = constraints.maxHeight.takeIf { it != Constraints.Infinity } ?: 0,
             )
-            val box = VideoLayout.cover(frame, available)
+            // A tile whose stream has not yet reported a shape is letterboxed to 16:9 rather
+            // than filled. Filling is what `videoBounds` does with an unknown box, and it
+            // hands the renderer the cell's aspect ratio -- a stretch, for as long as it
+            // takes the first frame to arrive. Every rung of every ladder this app offers is
+            // 16:9 (`VideoQualityProfiles`), so the guess is right for our own peers and
+            // wrong by less than a crop for anybody else.
+            val shape = if (frame.isKnown) frame else NEUTRAL_FRAME
+            val box = VideoLayout.fit(shape, available)
             AndroidView(
                 factory = {
                     // The view outlives this composable; if a re-measure runs before the
@@ -296,6 +311,15 @@ private fun NameChip(participant: ConferenceParticipantRow, modifier: Modifier =
 
 /** Dark enough to read white text over any frame, light enough to see the picture through. */
 private const val CHIP_SCRIM = 0.55f
+
+/**
+ * The shape a tile assumes before its own stream has reported one.
+ *
+ * 16:9, because every resolution this app negotiates is — see `VideoQualityProfiles`. It is
+ * used only to letterbox, never to scale: an unknown frame must not be given the tile's own
+ * proportions, which is how a picture gets stretched before anybody has seen it.
+ */
+private val NEUTRAL_FRAME = VideoSize(16, 9)
 
 internal const val TAG_CONFERENCE_GRID = "conference-grid"
 internal const val TAG_TILE_PREFIX = "conference-tile-"

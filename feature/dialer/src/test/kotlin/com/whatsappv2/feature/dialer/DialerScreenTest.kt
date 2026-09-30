@@ -63,7 +63,7 @@ class DialerScreenTest {
         compose.onNodeWithTag(TAG_CALL).performClick()
         compose.waitForIdle()
 
-        assertEquals("sip:1001@sip.example.com", lastDialled())
+        assertEquals("sip:1001@sip.example.com:5061", lastDialled())
     }
 
     @Test
@@ -89,7 +89,7 @@ class DialerScreenTest {
         compose.onNodeWithTag(TAG_CALL).performClick()
         compose.waitForIdle()
 
-        assertEquals("sip:12@sip.example.com", lastDialled())
+        assertEquals("sip:12@sip.example.com:5061", lastDialled())
     }
 
     @Test
@@ -115,7 +115,7 @@ class DialerScreenTest {
         compose.onNodeWithTag(TAG_CALL).performClick()
         compose.waitForIdle()
 
-        assertEquals("sip:1001@home.example.com", lastDialled())
+        assertEquals("sip:1001@home.example.com:5061", lastDialled())
     }
 
     @Test

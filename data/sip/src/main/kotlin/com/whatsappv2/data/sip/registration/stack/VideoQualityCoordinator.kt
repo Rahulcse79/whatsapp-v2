@@ -215,7 +215,9 @@ internal class VideoQualityCoordinator(
         if (legs.isEmpty()) return null
 
         val budget = VideoBudget(outgoingVideoLegs = legs.size)
-        val nextShape = if (legs.size > 1) CallShape.CONFERENCE else CallShape.ONE_TO_ONE
+        // By leg count, not by "is this a conference": three parties and four are different
+        // ladders now, because the second is half as much encoding again as the first.
+        val nextShape = CallShape.forOutgoingLegs(legs.size)
         shape = nextShape
 
         val active = policy ?: AdaptiveVideoPolicy(

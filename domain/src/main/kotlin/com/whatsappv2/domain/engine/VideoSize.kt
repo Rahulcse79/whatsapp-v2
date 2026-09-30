@@ -68,14 +68,27 @@ data class VideoSizes(
     val remotes: Map<String, VideoSize> = emptyMap(),
 ) {
     /**
-     * [callId]'s decoded frame shape, falling back to [remote].
+     * [callId]'s **own** decoded frame shape, or [VideoSize.UNKNOWN].
      *
-     * The fallback matters at the start of a call: the map has no entry until that call
-     * has decoded something, and sizing its view to nothing produces a visible flash.
-     * [remote] is the best guess available then — some peer's real shape rather than a
-     * made-up one.
+     * The fallback to [remote] is deliberately narrow: it applies only while *no* call has
+     * published a shape yet. At the start of a one-to-one call that is the right guess,
+     * because [remote] will be this very call's shape a frame later and sizing the view to
+     * nothing produces a visible flash.
+     *
+     * In a conference it is never right, and the old unconditional fallback was a stretching
+     * bug rather than a flicker fix. [remote] is whichever call decoded *most recently*, so a
+     * tile whose own entry had not arrived was sized to **another participant's** aspect
+     * ratio — a real shape, and the wrong one. The renderer then scaled this stream to that
+     * shape, which is non-uniform scaling by another name: a 16:9 peer drawn into a box built
+     * for a 9:16 one comes out as a column.
+     *
+     * So once anybody's shape is known, a tile gets its own or nothing, and "nothing" is
+     * handled by the caller letterboxing rather than by borrowing.
      */
-    fun remoteFor(callId: String): VideoSize = remotes[callId]?.takeIf { it.isKnown } ?: remote
+    fun remoteFor(callId: String): VideoSize =
+        remotes[callId]?.takeIf { it.isKnown }
+            ?: remote.takeIf { remotes.none { (_, size) -> size.isKnown } }
+            ?: VideoSize.UNKNOWN
 
     companion object {
         /** Nothing has been decoded and no camera has opened. */
