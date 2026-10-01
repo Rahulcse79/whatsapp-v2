@@ -276,8 +276,18 @@ class AdaptiveVideoPolicy(
     private val smoother: VideoConditionsSmoother = VideoConditionsSmoother(),
     initialBudget: VideoBudget = VideoBudget(outgoingVideoLegs = 1),
     initialDisplayCeiling: DisplayCeiling = DisplayCeiling.UNCONSTRAINED,
+    frameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
 ) {
-    private var ladder: VideoQualityLadder = VideoQualityProfiles.forShape(shape)
+    /**
+     * The frame rate every rung of this policy's ladder runs at — the user's setting.
+     *
+     * Held rather than read from [current] because a ladder rebuild has to be able to ask
+     * what rate to rebuild AT, and [current] is the answer to a different question.
+     */
+    var frameRate: VideoFrameRate = frameRate
+        private set
+
+    private var ladder: VideoQualityLadder = VideoQualityProfiles.forShape(shape, frameRate)
 
     /** The rung in force. Starts at the best the budget and the tile can actually use. */
     var current: VideoQualityProfile = ladder.bestAffordable(
@@ -383,11 +393,33 @@ class AdaptiveVideoPolicy(
      * leaving, except that *climbing* after a shape change still goes through the windows —
      * the new shape's allowance is applied at once, the new shape's headroom is earned.
      */
+    /**
+     * Takes the user's frame-rate setting, keeping the rung the policy had arrived at.
+     *
+     * A ladder rebuild rather than a tier reset, and the distinction is the point: the rate
+     * changes what a rung MEANS, not which rung the evidence supports. A call that has
+     * stepped down to the floor under real loss stays on the floor; it simply sends the
+     * floor's picture at the rate that was asked for. Restarting the climb here would hand
+     * back quality for a settings tap rather than for evidence, which is the one thing
+     * `AdaptiveVideoPolicy` is careful never to do.
+     *
+     * No transition is returned. The caller applies the new profile itself -- see
+     * `VideoQualityCoordinator.setPreferredFrameRate` -- because this is not a decision the
+     * policy reached, and recording it as one would put a user's tap in the same log as the
+     * measurements.
+     */
+    fun applyFrameRate(rate: VideoFrameRate) {
+        if (rate == frameRate) return
+        frameRate = rate
+        ladder = VideoQualityProfiles.forShape(shape, rate)
+        current = ladder.profile(current.tier) ?: ladder.bottom
+    }
+
     private fun reshapeIfNeeded(raw: VideoConditions, nowMillis: Long): VideoQualityTransition? {
         if (raw.shape == shape) return null
         val from = current
         shape = raw.shape
-        ladder = VideoQualityProfiles.forShape(raw.shape)
+        ladder = VideoQualityProfiles.forShape(raw.shape, frameRate)
         smoother.reset()
         breachSinceMillis = null
         healthySinceMillis = null

@@ -351,7 +351,33 @@ jobs:
               print(f"::error::{path} contains a debug-overrides block. See its own comment for why not.")
               sys.exit(1)
           PY
-          echo "Cleartext is refused in every build, with no debug override."
+          # A per-domain cleartext exception exists for lab servers on private networks
+          # (see the config's own header for why that route rather than a permissive
+          # TrustManager). It is only survivable while it CANNOT name a public host, so
+          # every domain inside a cleartext-permitting block must be an RFC 1918 literal.
+          python3 - "$config" <<'PY'
+          import ipaddress, re, sys
+          markup = re.sub(r"<!--.*?-->", "", open(sys.argv[1], encoding="utf-8").read(), flags=re.S)
+          bad = []
+          for block in re.findall(r"<domain-config\b[^>]*>.*?</domain-config>", markup, flags=re.S):
+              if 'cleartextTrafficPermitted="true"' not in block:
+                  continue
+              for domain in re.findall(r"<domain[^>]*>([^<]+)</domain>", block):
+                  name = domain.strip()
+                  try:
+                      address = ipaddress.ip_address(name)
+                  except ValueError:
+                      bad.append(f"{name} (not an IP literal)")
+                      continue
+                  if not address.is_private:
+                      bad.append(f"{name} (not a private address)")
+          if bad:
+              print("::error::A cleartext exception names something that is not a private-network literal:")
+              for entry in bad:
+                  print(f"::error::  {entry}")
+              sys.exit(1)
+          PY
+          echo "Cleartext is refused by default; any exception is a private-network literal, and there is no debug override."
 
   build:
     name: Build and check
@@ -551,6 +577,27 @@ jobs:
               # decides whether a recording may start at all, which is where §2.6 lives.
               "com/whatsappv2/domain/recording": 90,
               "com/whatsappv2/data/sip/recording": 85,
+
+              # Chat (docs/chat-sdk-integration.md 9.7). The domain half is pure Kotlin -
+              # a URL parser, a session model and one use case - so it is held to the
+              # domain bar with nothing to excuse it.
+              "com/whatsappv2/domain/chat": 90,
+              # 65, not 70, and the gap is stated rather than chased: the two request
+              # paths are not written yet, because the login response shape and the
+              # phonebook row shape have not been specified (docs/chat-auth-and-contacts-plan.md
+              # 2). Everything around them is - the session survives a restart, sign-out
+              # clears the credential and keeps the address, and a signed-out refresh never
+              # reaches the network. Raise this to 70 in the commit that lands the requests.
+              "com/whatsappv2/data/chat": 65,
+              # The cipher's residue is the key-decoding branches, which need a key: a
+              # build without one is the case that IS covered, and the known-answer test
+              # lands with the key material (plan 2 item 1).
+              "com/whatsappv2/data/chat/crypto": 70,
+              "com/whatsappv2/data/chat/net": 70,
+              "com/whatsappv2/data/chat/store": 75,
+              # The feature floor the other feature packages use, for the stated reason
+              # that line coverage of declarative UI is a weak signal.
+              "com/whatsappv2/feature/chat": 40,
           }
 
           reports = glob.glob("**/build/reports/kover/report.xml", recursive=True)

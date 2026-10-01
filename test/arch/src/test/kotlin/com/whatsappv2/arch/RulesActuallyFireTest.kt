@@ -105,6 +105,12 @@ class RulesActuallyFireTest {
         assertFires("Rule 9", violations)
         assertTrue(violations.any { "okhttp3.OkHttpClient" in it.detail })
         assertTrue(violations.any { "java.net.HttpURLConnection" in it.detail })
+        // The chat SDK was added to the egress list the day it was vendored. Asserted
+        // here so the entry cannot be dropped later without a red test to explain it.
+        assertTrue(
+            violations.any { "com.chatserver.sdk" in it.detail },
+            "the chat SDK is not treated as a way off the device",
+        )
     }
 
     @Test
@@ -112,6 +118,21 @@ class RulesActuallyFireTest {
         val violations = ArchitectureRules.callStateIsNotRestoredFromSavedState(fixtures)
         assertFires("Rule 10", violations)
         assertTrue(violations.any { "SavedStateHandle" in it.detail })
+    }
+
+    @Test
+    fun `rule 13 fires on a chat SDK type outside data chat`() {
+        val violations = ArchitectureRules.chatSdkStaysInDataChat(fixtures)
+        assertFires("Rule 13", violations)
+        assertTrue(violations.any { "com.chatserver.sdk.ChatSdk" in it.detail }, "the singleton was not rejected")
+        assertTrue(
+            violations.any { "com.chatserver.sdk.ChatListener" in it.detail },
+            "the listener interface was not rejected - this is the leak that keeps a ViewModel alive for ever",
+        )
+        assertTrue(
+            violations.any { "com.chatserver.sdk.model.Message" in it.detail },
+            "an SDK model type was not rejected",
+        )
     }
 
     private companion object {

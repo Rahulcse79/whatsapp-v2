@@ -180,11 +180,16 @@ dependencies {
     // graph, and :app is the only module permitted to know about every layer.
     implementation(project(":data:account"))
     implementation(project(":data:calllog"))
+    // Brings the chat identity and directory bindings onto the graph. :chatsdk is NOT
+    // declared here and must not be: architecture rule 13 confines it to :data:chat, and a
+    // dependency :app could reach through would make that rule a suggestion.
+    implementation(project(":data:chat"))
     implementation(project(":data:contacts"))
     implementation(project(":data:settings"))
     implementation(project(":data:sip"))
     implementation(project(":feature:accounts"))
     implementation(project(":feature:calls"))
+    implementation(project(":feature:chat"))
     implementation(project(":feature:dialer"))
     implementation(project(":feature:history"))
     implementation(project(":feature:settings"))

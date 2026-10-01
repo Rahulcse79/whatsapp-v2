@@ -1,0 +1,150 @@
+package com.whatsappv2.feature.chat
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.whatsappv2.feature.chat.contacts.ChatContactsScreen
+import com.whatsappv2.feature.chat.contacts.ChatContactsViewModel
+import com.whatsappv2.feature.chat.signin.ChatSignInEvent
+import com.whatsappv2.feature.chat.signin.ChatSignInScreen
+import com.whatsappv2.feature.chat.signin.ChatSignInViewModel
+import com.whatsappv2.feature.chat.thread.ChatThreadScreen
+import com.whatsappv2.feature.chat.thread.ChatThreadViewModel
+
+/**
+ * The Chats tab.
+ *
+ * The feature exposes routes rather than screens, so `:app` wires navigation without
+ * needing to know which composable, ViewModel or state type sits behind each one — the
+ * same shape `AccountsRoute` uses, and the reason `AppNavHost` changes by one line when a
+ * screen is replaced.
+ *
+ * [onOpenSettings] and [registrationIndicator] keep the signatures `ChatsPlaceholderScreen`
+ * had. The gear and the registration indicator travel with the **route**, not with whatever
+ * is drawn behind it, which is what its KDoc promised whoever replaced it.
+ */
+@Composable
+fun ChatsRoute(
+    onSignIn: () -> Unit,
+    onNewConversation: () -> Unit,
+    onOpenConversation: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    onOpenSettings: (() -> Unit)? = null,
+    registrationIndicator: (@Composable () -> Unit)? = null,
+    viewModel: ChatsViewModel = hiltViewModel(),
+) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+
+    ChatsScreen(
+        state = state,
+        onSignIn = onSignIn,
+        onNewConversation = onNewConversation,
+        // The id is handed up as a String rather than a ConversationId: `:app` puts it in
+        // a navigation argument, and a value class would only be unwrapped there anyway.
+        onOpenConversation = { onOpenConversation(it.value) },
+        onRetry = viewModel::refresh,
+        onOpenSettings = onOpenSettings,
+        registrationIndicator = registrationIndicator,
+        modifier = modifier,
+    )
+}
+
+/**
+ * One conversation.
+ *
+ * The conversation id reaches the ViewModel through `SavedStateHandle`, so this route
+ * takes no id parameter — `:app` puts it in the navigation argument named
+ * [ChatThreadViewModel.CONVERSATION_ID] and Hilt does the rest.
+ */
+@Composable
+fun ChatThreadRoute(
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    viewModel: ChatThreadViewModel = hiltViewModel(),
+) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+
+    ChatThreadScreen(
+        state = state,
+        onDraftChange = viewModel::setDraft,
+        onSend = viewModel::send,
+        onRetry = viewModel::retry,
+        onBack = onBack,
+        modifier = modifier,
+    )
+}
+
+/**
+ * The sign-in form.
+ *
+ * [onSignedIn] fires once, from the ViewModel's event channel rather than from its state.
+ * A "signed in" flag in state would re-fire on every recomposition after a rotation and
+ * navigate twice.
+ */
+@Composable
+fun ChatSignInRoute(
+    onSignedIn: () -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    viewModel: ChatSignInViewModel = hiltViewModel(),
+) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+
+    LaunchedEffect(viewModel) {
+        viewModel.events.collect { event ->
+            when (event) {
+                ChatSignInEvent.SignedIn -> onSignedIn()
+            }
+        }
+    }
+
+    ChatSignInScreen(
+        state = state,
+        onServerUrlChange = viewModel::setServerUrl,
+        onUsernameChange = viewModel::setUsername,
+        onPasswordChange = viewModel::setPassword,
+        onTogglePasswordVisible = viewModel::togglePasswordVisible,
+        onSubmit = viewModel::submit,
+        onBack = onBack,
+        modifier = modifier,
+    )
+}
+
+/**
+ * The company directory.
+ *
+ * Choosing somebody **opens the conversation and then navigates** — it does not navigate
+ * to a screen that opens it. The thread's id is the chat server's, not the directory's, so
+ * it has to be obtained before there is anywhere to go; a route that pushed first would
+ * land on a screen with nothing to load.
+ *
+ * Which directory field becomes the other party's id is decided in one place
+ * ([ChatContactsViewModel.conversationIdOf]). `userId`, `contactIdentifier`, `deviceKey`
+ * and an extension are four different things here, and the wrong one fails at
+ * conversation-creation time — a screen away from its cause.
+ */
+@Composable
+fun ChatContactsRoute(
+    onConversationOpened: (String) -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    viewModel: ChatContactsViewModel = hiltViewModel(),
+) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+
+    LaunchedEffect(viewModel) {
+        viewModel.opened.collect { conversationId -> onConversationOpened(conversationId.value) }
+    }
+
+    ChatContactsScreen(
+        state = state,
+        onQueryChange = viewModel::setQuery,
+        onContactSelected = viewModel::openConversationWith,
+        onRetry = viewModel::refresh,
+        onBack = onBack,
+        modifier = modifier,
+    )
+}

@@ -9,10 +9,11 @@ import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.ThemeMode
 import com.whatsappv2.domain.repository.AppSettingsRepository
+import com.whatsappv2.domain.repository.ChatSessionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -27,17 +28,53 @@ data class SettingsUiState(
      * someone to make it enableable, while an absent one has nothing to re-enable.
      */
     val traceToggleAvailable: Boolean = false,
+    /** Who is signed in to chat, or null when nobody is. */
+    val chatAccount: ChatAccountUiState? = null,
+)
+
+/**
+ * The signed-in chat identity, as Settings shows it.
+ *
+ * ## Why the row appears only while signed in
+ *
+ * Because its only action is Sign out, and a Sign out for an account nobody has is a
+ * control that cannot do anything. Signing *in* happens on the Chats tab, with the server
+ * URL beside the credentials it belongs to — decision D1, and the reason this row carries
+ * no URL field.
+ *
+ * [serverOrigin] is shown and not editable. It is what the session was obtained against,
+ * so changing it here would leave a saved session pointing at a server it did not come
+ * from — a failure that looks to a user like a broken account.
+ */
+data class ChatAccountUiState(
+    val identity: String,
+    val serverOrigin: String,
 )
 
 /** App preferences. */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val repository: AppSettingsRepository,
+    private val chatSessions: ChatSessionRepository,
     traceAvailability: TraceAvailability,
 ) : ViewModel() {
 
-    val uiState: StateFlow<SettingsUiState> = repository.observeSettings()
-        .map { SettingsUiState(it, traceAvailability.isAvailable()) }
+    val uiState: StateFlow<SettingsUiState> = combine(
+        repository.observeSettings(),
+        chatSessions.observeSession(),
+        chatSessions.observeServerUrl(),
+    ) { settings, session, serverUrl ->
+        SettingsUiState(
+            settings = settings,
+            traceToggleAvailable = traceAvailability.isAvailable(),
+            chatAccount = session?.let {
+                ChatAccountUiState(
+                    identity = it.displayName ?: it.userId,
+                    serverOrigin = serverUrl.origin,
+                )
+            },
+        )
+    }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(SUBSCRIPTION_TIMEOUT_MILLIS),
@@ -62,6 +99,16 @@ class SettingsViewModel @Inject constructor(
 
     fun setCallHistoryRetention(retention: CallHistoryRetention) =
         viewModelScope.launch { repository.setCallHistoryRetention(retention) }
+
+    /**
+     * Signs out of chat. The repository call and nothing else.
+     *
+     * No `ChatSignOutUseCase` in front of it: §4.2 forbids pass-through use cases, and
+     * this has no second collaborator to order — disconnecting the socket is `:data:chat`'s
+     * business, triggered by the session it already watches. The confirmation that guards
+     * it is the screen's, because confirming is a UI decision.
+     */
+    fun signOutOfChat() = viewModelScope.launch { chatSessions.signOut() }
 
     private companion object {
         const val SUBSCRIPTION_TIMEOUT_MILLIS = 5_000L

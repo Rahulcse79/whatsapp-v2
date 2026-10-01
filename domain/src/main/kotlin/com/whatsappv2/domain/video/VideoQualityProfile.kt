@@ -61,6 +61,31 @@ data class VideoQualityProfile(
     /** The wall clock a frame gets if the encoder is to keep up with [fps]. */
     val frameBudgetMillis: Double get() = 1_000.0 / fps
 
+    /**
+     * The same picture at [rate], with the bitrate band moved with it.
+     *
+     * The rungs below are written at [VideoFrameRate.DEFAULT], so this is how a user's
+     * choice of frame rate reaches them. Bitrate scales **linearly** with the rate: twice
+     * the frames is twice the encoded data at the same quality, to a first approximation.
+     * It is only an approximation — successive frames are more alike at a higher rate, so a
+     * real encoder needs somewhat less than double — and linear is the conservative
+     * direction on the way up and the safe one on the way down. The encoder's own rate
+     * controller has the last word inside the band either way.
+     *
+     * Rounded to whole bits per second, and [minBps] is floored at 1 so the band stays
+     * valid at the lowest rung and the lowest rate.
+     */
+    fun atFrameRate(rate: VideoFrameRate): VideoQualityProfile {
+        if (rate.fps == fps) return this
+        fun scaled(bps: Int): Int = (bps.toLong() * rate.fps / fps).toInt()
+        return copy(
+            fps = rate.fps,
+            minBps = scaled(minBps).coerceAtLeast(1),
+            targetBps = scaled(targetBps).coerceAtLeast(1),
+            maxBps = scaled(maxBps).coerceAtLeast(1),
+        )
+    }
+
     /** `640x360@24` — for a log line or a transition record, never parsed back. */
     override fun toString(): String = "${width}x$height@$fps"
 }
@@ -138,6 +163,20 @@ class VideoQualityLadder internal constructor(
                 displayCeiling.admits(it) &&
                 it.pixelRate <= pixelRateCeiling
         } ?: rungs.lastOrNull { it.pixelRate <= pixelRateCeiling } ?: bottom
+
+    /**
+     * The same ladder with every rung at [rate].
+     *
+     * Rung identities are untouched: HIGH is still HIGH, the order is still the order, and
+     * only what each one means in frames and bits moves. That is what lets a frame-rate
+     * change keep the tier the policy had arrived at instead of restarting the climb.
+     */
+    fun atFrameRate(rate: VideoFrameRate): VideoQualityLadder =
+        if (rungs.all { it.fps == rate.fps }) {
+            this
+        } else {
+            VideoQualityLadder(shape = shape, rungs = rungs.map { it.atFrameRate(rate) })
+        }
 
     private fun indexOf(tier: VideoQualityTier): Int =
         rungs.indexOfFirst { it.tier == tier }.takeIf { it >= 0 }
@@ -316,10 +355,25 @@ object VideoQualityProfiles {
         ),
     )
 
-    /** The ladder for [shape]. */
-    fun forShape(shape: CallShape): VideoQualityLadder = when (shape) {
-        CallShape.ONE_TO_ONE -> oneToOne
-        CallShape.THREE_PARTY -> threeParty
-        CallShape.FOUR_PARTY -> fourParty
+    /**
+     * The ladder for [shape], with every rung at [rate].
+     *
+     * The rungs are declared at [VideoFrameRate.DEFAULT] and moved from there, so the whole
+     * ladder shares one frame rate and the policy's budget arithmetic is done in the terms
+     * the stream will actually run in. Choosing the rate here rather than overriding it on
+     * the profile the policy hands out is what keeps the two consistent: a rung's
+     * `targetBps` is checked against the per-leg allowance, and a rate applied after that
+     * check would spend an allowance nobody had granted.
+     */
+    fun forShape(
+        shape: CallShape,
+        rate: VideoFrameRate = VideoFrameRate.DEFAULT,
+    ): VideoQualityLadder {
+        val base = when (shape) {
+            CallShape.ONE_TO_ONE -> oneToOne
+            CallShape.THREE_PARTY -> threeParty
+            CallShape.FOUR_PARTY -> fourParty
+        }
+        return base.atFrameRate(rate)
     }
 }

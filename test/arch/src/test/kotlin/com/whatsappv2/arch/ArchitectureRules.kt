@@ -192,6 +192,9 @@ object ArchitectureRules {
     /** The stack ADR-006 removed. Permitted nowhere. */
     private const val REMOVED_SDK = "org.linphone"
 
+    /** The chat SDK (docs/chat-sdk-integration.md). Confined to `:data:chat` by rule 13. */
+    private const val CHAT_SDK = "com.chatserver.sdk"
+
     fun sipSdkStaysInDataSip(files: List<SourceFile>): List<Violation> =
         files.flatMap { file ->
             file.imports.mapNotNull { imported ->
@@ -425,7 +428,37 @@ object ArchitectureRules {
         "io.ktor.",
         "android.webkit.",
         "com.google.firebase.",
+        // The chat SDK is a new way off the device, added the day it was vendored rather
+        // than the day somebody used it. Chat is exactly where a person will one day want
+        // to match the address book against chat users, and the rule's own KDoc names that
+        // mistake: "one import in one file, months later, in a class that already had a
+        // good reason to talk to the network". It costs nothing today — no file imports
+        // both — and this is the cheapest moment it will ever be added.
+        CHAT_SDK,
     )
+
+
+    /**
+     * **Rule 13 — no chat SDK type outside `:data:chat`** (docs/chat-sdk-integration.md §9.5).
+     *
+     * The same containment rule 2 gives PJSIP, for the same reason and with better odds of
+     * being needed. `com.chatserver.sdk` is vendored source from a repository this team does
+     * not control (§0), and what makes a second SDK swap a one-module rewrite rather than an
+     * application rewrite is that no ViewModel, no screen and no `:app` class can name one
+     * of its types.
+     *
+     * It is a stronger rule than it looks, because the SDK's shape invites the leak: its
+     * callbacks arrive on the main thread and its `ChatSdk` is a process-lifetime singleton
+     * reachable by a static `get()`, so a ViewModel that registers a listener directly
+     * would work — and would leak for the life of the app (finding 1.3-7). The rule makes
+     * that unbuildable instead of merely discouraged.
+     */
+    fun chatSdkStaysInDataChat(files: List<SourceFile>): List<Violation> =
+        files.flatMap { file ->
+            file.imports
+                .filter { it.startsWith(CHAT_SDK) && !file.isUnder("data/chat") }
+                .map { Violation(file.relativePath, "imports $it outside :data:chat") }
+        }
 
     /**
      * **Rule 10 — call state is never restored from `SavedStateHandle` (Task 45, §6).**

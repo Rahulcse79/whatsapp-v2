@@ -2,6 +2,8 @@ package com.whatsappv2.feature.settings
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -41,6 +43,7 @@ class SettingsScreenTest {
         onRetention: (CallHistoryRetention) -> Unit = {},
         onVerifyTls: (Boolean) -> Unit = {},
         backgroundAccess: BackgroundAccessLink? = null,
+        onChatSignOut: () -> Unit = {},
     ) {
         compose.setContent {
             WhatsAppV2Theme {
@@ -54,6 +57,7 @@ class SettingsScreenTest {
                         onSipTraceChange = onTrace,
                         onVerifyTlsChange = onVerifyTls,
                         onRetentionChange = onRetention,
+                        onChatSignOut = onChatSignOut,
                     ),
                     links = SettingsLinks(onOpenAccounts = {}, backgroundAccess = backgroundAccess),
                     onBack = {},
@@ -61,6 +65,56 @@ class SettingsScreenTest {
             }
         }
     }
+
+    @Test
+    fun `there is no chat account row until somebody signs in`() {
+        setContent()
+
+        compose.onNodeWithTag(TAG_CHAT_ACCOUNT).assertDoesNotExist()
+    }
+
+    @Test
+    fun `the chat account row names the identity and the server it came from`() {
+        setContent(state = signedInState())
+
+        compose.onNodeWithTag(TAG_CHAT_ACCOUNT).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Sample User · https://gujlogin.coraltele.com").assertIsDisplayed()
+    }
+
+    @Test
+    fun `signing out confirms first, and cancelling does nothing`() {
+        // The only way back from a sign-out is typing a password again, so it is guarded.
+        var signOuts = 0
+        setContent(state = signedInState(), onChatSignOut = { signOuts++ })
+
+        compose.onNodeWithTag(TAG_CHAT_SIGN_OUT).performScrollTo().performClick()
+        compose.onNodeWithText("Sign out of chat?").assertIsDisplayed()
+        compose.onNodeWithText("Cancel").performClick()
+
+        assertEquals(0, signOuts)
+    }
+
+    @Test
+    fun `confirming the dialog signs out`() {
+        var signOuts = 0
+        setContent(state = signedInState(), onChatSignOut = { signOuts++ })
+
+        compose.onNodeWithTag(TAG_CHAT_SIGN_OUT).performScrollTo().performClick()
+        // The dialog's confirm button, not the row's - the row's label is the same word,
+        // which is why this reaches for the one inside the dialog's own tree.
+        compose.onAllNodesWithText("Sign out").onLast().performClick()
+
+        assertEquals(1, signOuts)
+    }
+
+    private fun signedInState() = SettingsUiState(
+        settings = AppSettings.DEFAULT,
+        traceToggleAvailable = true,
+        chatAccount = ChatAccountUiState(
+            identity = "Sample User",
+            serverOrigin = "https://gujlogin.coraltele.com",
+        ),
+    )
 
     @Test
     fun `the background-access row says which way the phone is set, and opens the system screen`() {

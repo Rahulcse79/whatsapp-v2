@@ -1,6 +1,9 @@
 package com.whatsappv2.feature.settings
 
 import app.cash.turbine.test
+import com.whatsappv2.core.common.secret.Secret
+import com.whatsappv2.domain.chat.ChatSession
+import com.whatsappv2.domain.chat.CoralServerUrl
 import com.whatsappv2.domain.model.AppSettings
 import com.whatsappv2.domain.model.CallHistoryRetention
 import com.whatsappv2.domain.model.DtmfMode
@@ -8,6 +11,7 @@ import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.ThemeMode
 import com.whatsappv2.domain.testing.FakeAppSettingsRepository
+import com.whatsappv2.domain.testing.FakeChatSessionRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -20,12 +24,15 @@ import org.junit.Before
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SettingsViewModelTest {
 
     private val repository = FakeAppSettingsRepository()
+    private val chatSessions = FakeChatSessionRepository()
     private val dispatcher = StandardTestDispatcher()
 
     @Before
@@ -35,7 +42,7 @@ class SettingsViewModelTest {
     fun tearDown() = Dispatchers.resetMain()
 
     private fun viewModel(traceAvailable: Boolean = true) =
-        SettingsViewModel(repository, TraceAvailability { traceAvailable })
+        SettingsViewModel(repository, chatSessions, TraceAvailability { traceAvailable })
 
     @Test
     fun `a fresh install starts from the documented defaults`() = runTest(dispatcher) {
@@ -48,6 +55,85 @@ class SettingsViewModelTest {
             assertEquals(SrtpPolicy.DISABLED, state.settings.defaultSrtpPolicy)
             assertEquals(PreferredAudioRoute.AUTOMATIC, state.settings.preferredAudioRoute)
             assertEquals(CallHistoryRetention.DEFAULT, state.settings.callHistoryRetention)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `there is no chat account row until somebody signs in`() = runTest(dispatcher) {
+        val model = viewModel()
+        model.uiState.test {
+            advanceUntilIdle()
+            // Its only action is Sign out, so with nobody signed in the row is absent
+            // rather than present and inert.
+            assertNull(expectMostRecentItem().chatAccount)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `a signed-in account shows its identity and the server it came from`() = runTest(dispatcher) {
+        chatSessions.givenSignedIn(
+            ChatSession(
+                userId = "sample-user",
+                displayName = "Sample User",
+                token = Secret("a-token"),
+                expiresAtMs = null,
+                deviceId = "BF6625949EAA4D5F94CAA18641BE8E74",
+            ),
+        )
+        val model = viewModel()
+
+        model.uiState.test {
+            advanceUntilIdle()
+            val account = assertNotNull(expectMostRecentItem().chatAccount)
+            assertEquals("Sample User", account.identity)
+            assertEquals(CoralServerUrl.DEFAULT.origin, account.serverOrigin)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `an account with no display name falls back to the user id`() = runTest(dispatcher) {
+        chatSessions.givenSignedIn(
+            ChatSession(
+                userId = "other-user",
+                displayName = null,
+                token = Secret("a-token"),
+                expiresAtMs = null,
+                deviceId = "BF6625949EAA4D5F94CAA18641BE8E74",
+            ),
+        )
+        val model = viewModel()
+
+        model.uiState.test {
+            advanceUntilIdle()
+            assertEquals("other-user", assertNotNull(expectMostRecentItem().chatAccount).identity)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `signing out clears the row and keeps the server URL - decision D2`() = runTest(dispatcher) {
+        chatSessions.givenSignedIn(
+            ChatSession(
+                userId = "sample-user",
+                displayName = null,
+                token = Secret("a-token"),
+                expiresAtMs = null,
+                deviceId = "BF6625949EAA4D5F94CAA18641BE8E74",
+            ),
+        )
+        val model = viewModel()
+
+        model.uiState.test {
+            advanceUntilIdle()
+            model.signOutOfChat()
+            advanceUntilIdle()
+
+            assertNull(expectMostRecentItem().chatAccount)
+            assertEquals(1, chatSessions.signOutCount)
+            assertEquals(CoralServerUrl.DEFAULT, chatSessions.currentServerUrl())
             cancelAndIgnoreRemainingEvents()
         }
     }

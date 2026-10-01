@@ -3,7 +3,10 @@ package com.whatsappv2.feature.calls
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -19,6 +22,9 @@ import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.Shape
+import com.whatsappv2.core.designsystem.component.Avatar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
@@ -185,14 +191,45 @@ internal fun ConferenceVideoGrid(
 }
 
 /**
- * One participant: their picture, their name and extension, and whether they are muted.
+ * One participant: a card holding their picture, their name, and whether they are muted.
  *
- * The picture is clipped to the tile and fills it. PJSIP stretches whatever it decodes to
- * the bounds of the view it is given (`opengl_dev.c` sets the viewport to the whole
- * surface and corrects nothing), so a tile is only the right shape if it is *given* the
- * right shape — here that is [frame]'s aspect ratio scaled to cover the cell, with the
- * overflow clipped by the tile's rounded corners. A `TextureView` is what makes that clip
- * real; see the grid's KDoc for the SurfaceView that ignored it.
+ * ## Why it is a card and not a rectangle of video
+ *
+ * A conference tile is dark for most of its area — the picture is letterboxed to the
+ * frame's own shape (see below), and the rest is the canvas showing through. Without a
+ * surface and an edge, four of those on a black screen read as four holes rather than four
+ * people: that is what the grid looked like before. So the tile paints a barely-there
+ * surface, rounds itself at [Radius.large], and draws a hairline at its edge. None of it is
+ * decoration for its own sake — each piece is what makes a tile's bounds visible when its
+ * picture does not reach them.
+ *
+ * ## The border carries state
+ *
+ * [AppTheme.sizing.videoTileBorder] at rest, and the theme's primary at
+ * [AppTheme.sizing.videoPreviewBorder] while this participant is speaking. It is animated
+ * because an active speaker changes often enough that a hard switch flickers, and it is the
+ * border rather than a badge because the border is already there — a badge would be one
+ * more thing competing with the name for a corner.
+ *
+ * `isSpeaking` is plumbed from the roster and is false on a server that asserts no active
+ * speaker, which is the common case here. That is the right behaviour rather than dead
+ * code: the ring simply does not appear until something sets it.
+ *
+ * ## The picture
+ *
+ * The surface is given the *frame's own* shape, scaled uniformly to fit inside the tile.
+ * PJSIP draws onto a full-screen quad with fixed texture coordinates and corrects no aspect
+ * ratio whatever, so the shape of the view *is* the shape of the picture: a 16:9 frame in a
+ * portrait cell is a face half again as tall as it should be unless the view is 16:9 too.
+ *
+ * `fit` rather than `cover`. Cover fills the cell edge to edge and clips the overflow, which
+ * loses the sides of a 16:9 stream in a portrait tile — and in a conference every pixel is
+ * somebody. Contain keeps the whole frame and letterboxes the remainder, which is the
+ * requirement: preserve the entire original frame, never crop it merely to fill the cell.
+ *
+ * Neither distorts; the difference is what is lost. What *would* distort is giving the view
+ * the tile's shape instead of the frame's, and that is what happens when the frame is
+ * unknown — see the 16:9 fallback.
  */
 @Composable
 private fun ParticipantTile(
@@ -201,28 +238,36 @@ private fun ParticipantTile(
     frame: VideoSize,
     modifier: Modifier = Modifier,
 ) {
+    val shape: Shape = RoundedCornerShape(AppTheme.radius.large)
+    val speakingColour = MaterialTheme.colorScheme.primary
+    val edge by animateColorAsState(
+        targetValue = if (participant.isSpeaking) {
+            speakingColour
+        } else {
+            Color.White.copy(alpha = TILE_EDGE_ALPHA)
+        },
+        label = "conference-tile-edge",
+    )
+    val edgeWidth =
+        if (participant.isSpeaking) AppTheme.sizing.videoPreviewBorder else AppTheme.sizing.videoTileBorder
+
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(AppTheme.radius.medium))
+            .clip(shape)
             .background(Color.Black)
+            .background(Color.White.copy(alpha = TILE_SURFACE_ALPHA))
+            .border(BorderStroke(edgeWidth, edge), shape)
             .testTag("$TAG_TILE_PREFIX${participant.id}"),
         contentAlignment = Alignment.Center,
     ) {
-        // The surface is given the *frame's own* shape, scaled uniformly to fit inside the
-        // tile. PJSIP draws onto a full-screen quad with fixed texture coordinates and
-        // corrects no aspect ratio whatever, so the shape of the view *is* the shape of the
-        // picture: a 16:9 frame in a portrait cell is a face half again as tall as it should
-        // be unless the view is 16:9 too.
-        //
-        // `fit` rather than `cover`. Cover fills the cell edge to edge and clips the
-        // overflow, which loses the sides of a 16:9 stream in a portrait tile — and in a
-        // conference every pixel is somebody. Contain keeps the whole frame and letterboxes
-        // the remainder against the tile's black, which is the requirement: preserve the
-        // entire original frame, never crop it merely to fill the cell.
-        //
-        // Neither distorts; the difference is what is lost. What *would* distort is giving
-        // the view the tile's shape instead of the frame's, and that is what happens below
-        // when the frame is unknown -- see the 16:9 fallback.
+        // Behind the picture, and only until there is one. A `TextureView` draws nothing
+        // before its first frame, so this shows through the whole tile while a stream is
+        // still coming up and is covered the moment it is not -- which is the difference
+        // between "connecting" and "this call is broken" for anybody looking at the screen.
+        if (!frame.isKnown) {
+            TilePlaceholder(participant)
+        }
+
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val available = VideoSize(
                 width = constraints.maxWidth.takeIf { it != Constraints.Infinity } ?: 0,
@@ -234,8 +279,8 @@ private fun ParticipantTile(
             // takes the first frame to arrive. Every rung of every ladder this app offers is
             // 16:9 (`VideoQualityProfiles`), so the guess is right for our own peers and
             // wrong by less than a crop for anybody else.
-            val shape = if (frame.isKnown) frame else NEUTRAL_FRAME
-            val box = VideoLayout.fit(shape, available)
+            val pictureShape = if (frame.isKnown) frame else NEUTRAL_FRAME
+            val box = VideoLayout.fit(pictureShape, available)
             AndroidView(
                 factory = {
                     // The view outlives this composable; if a re-measure runs before the
@@ -251,66 +296,102 @@ private fun ParticipantTile(
             participant = participant,
             modifier = Modifier.align(Alignment.BottomStart).padding(AppTheme.spacing.small),
         )
+    }
+}
 
+/**
+ * What a tile shows before its stream has a picture: who you are waiting for.
+ *
+ * An initial circle and the name, centred — the same thing every other video product does
+ * with a camera that has not arrived, and for the same reason. The alternative is a black
+ * rectangle, which is indistinguishable from the failure modes this app has actually had.
+ */
+@Composable
+private fun TilePlaceholder(participant: ConferenceParticipantRow) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
+    ) {
+        Avatar(displayName = participant.label, size = AppTheme.sizing.videoTileAvatar)
+        Text(
+            text = participant.label,
+            style = MaterialTheme.typography.labelLarge,
+            color = Color.White.copy(alpha = PLACEHOLDER_LABEL_ALPHA),
+            maxLines = 1,
+        )
+    }
+}
+
+/**
+ * The name plate: a pill carrying the mute state, the extension and the name.
+ *
+ * One pill rather than a label in one corner and a mute badge in the other. A four-party
+ * grid has four tiles and eight corners in play, and the two marks belong to the same
+ * person — putting them together is what stops a tile looking like a dashboard.
+ *
+ * Two text lines rather than one string, because they answer different questions and
+ * deserve different weight: the extension is how somebody is addressed on this system and
+ * the name is who they are. [ConferenceParticipantRow.detail] is null when the two would
+ * say the same thing, and then the label is the only line — a chip reading "1003" over
+ * "1003" is noise.
+ */
+@Composable
+private fun NameChip(participant: ConferenceParticipantRow, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(AppTheme.radius.full))
+            .background(Color.Black.copy(alpha = CHIP_SCRIM))
+            .padding(horizontal = AppTheme.spacing.small, vertical = AppTheme.spacing.extraSmall),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraSmall),
+    ) {
         if (participant.isMuted) {
-            Box(
+            Icon(
+                imageVector = Icons.Filled.MicOff,
+                contentDescription = "${participant.label} is muted",
+                tint = Color.White,
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(AppTheme.spacing.small)
-                    .clip(RoundedCornerShape(AppTheme.radius.full))
-                    .background(Color.Black.copy(alpha = CHIP_SCRIM))
-                    .padding(AppTheme.spacing.extraSmall)
+                    .size(AppTheme.sizing.videoPreviewControl)
                     .testTag("$TAG_MUTE_PREFIX${participant.id}"),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.MicOff,
-                    contentDescription = "${participant.label} is muted",
-                    tint = Color.White,
-                    modifier = Modifier.size(AppTheme.sizing.videoPreviewControlMinimised),
+            )
+        }
+        Column {
+            val extension = participant.detail ?: participant.label
+            Text(
+                text = extension,
+                style = MaterialTheme.typography.labelMedium,
+                color = Color.White,
+                maxLines = 1,
+            )
+            if (participant.detail != null) {
+                Text(
+                    text = participant.label,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White,
+                    maxLines = 1,
                 )
             }
         }
     }
 }
 
-/**
- * The extension over the name, as the reference has it.
- *
- * Two lines rather than one string because they answer different questions and deserve
- * different weight: the extension is how somebody is addressed on this system and the
- * name is who they are. [ConferenceParticipantRow.detail] is null when the two would say
- * the same thing, and then the label is the only line — a chip reading "1003" over "1003"
- * is noise.
- */
-@Composable
-private fun NameChip(participant: ConferenceParticipantRow, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(AppTheme.radius.small))
-            .background(Color.Black.copy(alpha = CHIP_SCRIM))
-            .padding(horizontal = AppTheme.spacing.small, vertical = AppTheme.spacing.extraSmall),
-    ) {
-        val extension = participant.detail ?: participant.label
-        Text(
-            text = extension,
-            style = MaterialTheme.typography.labelMedium,
-            color = Color.White,
-            maxLines = 1,
-        )
-        if (participant.detail != null) {
-            Text(
-                text = participant.label,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = Color.White,
-                maxLines = 1,
-            )
-        }
-    }
-}
-
 /** Dark enough to read white text over any frame, light enough to see the picture through. */
 private const val CHIP_SCRIM = 0.55f
+
+/**
+ * The tile's own surface, over the black canvas.
+ *
+ * Barely there on purpose: enough that the letterboxed bands read as part of a card rather
+ * than as the screen behind it, and not so much that a dark picture looks washed out.
+ */
+private const val TILE_SURFACE_ALPHA = 0.06f
+
+/** The resting hairline. Visible against black, invisible against a bright picture. */
+private const val TILE_EDGE_ALPHA = 0.14f
+
+/** The waiting name, quieter than the name plate because it is a placeholder. */
+private const val PLACEHOLDER_LABEL_ALPHA = 0.7f
 
 /**
  * The shape a tile assumes before its own stream has reported one.
