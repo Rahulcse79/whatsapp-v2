@@ -19,6 +19,7 @@ val LocalStatusColors = staticCompositionLocalOf { LightStatusColors }
 
 /** The top bar and bottom navigation palette. See [BarColors]. */
 val LocalBarColors = staticCompositionLocalOf { LightBarColors }
+val LocalChatColors = staticCompositionLocalOf { LightChatColors }
 
 /**
  * The app theme.
@@ -48,6 +49,7 @@ fun WhatsAppV2Theme(
         LocalCallColors provides if (darkTheme) DarkCallColors else LightCallColors,
         LocalStatusColors provides if (darkTheme) DarkStatusColors else LightStatusColors,
         LocalBarColors provides if (darkTheme) DarkBarColors else LightBarColors,
+        LocalChatColors provides if (darkTheme) DarkChatColors else LightChatColors,
         LocalSpacing provides Spacing(),
         LocalRadius provides Radius(),
         LocalSizing provides Sizing(),
@@ -95,4 +97,9 @@ object AppTheme {
         @Composable
         @ReadOnlyComposable
         get() = LocalBarColors.current
+
+    val chatColors: ChatColors
+        @Composable
+        @ReadOnlyComposable
+        get() = LocalChatColors.current
 }

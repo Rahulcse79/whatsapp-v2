@@ -15,7 +15,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -29,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import com.whatsappv2.core.designsystem.component.AppTopBar
@@ -146,7 +146,7 @@ private fun ConversationRow(conversation: ChatConversation, onClick: () -> Unit)
             .clickable(onClick = onClick)
             .padding(horizontal = AppTheme.spacing.large, vertical = AppTheme.spacing.medium),
     ) {
-        Avatar(displayName = conversation.title)
+        Avatar(displayName = conversation.title, size = AppTheme.sizing.avatarLarge / 2)
 
         Column(
             modifier = Modifier
@@ -156,6 +156,7 @@ private fun ConversationRow(conversation: ChatConversation, onClick: () -> Unit)
             Text(
                 text = conversation.title,
                 style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -168,10 +169,61 @@ private fun ConversationRow(conversation: ChatConversation, onClick: () -> Unit)
             )
         }
 
+        RowStatus(conversation)
+    }
+}
+
+/**
+ * Time above, unread count below.
+ *
+ * The arrangement every messaging app uses, and it works because the eye reads one
+ * column for "when" and one for "how many" rather than hunting along each row.
+ */
+@Composable
+private fun RowStatus(conversation: ChatConversation) {
+    Column(
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraSmall),
+    ) {
+        conversation.lastMessageAtMs.takeIf { it > 0 }?.let { at ->
+            Text(
+                text = rowTime(at),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (conversation.unreadCount > 0) {
+                    AppTheme.chatColors.unreadBadge
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
         if (conversation.unreadCount > 0) {
-            Badge { Text(conversation.unreadCount.toString()) }
+            Surface(
+                shape = CircleShape,
+                color = AppTheme.chatColors.unreadBadge,
+                contentColor = AppTheme.chatColors.onUnreadBadge,
+            ) {
+                Text(
+                    text = conversation.unreadCount.toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(
+                        horizontal = AppTheme.spacing.small,
+                        vertical = AppTheme.spacing.extraSmall / 2,
+                    ),
+                )
+            }
         }
     }
+}
+
+/** `14:05` today, the date before that — the same rule the thread's day capsules use. */
+private fun rowTime(atMs: Long): String {
+    val then = java.util.Calendar.getInstance().apply { timeInMillis = atMs }
+    val now = java.util.Calendar.getInstance()
+    val sameDay = then.get(java.util.Calendar.YEAR) == now.get(java.util.Calendar.YEAR) &&
+        then.get(java.util.Calendar.DAY_OF_YEAR) == now.get(java.util.Calendar.DAY_OF_YEAR)
+
+    val pattern = if (sameDay) "HH:mm" else "dd/MM/yy"
+    return java.text.SimpleDateFormat(pattern, java.util.Locale.getDefault()).format(java.util.Date(atMs))
 }
 
 /**

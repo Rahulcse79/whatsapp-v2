@@ -23,6 +23,31 @@ data class ChatThreadUiState(
     val connection: ChatConnectionState = ChatConnectionState.NotConfigured,
     val isLoading: Boolean = false,
     val error: ChatFailure? = null,
+
+    /**
+     * The other party's extension, or null when there is nobody to dial.
+     *
+     * Null until the conversation is known, so the call buttons are absent rather than
+     * present-and-broken on the moment a brand-new thread opens.
+     */
+    val callableExtension: String? = null,
+
+    /** A call is being placed. The buttons lock, because a double tap is two INVITEs. */
+    val isPlacingCall: Boolean = false,
+
+    /**
+     * Whether this thread has exactly one other party.
+     *
+     * It decides whether an incoming bubble is labelled with who sent it. In a one-to-one
+     * conversation the title already says who that is, and the only label the SDK can
+     * offer is a shortened user id — there is no display name on a message and no roster
+     * to look one up in — so naming the sender there prints a ULID fragment above every
+     * run for no information at all.
+     *
+     * Defaults to true because that is what the app can open, and because a thread whose
+     * conversation summary has not arrived yet should not show the id and then drop it.
+     */
+    val isDirect: Boolean = true,
 ) {
 
     /**
@@ -45,4 +70,23 @@ data class ChatThreadUiState(
         }
 
     val isEmpty: Boolean get() = messages.isEmpty() && !isLoading && error == null
+
+    /** Whether the top bar offers to call. Shown only when there is a real extension behind it. */
+    val canCall: Boolean get() = callableExtension != null && !isPlacingCall
+
+    /**
+     * The line under the name — what the connection is doing, or nothing.
+     *
+     * Null when connected, which is the point: a bar that permanently reads "online"
+     * spends a line saying what the absence of a warning already says. It is also where
+     * a messaging app puts "typing…", which this SDK cannot report (no typing API), so
+     * the slot exists and stays honest about what it knows.
+     */
+    val presenceLabel: String?
+        get() = when (connection) {
+            ChatConnectionState.Connected -> null
+            ChatConnectionState.Connecting -> "connecting…"
+            is ChatConnectionState.Disconnected -> "reconnecting…"
+            ChatConnectionState.NotConfigured -> "not signed in"
+        }
 }

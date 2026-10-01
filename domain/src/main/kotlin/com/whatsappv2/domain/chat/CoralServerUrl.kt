@@ -101,6 +101,16 @@ value class CoralServerUrl private constructor(val origin: String) {
         if (isSecure) origin.replaceFirst(HTTPS, WSS) + WS_PATH else origin.replaceFirst(HTTP, WS) + WS_PATH
 
     /**
+     * The host, with no scheme and no port — `gujlogin.coraltele.com`.
+     *
+     * What SIP wants. A SIP domain is a bare host: a registrar configured as
+     * `https://host` produces a URI of `sip:user@https://host`, which fails to parse at
+     * the point of registration rather than here.
+     */
+    val host: String
+        get() = origin.substringAfter(SCHEME_SEPARATOR).substringBefore(':')
+
+    /**
      * True when the origin is `https://`.
      *
      * Asked by the layer that builds the HTTP client, because an `http://` origin only

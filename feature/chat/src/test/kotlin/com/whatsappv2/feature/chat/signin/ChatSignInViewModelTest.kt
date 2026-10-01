@@ -1,11 +1,17 @@
 package com.whatsappv2.feature.chat.signin
 
+import com.whatsappv2.core.common.logging.NoOpLogger
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.chat.ChatAuthError
 import com.whatsappv2.domain.chat.ChatUrlViolation
 import com.whatsappv2.domain.chat.CoralServerUrl
 import com.whatsappv2.domain.testing.FakeChatSessionRepository
+import com.whatsappv2.domain.testing.FakeSipAccountRepository
+import com.whatsappv2.domain.testing.FakeSipEngine
 import com.whatsappv2.domain.usecase.ChatSignInUseCase
+import com.whatsappv2.domain.usecase.EnsureChatExtensionUseCase
+import com.whatsappv2.domain.usecase.LoginUseCase
+import com.whatsappv2.domain.usecase.SaveAccountUseCase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
@@ -37,7 +43,20 @@ class ChatSignInViewModelTest {
     private val dispatcher = StandardTestDispatcher()
     private val repository = FakeChatSessionRepository()
 
-    private fun viewModel() = ChatSignInViewModel(ChatSignInUseCase(repository), repository)
+    private val accounts = FakeSipAccountRepository()
+    private val engine = FakeSipEngine()
+
+    private fun viewModel() = ChatSignInViewModel(
+        ChatSignInUseCase(
+            repository,
+            EnsureChatExtensionUseCase(
+                accounts = accounts,
+                saveAccount = SaveAccountUseCase(accounts, engine, LoginUseCase(accounts, engine)),
+                logger = NoOpLogger,
+            ),
+        ),
+        repository,
+    )
 
     @BeforeTest
     fun setUp() = Dispatchers.setMain(dispatcher)

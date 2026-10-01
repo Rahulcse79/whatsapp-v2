@@ -70,6 +70,13 @@ sealed interface ChatSignInError {
  * that in the ViewModel and the next caller — a deep link, a test, a second screen —
  * re-implements it, differently.
  *
+ * ## It also provisions the extension the call button needs
+ *
+ * On success, [EnsureChatExtensionUseCase] makes sure a SIP account exists for this
+ * identity. That is a second collaborator in a fixed order — the username is only known
+ * once the credentials are accepted — which is precisely what a use case is for, and it
+ * is why this one keeps earning its class.
+ *
  * ## Nothing is persisted on a failure
  *
  * The URL reaches storage only through a successful [ChatSessionRepository.signIn]. A
@@ -77,6 +84,7 @@ sealed interface ChatSignInError {
  */
 class ChatSignInUseCase @Inject constructor(
     private val repository: ChatSessionRepository,
+    private val ensureExtension: EnsureChatExtensionUseCase,
 ) {
 
     suspend operator fun invoke(
@@ -107,7 +115,13 @@ class ChatSignInUseCase @Inject constructor(
 
         val credentials = ChatCredentials(username = trimmedUsername, password = password)
         return when (val result = repository.signIn(url, credentials)) {
-            is Outcome.Success -> result
+            is Outcome.Success -> {
+                // The chat thread offers a call button, and a button that cannot work is
+                // worse than no button. Deliberately NOT propagated: chat is signed in
+                // either way, and only the call button depends on this half.
+                ensureExtension(url, trimmedUsername, password)
+                result
+            }
             is Outcome.Failure -> failure(ChatSignInError.Rejected(result.error))
         }
     }

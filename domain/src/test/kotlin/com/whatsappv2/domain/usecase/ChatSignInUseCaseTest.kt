@@ -1,5 +1,6 @@
 package com.whatsappv2.domain.usecase
 
+import com.whatsappv2.core.common.logging.NoOpLogger
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.core.common.result.errorOrNull
 import com.whatsappv2.core.common.result.getOrNull
@@ -8,7 +9,11 @@ import com.whatsappv2.domain.chat.ChatAuthError
 import com.whatsappv2.domain.chat.ChatSession
 import com.whatsappv2.domain.chat.ChatUrlViolation
 import com.whatsappv2.domain.chat.CoralServerUrl
+import com.whatsappv2.domain.model.Transport
 import com.whatsappv2.domain.testing.FakeChatSessionRepository
+import com.whatsappv2.domain.testing.FakeSipAccountRepository
+import com.whatsappv2.domain.testing.FakeSipEngine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -26,7 +31,16 @@ import kotlin.test.fail
 class ChatSignInUseCaseTest {
 
     private val repository = FakeChatSessionRepository()
-    private val signIn = ChatSignInUseCase(repository)
+    private val accounts = FakeSipAccountRepository()
+    private val engine = FakeSipEngine()
+    private val signIn = ChatSignInUseCase(
+        repository,
+        EnsureChatExtensionUseCase(
+            accounts = accounts,
+            saveAccount = SaveAccountUseCase(accounts, engine, LoginUseCase(accounts, engine)),
+            logger = NoOpLogger,
+        ),
+    )
 
     private fun violations(outcome: Outcome<ChatSession, ChatSignInError>): List<ChatSignInViolation> =
         assertIs<ChatSignInError.InvalidInput>(
@@ -174,6 +188,39 @@ class ChatSignInUseCaseTest {
 
         assertEquals(session, repository.currentSession())
         assertEquals("https://host.example", repository.currentServerUrl().origin)
+    }
+
+    @Test
+    fun `signing in provisions the extension the chat thread's call button needs`() = runTest {
+        signIn("https://host.example", "sample-user", Secret("not-a-real-password"))
+
+        val created = accounts.observeAccounts().first().single()
+        assertEquals("sample-user", created.username, "the chat username is the extension")
+        assertEquals("host.example", created.domain, "the SIP domain must be a bare host")
+        assertEquals(1234, created.port, "this deployment's SIP port is not 5060")
+        assertEquals(Transport.UDP, created.transport)
+        assertTrue(created.isDefault, "the first account must be the default or no call can be placed")
+    }
+
+    @Test
+    fun `an extension that already exists is left alone, decisions and all`() = runTest {
+        signIn("https://host.example", "sample-user", Secret("not-a-real-password"))
+        val first = accounts.observeAccounts().first().single()
+
+        signIn("https://host.example", "sample-user", Secret("not-a-real-password"))
+
+        val after = accounts.observeAccounts().first()
+        assertEquals(1, after.size, "a second sign-in created a duplicate account")
+        assertEquals(first.id, after.single().id)
+    }
+
+    @Test
+    fun `a failed sign-in provisions nothing`() = runTest {
+        repository.givenSignInFails(ChatAuthError.InvalidCredentials)
+
+        signIn("https://host.example", "sample-user", Secret("not-a-real-password"))
+
+        assertTrue(accounts.observeAccounts().first().isEmpty())
     }
 
     @Test

@@ -188,7 +188,14 @@ private fun NavGraphBuilder.callRoutes(
     ) {
         // No id parameter: it reaches the ViewModel through SavedStateHandle, which is
         // also what makes the thread survive process death without this route caring.
-        ChatThreadRoute(onBack = { navController.popBackStack() })
+        //
+        // openCall is the SAME lambda the dialler and the call log use. A call started
+        // from a conversation is not a different kind of call, and giving it its own
+        // route would be the second call screen Task 39 exists to prevent.
+        ChatThreadRoute(
+            onCallPlaced = openCall,
+            onBack = { navController.popBackStack() },
+        )
     }
 
     composable(AppDestination.HISTORY.route) {

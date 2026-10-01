@@ -37,7 +37,54 @@ data class ChatConversation(
 ) {
     /** What to show as the row's title, falling back until something is printable. */
     val title: String
-        get() = otherUserContactIdentifier?.takeIf { it.isNotBlank() }
-            ?: otherUserId?.takeIf { it.isNotBlank() }
+        get() = handleOf(otherUserContactIdentifier)
+            ?: handleOf(otherUserId)
             ?: id.value
+
+    /**
+     * The extension to dial for the other party, or null when there is nobody to dial.
+     *
+     * The same string as [title] whenever the directory and the PBX agree, which on this
+     * deployment they do — but kept separate because they answer different questions, and
+     * a group conversation has a title and nobody to call.
+     */
+    val callableExtension: String?
+        get() = handleOf(otherUserContactIdentifier) ?: handleOf(otherUserId)
+
+    /**
+     * Whether there is exactly one other party.
+     *
+     * [type] is the server's own word for it (`DIRECT`, `GROUP` or `BROADCAST`), and the
+     * other-party fields are the fallback for a summary that arrives without one: the
+     * server leaves both null for a group, so their presence says the same thing.
+     *
+     * It matters to the thread because a sender's name is worth drawing only when the
+     * title does not already answer "who said this".
+     */
+    val isDirect: Boolean
+        get() = type?.equals(DIRECT_TYPE, ignoreCase = true)
+            ?: (otherUserContactIdentifier != null || otherUserId != null)
 }
+
+/** The server's name for a one-to-one conversation. */
+private const val DIRECT_TYPE = "DIRECT"
+
+/**
+ * Unwraps chat-node's guest identity into the handle a person recognises.
+ *
+ * In guest mode the server provisions `guest-8102@guest.local` for the identifier
+ * `8102`, and shows that back in every conversation summary. Rendering it raw puts a
+ * synthetic email in the title bar where a name belongs — and, worse, gives the call
+ * button something no PBX can dial. The reference client strips it the same way.
+ *
+ * Anything that is not of that shape is returned as it came: a real display name must
+ * survive untouched.
+ */
+private fun handleOf(identifier: String?): String? {
+    val value = identifier?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    if (!value.startsWith(GUEST_PREFIX) || '@' !in value) return value
+
+    return value.substring(GUEST_PREFIX.length, value.indexOf('@')).takeIf { it.isNotEmpty() } ?: value
+}
+
+private const val GUEST_PREFIX = "guest-"

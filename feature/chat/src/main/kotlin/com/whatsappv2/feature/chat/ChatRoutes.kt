@@ -1,16 +1,21 @@
 package com.whatsappv2.feature.chat
 
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.whatsappv2.domain.model.CallId
+import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.feature.chat.contacts.ChatContactsScreen
 import com.whatsappv2.feature.chat.contacts.ChatContactsViewModel
 import com.whatsappv2.feature.chat.signin.ChatSignInEvent
 import com.whatsappv2.feature.chat.signin.ChatSignInScreen
 import com.whatsappv2.feature.chat.signin.ChatSignInViewModel
+import com.whatsappv2.feature.chat.thread.ChatThreadEvent
 import com.whatsappv2.feature.chat.thread.ChatThreadScreen
 import com.whatsappv2.feature.chat.thread.ChatThreadViewModel
 
@@ -61,19 +66,41 @@ fun ChatsRoute(
  */
 @Composable
 fun ChatThreadRoute(
+    onCallPlaced: (CallId) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: ChatThreadViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val snackbars = remember { SnackbarHostState() }
 
+    LaunchedEffect(viewModel) {
+        viewModel.events.collect { event ->
+            when (event) {
+                // The thread stays where it is. A call is an activity of its own, and
+                // coming off it should return to the conversation, not to the list.
+                is ChatThreadEvent.CallPlaced -> onCallPlaced(event.callId)
+                // Shown here rather than pushed anywhere: the user is in a conversation,
+                // and the useful thing is that the call failed and the chat still works.
+                is ChatThreadEvent.CallFailed -> snackbars.showSnackbar(event.reason)
+            }
+        }
+    }
+
+    // The host is made here and shown by the screen's own Scaffold. Wrapping the screen
+    // in a second Scaffold to hold it is what every other route avoids: the inner one
+    // then pads against system bars the outer one already padded against, which lifts the
+    // header off the status bar and the composer off the navigation bar.
     ChatThreadScreen(
         state = state,
         onDraftChange = viewModel::setDraft,
         onSend = viewModel::send,
         onRetry = viewModel::retry,
+        onAudioCall = { viewModel.call(MediaProfile.AUDIO) },
+        onVideoCall = { viewModel.call(MediaProfile.AUDIO_VIDEO) },
         onBack = onBack,
         modifier = modifier,
+        snackbarHostState = snackbars,
     )
 }
 
