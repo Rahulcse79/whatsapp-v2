@@ -19,13 +19,17 @@ import javax.crypto.spec.SecretKeySpec
  * The API document says "AES-128-CFB + Base64". The server's `DecryptCredential.decryptData`
  * says something more specific, and the difference is not cosmetic:
  *
- * | | What this does | Why it is not a guess |
+ *  - **Transformation** `AES/CFB/PKCS5Padding` — with padding. The server names it, and
+ *    omitting it leaves the ciphertext one block short of what the server reads.
+ *  - **IV** random per message, **prepended** to the ciphertext before Base64:
+ *    `decryptData` takes bytes 0..15 as the IV and decrypts from offset 16.
+ *  - **Key** the `login.key` string's UTF-8 bytes, 16 of them —
+ *    `new SecretKeySpec(secretKey.getBytes("UTF-8"), "AES")`. A passphrase used directly,
+ *    not a KDF and not hex.
+ *  - **Base64** `java.util.Base64`, standard alphabet, padded, unwrapped.
+ *  - **Charset** UTF-8, from `data.getBytes("UTF-8")`.
+ *
  * |---|---|---|
- * | Transformation | `AES/CFB/PKCS5Padding` — **with** padding | The server names it. Padding on a stream mode is unusual, and omitting it produces ciphertext one block short of what the server reads. |
- * | IV | **Random per message, prepended** to the ciphertext before Base64 | `decryptData` takes `encryptedBytes[0..15]` as the IV and decrypts from offset 16. |
- * | Key | The `login.key` string's **UTF-8 bytes**, 16 of them | `new SecretKeySpec(secretKey.getBytes("UTF-8"), "AES")` — a passphrase used directly, not a KDF and not hex. |
- * | Base64 | `java.util.Base64`, standard alphabet, padded, unwrapped | The server decodes with `Base64.getDecoder()`. |
- * | Charset | UTF-8 | `data.getBytes("UTF-8")`. |
  *
  * The ciphertext length corroborates it independently: an 8-character username and a
  * 6-character password both encode to 44 Base64 characters — 32 bytes — which is a 16-byte

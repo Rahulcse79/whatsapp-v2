@@ -12,7 +12,6 @@ import androidx.compose.ui.test.performScrollTo
 import com.whatsappv2.HiltTestActivity
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
 import com.whatsappv2.di.ROBOLECTRIC_SDK
-import com.whatsappv2.ui.chats.TAG_CHATS_SETTINGS
 import com.whatsappv2.ui.navigation.AppDestination
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
@@ -203,6 +202,18 @@ class AppRootNavigationTest {
          * still switch and the gear must still open Settings with no chat account at all.
          */
         const val CHATS_SIGNED_OUT = "Sign in to chat"
+
+        /**
+         * The gear on the Chats tab.
+         *
+         * Declared here rather than imported. It used to come from
+         * `com.whatsappv2.ui.chats.TAG_CHATS_SETTINGS`, which was deleted with the
+         * placeholder in phase 3; `:feature:chat` owns the tab now and its own constant is
+         * `internal` to that module. The STRING is the contract between them, and it has
+         * not changed — which is the point: the tab changed hands and this test did not
+         * have to learn a new way to press its gear.
+         */
+        const val TAG_CHATS_SETTINGS = "chats-settings"
     }
 
     /** The one way in: the Chats tab, then the gear in its top bar. */

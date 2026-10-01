@@ -3,8 +3,11 @@ package com.whatsappv2.feature.chat.contacts
 import com.whatsappv2.domain.chat.ChatAuthError
 import com.whatsappv2.domain.chat.ChatContact
 import com.whatsappv2.domain.testing.FakeChatContactRepository
+import com.whatsappv2.domain.testing.FakeChatRepository
+import com.whatsappv2.domain.usecase.OpenConversationUseCase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -33,13 +36,18 @@ class ChatContactsViewModelTest {
     @AfterTest
     fun tearDown() = Dispatchers.resetMain()
 
+    private val chat = FakeChatRepository()
+
+    /** The use case is real; only its repository is a fake. Opening is tested through it. */
+    private fun viewModel() = ChatContactsViewModel(repository, OpenConversationUseCase(chat))
+
     private fun contact(id: String, name: String, extension: String? = null) =
         ChatContact(id = id, displayName = name, extension = extension, department = "coral-test", avatarUrl = null)
 
     @Test
     fun `the directory is loaded on open`() = runTest(dispatcher) {
         repository.given(contact("1001", "Rahul Singh"))
-        val model = ChatContactsViewModel(repository)
+        val model = viewModel()
 
         testScheduler.advanceUntilIdle()
 
@@ -51,7 +59,7 @@ class ChatContactsViewModelTest {
     fun `opening the screen issues exactly one request`() = runTest(dispatcher) {
         // The query flow and the initial refresh both want to fire. Without the drop(1)
         // in the ViewModel that is two identical HTTP calls every time the screen opens.
-        ChatContactsViewModel(repository)
+        viewModel()
 
         testScheduler.advanceUntilIdle()
 
@@ -60,7 +68,7 @@ class ChatContactsViewModelTest {
 
     @Test
     fun `an empty directory is the empty state, not an error`() = runTest(dispatcher) {
-        val model = ChatContactsViewModel(repository)
+        val model = viewModel()
 
         testScheduler.advanceUntilIdle()
 
@@ -71,7 +79,7 @@ class ChatContactsViewModelTest {
     @Test
     fun `a failed refresh is an error, and is not the empty state`() = runTest(dispatcher) {
         repository.givenRefreshFails(ChatAuthError.Network)
-        val model = ChatContactsViewModel(repository)
+        val model = viewModel()
 
         testScheduler.advanceUntilIdle()
 
@@ -82,7 +90,7 @@ class ChatContactsViewModelTest {
     @Test
     fun `a failed refresh keeps the rows that were already there`() = runTest(dispatcher) {
         repository.given(contact("1001", "Rahul Singh"))
-        val model = ChatContactsViewModel(repository)
+        val model = viewModel()
         testScheduler.advanceUntilIdle()
 
         repository.givenRefreshFails(ChatAuthError.Network)
@@ -97,7 +105,7 @@ class ChatContactsViewModelTest {
     fun `retry after a failure clears the error and reloads`() = runTest(dispatcher) {
         repository.given(contact("1001", "Rahul Singh"))
         repository.givenRefreshFails(ChatAuthError.Network)
-        val model = ChatContactsViewModel(repository)
+        val model = viewModel()
         testScheduler.advanceUntilIdle()
 
         repository.nextResult = null
@@ -112,7 +120,7 @@ class ChatContactsViewModelTest {
     fun `the query goes to the server, debounced into one request`() = runTest(dispatcher) {
         repository.given(contact("1001", "Rahul Singh"))
         repository.given(contact("1005", "Priya Nair"))
-        val model = ChatContactsViewModel(repository)
+        val model = viewModel()
         testScheduler.advanceUntilIdle()
 
         // Four keystrokes. One request, or the directory is re-fetched per character.
@@ -128,7 +136,7 @@ class ChatContactsViewModelTest {
 
     @Test
     fun `a blank query is sent as no filter rather than as an empty string`() = runTest(dispatcher) {
-        val model = ChatContactsViewModel(repository)
+        val model = viewModel()
         testScheduler.advanceUntilIdle()
 
         model.setQuery("   ")
@@ -140,7 +148,7 @@ class ChatContactsViewModelTest {
     @Test
     fun `search appears only once the list can exceed a screen`() = runTest(dispatcher) {
         repeat(12) { repository.given(contact("100$it", "Person $it")) }
-        val model = ChatContactsViewModel(repository)
+        val model = viewModel()
 
         testScheduler.advanceUntilIdle()
 
@@ -152,7 +160,7 @@ class ChatContactsViewModelTest {
         // Otherwise the box that produced the empty result disappears with the rows, and
         // there is no way to clear the query that caused it.
         repeat(12) { repository.given(contact("100$it", "Person $it")) }
-        val model = ChatContactsViewModel(repository)
+        val model = viewModel()
         testScheduler.advanceUntilIdle()
 
         model.setQuery("nobody")
@@ -163,12 +171,19 @@ class ChatContactsViewModelTest {
     }
 
     @Test
-    fun `the conversation id is decided in one place`() {
-        // Named here so no screen picks a field off a row. userId, contactIdentifier,
-        // deviceKey and an extension are four different things in this deployment, and the
-        // wrong one fails when a conversation is opened - a screen away from its cause.
-        val model = ChatContactsViewModel(repository)
+    fun `choosing somebody opens the conversation and then announces where to go`() = runTest(dispatcher) {
+        // Opening BEFORE navigating: the thread's id belongs to the chat server and does
+        // not exist until it says so. Navigating first would land on an id-less screen.
+        chat.givenConnected()
+        val model = viewModel()
+        testScheduler.advanceUntilIdle()
 
-        assertEquals("1001", model.conversationIdOf(contact("1001", "Rahul Singh", extension = "1001")))
+        model.openConversationWith(contact("1001", "Rahul Singh", extension = "1001"))
+        testScheduler.advanceUntilIdle()
+
+        // The extension, not the directory's numeric id: chat-node keys an identity by
+        // the PPDR username and knows nothing about a UC database row.
+        assertEquals(listOf("1001"), chat.opened)
+        assertEquals("conv-1001", model.opened.first().value)
     }
 }

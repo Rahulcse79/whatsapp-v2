@@ -2,6 +2,7 @@ package com.whatsappv2.feature.chat.contacts
 
 import com.whatsappv2.domain.chat.ChatAuthError
 import com.whatsappv2.domain.chat.ChatContact
+import com.whatsappv2.domain.chat.ChatFailure
 
 /**
  * What the contacts screen is showing.
@@ -18,6 +19,12 @@ data class ChatContactsUiState(
     val query: String = "",
     val isLoading: Boolean = false,
     val error: ChatAuthError? = null,
+
+    /** A conversation is being created. The row that was tapped should not be tapped twice. */
+    val isOpening: Boolean = false,
+
+    /** Opening a conversation failed. Reported here, because here is where the retry is. */
+    val openFailure: ChatFailure? = null,
 ) {
 
     /** Nothing to show, nothing loading, nothing wrong — the genuine empty state. */

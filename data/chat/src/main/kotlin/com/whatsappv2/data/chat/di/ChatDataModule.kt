@@ -8,11 +8,17 @@ import androidx.datastore.preferences.preferencesDataStoreFile
 import com.google.gson.Gson
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.data.chat.ChatContactRepositoryImpl
+import com.whatsappv2.data.chat.ChatEngineLifecycle
+import com.whatsappv2.data.chat.ChatEngineState
+import com.whatsappv2.data.chat.ChatRepositoryImpl
 import com.whatsappv2.data.chat.ChatSessionRepositoryImpl
 import com.whatsappv2.data.chat.net.BearerTokenSource
+import com.whatsappv2.data.chat.sdk.ChatSdkHandle
+import com.whatsappv2.data.chat.sdk.RealChatSdkHandle
 import com.whatsappv2.data.chat.store.ChatTokenFile
 import com.whatsappv2.data.chat.store.PrivateChatTokenFile
 import com.whatsappv2.domain.repository.ChatContactRepository
+import com.whatsappv2.domain.repository.ChatRepository
 import com.whatsappv2.domain.repository.ChatSessionRepository
 import dagger.Binds
 import dagger.Module
@@ -59,6 +65,27 @@ internal abstract class ChatDataModule {
     @Binds
     @Singleton
     abstract fun bindChatContactRepository(impl: ChatContactRepositoryImpl): ChatContactRepository
+
+    /** Conversations and messages, over chat-node. A different server from the two above. */
+    @Binds
+    @Singleton
+    abstract fun bindChatRepository(impl: ChatRepositoryImpl): ChatRepository
+
+    /**
+     * The seam over the static `ChatSdk`.
+     *
+     * Bound rather than constructed so a test can substitute it — which is the only way
+     * anything in this module can be exercised off a device, since `ChatSdk` is a static
+     * singleton whose `get()` throws before `init`.
+     */
+    @Binds
+    @Singleton
+    abstract fun bindChatSdkHandle(impl: RealChatSdkHandle): ChatSdkHandle
+
+    /** The engine, under the narrow role the repository asks for. One object, two views. */
+    @Binds
+    @Singleton
+    abstract fun bindChatEngineState(impl: ChatEngineLifecycle): ChatEngineState
 
     companion object {
 

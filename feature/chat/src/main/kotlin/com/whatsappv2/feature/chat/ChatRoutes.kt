@@ -6,12 +6,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.whatsappv2.domain.chat.ChatContact
 import com.whatsappv2.feature.chat.contacts.ChatContactsScreen
 import com.whatsappv2.feature.chat.contacts.ChatContactsViewModel
 import com.whatsappv2.feature.chat.signin.ChatSignInEvent
 import com.whatsappv2.feature.chat.signin.ChatSignInScreen
 import com.whatsappv2.feature.chat.signin.ChatSignInViewModel
+import com.whatsappv2.feature.chat.thread.ChatThreadScreen
+import com.whatsappv2.feature.chat.thread.ChatThreadViewModel
 
 /**
  * The Chats tab.
@@ -29,19 +30,49 @@ import com.whatsappv2.feature.chat.signin.ChatSignInViewModel
 fun ChatsRoute(
     onSignIn: () -> Unit,
     onNewConversation: () -> Unit,
+    onOpenConversation: (String) -> Unit,
     modifier: Modifier = Modifier,
     onOpenSettings: (() -> Unit)? = null,
     registrationIndicator: (@Composable () -> Unit)? = null,
     viewModel: ChatsViewModel = hiltViewModel(),
 ) {
-    val isSignedIn by viewModel.isSignedIn.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsStateWithLifecycle()
 
     ChatsScreen(
-        isSignedIn = isSignedIn,
+        state = state,
         onSignIn = onSignIn,
         onNewConversation = onNewConversation,
+        // The id is handed up as a String rather than a ConversationId: `:app` puts it in
+        // a navigation argument, and a value class would only be unwrapped there anyway.
+        onOpenConversation = { onOpenConversation(it.value) },
+        onRetry = viewModel::refresh,
         onOpenSettings = onOpenSettings,
         registrationIndicator = registrationIndicator,
+        modifier = modifier,
+    )
+}
+
+/**
+ * One conversation.
+ *
+ * The conversation id reaches the ViewModel through `SavedStateHandle`, so this route
+ * takes no id parameter — `:app` puts it in the navigation argument named
+ * [ChatThreadViewModel.CONVERSATION_ID] and Hilt does the rest.
+ */
+@Composable
+fun ChatThreadRoute(
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    viewModel: ChatThreadViewModel = hiltViewModel(),
+) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+
+    ChatThreadScreen(
+        state = state,
+        onDraftChange = viewModel::setDraft,
+        onSend = viewModel::send,
+        onRetry = viewModel::retry,
+        onBack = onBack,
         modifier = modifier,
     )
 }
@@ -85,11 +116,15 @@ fun ChatSignInRoute(
 /**
  * The company directory.
  *
- * [onConversationOpened] takes the id the conversation API expects, decided in one place
- * ([ChatContactsViewModel.conversationIdOf]) rather than by each caller picking a field off
- * a [ChatContact]. In this deployment's vocabulary `userId`, `contactIdentifier`,
- * `deviceKey` and an extension are four different things, and choosing wrong fails when a
- * conversation is opened rather than when contacts are listed — a screen away from its cause.
+ * Choosing somebody **opens the conversation and then navigates** — it does not navigate
+ * to a screen that opens it. The thread's id is the chat server's, not the directory's, so
+ * it has to be obtained before there is anywhere to go; a route that pushed first would
+ * land on a screen with nothing to load.
+ *
+ * Which directory field becomes the other party's id is decided in one place
+ * ([ChatContactsViewModel.conversationIdOf]). `userId`, `contactIdentifier`, `deviceKey`
+ * and an extension are four different things here, and the wrong one fails at
+ * conversation-creation time — a screen away from its cause.
  */
 @Composable
 fun ChatContactsRoute(
@@ -100,10 +135,14 @@ fun ChatContactsRoute(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
+    LaunchedEffect(viewModel) {
+        viewModel.opened.collect { conversationId -> onConversationOpened(conversationId.value) }
+    }
+
     ChatContactsScreen(
         state = state,
         onQueryChange = viewModel::setQuery,
-        onContactSelected = { onConversationOpened(viewModel.conversationIdOf(it)) },
+        onContactSelected = viewModel::openConversationWith,
         onRetry = viewModel::refresh,
         onBack = onBack,
         modifier = modifier,

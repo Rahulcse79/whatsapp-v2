@@ -64,6 +64,7 @@ class ChatSessionStoreTest {
         token = Secret("a-bearer-token"),
         expiresAtMs = 1_800_000_000_000,
         deviceId = "BF6625949EAA4D5F94CAA18641BE8E74",
+        departments = listOf("Ghaziabad"),
     )
 
     @After
@@ -111,6 +112,23 @@ class ChatSessionStoreTest {
         assertNull(store().currentSession())
         assertEquals(url, store().currentServerUrl())
         assertFalse(tokenPath.exists(), "the credential outlived sign-out")
+    }
+
+    @Test
+    fun `the departments survive a restart, so the directory is not empty on relaunch`() = runTest {
+        // They arrive ONLY in the login response - the platform has no endpoint that
+        // lists them - so a session restored without them means an empty directory until
+        // the user signs in again, which looks like an account with no colleagues.
+        store().save(session, CoralServerUrl.DEFAULT)
+
+        assertEquals(listOf("Ghaziabad"), assertNotNull(store().currentSession()).departments)
+    }
+
+    @Test
+    fun `an account in no department round-trips as empty rather than as everything`() = runTest {
+        store().save(session.copy(departments = emptyList()), CoralServerUrl.DEFAULT)
+
+        assertEquals(emptyList(), assertNotNull(store().currentSession()).departments)
     }
 
     @Test

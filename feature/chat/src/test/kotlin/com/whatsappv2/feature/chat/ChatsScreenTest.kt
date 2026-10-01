@@ -5,6 +5,7 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
+import com.whatsappv2.domain.chat.ChatConnectionState
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -35,9 +36,18 @@ class ChatsScreenTest {
         compose.setContent {
             WhatsAppV2Theme {
                 ChatsScreen(
-                    isSignedIn = isSignedIn,
+                    state = ChatsUiState(
+                        isSignedIn = isSignedIn,
+                        connection = if (isSignedIn) {
+                            ChatConnectionState.Connected
+                        } else {
+                            ChatConnectionState.NotConfigured
+                        },
+                    ),
                     onSignIn = { signInTaps++ },
                     onNewConversation = { newConversationTaps++ },
+                    onOpenConversation = {},
+                    onRetry = {},
                     onOpenSettings = { settingsTaps++ },
                 )
             }

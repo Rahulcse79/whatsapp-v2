@@ -66,15 +66,6 @@ internal class ChatSessionRepositoryImpl @Inject constructor(
     private val live = MutableStateFlow<ChatSession?>(null)
 
     /**
-     * The departments the signed-in user may read, from the login response.
-     *
-     * Held here because that is where they arrive — the platform has no endpoint that
-     * lists them — and read by [ChatContactRepositoryImpl], which cannot ask for a
-     * directory without them.
-     */
-    private val departments = MutableStateFlow<List<String>>(emptyList())
-
-    /**
      * Guards the one-time read from disk.
      *
      * A [Mutex] rather than a volatile flag: two screens observing at once would otherwise
@@ -101,8 +92,14 @@ internal class ChatSessionRepositoryImpl @Inject constructor(
         store.currentServerUrl()
     }
 
-    /** The departments this session may read. Empty when signed out. */
-    fun currentDepartments(): List<String> = departments.value
+    /**
+     * The departments this session may read. Empty when signed out.
+     *
+     * Read off the session rather than kept beside it, so a restored session carries them
+     * too — they are persisted with it precisely so the directory is not empty until the
+     * next sign-in.
+     */
+    fun currentDepartments(): List<String> = live.value?.departments.orEmpty()
 
     override suspend fun signIn(
         url: CoralServerUrl,
@@ -147,7 +144,6 @@ internal class ChatSessionRepositoryImpl @Inject constructor(
         if (!store.save(session, url)) return@withContext failure(ChatAuthError.CryptoUnavailable)
 
         live.value = session
-        departments.value = envelope.data.departmentNames()
         seeded = true
         success(session)
     }
@@ -156,7 +152,6 @@ internal class ChatSessionRepositoryImpl @Inject constructor(
         // In memory first, so nothing can attach the token to a request racing this call.
         // The persisted copy goes next; the origin stays behind, which is decision D2.
         live.value = null
-        departments.value = emptyList()
         withContext(dispatchers.io) { store.clearSession() }
     }
 
@@ -182,6 +177,7 @@ internal class ChatSessionRepositoryImpl @Inject constructor(
             // out while their token still works.
             expiresAtMs = null,
             deviceId = deviceId,
+            departments = departmentNames(),
         )
     }
 

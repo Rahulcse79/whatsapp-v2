@@ -78,6 +78,15 @@ enum class AppDestination(
      * device, and architecture rule 9 is what keeps the two apart.
      */
     CHAT_CONTACTS("chat-contacts", "New conversation", Icons.Filled.PersonSearch),
+
+    /**
+     * One conversation's messages.
+     *
+     * Its route carries an argument, so [route] here is the **pattern**; the one to
+     * navigate to is built by `chatThreadRoute(id)`. Not `isTopLevel`, so `AppNavHost`'s
+     * existing push transition applies with no change to its animation logic.
+     */
+    CHAT_THREAD("chat/{conversationId}", "Conversation", Icons.AutoMirrored.Filled.Chat),
     ;
 
     /** True for the two destinations the bottom bar switches between, in bar order. */
@@ -110,5 +119,8 @@ enum class AppDestination(
         val TOP_LEVEL: List<AppDestination> = listOf(CHATS, HISTORY)
 
         fun fromRoute(route: String?): AppDestination? = entries.firstOrNull { it.route == route }
+
+        /** The thread route for one conversation, with its id substituted into the pattern. */
+        fun chatThreadRoute(conversationId: String): String = "chat/$conversationId"
     }
 }

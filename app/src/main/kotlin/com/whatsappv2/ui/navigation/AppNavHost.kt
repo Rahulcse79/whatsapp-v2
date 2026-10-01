@@ -27,7 +27,9 @@ import com.whatsappv2.feature.accounts.AccountsRoute
 import com.whatsappv2.feature.accounts.status.RegistrationIndicatorRoute
 import com.whatsappv2.feature.chat.ChatContactsRoute
 import com.whatsappv2.feature.chat.ChatSignInRoute
+import com.whatsappv2.feature.chat.ChatThreadRoute
 import com.whatsappv2.feature.chat.ChatsRoute
+import com.whatsappv2.feature.chat.thread.ChatThreadViewModel
 import com.whatsappv2.feature.dialer.DialerScreen
 import com.whatsappv2.feature.history.HistoryRoute
 import com.whatsappv2.feature.recordings.RecordingsRoute
@@ -147,6 +149,7 @@ private fun NavGraphBuilder.callRoutes(
             // of the whole app would make placing a call need a chat account.
             onSignIn = { navController.navigate(AppDestination.CHAT_SIGN_IN.route) },
             onNewConversation = { navController.navigate(AppDestination.CHAT_CONTACTS.route) },
+            onOpenConversation = { navController.navigate(AppDestination.chatThreadRoute(it)) },
             onOpenSettings = { navController.navigate(AppDestination.SETTINGS.route) },
             registrationIndicator = {
                 // Straight to the account list, not to Settings and then the list: the
@@ -169,12 +172,23 @@ private fun NavGraphBuilder.callRoutes(
 
     composable(AppDestination.CHAT_CONTACTS.route) {
         ChatContactsRoute(
-            // Opening the thread is phase 3. Until then choosing somebody returns to Chats,
-            // which is honest: there is no conversation screen to land on yet, and pushing
-            // one that says "coming soon" would be a screen built to be deleted.
-            onConversationOpened = { navController.popBackStack() },
+            onConversationOpened = { conversationId ->
+                // The picker is popped first, so Back from the thread returns to Chats
+                // rather than to the directory the user has finished with.
+                navController.popBackStack()
+                navController.navigate(AppDestination.chatThreadRoute(conversationId))
+            },
             onBack = { navController.popBackStack() },
         )
+    }
+
+    composable(
+        route = AppDestination.CHAT_THREAD.route,
+        arguments = listOf(navArgument(ChatThreadViewModel.CONVERSATION_ID) { type = NavType.StringType }),
+    ) {
+        // No id parameter: it reaches the ViewModel through SavedStateHandle, which is
+        // also what makes the thread survive process death without this route caring.
+        ChatThreadRoute(onBack = { navController.popBackStack() })
     }
 
     composable(AppDestination.HISTORY.route) {

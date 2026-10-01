@@ -271,7 +271,9 @@ class ChatRepositoryImplTest {
         runTest(dispatcher) {
             store.save(session, origin())
             sessions.currentSession()
-            server.enqueue(MockResponse().setResponseCode(401).setBody("""{"error":"Full authentication is required"}"""))
+            server.enqueue(
+                MockResponse().setResponseCode(401).setBody("""{"error":"Full authentication is required"}"""),
+            )
 
             // Reached only with departments, so this drives the mapper directly instead.
             assertEquals(
@@ -303,8 +305,6 @@ class ChatRepositoryImplTest {
         assertEquals(session, assertNotNull(store.currentSession()))
         assertNotNull(sessions.currentSession()?.token?.reveal())
     }
-
-    private fun <T> Outcome<T, *>.valueOrNull(): T? = getOrNull()
 }
 
 /**

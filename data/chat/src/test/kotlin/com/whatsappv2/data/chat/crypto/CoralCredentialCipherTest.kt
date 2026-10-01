@@ -1,8 +1,8 @@
 package com.whatsappv2.data.chat.crypto
 
 import com.whatsappv2.core.common.result.errorOrNull
-import com.whatsappv2.data.chat.BuildConfig
 import com.whatsappv2.core.common.result.getOrNull
+import com.whatsappv2.data.chat.BuildConfig
 import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec

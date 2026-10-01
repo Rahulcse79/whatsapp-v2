@@ -47,6 +47,20 @@ data class ChatSession(
      * owners; do not try to share one.
      */
     val deviceId: String,
+
+    /**
+     * The departments this account may read in the company directory.
+     *
+     * Part of the session because that is the only place it comes from: the platform has
+     * no endpoint that lists a user's departments — `AuthenticationRequestResponseModel`
+     * carries `departmentList` and nothing else does. Held here rather than in memory so
+     * it survives a restart; otherwise the directory is empty until the next sign-in,
+     * which looks exactly like an account with no colleagues.
+     *
+     * Empty is meaningful and is **not** "all": an account in no department can see
+     * nobody, and asking the server for everything would be a different question.
+     */
+    val departments: List<String> = emptyList(),
 ) {
     /** True when [expiresAtMs] is in the past. Null expiry is never expired — see the field. */
     fun isExpiredAt(nowMs: Long): Boolean = expiresAtMs != null && expiresAtMs <= nowMs

@@ -46,7 +46,11 @@ class ChatSignInUseCaseTest {
 
     @Test
     fun `a pasted API path still signs in against the origin`() = runTest {
-        signIn("https://gujlogin.coraltele.com/services/app/v2/auth/login", "sample-user", Secret("not-a-real-password"))
+        signIn(
+            "https://gujlogin.coraltele.com/services/app/v2/auth/login",
+            "sample-user",
+            Secret("not-a-real-password"),
+        )
 
         assertEquals(CoralServerUrl.DEFAULT, repository.signInAttempts.single().url)
     }

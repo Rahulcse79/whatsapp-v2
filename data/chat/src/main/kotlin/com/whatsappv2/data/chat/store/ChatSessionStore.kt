@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.data.account.crypto.CredentialCipher
@@ -96,6 +97,9 @@ internal class ChatSessionStore @Inject constructor(
             preferences[DEVICE_ID] = session.deviceId
             session.displayName?.let { preferences[DISPLAY_NAME] = it } ?: preferences.remove(DISPLAY_NAME)
             session.expiresAtMs?.let { preferences[EXPIRES_AT] = it } ?: preferences.remove(EXPIRES_AT)
+            // A Set, because DataStore has no list type and the order of departments
+            // carries no meaning - they are a filter, not a sequence.
+            preferences[DEPARTMENTS] = session.departments.toSet()
         }
         return true
     }
@@ -108,6 +112,7 @@ internal class ChatSessionStore @Inject constructor(
             preferences.remove(DISPLAY_NAME)
             preferences.remove(DEVICE_ID)
             preferences.remove(EXPIRES_AT)
+            preferences.remove(DEPARTMENTS)
         }
     }
 
@@ -139,6 +144,7 @@ internal class ChatSessionStore @Inject constructor(
             token = token,
             expiresAtMs = this[EXPIRES_AT],
             deviceId = deviceId,
+            departments = this[DEPARTMENTS].orEmpty().sorted(),
         )
     }
 
@@ -159,6 +165,7 @@ internal class ChatSessionStore @Inject constructor(
         val DISPLAY_NAME = stringPreferencesKey("chat_display_name")
         val DEVICE_ID = stringPreferencesKey("chat_device_id")
         val EXPIRES_AT = longPreferencesKey("chat_token_expires_at")
+        val DEPARTMENTS = stringSetPreferencesKey("chat_departments")
     }
 }
 
