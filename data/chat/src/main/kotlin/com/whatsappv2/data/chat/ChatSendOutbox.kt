@@ -96,6 +96,17 @@ internal class ChatSendOutbox @Inject constructor(
         clientId?.let(::remove)
     }
 
+    /**
+     * Forgets everything in flight.
+     *
+     * Called when the identity changes: an entry here is a message **this** person was
+     * sending, and a failed one survives in memory with nothing in the SDK behind it, so
+     * it would otherwise reappear as a failed bubble in the next person's thread.
+     */
+    fun clear() {
+        entries.value = emptyMap()
+    }
+
     private fun put(entry: OutboxEntry) {
         entries.value = entries.value + (entry.clientId to entry)
     }

@@ -4,9 +4,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.domain.chat.ChatConnectionState
+import com.whatsappv2.domain.chat.ConversationId
+import com.whatsappv2.domain.repository.ChatPinRepository
 import com.whatsappv2.domain.repository.ChatRepository
 import com.whatsappv2.domain.repository.ChatSessionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -14,6 +18,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -37,10 +42,14 @@ import javax.inject.Inject
 class ChatsViewModel @Inject constructor(
     private val sessions: ChatSessionRepository,
     private val chat: ChatRepository,
+    private val pins: ChatPinRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ChatsUiState())
     val state: StateFlow<ChatsUiState> = _state.asStateFlow()
+
+    private val _events = Channel<ChatsEvent>(Channel.BUFFERED)
+    val events: Flow<ChatsEvent> = _events.receiveAsFlow()
 
     init {
         viewModelScope.launch {
@@ -48,13 +57,20 @@ class ChatsViewModel @Inject constructor(
                 sessions.observeSession().map { it != null },
                 chat.observeConnection(),
                 chat.observeConversations(),
-            ) { signedIn, connection, conversations ->
-                Triple(signedIn, connection, conversations)
-            }.collect { (signedIn, connection, conversations) ->
-                _state.update {
-                    it.copy(isSignedIn = signedIn, connection = connection, conversations = conversations)
+                pins.observePinned(),
+            ) { signedIn, connection, conversations, pinned ->
+                // Only the four server-and-storage facts. The query is typed into this
+                // ViewModel and must survive a conversation arriving mid-search, so it is
+                // never part of what this flow rebuilds.
+                { state: ChatsUiState ->
+                    state.copy(
+                        isSignedIn = signedIn,
+                        connection = connection,
+                        conversations = conversations,
+                        pinned = pinned,
+                    )
                 }
-            }
+            }.collect { apply -> _state.update(apply) }
         }
 
         // Refresh when the socket comes up, not on a timer and not on every recomposition.
@@ -74,6 +90,27 @@ class ChatsViewModel @Inject constructor(
 
     fun signOut() {
         viewModelScope.launch { sessions.signOut() }
+    }
+
+    fun setQuery(value: String) = _state.update { it.copy(query = value) }
+
+    /** Clears the search. Separate from [setQuery] so the screen's X has one obvious call. */
+    fun clearQuery() = _state.update { it.copy(query = "") }
+
+    /**
+     * Pins or unpins [id], and reports a full list rather than ignoring the tap.
+     *
+     * The event is a one-shot rather than state: "you can pin five" is a reply to a
+     * gesture, and a flag in state would re-announce it on the next recomposition.
+     */
+    fun togglePin(id: ConversationId) {
+        viewModelScope.launch {
+            if (_state.value.isPinned(id)) {
+                pins.unpin(id)
+            } else if (!pins.pin(id)) {
+                _events.send(ChatsEvent.PinLimitReached(ChatPinRepository.MAX_PINNED))
+            }
+        }
     }
 
     private suspend fun load() {

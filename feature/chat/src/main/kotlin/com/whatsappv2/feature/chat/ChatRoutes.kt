@@ -42,6 +42,18 @@ fun ChatsRoute(
     viewModel: ChatsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val snackbars = remember { SnackbarHostState() }
+
+    LaunchedEffect(viewModel) {
+        viewModel.events.collect { event ->
+            when (event) {
+                // Said here rather than prevented in the UI: a sixth pin is a reasonable
+                // thing to try, and the limit is only interesting at the moment you hit it.
+                is ChatsEvent.PinLimitReached ->
+                    snackbars.showSnackbar("You can pin up to ${event.limit} chats")
+            }
+        }
+    }
 
     ChatsScreen(
         state = state,
@@ -51,6 +63,9 @@ fun ChatsRoute(
         // a navigation argument, and a value class would only be unwrapped there anyway.
         onOpenConversation = { onOpenConversation(it.value) },
         onRetry = viewModel::refresh,
+        onQueryChange = viewModel::setQuery,
+        onTogglePin = viewModel::togglePin,
+        snackbarHostState = snackbars,
         onOpenSettings = onOpenSettings,
         registrationIndicator = registrationIndicator,
         modifier = modifier,

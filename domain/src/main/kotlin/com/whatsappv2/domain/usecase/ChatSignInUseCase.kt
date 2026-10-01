@@ -119,7 +119,10 @@ class ChatSignInUseCase @Inject constructor(
                 // The chat thread offers a call button, and a button that cannot work is
                 // worse than no button. Deliberately NOT propagated: chat is signed in
                 // either way, and only the call button depends on this half.
-                ensureExtension(url, trimmedUsername, password)
+                //
+                // The extension comes from the session rather than from the username: they
+                // are two different strings on this platform (ChatSession.extension).
+                ensureExtension(trimmedUsername, result.value.extension)
                 result
             }
             is Outcome.Failure -> failure(ChatSignInError.Rejected(result.error))

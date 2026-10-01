@@ -64,6 +64,22 @@ internal data class LoginData(
     val userName: String?,
     val fullName: String?,
     val extension: String?,
+
+    /** The name to register under. **Null on real accounts**, which is why there is a fallback. */
+    val extensionName: String?,
+
+    /** The SIP credential. A different secret from the password typed at sign-in. */
+    val sipPassword: String?,
+
+    /** The SIP domain and registrar — not necessarily the host the chat API is on. */
+    val primaryDomain: String?,
+
+    /** The SIP port, as a string. `5061` on this deployment, which is not the default. */
+    val serverPort: String?,
+
+    /** Whether the switch wants TLS. False on this deployment, so the transport is UDP. */
+    val enableSsl: Boolean?,
+
     /**
      * The departments this user can see — and the answer to "where does `departmentList`
      * come from". It arrives here, at sign-in, not from an endpoint of its own.

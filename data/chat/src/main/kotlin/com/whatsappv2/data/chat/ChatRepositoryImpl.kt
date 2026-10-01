@@ -61,10 +61,9 @@ internal class ChatRepositoryImpl @Inject constructor(
     private val engine: ChatEngineState,
     private val bus: ChatEventBus,
     private val outbox: ChatSendOutbox,
+    private val cache: ChatMemoryCache,
     private val dispatchers: DispatcherProvider,
 ) : ChatRepository {
-
-    private val conversations = MutableStateFlow<List<ChatConversation>>(emptyList())
 
     /**
      * Bumped whenever this app does something that changes a thread — a sync, a send, a
@@ -77,7 +76,7 @@ internal class ChatRepositoryImpl @Inject constructor(
 
     override fun observeIdentity(): Flow<ChatIdentity?> = engine.observeIdentity()
 
-    override fun observeConversations(): Flow<List<ChatConversation>> = conversations
+    override fun observeConversations(): Flow<List<ChatConversation>> = cache.conversations
 
     /**
      * One thread, kept current by three things: the snapshot a sync produced, the outbox's
@@ -128,9 +127,11 @@ internal class ChatRepositoryImpl @Inject constructor(
             when (val rows = bridge<List<SdkConversation>> { sdk.conversations(it) }) {
                 is Outcome.Failure -> rows
                 is Outcome.Success -> {
-                    conversations.value = rows.value
-                        .map(ChatModelMapper::toDomain)
-                        .sortedByDescending { it.lastMessageAtMs }
+                    cache.putConversations(
+                        rows.value
+                            .map(ChatModelMapper::toDomain)
+                            .sortedByDescending { it.lastMessageAtMs },
+                    )
                     success(Unit)
                 }
             }

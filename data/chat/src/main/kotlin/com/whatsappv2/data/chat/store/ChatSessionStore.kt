@@ -2,8 +2,10 @@ package com.whatsappv2.data.chat.store
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -11,6 +13,7 @@ import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.data.account.crypto.CredentialCipher
 import com.whatsappv2.data.chat.di.ChatSessionPreferences
+import com.whatsappv2.domain.chat.ChatExtension
 import com.whatsappv2.domain.chat.ChatSession
 import com.whatsappv2.domain.chat.CoralServerUrl
 import kotlinx.coroutines.flow.Flow
@@ -97,6 +100,26 @@ internal class ChatSessionStore @Inject constructor(
             preferences[DEVICE_ID] = session.deviceId
             session.displayName?.let { preferences[DISPLAY_NAME] = it } ?: preferences.remove(DISPLAY_NAME)
             session.expiresAtMs?.let { preferences[EXPIRES_AT] = it } ?: preferences.remove(EXPIRES_AT)
+            // Everything but the SIP password, which is a credential and is needed only
+            // at sign-in. See ChatExtension: it is null on a session read back from here.
+            //
+            // An if/else rather than `?: run {}`: the elvis took its value from
+            // `remove()`, which returns the old entry, and unboxing a null one threw.
+            val extension = session.extension
+            if (extension == null) {
+                preferences.remove(EXTENSION)
+                preferences.remove(EXTENSION_NAME)
+                preferences.remove(EXTENSION_DOMAIN)
+                preferences.remove(EXTENSION_PORT)
+                preferences.remove(EXTENSION_SECURE)
+            } else {
+                preferences[EXTENSION] = extension.number
+                preferences[EXTENSION_DOMAIN] = extension.domain
+                preferences[EXTENSION_PORT] = extension.port
+                preferences[EXTENSION_SECURE] = extension.secure
+                val name = extension.name
+                if (name == null) preferences.remove(EXTENSION_NAME) else preferences[EXTENSION_NAME] = name
+            }
             // A Set, because DataStore has no list type and the order of departments
             // carries no meaning - they are a filter, not a sequence.
             preferences[DEPARTMENTS] = session.departments.toSet()
@@ -104,7 +127,13 @@ internal class ChatSessionStore @Inject constructor(
         return true
     }
 
-    /** Forgets the identity and the token. **Keeps the origin** — decision D2. */
+    /**
+     * Forgets the identity and the token. **Keeps the origin** — decision D2.
+     *
+     * Pins go with the identity. They are this person's five conversations, and leaving
+     * them would show the next person who signs in a pinned section built by somebody
+     * else — or, worse, five ids that resolve to nothing.
+     */
     suspend fun clearSession() {
         tokenFile.delete()
         dataStore.edit { preferences ->
@@ -112,7 +141,46 @@ internal class ChatSessionStore @Inject constructor(
             preferences.remove(DISPLAY_NAME)
             preferences.remove(DEVICE_ID)
             preferences.remove(EXPIRES_AT)
+            preferences.remove(EXTENSION)
+            preferences.remove(EXTENSION_NAME)
+            preferences.remove(EXTENSION_DOMAIN)
+            preferences.remove(EXTENSION_PORT)
+            preferences.remove(EXTENSION_SECURE)
             preferences.remove(DEPARTMENTS)
+            preferences.remove(PINNED)
+        }
+    }
+
+    /** The pinned conversation ids, newest first. */
+    fun observePinned(): Flow<List<String>> = preferences().map { it.toPinned() }
+
+    /**
+     * Adds [id] to the front of the pinned list, or returns false when it is full.
+     *
+     * The read and the write are one `edit`, which is the whole reason this lives here:
+     * counting in a caller and writing afterwards races a second pin and ends with six.
+     */
+    suspend fun pin(id: String, max: Int): Boolean {
+        var pinned = true
+        dataStore.edit { preferences ->
+            val current = preferences.toPinned()
+            when {
+                id in current -> Unit
+                current.size >= max -> pinned = false
+                else -> preferences[PINNED] = (listOf(id) + current).joinToString(PIN_SEPARATOR)
+            }
+        }
+        return pinned
+    }
+
+    suspend fun unpin(id: String) {
+        dataStore.edit { preferences ->
+            val remaining = preferences.toPinned() - id
+            if (remaining.isEmpty()) {
+                preferences.remove(PINNED)
+            } else {
+                preferences[PINNED] = remaining.joinToString(PIN_SEPARATOR)
+            }
         }
     }
 
@@ -144,9 +212,37 @@ internal class ChatSessionStore @Inject constructor(
             token = token,
             expiresAtMs = this[EXPIRES_AT],
             deviceId = deviceId,
+            extension = toExtension(),
             departments = this[DEPARTMENTS].orEmpty().sorted(),
         )
     }
+
+    /**
+     * The stored extension, without its password — see [ChatExtension].
+     *
+     * A stored number with no domain is not half an extension, it is a store written by an
+     * older build: both are required, so it reads as absent rather than as broken.
+     */
+    private fun Preferences.toExtension(): ChatExtension? {
+        val number = this[EXTENSION] ?: return null
+        val domain = this[EXTENSION_DOMAIN] ?: return null
+
+        return ChatExtension(
+            number = number,
+            name = this[EXTENSION_NAME],
+            sipPassword = null,
+            domain = domain,
+            port = this[EXTENSION_PORT] ?: 0,
+            secure = this[EXTENSION_SECURE] ?: false,
+        )
+    }
+
+    /**
+     * One string rather than a `stringSet`, because the order IS the data here — unlike
+     * [DEPARTMENTS], where it carries no meaning. A ULID contains no separator.
+     */
+    private fun Preferences.toPinned(): List<String> =
+        this[PINNED]?.split(PIN_SEPARATOR).orEmpty().filter { it.isNotBlank() }
 
     /**
      * The stored origin, or the shipped default.
@@ -165,7 +261,16 @@ internal class ChatSessionStore @Inject constructor(
         val DISPLAY_NAME = stringPreferencesKey("chat_display_name")
         val DEVICE_ID = stringPreferencesKey("chat_device_id")
         val EXPIRES_AT = longPreferencesKey("chat_token_expires_at")
+        val EXTENSION = stringPreferencesKey("chat_extension")
+        val EXTENSION_NAME = stringPreferencesKey("chat_extension_name")
+        val EXTENSION_DOMAIN = stringPreferencesKey("chat_extension_domain")
+        val EXTENSION_PORT = intPreferencesKey("chat_extension_port")
+        val EXTENSION_SECURE = booleanPreferencesKey("chat_extension_secure")
         val DEPARTMENTS = stringSetPreferencesKey("chat_departments")
+        val PINNED = stringPreferencesKey("chat_pinned_conversations")
+
+        /** Not a character a ULID can contain, so no id can split itself in two. */
+        const val PIN_SEPARATOR = "\n"
     }
 }
 

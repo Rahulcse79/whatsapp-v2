@@ -6,6 +6,7 @@ import com.whatsappv2.core.common.result.success
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.domain.chat.ChatAuthError
 import com.whatsappv2.domain.chat.ChatCredentials
+import com.whatsappv2.domain.chat.ChatExtension
 import com.whatsappv2.domain.chat.ChatSession
 import com.whatsappv2.domain.chat.CoralServerUrl
 import com.whatsappv2.domain.repository.ChatSessionRepository
@@ -87,15 +88,39 @@ class FakeChatSessionRepository(
         nextResult = failure(error)
     }
 
+    /**
+     * What the platform returns as this person's PBX extension.
+     *
+     * Deliberately unlike the username, with a domain and password of its own. They are
+     * all different values in the real login payload, and a fixture that reused the chat
+     * ones would let a caller that confuses them pass every test and then register an
+     * account the switch has never heard of. Set it to null for an account with no
+     * telephony, or null its password for one the server gave no SIP credential.
+     */
+    var extension: ChatExtension? = ChatExtension(
+        number = FAKE_EXTENSION,
+        // Null, which is the live case — `extensionName` comes back null on real accounts,
+        // so anything registering a name has to fall back to the number.
+        name = null,
+        sipPassword = Secret("not-a-real-sip-password"),
+        domain = "pbx.example",
+        port = 5061,
+        secure = false,
+    )
+
     private fun sessionFor(credentials: ChatCredentials) = ChatSession(
         userId = credentials.username,
         displayName = credentials.username,
         token = Secret("token-for-${credentials.username}"),
         expiresAtMs = null,
         deviceId = FAKE_DEVICE_ID,
+        extension = extension,
     )
 
     private companion object {
+        /** Nothing like a username, so a test that mixes them up fails loudly. */
+        const val FAKE_EXTENSION = "4021"
+
         /** 32 upper hex, the shape the Coral platform's sample uses. Fixed, so assertions can name it. */
         const val FAKE_DEVICE_ID = "0123456789ABCDEF0123456789ABCDEF"
     }

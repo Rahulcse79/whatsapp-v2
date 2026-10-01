@@ -1,6 +1,7 @@
 package com.whatsappv2.feature.chat
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,9 +12,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.FloatingActionButton
@@ -21,10 +26,15 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -74,22 +84,21 @@ fun ChatsScreen(
     onOpenConversation: (ConversationId) -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    onQueryChange: (String) -> Unit = {},
+    onTogglePin: (ConversationId) -> Unit = {},
+    snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
     onOpenSettings: (() -> Unit)? = null,
     registrationIndicator: (@Composable () -> Unit)? = null,
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            AppTopBar(
-                title = "Chats",
-                actions = {
-                    registrationIndicator?.invoke()
-                    onOpenSettings?.let { open ->
-                        IconButton(onClick = open, modifier = Modifier.testTag(TAG_CHATS_SETTINGS)) {
-                            Icon(Icons.Filled.Settings, contentDescription = "Open settings")
-                        }
-                    }
-                },
+            ChatsBar(
+                state = state,
+                onQueryChange = onQueryChange,
+                onOpenSettings = onOpenSettings,
+                registrationIndicator = registrationIndicator,
             )
         },
         floatingActionButton = {
@@ -123,27 +132,121 @@ fun ChatsScreen(
 
                 state.isEmpty -> NoConversations()
 
-                else -> LazyColumn(modifier = Modifier.fillMaxSize().testTag(TAG_CONVERSATIONS)) {
-                    items(state.conversations, key = { it.id.value }) { conversation ->
-                        ConversationRow(
-                            conversation = conversation,
-                            onClick = { onOpenConversation(conversation.id) },
-                        )
-                        HorizontalDivider()
-                    }
-                }
+                state.hasNoMatches -> NoMatches(query = state.query)
+
+                else -> ConversationList(
+                    state = state,
+                    onOpenConversation = onOpenConversation,
+                    onTogglePin = onTogglePin,
+                )
             }
         }
     }
 }
 
+/**
+ * The header: the title, the gear, and the search field under both.
+ *
+ * The field is in the header's own slot rather than behind a magnifier that expands —
+ * the directory screen already searches this way, and a field that is always there is one
+ * tap closer than one that has to be revealed. It is absent while signed out, where there
+ * is nothing to search.
+ */
 @Composable
-private fun ConversationRow(conversation: ChatConversation, onClick: () -> Unit) {
+private fun ChatsBar(
+    state: ChatsUiState,
+    onQueryChange: (String) -> Unit,
+    onOpenSettings: (() -> Unit)?,
+    registrationIndicator: (@Composable () -> Unit)?,
+) {
+    AppTopBar(
+        title = "Chats",
+        actions = {
+            registrationIndicator?.invoke()
+            onOpenSettings?.let { open ->
+                IconButton(onClick = open, modifier = Modifier.testTag(TAG_CHATS_SETTINGS)) {
+                    Icon(Icons.Filled.Settings, contentDescription = "Open settings")
+                }
+            }
+        },
+        below = if (state.isSignedIn) {
+            {
+                SearchField(
+                    query = state.query,
+                    onQueryChange = onQueryChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            horizontal = AppTheme.spacing.large,
+                            vertical = AppTheme.spacing.small,
+                        ),
+                )
+            }
+        } else {
+            null
+        },
+    )
+}
+
+/**
+ * The list, in two sections.
+ *
+ * Both sections draw the same row and differ only in what they are given, which is what
+ * keeps "pinned" a property of the row rather than a second kind of row.
+ */
+@Composable
+private fun ConversationList(
+    state: ChatsUiState,
+    onOpenConversation: (ConversationId) -> Unit,
+    onTogglePin: (ConversationId) -> Unit,
+) {
+    LazyColumn(modifier = Modifier.fillMaxSize().testTag(TAG_CONVERSATIONS)) {
+        // A heading only when there is something under it — a lone "Pinned" label over an
+        // empty section is a label about nothing.
+        if (state.pinnedConversations.isNotEmpty()) {
+            item(key = PINNED_HEADER_KEY) { SectionHeader("Pinned") }
+        }
+        items(state.pinnedConversations, key = { "pinned-" + it.id.value }) { conversation ->
+            ConversationRow(
+                conversation = conversation,
+                pinned = true,
+                onClick = { onOpenConversation(conversation.id) },
+                onLongClick = { onTogglePin(conversation.id) },
+            )
+            HorizontalDivider()
+        }
+
+        if (state.pinnedConversations.isNotEmpty() && state.otherConversations.isNotEmpty()) {
+            item(key = OTHERS_HEADER_KEY) { SectionHeader("All chats") }
+        }
+        items(state.otherConversations, key = { it.id.value }) { conversation ->
+            ConversationRow(
+                conversation = conversation,
+                pinned = false,
+                onClick = { onOpenConversation(conversation.id) },
+                onLongClick = { onTogglePin(conversation.id) },
+            )
+            HorizontalDivider()
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ConversationRow(
+    conversation: ChatConversation,
+    pinned: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            // Long press pins, the way it does in the app this screen is modelled on.
+            // `combinedClickable` rather than a trailing button: a control on every row
+            // for something at most five rows can have is five rows of clutter.
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = AppTheme.spacing.large, vertical = AppTheme.spacing.medium),
     ) {
         Avatar(displayName = conversation.title, size = AppTheme.sizing.avatarLarge / 2)
@@ -169,9 +272,66 @@ private fun ConversationRow(conversation: ChatConversation, onClick: () -> Unit)
             )
         }
 
-        RowStatus(conversation)
+        RowStatus(conversation = conversation, pinned = pinned)
     }
 }
+
+/**
+ * The search field, and the X that empties it.
+ *
+ * The X appears only once there is something to clear: a permanent one is a control that
+ * does nothing most of the time, and it is also how you tell at a glance that a list is
+ * filtered rather than simply short.
+ */
+@Composable
+private fun SearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        singleLine = true,
+        placeholder = { Text("Search chats") },
+        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+        trailingIcon = {
+            if (query.isNotEmpty()) {
+                IconButton(onClick = { onQueryChange("") }, modifier = Modifier.testTag(TAG_SEARCH_CLEAR)) {
+                    Icon(Icons.Filled.Close, contentDescription = "Clear the search")
+                }
+            }
+        },
+        shape = RoundedCornerShape(AppTheme.radius.full),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedContainerColor = AppTheme.chatColors.composer,
+            unfocusedContainerColor = AppTheme.chatColors.composer,
+        ),
+        modifier = modifier.testTag(TAG_SEARCH),
+    )
+}
+
+/** A section label. Quiet, because it is a divider with a word on it, not a heading. */
+@Composable
+private fun SectionHeader(label: String) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(
+            start = AppTheme.spacing.large,
+            end = AppTheme.spacing.large,
+            top = AppTheme.spacing.medium,
+            bottom = AppTheme.spacing.small,
+        ),
+    )
+}
+
+@Composable
+private fun NoMatches(query: String) = Centred(
+    title = "No chats match \u201C$query\u201D",
+    body = "Search looks at who you are talking to and the last message in each chat.",
+)
 
 /**
  * Time above, unread count below.
@@ -180,7 +340,7 @@ private fun ConversationRow(conversation: ChatConversation, onClick: () -> Unit)
  * column for "when" and one for "how many" rather than hunting along each row.
  */
 @Composable
-private fun RowStatus(conversation: ChatConversation) {
+private fun RowStatus(conversation: ChatConversation, pinned: Boolean) {
     Column(
         horizontalAlignment = Alignment.End,
         verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.extraSmall),
@@ -211,6 +371,17 @@ private fun RowStatus(conversation: ChatConversation) {
                     ),
                 )
             }
+        }
+
+        // Under the unread count rather than over it: the count is the thing that changed,
+        // the pin is a standing fact about the row and can afford to be the quieter mark.
+        if (pinned) {
+            Icon(
+                imageVector = Icons.Filled.PushPin,
+                contentDescription = "Pinned",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(AppTheme.sizing.chatTick).testTag(TAG_PINNED_MARK),
+            )
         }
     }
 }
@@ -313,6 +484,13 @@ internal const val TAG_SIGN_IN = "chats-sign-in"
 internal const val TAG_NEW_CONVERSATION = "chats-new-conversation"
 internal const val TAG_CONVERSATIONS = "chats-conversations"
 internal const val TAG_CHATS_ERROR = "chats-error"
+internal const val TAG_SEARCH = "chats-search"
+internal const val TAG_SEARCH_CLEAR = "chats-search-clear"
+internal const val TAG_PINNED_MARK = "chats-pinned-mark"
+
+/** Stable keys, so a section heading is never confused with a conversation id. */
+private const val PINNED_HEADER_KEY = "chats-header-pinned"
+private const val OTHERS_HEADER_KEY = "chats-header-others"
 
 private val SAMPLE = listOf(
     ChatConversation(

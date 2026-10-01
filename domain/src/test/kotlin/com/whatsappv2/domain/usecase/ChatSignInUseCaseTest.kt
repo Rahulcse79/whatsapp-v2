@@ -191,14 +191,20 @@ class ChatSignInUseCaseTest {
     }
 
     @Test
-    fun `signing in provisions the extension the chat thread's call button needs`() = runTest {
+    fun `signing in registers the extension the LOGIN RESPONSE gave, not the username`() = runTest {
         signIn("https://host.example", "sample-user", Secret("not-a-real-password"))
 
         val created = accounts.observeAccounts().first().single()
-        assertEquals("sample-user", created.username, "the chat username is the extension")
-        assertEquals("host.example", created.domain, "the SIP domain must be a bare host")
-        assertEquals(1234, created.port, "this deployment's SIP port is not 5060")
-        assertEquals(Transport.UDP, created.transport)
+        // The bug this pins: `sample-user` signs in, `4021` is what the PBX answers to.
+        // Registering the username produced an account no call could ever reach.
+        assertEquals("4021", created.username, "the PBX extension registers, not the username")
+        assertEquals("4021", created.extension)
+        // The server's SIP domain and port, not the chat origin's host and not 5060.
+        assertEquals("pbx.example", created.domain)
+        assertEquals(5061, created.port)
+        assertEquals(Transport.UDP, created.transport, "the response says enableSsl is false")
+        // `extensionName` is null on real accounts, so the number is what gets displayed.
+        assertEquals("4021", created.displayName)
         assertTrue(created.isDefault, "the first account must be the default or no call can be placed")
     }
 
@@ -213,6 +219,37 @@ class ChatSignInUseCaseTest {
         assertEquals(1, after.size, "a second sign-in created a duplicate account")
         assertEquals(first.id, after.single().id)
     }
+
+    @Test
+    fun `no extension in the login response means no account, rather than a guessed one`() = runTest {
+        repository.extension = null
+
+        signIn("https://host.example", "sample-user", Secret("not-a-real-password"))
+
+        assertTrue(
+            accounts.observeAccounts().first().isEmpty(),
+            "an account built from the username would register something the PBX does not know",
+        )
+    }
+
+    @Test
+    fun `the server's extension name wins over the number when it has one`() = runTest {
+        repository.extension = repository.extension?.copy(name = "Reception")
+
+        signIn("https://host.example", "sample-user", Secret("not-a-real-password"))
+
+        assertEquals("Reception", accounts.observeAccounts().first().single().displayName)
+    }
+
+    @Test
+    fun `no SIP password means no account, rather than one registered with the web password`() =
+        runTest {
+            repository.extension = repository.extension?.copy(sipPassword = null)
+
+            signIn("https://host.example", "sample-user", Secret("not-a-real-password"))
+
+            assertTrue(accounts.observeAccounts().first().isEmpty())
+        }
 
     @Test
     fun `a failed sign-in provisions nothing`() = runTest {

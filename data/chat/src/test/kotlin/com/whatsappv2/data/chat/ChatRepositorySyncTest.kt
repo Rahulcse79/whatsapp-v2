@@ -53,7 +53,7 @@ class ChatRepositorySyncTest {
         override fun observeIdentity() = MutableStateFlow<ChatIdentity?>(ChatIdentity("me", "d"))
     }
 
-    private val repository = ChatRepositoryImpl(sdk, engine, bus, outbox, dispatchers)
+    private val repository = ChatRepositoryImpl(sdk, engine, bus, outbox, ChatMemoryCache(), dispatchers)
 
     private val conversation = ConversationId("c1")
 

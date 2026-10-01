@@ -49,6 +49,15 @@ data class ChatSession(
     val deviceId: String,
 
     /**
+     * This person's extension and how to register it, or null when the login had none.
+     *
+     * **Not the username.** `mcx8101` signs in; the PBX knows them as `8101`, and the
+     * login response carries both. See [ChatExtension] for the four facts this replaced
+     * and for why its password does not survive a restart.
+     */
+    val extension: ChatExtension? = null,
+
+    /**
      * The departments this account may read in the company directory.
      *
      * Part of the session because that is the only place it comes from: the platform has
