@@ -183,6 +183,24 @@ data class Sizing(
     val chatTick: Dp = 14.dp,
 
     /**
+     * The emoji panel under the composer.
+     *
+     * Close to a soft keyboard's own height on a handset, because the panel stands in for
+     * the keyboard rather than joining it: a different height makes the composer jump as
+     * one replaces the other.
+     */
+    val emojiPanelHeight: Dp = 280.dp,
+
+    /**
+     * The smallest an emoji cell may be, which decides how many fit per row.
+     *
+     * [minimumTouchTarget] would waste a third of a phone's width on gaps — an emoji is
+     * read at a glance and tapped at the glyph, so the cell is the glyph plus enough room
+     * not to mis-tap its neighbour.
+     */
+    val emojiCell: Dp = 44.dp,
+
+    /**
      * Where a row divider starts in a list whose rows lead with a small avatar: past the
      * avatar and its gutters, the way Material lists inset theirs. [avatarSmall] plus a
      * medium gutter each side.

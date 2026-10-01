@@ -25,7 +25,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.KeyboardAlt
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
@@ -42,12 +44,16 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -104,39 +110,21 @@ fun ChatThreadScreen(
     val listState = rememberLazyListState()
     val rows = state.messages.withDayBreaks()
 
-    // Follow the bottom as messages arrive, keyed on the count so it does not fight a
-    // user who has scrolled up to read history.
-    LaunchedEffect(rows.size) {
-        if (rows.isNotEmpty()) listState.animateScrollToItem(rows.lastIndex)
-    }
+    // The emoji panel stands in for the keyboard rather than joining it: both want the
+    // bottom third of the screen, and together they leave the conversation as a sliver.
+    // Opening the panel puts the keyboard away here; the keyboard puts the panel away
+    // from the inset collector below, which is the only place that knows it opened.
+    //
+    // Saveable, because a rotation with the panel open should come back with it open.
+    var emojiShown by rememberSaveable { mutableStateOf(false) }
+    val keyboard = LocalSoftwareKeyboardController.current
+    LaunchedEffect(emojiShown) { if (emojiShown) keyboard?.hide() }
 
-    // The keyboard is an arrival too: it takes a third of the screen, and a thread that
-    // stays where it was answers "what did they say?" with the composer.
-    //
-    // Keyed on the inset's HEIGHT rather than on "is it showing", because the keyboard
-    // animates in over a few hundred milliseconds: a single scroll fired when it starts
-    // opening aims at a list that is still full height, and the message it was aiming at
-    // ends up behind the composer anyway. Following the inset tracks it the whole way.
-    // `snapshotFlow` keeps that per-frame reading inside the effect, so the screen does
-    // not recompose on every frame of the animation.
-    //
-    // Only for a reader who is at the bottom: pulling somebody out of history to show
-    // them the newest message is the same mistake in the other direction.
-    //
-    // Its keys are all stable, so a new message does not restart it — the index is read
-    // through `rememberUpdatedState` instead. Keying it on the row count made it fire
-    // alongside the effect above, and an instant scroll cancels an animated one already
-    // on its way to the same place: a sent message landed half behind the composer.
-    val lastRowIndex by rememberUpdatedState(rows.lastIndex)
-    val ime = WindowInsets.ime
-    val density = LocalDensity.current
-    LaunchedEffect(listState, ime, density) {
-        snapshotFlow { ime.getBottom(density) }.collect { inset ->
-            if (inset > 0 && lastRowIndex >= 0 && listState.isAtBottom) {
-                listState.scrollToItem(lastRowIndex)
-            }
-        }
-    }
+    FollowTheConversation(
+        listState = listState,
+        rowCount = rows.size,
+        onKeyboardShown = { emojiShown = false },
+    )
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -178,7 +166,66 @@ fun ChatThreadScreen(
                 }
             }
 
-            Composer(state = state, onDraftChange = onDraftChange, onSend = onSend)
+            Composer(
+                state = state,
+                emojiShown = emojiShown,
+                onDraftChange = onDraftChange,
+                // The panel goes with the message. Left open over an empty composer it
+                // is the app still offering to decorate something already sent.
+                onSend = {
+                    emojiShown = false
+                    onSend()
+                },
+                onToggleEmoji = { emojiShown = !emojiShown },
+            )
+
+            // Under the composer, in the space the keyboard would have had. Dismissed on
+            // send as well as by the button: an open panel over an empty composer is the
+            // app still offering to decorate a message that has already gone.
+            if (emojiShown) {
+                EmojiPicker(onEmoji = { onDraftChange(state.draft + it) })
+            }
+        }
+    }
+}
+
+/**
+ * Keeps the newest message in view, through the two things that move it.
+ *
+ * Both effects live here rather than in the screen so that neither can be reordered into
+ * the other by accident — they share one [LazyListState] and they used to fight over it.
+ *
+ * A new message animates to the bottom. The keyboard does not: it animates in over a few
+ * hundred milliseconds, so a scroll fired when it starts opening aims at a list that is
+ * still full height and lands behind the composer. That one follows the inset's HEIGHT
+ * instead, through a `snapshotFlow` so the screen does not recompose on every frame, and
+ * only for a reader who is already at the bottom — pulling somebody out of history to
+ * show them the newest message is the same mistake in the other direction.
+ *
+ * The keyboard effect's keys are all stable and the index arrives through
+ * [rememberUpdatedState]: keyed on the row count it restarted on every message and fired
+ * alongside the arrival effect, and an instant scroll cancels an animated one already on
+ * its way to the same place — which left a sent message half behind the composer.
+ */
+@Composable
+private fun FollowTheConversation(
+    listState: LazyListState,
+    rowCount: Int,
+    onKeyboardShown: () -> Unit,
+) {
+    LaunchedEffect(rowCount) {
+        if (rowCount > 0) listState.animateScrollToItem(rowCount - 1)
+    }
+
+    val lastRowIndex by rememberUpdatedState(rowCount - 1)
+    val keyboardShown by rememberUpdatedState(onKeyboardShown)
+    val ime = WindowInsets.ime
+    val density = LocalDensity.current
+    LaunchedEffect(listState, ime, density) {
+        snapshotFlow { ime.getBottom(density) }.collect { inset ->
+            if (inset <= 0) return@collect
+            keyboardShown()
+            if (lastRowIndex >= 0 && listState.isAtBottom) listState.scrollToItem(lastRowIndex)
         }
     }
 }
@@ -456,8 +503,10 @@ private fun EmptyThread() {
 @Composable
 private fun Composer(
     state: ChatThreadUiState,
+    emojiShown: Boolean,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
+    onToggleEmoji: () -> Unit,
 ) {
     Row(
         verticalAlignment = Alignment.Bottom,
@@ -475,6 +524,15 @@ private fun Composer(
             placeholder = { Text(state.composerHint ?: "Message") },
             maxLines = COMPOSER_MAX_LINES,
             shape = RoundedCornerShape(AppTheme.radius.full),
+            // Inside the field, where the reference client puts it: it belongs to what is
+            // being typed, not to the row of actions beside it.
+            leadingIcon = {
+                EmojiToggle(
+                    showing = emojiShown,
+                    enabled = state.identity != null,
+                    onClick = onToggleEmoji,
+                )
+            },
             colors = OutlinedTextFieldDefaults.colors(
                 focusedContainerColor = AppTheme.chatColors.composer,
                 unfocusedContainerColor = AppTheme.chatColors.composer,
@@ -485,32 +543,67 @@ private fun Composer(
                 .testTag(TAG_COMPOSER),
         )
 
-        // A filled circle rather than a bare icon: it is the screen's primary action and
-        // the only control on a tinted page that should look pressable.
-        Surface(
-            shape = CircleShape,
-            color = if (state.canSend) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant
-            },
-            modifier = Modifier.size(AppTheme.sizing.minimumTouchTarget),
+        SendButton(enabled = state.canSend, onSend = onSend)
+    }
+}
+
+/**
+ * The smiley, and what it turns into.
+ *
+ * It swaps to a keyboard glyph while the panel is up, because the button is the way back:
+ * an icon that stayed a smiley would be a control that says what it opens but not what
+ * pressing it again does.
+ */
+@Composable
+private fun EmojiToggle(
+    showing: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    IconButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.testTag(TAG_EMOJI_TOGGLE),
+    ) {
+        Icon(
+            imageVector = if (showing) Icons.Filled.KeyboardAlt else Icons.Filled.EmojiEmotions,
+            contentDescription = if (showing) "Show the keyboard" else "Choose an emoji",
+        )
+    }
+}
+
+/**
+ * A filled circle rather than a bare icon: it is the screen's primary action and the only
+ * control on a tinted page that should look pressable.
+ */
+@Composable
+private fun SendButton(
+    enabled: Boolean,
+    onSend: () -> Unit,
+) {
+    Surface(
+        shape = CircleShape,
+        color = if (enabled) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant
+        },
+        modifier = Modifier.size(AppTheme.sizing.minimumTouchTarget),
+    ) {
+        IconButton(
+            onClick = onSend,
+            enabled = enabled,
+            modifier = Modifier.testTag(TAG_SEND),
         ) {
-            IconButton(
-                onClick = onSend,
-                enabled = state.canSend,
-                modifier = Modifier.testTag(TAG_SEND),
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Send,
-                    contentDescription = "Send",
-                    tint = if (state.canSend) {
-                        MaterialTheme.colorScheme.onPrimary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.Send,
+                contentDescription = "Send",
+                tint = if (enabled) {
+                    MaterialTheme.colorScheme.onPrimary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
         }
     }
 }

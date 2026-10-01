@@ -4,6 +4,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -37,6 +38,7 @@ class ChatThreadScreenTest {
     val compose = createComposeRule()
 
     private var retried: String? = null
+    private var drafted: String? = null
     private var sends = 0
     private var audioCalls = 0
     private var videoCalls = 0
@@ -67,7 +69,7 @@ class ChatThreadScreenTest {
             WhatsAppV2Theme {
                 ChatThreadScreen(
                     state = state,
-                    onDraftChange = {},
+                    onDraftChange = { drafted = it },
                     onSend = { sends++ },
                     onRetry = { retried = it },
                     onAudioCall = { audioCalls++ },
@@ -169,6 +171,70 @@ class ChatThreadScreenTest {
 
         compose.onNodeWithTag(TAG_PENDING).assertDoesNotExist()
         compose.onNodeWithTag(TAG_FAILED).assertDoesNotExist()
+    }
+
+    // ------------------------------------------------------------------ emoji
+
+    @Test
+    fun `the emoji panel is closed until the smiley is pressed`() {
+        setContent(ready())
+
+        compose.onNodeWithTag(TAG_EMOJI_PICKER).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_EMOJI_TOGGLE).performClick()
+
+        compose.onNodeWithTag(TAG_EMOJI_PICKER).assertIsDisplayed()
+    }
+
+    @Test
+    fun `the smiley closes the panel it opened`() {
+        setContent(ready())
+
+        compose.onNodeWithTag(TAG_EMOJI_TOGGLE).performClick()
+        compose.onNodeWithTag(TAG_EMOJI_TOGGLE).performClick()
+
+        compose.onNodeWithTag(TAG_EMOJI_PICKER).assertDoesNotExist()
+    }
+
+    @Test
+    fun `choosing an emoji appends it to the draft`() {
+        setContent(ready(draft = "on my way"))
+
+        compose.onNodeWithTag(TAG_EMOJI_TOGGLE).performClick()
+        compose.onNodeWithText("😀").performClick()
+
+        assertEquals("on my way😀", drafted)
+    }
+
+    @Test
+    fun `the panel stays open after one emoji, because nobody sends exactly one`() {
+        setContent(ready())
+
+        compose.onNodeWithTag(TAG_EMOJI_TOGGLE).performClick()
+        compose.onNodeWithText("😀").performClick()
+
+        compose.onNodeWithTag(TAG_EMOJI_PICKER).assertIsDisplayed()
+    }
+
+    @Test
+    fun `a category tab swaps the grid`() {
+        setContent(ready())
+
+        compose.onNodeWithTag(TAG_EMOJI_TOGGLE).performClick()
+        // A broken heart, not a heart: ❤️ is also the Hearts TAB, so it is on screen
+        // either way and asserting on it would pass whatever the grid was showing.
+        compose.onNodeWithText("💔").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Hearts").performClick()
+
+        compose.onNodeWithText("💔").assertIsDisplayed()
+    }
+
+    @Test
+    fun `the composer cannot offer emoji before the identity is known`() {
+        // The same rule the text field and send follow: a draft typed now would be sent
+        // with a null sender and drawn on the wrong side (finding 1.3-5).
+        setContent(ready().copy(identity = null))
+
+        compose.onNodeWithTag(TAG_EMOJI_TOGGLE).assertIsNotEnabled()
     }
 
     // ------------------------------------------------------------------ who said it
