@@ -39,6 +39,14 @@ data class Spacing(
 
 /** Corner radii, so a card and a dialog cannot disagree by two pixels. */
 data class Radius(
+    /**
+     * No rounding at all.
+     *
+     * Not an omission: a message bubble squares off the corner nearest its speaker, and
+     * that notch is what distinguishes the two sides without relying on colour. Naming it
+     * keeps the literal out of the feature, where rule 8 would catch it and be right to.
+     */
+    val none: Dp = 0.dp,
     val small: Dp = 8.dp,
     val medium: Dp = 12.dp,
     val large: Dp = 20.dp,
@@ -161,6 +169,36 @@ data class Sizing(
      * it and the in-call one crowds it.
      */
     val videoTileAvatar: Dp = 56.dp,
+
+    /**
+     * How wide a message bubble may get.
+     *
+     * Capped rather than left to fill the row, because a line that runs the full width of
+     * a phone is hard to track back to the start of — and because the gap on the other
+     * side is what tells you, at a glance and before reading a word, who said it.
+     */
+    val chatBubbleMaxWidth: Dp = 280.dp,
+
+    /** The delivery tick and the clock inside a bubble. Small enough not to crowd the time. */
+    val chatTick: Dp = 14.dp,
+
+    /**
+     * The emoji panel under the composer.
+     *
+     * Close to a soft keyboard's own height on a handset, because the panel stands in for
+     * the keyboard rather than joining it: a different height makes the composer jump as
+     * one replaces the other.
+     */
+    val emojiPanelHeight: Dp = 280.dp,
+
+    /**
+     * The smallest an emoji cell may be, which decides how many fit per row.
+     *
+     * [minimumTouchTarget] would waste a third of a phone's width on gaps — an emoji is
+     * read at a glance and tapped at the glyph, so the cell is the glyph plus enough room
+     * not to mis-tap its neighbour.
+     */
+    val emojiCell: Dp = 44.dp,
 
     /**
      * Where a row divider starts in a list whose rows lead with a small avatar: past the

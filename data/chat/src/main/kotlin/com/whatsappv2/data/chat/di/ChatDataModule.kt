@@ -10,6 +10,8 @@ import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.data.chat.ChatContactRepositoryImpl
 import com.whatsappv2.data.chat.ChatEngineLifecycle
 import com.whatsappv2.data.chat.ChatEngineState
+import com.whatsappv2.data.chat.ChatPinRepositoryImpl
+import com.whatsappv2.data.chat.ChatReadRepositoryImpl
 import com.whatsappv2.data.chat.ChatRepositoryImpl
 import com.whatsappv2.data.chat.ChatSessionRepositoryImpl
 import com.whatsappv2.data.chat.net.BearerTokenSource
@@ -18,6 +20,8 @@ import com.whatsappv2.data.chat.sdk.RealChatSdkHandle
 import com.whatsappv2.data.chat.store.ChatTokenFile
 import com.whatsappv2.data.chat.store.PrivateChatTokenFile
 import com.whatsappv2.domain.repository.ChatContactRepository
+import com.whatsappv2.domain.repository.ChatPinRepository
+import com.whatsappv2.domain.repository.ChatReadRepository
 import com.whatsappv2.domain.repository.ChatRepository
 import com.whatsappv2.domain.repository.ChatSessionRepository
 import dagger.Binds
@@ -70,6 +74,16 @@ internal abstract class ChatDataModule {
     @Binds
     @Singleton
     abstract fun bindChatRepository(impl: ChatRepositoryImpl): ChatRepository
+
+    /** Pins. This device's own list — chat-node has no frame for them yet. */
+    @Binds
+    @Singleton
+    abstract fun bindChatPinRepository(impl: ChatPinRepositoryImpl): ChatPinRepository
+
+    /** Read marks. This device's own too: `message.read` is refused by chat-node. */
+    @Binds
+    @Singleton
+    abstract fun bindChatReadRepository(impl: ChatReadRepositoryImpl): ChatReadRepository
 
     /**
      * The seam over the static `ChatSdk`.

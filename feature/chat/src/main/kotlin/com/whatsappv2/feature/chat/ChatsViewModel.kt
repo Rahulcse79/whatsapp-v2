@@ -4,9 +4,15 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.domain.chat.ChatConnectionState
+import com.whatsappv2.domain.chat.ConversationId
+import com.whatsappv2.domain.repository.ChatContactRepository
+import com.whatsappv2.domain.repository.ChatPinRepository
+import com.whatsappv2.domain.repository.ChatReadRepository
 import com.whatsappv2.domain.repository.ChatRepository
 import com.whatsappv2.domain.repository.ChatSessionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -14,6 +20,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -37,24 +44,54 @@ import javax.inject.Inject
 class ChatsViewModel @Inject constructor(
     private val sessions: ChatSessionRepository,
     private val chat: ChatRepository,
+    private val pins: ChatPinRepository,
+    private val reads: ChatReadRepository,
+    private val contacts: ChatContactRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ChatsUiState())
     val state: StateFlow<ChatsUiState> = _state.asStateFlow()
 
+    private val _events = Channel<ChatsEvent>(Channel.BUFFERED)
+    val events: Flow<ChatsEvent> = _events.receiveAsFlow()
+
     init {
         viewModelScope.launch {
             combine(
-                sessions.observeSession().map { it != null },
+                // The whole session rather than a boolean: the header shows which extension
+                // this is, and `ChatSession` is the only thing that knows.
+                sessions.observeSession(),
                 chat.observeConnection(),
                 chat.observeConversations(),
-            ) { signedIn, connection, conversations ->
-                Triple(signedIn, connection, conversations)
-            }.collect { (signedIn, connection, conversations) ->
-                _state.update {
-                    it.copy(isSignedIn = signedIn, connection = connection, conversations = conversations)
+                // Paired rather than given a slot each: `combine` is typed only to five
+                // arguments, and the vararg overload would cost every one of these its type.
+                // Both are this device's own lists, so they belong together anyway.
+                combine(pins.observePinned(), reads.observeReadMarks(), ::Pair),
+                // Only to put an extension beside the handle: the chat server knows this
+                // person as `mcx8102` and the directory is the only thing that knows they
+                // are on 8102.
+                contacts.observeContacts(),
+            ) { session, connection, conversations, local, directory ->
+                val (pinned, readMarks) = local
+                // Only the four server-and-storage facts. The query is typed into this
+                // ViewModel and must survive a conversation arriving mid-search, so it is
+                // never part of what this flow rebuilds.
+                { state: ChatsUiState ->
+                    state.copy(
+                        isSignedIn = session != null,
+                        myExtensionLabel = session?.extensionLabel,
+                        // Both names, because the phantom self-chats use both: this build
+                        // addresses by designation, the one before it used the extension.
+                        myUsername = session?.userId,
+                        myExtension = session?.extension?.number,
+                        connection = connection,
+                        conversations = conversations,
+                        pinned = pinned,
+                        readMarks = readMarks,
+                        directory = directory.associateBy { it.id },
+                    )
                 }
-            }
+            }.collect { apply -> _state.update(apply) }
         }
 
         // Refresh when the socket comes up, not on a timer and not on every recomposition.
@@ -74,6 +111,46 @@ class ChatsViewModel @Inject constructor(
 
     fun signOut() {
         viewModelScope.launch { sessions.signOut() }
+    }
+
+    fun setQuery(value: String) = _state.update { it.copy(query = value) }
+
+    /** Clears the search. Separate from [setQuery] so the screen's X has one obvious call. */
+    fun clearQuery() = _state.update { it.copy(query = "") }
+
+    /**
+     * Pins or unpins [id], and reports a full list rather than ignoring the tap.
+     *
+     * The event is a one-shot rather than state: "you can pin five" is a reply to a
+     * gesture, and a flag in state would re-announce it on the next recomposition.
+     */
+    fun togglePin(id: ConversationId) {
+        viewModelScope.launch {
+            if (_state.value.isPinned(id)) {
+                pins.unpin(id)
+            } else if (!pins.pin(id)) {
+                _events.send(ChatsEvent.PinLimitReached(ChatPinRepository.MAX_PINNED))
+            }
+        }
+    }
+
+    /**
+     * Clears a chat's badge without opening it.
+     *
+     * Marked up to the conversation's own newest message, which is the only timestamp this
+     * device can be sure the server agrees with — using "now" would mark a message that
+     * arrives a second later as already read.
+     */
+    fun markRead(id: ConversationId) {
+        val conversation = _state.value.conversations.firstOrNull { it.id == id } ?: return
+        viewModelScope.launch {
+            reads.markRead(id, conversation.lastMessageAtMs, conversation.unreadCount)
+        }
+    }
+
+    /** Puts a chat's badge back, by forgetting this device's mark — see [ChatReadRepository]. */
+    fun markUnread(id: ConversationId) {
+        viewModelScope.launch { reads.clearRead(id) }
     }
 
     private suspend fun load() {

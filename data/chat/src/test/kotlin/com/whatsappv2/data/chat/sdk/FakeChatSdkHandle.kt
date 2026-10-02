@@ -92,7 +92,12 @@ internal class FakeChatSdkHandle : ChatSdkHandle {
         meResult?.let(callback::onSuccess)
     }
 
+    /** How many times the list has been fetched, so a test can prove it was not fetched twice. */
+    var conversationsCalls = 0
+        private set
+
     override fun conversations(callback: ChatCallback<List<Conversation>>): Boolean = dispatch {
+        conversationsCalls++
         callback.onSuccess(conversationsResult)
     }
 

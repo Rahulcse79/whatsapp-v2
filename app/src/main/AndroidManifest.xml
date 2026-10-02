@@ -216,9 +216,20 @@
           it a destination through onNewIntent rather than stacking a second copy of the
           whole app on top of the first.
         -->
+        <!--
+          adjustResize, because this activity draws edge to edge and the screens inside it
+          handle the keyboard themselves with imePadding. Left unspecified, the system
+          chooses for us and these handsets choose to PAN: the whole window slides up by
+          the keyboard's height on top of the padding the thread has already applied, so
+          the header scrolls off the top and the composer parks a keyboard's height above
+          the keyboard. With decorFitsSystemWindows(false) this value does not resize the
+          window either - it stops the pan and lets the IME arrive as an inset, which is
+          the half Compose is waiting for.
+        -->
         <activity
             android:name=".MainActivity"
             android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

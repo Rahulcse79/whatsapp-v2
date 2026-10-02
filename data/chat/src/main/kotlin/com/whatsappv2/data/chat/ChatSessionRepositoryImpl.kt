@@ -16,6 +16,7 @@ import com.whatsappv2.data.chat.net.dto.LoginRequest
 import com.whatsappv2.data.chat.store.ChatSessionStore
 import com.whatsappv2.domain.chat.ChatAuthError
 import com.whatsappv2.domain.chat.ChatCredentials
+import com.whatsappv2.domain.chat.ChatExtension
 import com.whatsappv2.domain.chat.ChatSession
 import com.whatsappv2.domain.chat.CoralServerUrl
 import com.whatsappv2.domain.repository.ChatSessionRepository
@@ -59,6 +60,8 @@ internal class ChatSessionRepositoryImpl @Inject constructor(
     private val clients: CoralClientFactory,
     private val errors: CoralErrorMapper,
     private val deviceIds: CoralDeviceId,
+    private val cache: ChatMemoryCache,
+    private val outbox: ChatSendOutbox,
     private val dispatchers: DispatcherProvider,
     private val logger: Logger,
 ) : ChatSessionRepository, BearerTokenSource {
@@ -138,11 +141,15 @@ internal class ChatSessionRepositoryImpl @Inject constructor(
             return@withContext failure(ChatAuthError.InvalidCredentials)
         }
 
-        val session = envelope.data?.toSession(deviceId)
+        val session = envelope.data?.toSession(deviceId, fallbackDomain = url.host)
             ?: return@withContext failure(ChatAuthError.Server(response.code(), envelope.detail))
 
         if (!store.save(session, url)) return@withContext failure(ChatAuthError.CryptoUnavailable)
 
+        // Belt and braces. Sign-out is the only route to this screen and it clears these
+        // already, but "whose data is on screen" is not a question to leave to a path.
+        cache.clear()
+        outbox.clear()
         live.value = session
         seeded = true
         success(session)
@@ -152,6 +159,11 @@ internal class ChatSessionRepositoryImpl @Inject constructor(
         // In memory first, so nothing can attach the token to a request racing this call.
         // The persisted copy goes next; the origin stays behind, which is decision D2.
         live.value = null
+        // Then this person's conversations. They were fetched with the token above and
+        // they are not the next person's: without this, signing in as somebody else
+        // showed the previous user's chat list until a refresh happened to replace it.
+        cache.clear()
+        outbox.clear()
         withContext(dispatchers.io) { store.clearSession() }
     }
 
@@ -163,7 +175,7 @@ internal class ChatSessionRepositoryImpl @Inject constructor(
      * Treated as a server fault rather than as a session with a null token: a signed-in
      * state whose every request 401s is worse than a failure at the point of sign-in.
      */
-    private fun LoginData.toSession(deviceId: String): ChatSession? {
+    private fun LoginData.toSession(deviceId: String, fallbackDomain: String): ChatSession? {
         val bearer = token?.takeIf { it.isNotBlank() } ?: return null
 
         return ChatSession(
@@ -177,7 +189,29 @@ internal class ChatSessionRepositoryImpl @Inject constructor(
             // out while their token still works.
             expiresAtMs = null,
             deviceId = deviceId,
+            // The PBX's name for this person, which is NOT userName - see ChatExtension.
+            extension = toExtension(fallbackDomain),
             departments = departmentNames(),
+        )
+    }
+
+    /**
+     * The telephony half of the response, or null when there is no extension behind it.
+     *
+     * Every value is the server's. The fallbacks are for fields the response may omit,
+     * and each is the standard rather than a guess at this deployment: SIP's own default
+     * port, and the origin's host when the payload names no SIP domain.
+     */
+    private fun LoginData.toExtension(fallbackDomain: String): ChatExtension? {
+        val number = extension?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+
+        return ChatExtension(
+            number = number,
+            name = extensionName?.trim()?.takeIf { it.isNotEmpty() },
+            sipPassword = sipPassword?.takeIf { it.isNotBlank() }?.let(::Secret),
+            domain = primaryDomain?.trim()?.takeIf { it.isNotEmpty() } ?: fallbackDomain,
+            port = serverPort?.trim()?.toIntOrNull() ?: DEFAULT_SIP_PORT,
+            secure = enableSsl == true,
         )
     }
 
@@ -195,5 +229,8 @@ internal class ChatSessionRepositoryImpl @Inject constructor(
 
     private companion object {
         const val TAG = "ChatSessionRepository"
+
+        /** Only when the response names no port. The deployment this was built against says 5061. */
+        const val DEFAULT_SIP_PORT = 5060
     }
 }

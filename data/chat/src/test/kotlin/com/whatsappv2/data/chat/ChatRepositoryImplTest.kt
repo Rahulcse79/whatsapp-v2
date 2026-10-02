@@ -16,11 +16,14 @@ import com.whatsappv2.data.account.crypto.CredentialCipher
 import com.whatsappv2.data.chat.net.BearerTokenSource
 import com.whatsappv2.data.chat.net.CoralClientFactory
 import com.whatsappv2.data.chat.net.CoralErrorMapper
+import com.whatsappv2.data.chat.sdk.FakeChatSdkHandle
 import com.whatsappv2.data.chat.store.ChatSessionStore
 import com.whatsappv2.data.chat.store.PrivateChatTokenFile
 import com.whatsappv2.domain.chat.ChatAuthError
+import com.whatsappv2.domain.chat.ChatConversation
 import com.whatsappv2.domain.chat.ChatCredentials
 import com.whatsappv2.domain.chat.ChatSession
+import com.whatsappv2.domain.chat.ConversationId
 import com.whatsappv2.domain.chat.CoralServerUrl
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -84,12 +87,19 @@ class ChatRepositoryImplTest {
 
     private val errors = CoralErrorMapper(Gson())
 
+    // Real ones: both are plain in-memory holders, and a fake would only re-implement
+    // the clearing this test is here to check.
+    private val cache = ChatMemoryCache()
+    private val outbox = ChatSendOutbox(FakeChatSdkHandle())
+
     private val sessions: ChatSessionRepositoryImpl by lazy {
         ChatSessionRepositoryImpl(
             store = store,
             clients = CoralClientFactory(Gson()) { tokenSource },
             errors = errors,
             deviceIds = CoralDeviceId(context),
+            cache = cache,
+            outbox = outbox,
             dispatchers = dispatchers,
             logger = NoOpLogger,
         )
@@ -109,6 +119,23 @@ class ChatRepositoryImplTest {
     )
 
     /** The MockWebServer as an http origin — which the parser now accepts. */
+    /** A conversation belonging to whoever was signed in before. Only its id is read. */
+    private fun someoneElsesConversation() = ChatConversation(
+        id = ConversationId("01THEIRCONVERSATION00000000"),
+        type = "DIRECT",
+        createdAtMs = 0,
+        muted = false,
+        archived = false,
+        pinned = false,
+        otherUserId = "01THEM0000000000000000000",
+        otherUserContactIdentifier = "guest-9999@guest.local",
+        lastMessageBody = "private",
+        lastMessageType = null,
+        lastMessageSenderId = null,
+        lastMessageAtMs = 0,
+        unreadCount = 0,
+    )
+
     private fun origin(): CoralServerUrl {
         val raw = server.url("/").toString().removeSuffix("/")
         return (CoralServerUrl.parse(raw) as Outcome.Success).value
@@ -286,6 +313,33 @@ class ChatRepositoryImplTest {
     fun `the directory starts empty rather than absent`() = runTest(dispatcher) {
         assertTrue(contactsRepository().observeContacts().first().isEmpty())
     }
+
+    @Test
+    fun `signing out forgets the conversation list, so the next person never sees it`() =
+        runTest(dispatcher) {
+            // Found on a device: sign out as one user, sign in as another, and the first
+            // user's chats were still listed. The list is a @Singleton's field and it
+            // outlived the identity that fetched it; nothing on disk was involved, and
+            // the SDK was innocent too — ChatSdk.init builds a new instance every time.
+            cache.putConversations(listOf(someoneElsesConversation()))
+
+            sessions.signOut()
+
+            assertTrue(
+                cache.conversations.value.isEmpty(),
+                "a signed-out user's conversations are still in memory",
+            )
+        }
+
+    @Test
+    fun `signing out empties the outbox too, or a failed bubble reappears for the next user`() =
+        runTest(dispatcher) {
+            outbox.offer("c1", "half-sent when they signed out")
+
+            sessions.signOut()
+
+            assertTrue(outbox.observe().first().isEmpty())
+        }
 
     @Test
     fun `the device id is one per install, not one per sign-in`() {

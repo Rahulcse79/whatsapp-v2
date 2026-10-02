@@ -4,6 +4,7 @@ import com.whatsappv2.core.common.secret.Secret
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
@@ -62,21 +63,97 @@ class ChatSessionTest {
     }
 
     @Test
-    fun `a contact carries what a row needs and nothing more`() {
+    fun `a contact is addressed by its designation and labelled with both`() {
         val contact = ChatContact(
-            id = "1001",
-            displayName = "Rahul Singh",
-            extension = "1001",
+            id = "mcx8102",
+            username = "mcx8102",
+            displayName = "8102",
+            extension = "8102",
             department = "coral-test",
             avatarUrl = null,
         )
 
-        assertEquals("1001", contact.id)
+        // The id is what ChatSdk.openDirectConversation takes, and it is the DESIGNATION,
+        // not the extension: chat-node keys a guest identity by the username, so a
+        // conversation opened against `8102` reaches `guest-8102@guest.local` — a second
+        // identity nobody signs in as.
+        assertEquals("mcx8102", contact.id)
+        assertNotEquals(contact.extension, contact.id)
         assertEquals(contact, contact.copy())
-        // The id is what ChatSdk.openDirectConversation takes, and it is deliberately
-        // separate from the extension: they are two different things in this deployment,
-        // even when a directory happens to make them equal.
-        assertEquals(contact.extension, contact.id)
+        assertEquals("8102 (mcx8102)", contact.label)
+    }
+}
+
+/** The one rule for writing a person down, and what it does when half of it is missing. */
+class ChatIdentityLabelTest {
+
+    @Test
+    fun `both halves when both are known`() {
+        assertEquals("8102 (mcx8102)", chatIdentityLabel("8102", "mcx8102", fallback = "ignored"))
+    }
+
+    @Test
+    fun `the extension alone rather than an empty bracket`() {
+        assertEquals("8102", chatIdentityLabel("8102", null, fallback = "ignored"))
+        assertEquals("8102", chatIdentityLabel("8102", "  ", fallback = "ignored"))
+    }
+
+    @Test
+    fun `the username alone for a row the directory gave no extension`() {
+        assertEquals("mcx8102", chatIdentityLabel(null, "mcx8102", fallback = "ignored"))
+        assertEquals("mcx8102", chatIdentityLabel("", "mcx8102", fallback = "ignored"))
+    }
+
+    @Test
+    fun `the fallback only when there is neither`() {
+        assertEquals("Reception", chatIdentityLabel(null, null, fallback = "Reception"))
+        assertEquals("Reception", chatIdentityLabel(" ", " ", fallback = "Reception"))
+    }
+
+    @Test
+    fun `a contact with no extension labels itself by its username, not its display name`() {
+        val contact = ChatContact(
+            id = "mcx8102",
+            username = "mcx8102",
+            displayName = "Rahul Singh",
+            extension = null,
+            department = null,
+            avatarUrl = null,
+        )
+
+        assertEquals("mcx8102", contact.label)
+    }
+}
+
+/** The signed-in user's own label — the same rule, applied to the login response. */
+class ChatSessionExtensionLabelTest {
+
+    private fun session(extension: ChatExtension?) = ChatSession(
+        userId = "mcx8101",
+        displayName = null,
+        token = Secret("not-a-real-token"),
+        expiresAtMs = null,
+        deviceId = "DEVICE",
+        extension = extension,
+    )
+
+    private fun extension(number: String) = ChatExtension(
+        number = number,
+        name = null,
+        sipPassword = null,
+        domain = "pbx.example",
+        port = 5061,
+        secure = false,
+    )
+
+    @Test
+    fun `the header reads the extension and the username that signed in`() {
+        assertEquals("8101 (mcx8101)", session(extension("8101")).extensionLabel)
+    }
+
+    @Test
+    fun `a login with no extension has no label, rather than an empty one`() {
+        assertEquals(null, session(extension = null).extensionLabel)
     }
 }
 

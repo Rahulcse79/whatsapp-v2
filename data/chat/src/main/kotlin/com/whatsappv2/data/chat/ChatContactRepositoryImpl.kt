@@ -8,10 +8,11 @@ import com.whatsappv2.core.common.result.success
 import com.whatsappv2.data.chat.net.CoralClientFactory
 import com.whatsappv2.data.chat.net.CoralErrorMapper
 import com.whatsappv2.data.chat.net.dto.PhoneBookRequest
-import com.whatsappv2.data.chat.net.dto.PhoneBookRow
 import com.whatsappv2.data.chat.net.dto.SearchRequest
+import com.whatsappv2.data.chat.net.dto.toChatContact
 import com.whatsappv2.domain.chat.ChatAuthError
 import com.whatsappv2.domain.chat.ChatContact
+import com.whatsappv2.domain.chat.isSelfConversation
 import com.whatsappv2.domain.repository.ChatContactRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -65,7 +66,8 @@ internal class ChatContactRepositoryImpl @Inject constructor(
             // No session means no bearer token. Letting the request go out unauthenticated
             // would return the platform's own 401 — the same answer one round trip later,
             // and indistinguishable from a token that had genuinely aged out.
-            sessions.currentSession() ?: return@withContext failure(ChatAuthError.SessionExpired)
+            val session = sessions.currentSession()
+                ?: return@withContext failure(ChatAuthError.SessionExpired)
 
             val departments = sessions.currentDepartments()
             if (departments.isEmpty()) {
@@ -97,7 +99,16 @@ internal class ChatContactRepositoryImpl @Inject constructor(
                 return@withContext failure(ChatAuthError.Server(response.code(), envelope?.detail))
             }
 
-            publish(envelope.data.orEmpty().mapNotNull { it.toContact() }, query)
+            publish(
+                envelope.data.orEmpty()
+                    .mapNotNull { it.toChatContact() }
+                    // Not yourself. Picking your own row opened a conversation with
+                    // yourself, which chat-node provisions quite happily and which can
+                    // never be answered — and whose call button rings the handset doing
+                    // the dialling. See `isSelfConversation` for the ones already made.
+                    .filterNot { isSelfConversation(it.id, session.userId, session.extension?.number) },
+                query,
+            )
             success(Unit)
         }
 
@@ -106,39 +117,21 @@ internal class ChatContactRepositoryImpl @Inject constructor(
         contacts.value = fetched.narrowedBy(query).sortedBy { it.displayName.lowercase() }
     }
 
+    /**
+     * The local filter, matched on what the row actually shows.
+     *
+     * [ChatContact.label] rather than the display name, because the row reads
+     * `8102 (mcx8102)` and a search for `mcx` that returned nothing would be a filter
+     * disagreeing with the list in front of it. The label already contains the extension,
+     * so it is not matched separately.
+     */
     private fun List<ChatContact>.narrowedBy(query: String?): List<ChatContact> {
         if (query.isNullOrBlank()) return this
+        val needle = query.trim()
         return filter {
-            it.displayName.contains(query, ignoreCase = true) ||
-                it.extension?.contains(query, ignoreCase = true) == true
+            it.label.contains(needle, ignoreCase = true) ||
+                it.displayName.contains(needle, ignoreCase = true)
         }
-    }
-
-    /**
-     * A directory row, or null when it carries nothing to show or reach.
-     *
-     * ## Which field becomes the conversation id
-     *
-     * [PhoneBookRow.offExtension] — the extension — rather than the numeric `id`. The
-     * numeric one is a database row in the UC platform's `extension` table and means
-     * nothing to chat-node; the extension is what chat-node's guest mode keys an identity
-     * by (`deviceKey` is "the PPDR username"). **Provisional until a conversation is
-     * actually opened against it**, which is phase 3 — and this mapper is the single place
-     * that decides, so changing the answer is a one-file change.
-     */
-    private fun PhoneBookRow.toContact(): ChatContact? {
-        val extension = offExtension?.takeIf { it.isNotBlank() } ?: return null
-        val display = name?.takeIf { it.isNotBlank() } ?: extension
-
-        return ChatContact(
-            id = extension,
-            displayName = display,
-            extension = extension,
-            department = department?.takeIf { it.isNotBlank() },
-            // The platform's phonebook carries no avatar. Null lets the design system's
-            // Avatar fall back to initials, which is what it is built to do.
-            avatarUrl = null,
-        )
     }
 
     private companion object {

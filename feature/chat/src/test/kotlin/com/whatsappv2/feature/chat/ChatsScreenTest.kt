@@ -3,6 +3,7 @@ package com.whatsappv2.feature.chat
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.whatsappv2.core.designsystem.theme.WhatsAppV2Theme
 import com.whatsappv2.domain.chat.ChatConnectionState
@@ -16,10 +17,10 @@ import kotlin.test.assertEquals
 /**
  * The Chats tab in both of its states.
  *
- * The assertion that matters is the negative one: the tab keeps its gear and its
- * registration indicator while signed out. Sign-in gates this tab, not the app — a user
- * with no chat account still has a phone, and must still be able to reach Settings and see
- * whether they are registered.
+ * The signed-out state is a fallback rather than a gate since `SignInGate` moved the login
+ * in front of the whole app, but it is still representable and still has to render: the tab
+ * keeps its gear and its registration indicator, so a screen handed that state explains
+ * itself instead of going blank.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [CHAT_ROBOLECTRIC_SDK])
@@ -84,6 +85,38 @@ class ChatsScreenTest {
         compose.onNodeWithTag(TAG_CHATS_SETTINGS).performClick()
 
         assertEquals(1, settingsTaps)
+    }
+
+    @Test
+    fun `the header says which extension is signed in`() {
+        compose.setContent {
+            WhatsAppV2Theme {
+                ChatsScreen(
+                    state = ChatsUiState(
+                        isSignedIn = true,
+                        connection = ChatConnectionState.Connected,
+                        myExtensionLabel = "8101 (mcx8101)",
+                    ),
+                    onSignIn = {},
+                    onNewConversation = {},
+                    onOpenConversation = {},
+                    onRetry = {},
+                )
+            }
+        }
+
+        // On a deployment where one person is `mcx8101` to the platform and `8101` to the
+        // switch, "which extension am I" is the question asked before anything else.
+        compose.onNodeWithText("8101 (mcx8101)").assertIsDisplayed()
+        compose.onNodeWithText("Chats").assertIsDisplayed()
+    }
+
+    @Test
+    fun `no extension in the login means a bare title, not an empty label`() {
+        setContent(isSignedIn = true)
+
+        compose.onNodeWithTag(TAG_MY_EXTENSION).assertDoesNotExist()
+        compose.onNodeWithText("Chats").assertIsDisplayed()
     }
 
     @Test

@@ -1,16 +1,21 @@
 package com.whatsappv2.feature.chat
 
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.whatsappv2.domain.model.CallId
+import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.feature.chat.contacts.ChatContactsScreen
 import com.whatsappv2.feature.chat.contacts.ChatContactsViewModel
 import com.whatsappv2.feature.chat.signin.ChatSignInEvent
 import com.whatsappv2.feature.chat.signin.ChatSignInScreen
 import com.whatsappv2.feature.chat.signin.ChatSignInViewModel
+import com.whatsappv2.feature.chat.thread.ChatThreadEvent
 import com.whatsappv2.feature.chat.thread.ChatThreadScreen
 import com.whatsappv2.feature.chat.thread.ChatThreadViewModel
 
@@ -37,6 +42,18 @@ fun ChatsRoute(
     viewModel: ChatsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val snackbars = remember { SnackbarHostState() }
+
+    LaunchedEffect(viewModel) {
+        viewModel.events.collect { event ->
+            when (event) {
+                // Said here rather than prevented in the UI: a sixth pin is a reasonable
+                // thing to try, and the limit is only interesting at the moment you hit it.
+                is ChatsEvent.PinLimitReached ->
+                    snackbars.showSnackbar("You can pin up to ${event.limit} chats")
+            }
+        }
+    }
 
     ChatsScreen(
         state = state,
@@ -46,6 +63,11 @@ fun ChatsRoute(
         // a navigation argument, and a value class would only be unwrapped there anyway.
         onOpenConversation = { onOpenConversation(it.value) },
         onRetry = viewModel::refresh,
+        onQueryChange = viewModel::setQuery,
+        onTogglePin = viewModel::togglePin,
+        onMarkRead = viewModel::markRead,
+        onMarkUnread = viewModel::markUnread,
+        snackbarHostState = snackbars,
         onOpenSettings = onOpenSettings,
         registrationIndicator = registrationIndicator,
         modifier = modifier,
@@ -61,19 +83,41 @@ fun ChatsRoute(
  */
 @Composable
 fun ChatThreadRoute(
+    onCallPlaced: (CallId) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: ChatThreadViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val snackbars = remember { SnackbarHostState() }
 
+    LaunchedEffect(viewModel) {
+        viewModel.events.collect { event ->
+            when (event) {
+                // The thread stays where it is. A call is an activity of its own, and
+                // coming off it should return to the conversation, not to the list.
+                is ChatThreadEvent.CallPlaced -> onCallPlaced(event.callId)
+                // Shown here rather than pushed anywhere: the user is in a conversation,
+                // and the useful thing is that the call failed and the chat still works.
+                is ChatThreadEvent.CallFailed -> snackbars.showSnackbar(event.reason)
+            }
+        }
+    }
+
+    // The host is made here and shown by the screen's own Scaffold. Wrapping the screen
+    // in a second Scaffold to hold it is what every other route avoids: the inner one
+    // then pads against system bars the outer one already padded against, which lifts the
+    // header off the status bar and the composer off the navigation bar.
     ChatThreadScreen(
         state = state,
         onDraftChange = viewModel::setDraft,
         onSend = viewModel::send,
         onRetry = viewModel::retry,
+        onAudioCall = { viewModel.call(MediaProfile.AUDIO) },
+        onVideoCall = { viewModel.call(MediaProfile.AUDIO_VIDEO) },
         onBack = onBack,
         modifier = modifier,
+        snackbarHostState = snackbars,
     )
 }
 
@@ -83,12 +127,17 @@ fun ChatThreadRoute(
  * [onSignedIn] fires once, from the ViewModel's event channel rather than from its state.
  * A "signed in" flag in state would re-fire on every recomposition after a rotation and
  * navigate twice.
+ *
+ * Both callbacks default to doing nothing, because the app's gate needs neither: it draws
+ * this instead of the app while there is no session, so the session appearing is what
+ * dismisses it, and there is nothing behind it to go back to. A caller that navigates to
+ * this as a screen passes both.
  */
 @Composable
 fun ChatSignInRoute(
-    onSignedIn: () -> Unit,
-    onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    onSignedIn: () -> Unit = {},
+    onBack: (() -> Unit)? = null,
     viewModel: ChatSignInViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()

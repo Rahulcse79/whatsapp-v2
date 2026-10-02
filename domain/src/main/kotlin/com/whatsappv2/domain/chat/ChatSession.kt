@@ -49,6 +49,15 @@ data class ChatSession(
     val deviceId: String,
 
     /**
+     * This person's extension and how to register it, or null when the login had none.
+     *
+     * **Not the username.** `mcx8101` signs in; the PBX knows them as `8101`, and the
+     * login response carries both. See [ChatExtension] for the four facts this replaced
+     * and for why its password does not survive a restart.
+     */
+    val extension: ChatExtension? = null,
+
+    /**
      * The departments this account may read in the company directory.
      *
      * Part of the session because that is the only place it comes from: the platform has
@@ -64,4 +73,16 @@ data class ChatSession(
 ) {
     /** True when [expiresAtMs] is in the past. Null expiry is never expired — see the field. */
     fun isExpiredAt(nowMs: Long): Boolean = expiresAtMs != null && expiresAtMs <= nowMs
+
+    /**
+     * This person's own `8101 (mcx8101)`, or null when the login carried no extension.
+     *
+     * Shown in the Chats header, because "which extension am I" is the question a user of a
+     * multi-extension deployment asks before they do anything else — and because the app
+     * now provisions that extension for them, so it is also the answer to "what did signing
+     * in just do". The same [chatIdentityLabel] the directory rows use, so the header and
+     * the list cannot write the same person two ways.
+     */
+    val extensionLabel: String?
+        get() = extension?.let { chatIdentityLabel(it.number, userId, fallback = it.number) }
 }

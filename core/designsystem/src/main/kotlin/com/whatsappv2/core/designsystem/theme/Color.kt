@@ -368,3 +368,89 @@ val LightBarColorsForTest: BarColors = LightBarColors
 
 /** @see LightBarColorsForTest */
 val DarkBarColorsForTest: BarColors = DarkBarColors
+
+/**
+ * The message thread's own colours.
+ *
+ * ## Why a thread needs a palette of its own
+ *
+ * A conversation is the one screen in this app that is mostly **other people's content**,
+ * and it is read the way a page is read rather than scanned the way a list is. Material's
+ * surface/primaryContainer pair puts two tones of the same hue side by side, which makes
+ * "mine" and "theirs" a question of brightness — legible in a screenshot, much less so on
+ * a phone outdoors. Every messaging app this one sits beside solves it the same way: a
+ * tinted page, a white bubble for them, a coloured bubble for you.
+ *
+ * The light values are the ones the reference client uses, so a user moving between the
+ * two sees one product. Dark is **not** those values inverted — a pale-green bubble on a
+ * dark page glares. It is a desaturated green against a near-black page, which keeps the
+ * same mine/theirs distinction at a brightness somebody can read at night.
+ */
+data class ChatColors(
+    /** The page behind the bubbles. Tinted, so a white bubble reads as a card on it. */
+    val background: Color,
+    /** A bubble this device sent. */
+    val outgoingBubble: Color,
+    /** Text in an outgoing bubble. */
+    val onOutgoingBubble: Color,
+    /** A bubble somebody else sent. */
+    val incomingBubble: Color,
+    /** Text in an incoming bubble. */
+    val onIncomingBubble: Color,
+    /** The timestamp and delivery tick inside a bubble — present, quiet, never competing with the text. */
+    val bubbleMeta: Color,
+    /** A delivery tick once the server has the message. */
+    val deliveredTick: Color,
+    /** The sender's name above an incoming bubble. */
+    val senderName: Color,
+    /** The floating "Today" / date capsule between days. */
+    val dayDivider: Color,
+    /** Text on [dayDivider]. */
+    val onDayDivider: Color,
+    /** The composer's own surface, which sits on [background] rather than on the page. */
+    val composer: Color,
+    /** The unread count on a conversation row. */
+    val unreadBadge: Color,
+    /** The number on [unreadBadge]. */
+    val onUnreadBadge: Color,
+)
+
+/** The reference client's palette, so the two products look like one. */
+val LightChatColors = ChatColors(
+    background = Color(0xFFECE5DD),
+    outgoingBubble = Color(0xFFDCF8C6),
+    onOutgoingBubble = Color(0xFF111B21),
+    incomingBubble = Color(0xFFFFFFFF),
+    onIncomingBubble = Color(0xFF111B21),
+    bubbleMeta = Color(0xFF667781),
+    deliveredTick = Color(0xFF53BDEB),
+    senderName = Color(0xFF128C7E),
+    dayDivider = Color(0xFFE1F2FA),
+    onDayDivider = Color(0xFF54656F),
+    composer = Color(0xFFFFFFFF),
+    unreadBadge = Color(0xFF25D366),
+    onUnreadBadge = Color(0xFFFFFFFF),
+)
+
+/**
+ * Dark, chosen rather than derived.
+ *
+ * The outgoing bubble is a deep green that carries the same "this one is mine" signal at
+ * a fraction of the light theme's luminance; inverting `#DCF8C6` would have produced a
+ * bright panel that is painful to read a long thread on.
+ */
+val DarkChatColors = ChatColors(
+    background = Color(0xFF0B141A),
+    outgoingBubble = Color(0xFF005C4B),
+    onOutgoingBubble = Color(0xFFE9EDEF),
+    incomingBubble = Color(0xFF202C33),
+    onIncomingBubble = Color(0xFFE9EDEF),
+    bubbleMeta = Color(0xFF8696A0),
+    deliveredTick = Color(0xFF53BDEB),
+    senderName = Color(0xFF53BDEB),
+    dayDivider = Color(0xFF182229),
+    onDayDivider = Color(0xFF8696A0),
+    composer = Color(0xFF202C33),
+    unreadBadge = Color(0xFF25D366),
+    onUnreadBadge = Color(0xFF111B21),
+)

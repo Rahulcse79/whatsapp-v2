@@ -4,6 +4,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -37,7 +38,10 @@ class ChatThreadScreenTest {
     val compose = createComposeRule()
 
     private var retried: String? = null
+    private var drafted: String? = null
     private var sends = 0
+    private var audioCalls = 0
+    private var videoCalls = 0
 
     private val conversation = ConversationId("c1")
 
@@ -47,11 +51,12 @@ class ChatThreadScreenTest {
         delivery: ChatMessage.Delivery = ChatMessage.Delivery.Sent,
         type: ChatMessageType = ChatMessageType.TEXT,
         clientId: String? = body,
+        senderId: String = if (mine) "me" else "8102",
     ) = ChatMessage(
         id = null,
         clientId = clientId,
         conversationId = conversation,
-        senderId = if (mine) "me" else "8102",
+        senderId = senderId,
         type = type,
         body = body,
         sequenceNumber = 0,
@@ -64,9 +69,11 @@ class ChatThreadScreenTest {
             WhatsAppV2Theme {
                 ChatThreadScreen(
                     state = state,
-                    onDraftChange = {},
+                    onDraftChange = { drafted = it },
                     onSend = { sends++ },
                     onRetry = { retried = it },
+                    onAudioCall = { audioCalls++ },
+                    onVideoCall = { videoCalls++ },
                     onBack = {},
                 )
             }
@@ -79,6 +86,7 @@ class ChatThreadScreenTest {
         draft = draft,
         identity = ChatIdentity("me", "d1"),
         connection = ChatConnectionState.Connected,
+        callableExtension = "8102",
     )
 
     @Test
@@ -165,7 +173,121 @@ class ChatThreadScreenTest {
         compose.onNodeWithTag(TAG_FAILED).assertDoesNotExist()
     }
 
-    // ------------------------------------------------------------------ inbound types
+    // ------------------------------------------------------------------ emoji
+
+    @Test
+    fun `the emoji panel is closed until the smiley is pressed`() {
+        setContent(ready())
+
+        compose.onNodeWithTag(TAG_EMOJI_PICKER).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_EMOJI_TOGGLE).performClick()
+
+        compose.onNodeWithTag(TAG_EMOJI_PICKER).assertIsDisplayed()
+    }
+
+    @Test
+    fun `the smiley closes the panel it opened`() {
+        setContent(ready())
+
+        compose.onNodeWithTag(TAG_EMOJI_TOGGLE).performClick()
+        compose.onNodeWithTag(TAG_EMOJI_TOGGLE).performClick()
+
+        compose.onNodeWithTag(TAG_EMOJI_PICKER).assertDoesNotExist()
+    }
+
+    @Test
+    fun `choosing an emoji appends it to the draft`() {
+        setContent(ready(draft = "on my way"))
+
+        compose.onNodeWithTag(TAG_EMOJI_TOGGLE).performClick()
+        compose.onNodeWithText("😀").performClick()
+
+        assertEquals("on my way😀", drafted)
+    }
+
+    @Test
+    fun `the panel stays open after one emoji, because nobody sends exactly one`() {
+        setContent(ready())
+
+        compose.onNodeWithTag(TAG_EMOJI_TOGGLE).performClick()
+        compose.onNodeWithText("😀").performClick()
+
+        compose.onNodeWithTag(TAG_EMOJI_PICKER).assertIsDisplayed()
+    }
+
+    @Test
+    fun `a category tab swaps the grid`() {
+        setContent(ready())
+
+        compose.onNodeWithTag(TAG_EMOJI_TOGGLE).performClick()
+        // A broken heart, not a heart: ❤️ is also the Hearts TAB, so it is on screen
+        // either way and asserting on it would pass whatever the grid was showing.
+        compose.onNodeWithText("💔").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Hearts").performClick()
+
+        compose.onNodeWithText("💔").assertIsDisplayed()
+    }
+
+    @Test
+    fun `the composer cannot offer emoji before the identity is known`() {
+        // The same rule the text field and send follow: a draft typed now would be sent
+        // with a null sender and drawn on the wrong side (finding 1.3-5).
+        setContent(ready().copy(identity = null))
+
+        compose.onNodeWithTag(TAG_EMOJI_TOGGLE).assertIsNotEnabled()
+    }
+
+    // ------------------------------------------------------------------ who said it
+
+    @Test
+    fun `a one-to-one thread does not name the sender`() {
+        // The id is all the SDK has - there is no display name on a message and no roster
+        // to look one up in - so naming the sender here printed `01M3TED5` above every
+        // inbound run, next to a bar already reading 8102.
+        setContent(ready(message("hi", senderId = "01M3TED5CT7MTBPF8KBN0DYME6")))
+
+        compose.onNodeWithText("01M3TED5").assertDoesNotExist()
+    }
+
+    @Test
+    fun `a thread with more than one other party does name them`() {
+        setContent(
+            ready(message("hi", senderId = "01M3TED5CT7MTBPF8KBN0DYME6")).copy(isDirect = false),
+        )
+
+        compose.onNodeWithText("01M3TED5").assertIsDisplayed()
+    }
+
+    // ------------------------------------------------------------------ calling
+
+    @Test
+    fun `the top bar offers an audio and a video call`() {
+        setContent(ready(message("hi")))
+
+        compose.onNodeWithTag(TAG_AUDIO_CALL).performClick()
+        compose.onNodeWithTag(TAG_VIDEO_CALL).performClick()
+
+        assertEquals(1, audioCalls)
+        assertEquals(1, videoCalls)
+    }
+
+    @Test
+    fun `there are no call buttons when there is no extension to dial`() {
+        // A call button that cannot work is worse than no call button - and a group
+        // conversation has a title but nobody to ring.
+        setContent(ready(message("hi")).copy(callableExtension = null))
+
+        compose.onNodeWithTag(TAG_AUDIO_CALL).assertDoesNotExist()
+        compose.onNodeWithTag(TAG_VIDEO_CALL).assertDoesNotExist()
+    }
+
+    @Test
+    fun `the call buttons lock while one is being placed, because a double tap is two INVITEs`() {
+        setContent(ready(message("hi")).copy(isPlacingCall = true))
+
+        compose.onNodeWithTag(TAG_AUDIO_CALL).assertIsNotEnabled()
+        compose.onNodeWithTag(TAG_VIDEO_CALL).assertIsNotEnabled()
+    }
 
     @Test
     fun `an attachment type this app cannot send is still named, not left blank`() {
