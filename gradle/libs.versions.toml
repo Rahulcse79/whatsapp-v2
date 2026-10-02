@@ -52,7 +52,7 @@ javaxInject = "1"
 # if it reports newer — the header rule above applies to them like everything else.
 okhttp = "4.12.0"
 retrofit = "2.11.0"
-gson = "2.11.0"
+gson = "2.14.0"
 ulidCreator = "5.2.3"
 androidxAnnotation = "1.8.2"
 
