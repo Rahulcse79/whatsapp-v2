@@ -204,6 +204,10 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.navigation.compose)
+    // `:app` holds one ViewModel of its own: SignInGateViewModel, which decides whether
+    // the app is on screen at all. Every other ViewModel in the tree belongs to a feature
+    // module and arrives through its route.
+    implementation(libs.androidx.hilt.navigation.compose)
     implementation(libs.kotlinx.coroutines.android)
 
     // Task 65, DoD 16. Debug only, and that is the whole arrangement: LeakCanary installs

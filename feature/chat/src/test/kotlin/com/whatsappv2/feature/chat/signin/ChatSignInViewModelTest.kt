@@ -11,6 +11,7 @@ import com.whatsappv2.domain.testing.FakeSipEngine
 import com.whatsappv2.domain.usecase.ChatSignInUseCase
 import com.whatsappv2.domain.usecase.EnsureChatExtensionUseCase
 import com.whatsappv2.domain.usecase.LoginUseCase
+import com.whatsappv2.domain.usecase.LogoutUseCase
 import com.whatsappv2.domain.usecase.SaveAccountUseCase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -52,6 +53,7 @@ class ChatSignInViewModelTest {
             EnsureChatExtensionUseCase(
                 accounts = accounts,
                 saveAccount = SaveAccountUseCase(accounts, engine, LoginUseCase(accounts, engine)),
+                logout = LogoutUseCase(accounts, engine, engine),
                 logger = NoOpLogger,
             ),
         ),

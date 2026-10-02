@@ -37,10 +37,10 @@ before handing over to the app shell for good. **Chat sign-in is a separate gate
 one**, because it can recur (after sign-out) whereas first-run cannot. It wraps the app
 shell, not the first-run gate.
 
-**A signed-out user must still be able to make and receive calls.** This is a SIP client
-first; chat is one of its two tabs. So sign-in blocks the **Chats tab**, not the
-application — a signed-out user sees a sign-in prompt in that tab and a fully working Calls
-tab beside it. Do not put a full-screen login in front of the whole app.
+**~~A signed-out user must still be able to make and receive calls.~~** *Reversed on 2 Oct
+2026 — see D4 below.* The login now gates the **whole application**: `SignInGate` in `:app`
+draws it instead of the app shell until there is a session. The original rule said sign-in
+blocked the Chats tab only, so that a signed-out user kept a working Calls tab beside it.
 
 ### 2.3 Sign-out
 
@@ -114,7 +114,7 @@ SDK. That has three consequences:
 | **D1** | The URL lives with the session, not in `AppSettings`. | It is an identity, not a preference. Putting it in Settings means it survives sign-out and can be edited into a state where the session no longer matches the server. |
 | **D2** | Sign-out clears credentials and the session; it **keeps** the URL. | Re-signing in is then two fields. The URL is a deployment fact, not a secret. |
 | **D3** | The password is **not stored** unless the API requires re-sending it. Store the session token / identity instead. | A stored password is a liability with no benefit if a token can be refreshed. If the API forces it, store it exactly as SIP passwords are stored — encrypted at rest in `:data:account`'s cipher — never in DataStore, which the settings store's own KDoc says is for nothing sensitive. |
-| **D4** | Sign-in gates the **Chats tab only**. | Calling must not require a chat account. |
+| **D4** | ~~Sign-in gates the **Chats tab only**.~~ **Reversed 2 Oct 2026: sign-in gates the whole application.** | The original reason was that calling must not require a chat account. It no longer holds: the Coral login is also what provisions the SIP extension the app calls from (`EnsureChatExtensionUseCase`), so a signed-out user had no account to call with in any case. Cost, stated: no dialler, call log, Settings or account list without a session. Incoming calls are unaffected in principle — they arrive through `SipConnectionService`, outside the gate — but a device with no session has no provisioned account to be reached on. |
 | **D5** | Contacts are server contacts. The device address book is untouched. | Architecture rule 9, and the two are genuinely different data. |
 
 ---

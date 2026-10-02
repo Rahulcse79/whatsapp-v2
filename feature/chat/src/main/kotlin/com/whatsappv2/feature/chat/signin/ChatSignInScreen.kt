@@ -38,7 +38,13 @@ import com.whatsappv2.domain.chat.ChatAuthError
 import com.whatsappv2.domain.chat.ChatUrlViolation
 
 /**
- * Sign in to chat: server, username, password.
+ * Sign in: server, username, password.
+ *
+ * ## It is the application's login, not the Chats tab's
+ *
+ * It began as the latter and is mounted above everything now — `SignInGate` in `:app` draws
+ * it instead of the app until there is a session. That is why [onBack] is nullable: there is
+ * nowhere behind a gate, and a back arrow that pops to nothing is a control that lies.
  *
  * ## Why the URL is asked here and not in Settings
  *
@@ -62,17 +68,21 @@ fun ChatSignInScreen(
     onPasswordChange: (Secret) -> Unit,
     onTogglePasswordVisible: () -> Unit,
     onSubmit: () -> Unit,
-    onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Null when this is the app's gate, where there is nothing behind it to go back to. */
+    onBack: (() -> Unit)? = null,
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
             AppTopBar(
-                title = "Sign in to chat",
+                title = "Sign in",
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    // Absent rather than disabled: a greyed-out arrow still invites a tap.
+                    onBack?.let { back ->
+                        IconButton(onClick = back) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
                     }
                 },
             )

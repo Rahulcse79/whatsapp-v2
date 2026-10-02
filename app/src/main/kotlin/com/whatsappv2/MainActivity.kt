@@ -16,8 +16,10 @@ import com.whatsappv2.background.BackgroundAccessPrompt
 import com.whatsappv2.background.LocalBackgroundAccess
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.domain.repository.AppSettingsRepository
+import com.whatsappv2.feature.chat.ChatSignInRoute
 import com.whatsappv2.onboarding.FirstRunGate
 import com.whatsappv2.onboarding.FirstRunStore
+import com.whatsappv2.onboarding.SignInGate
 import com.whatsappv2.permission.LocalPermissionCoordinator
 import com.whatsappv2.permission.PermissionCoordinator
 import com.whatsappv2.permission.PermissionOnboarding
@@ -48,6 +50,12 @@ import javax.inject.Inject
  * from a test and a preview with no permission state at all. The flag is read once into
  * `rememberSaveable`, so finishing the screen moves on without a second read and a
  * rotation mid-flow does not restart it.
+ *
+ * ## Then the login gate
+ *
+ * Terms, tour and permissions are answered once; the login recurs, so it is a second gate
+ * rather than a fourth step — see [SignInGate], which also records that this reverses
+ * decision D4 and what that costs. The order matters: terms before credentials.
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -119,23 +127,30 @@ class MainActivity : ComponentActivity() {
                             )
                         },
                     ) {
-                        // The camera is asked for when a video call is pressed, not only on
-                        // the first-run screen somebody may have skipped (Task 74).
-                        AppRoot(
-                            // Both asked for in context, not only on a first-run screen
-                            // somebody may have skipped (Task 74). The microphone gate
-                            // refuses the call when it is denied; the camera's downgrades
-                            // it to audio — see `MicrophoneGate` for why they differ.
-                            videoGate = rememberCameraGate(),
-                            callGate = rememberMicrophoneGate(),
-                            openDestination = openDestination,
-                            onDestinationOpened = { openDestination = null },
-                        )
-                        // Once somebody is logged in, and once only: the platform's own
-                        // dialog for staying alive in the background. Above the screens
-                        // so it appears wherever the first login happens.
-                        val wantsRegistration by registrationDemand.wanted.collectAsState()
-                        BackgroundAccessPrompt(wantsRegistration = wantsRegistration)
+                        // And then the login, which gates the whole app rather than the
+                        // Chats tab. Inside the first-run gate so terms are accepted before
+                        // anybody is asked for a password, and above AppRoot so no screen
+                        // can be reached around it. SignInGate's KDoc carries the reversal
+                        // of decision D4 and what it costs.
+                        SignInGate(signInScreen = { ChatSignInRoute() }) {
+                            // The camera is asked for when a video call is pressed, not only
+                            // on the first-run screen somebody may have skipped (Task 74).
+                            AppRoot(
+                                // Both asked for in context, not only on a first-run screen
+                                // somebody may have skipped (Task 74). The microphone gate
+                                // refuses the call when it is denied; the camera's downgrades
+                                // it to audio — see `MicrophoneGate` for why they differ.
+                                videoGate = rememberCameraGate(),
+                                callGate = rememberMicrophoneGate(),
+                                openDestination = openDestination,
+                                onDestinationOpened = { openDestination = null },
+                            )
+                            // Once somebody is logged in, and once only: the platform's own
+                            // dialog for staying alive in the background. Above the screens
+                            // so it appears wherever the first login happens.
+                            val wantsRegistration by registrationDemand.wanted.collectAsState()
+                            BackgroundAccessPrompt(wantsRegistration = wantsRegistration)
+                        }
                     }
                 }
             }

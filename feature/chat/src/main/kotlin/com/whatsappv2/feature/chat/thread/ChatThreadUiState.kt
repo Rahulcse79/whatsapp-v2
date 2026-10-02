@@ -17,6 +17,14 @@ import com.whatsappv2.domain.chat.ChatMessage
  */
 data class ChatThreadUiState(
     val title: String = "",
+
+    /**
+     * What the avatar takes its initials from — a name, never [title].
+     *
+     * [title] is `8102 (mcx8102)` once the directory has loaded, and its initials are
+     * `8(`, which reads as a rendering fault rather than as a person.
+     */
+    val avatarName: String = "",
     val messages: List<ChatMessage> = emptyList(),
     val draft: String = "",
     val identity: ChatIdentity? = null,
@@ -25,10 +33,17 @@ data class ChatThreadUiState(
     val error: ChatFailure? = null,
 
     /**
-     * The other party's extension, or null when there is nobody to dial.
+     * The other party's **dialable** extension, or null when there is nobody to dial.
      *
      * Null until the conversation is known, so the call buttons are absent rather than
      * present-and-broken on the moment a brand-new thread opens.
+     *
+     * It comes from the directory, not from the conversation. A conversation is addressed
+     * to the designation — `mcx8102` — and `ChatConversation.callableExtension` can only
+     * report that string, which no PBX can dial. The directory is the one thing that knows
+     * `mcx8102` is on `8102`, so the ViewModel joins the two and this field holds the
+     * result; the conversation's own answer is the fallback, for a party outside the
+     * directory where the handle is the best guess available.
      */
     val callableExtension: String? = null,
 

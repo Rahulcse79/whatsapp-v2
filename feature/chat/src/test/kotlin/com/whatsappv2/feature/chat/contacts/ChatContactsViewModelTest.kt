@@ -41,8 +41,14 @@ class ChatContactsViewModelTest {
     /** The use case is real; only its repository is a fake. Opening is tested through it. */
     private fun viewModel() = ChatContactsViewModel(repository, OpenConversationUseCase(chat))
 
-    private fun contact(id: String, name: String, extension: String? = null) =
-        ChatContact(id = id, displayName = name, extension = extension, department = "coral-test", avatarUrl = null)
+    private fun contact(id: String, name: String, extension: String? = null) = ChatContact(
+        id = id,
+        username = id,
+        displayName = name,
+        extension = extension,
+        department = "coral-test",
+        avatarUrl = null,
+    )
 
     @Test
     fun `the directory is loaded on open`() = runTest(dispatcher) {

@@ -144,9 +144,9 @@ private fun NavGraphBuilder.callRoutes(
         // `ChatsPlaceholderScreen` stays in the tree unreferenced until phase 3 is soaked —
         // reverting this change is then a one-line edit rather than a file to restore.
         ChatsRoute(
-            // Sign-in gates this TAB, not the app (decision D4). A signed-out user gets a
-            // prompt here and a fully working Calls tab beside it; putting a login in front
-            // of the whole app would make placing a call need a chat account.
+            // Unreachable while `SignInGate` is mounted: nothing in this graph is drawn
+            // without a session. Kept wired as the fallback for a session ever allowed to
+            // expire in place rather than bouncing to the gate.
             onSignIn = { navController.navigate(AppDestination.CHAT_SIGN_IN.route) },
             onNewConversation = { navController.navigate(AppDestination.CHAT_CONTACTS.route) },
             onOpenConversation = { navController.navigate(AppDestination.chatThreadRoute(it)) },

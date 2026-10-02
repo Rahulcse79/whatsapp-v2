@@ -19,13 +19,20 @@ import com.whatsappv2.core.common.secret.Secret
  * | [domain] | the chat origin's host | `primaryDomain` |
  * | [port] | `1234` | `serverPort` — `5061` on this deployment |
  *
+ * ## [port] and [sipPassword] are recorded here but are not what registers
+ *
+ * They are the server's answer, and this type's job is to hold the server's answer. They
+ * are not what `EnsureChatExtensionUseCase` registers with: `serverPort` is the platform's
+ * own port and `sipPassword` its own credential, and a REGISTER built from the pair does
+ * not authenticate against the PBX. That use case fixes port `5060` and password `1234`,
+ * which is what this deployment's switch answers to, and names both as constants so
+ * switching back to these fields is a two-line change there.
+ *
  * ## [sipPassword] is transient, and that is deliberate
  *
  * It is a credential, and `ChatSessionStore`'s stated rule is that its DataStore holds
- * nothing sensitive. It is also needed exactly once — at sign-in, to create the SIP
- * account, after which it lives in the account repository's own encrypted column. So it
- * is present on a session returned by a fresh sign-in and **null on one read back from
- * storage**, which is why provisioning only ever happens on the way in.
+ * nothing sensitive. So it is present on a session returned by a fresh sign-in and
+ * **null on one read back from storage**.
  */
 data class ChatExtension(
     /** The number the PBX knows this person by. Not the username — see the table above. */
@@ -39,13 +46,21 @@ data class ChatExtension(
      */
     val name: String?,
 
-    /** The SIP credential, present only on a freshly signed-in session. See the KDoc. */
+    /**
+     * The platform's SIP credential, present only on a freshly signed-in session.
+     *
+     * **Not what registers.** See the KDoc: provisioning uses this deployment's `1234`.
+     */
     val sipPassword: Secret?,
 
     /** `primaryDomain`: the SIP domain and registrar. */
     val domain: String,
 
-    /** `serverPort`. 5061 on this deployment, which is not SIP's default. */
+    /**
+     * `serverPort`. 5061 on this deployment, which is not SIP's default.
+     *
+     * **Not what registers.** See the KDoc: provisioning uses 5060.
+     */
     val port: Int,
 
     /** `enableSsl`. False on this deployment, so the transport is plain UDP. */

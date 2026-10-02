@@ -33,8 +33,15 @@ class ChatContactsScreenTest {
     private var selected: ChatContact? = null
     private var retries = 0
 
-    private fun contact(id: String, name: String, extension: String? = null) =
-        ChatContact(id = id, displayName = name, extension = extension, department = "coral-test", avatarUrl = null)
+    /** A directory row the way the live one arrives: a designation, and no `name`. */
+    private fun contact(id: String, name: String, extension: String? = null) = ChatContact(
+        id = id,
+        username = id,
+        displayName = name,
+        extension = extension,
+        department = "coral-test",
+        avatarUrl = null,
+    )
 
     private fun setContent(state: ChatContactsUiState) {
         compose.setContent {
@@ -51,19 +58,23 @@ class ChatContactsScreenTest {
     }
 
     @Test
-    fun `rows carry the name and whatever else the directory knew`() {
-        setContent(ChatContactsUiState(contacts = listOf(contact("1001", "Rahul Singh", extension = "1001"))))
+    fun `a row is labelled with the extension AND the designation, and then its department`() {
+        setContent(ChatContactsUiState(contacts = listOf(contact("mcx8102", "8102", extension = "8102"))))
 
-        compose.onNodeWithText("Rahul Singh").assertIsDisplayed()
-        compose.onNodeWithText("1001 · coral-test").assertIsDisplayed()
+        // Both halves: the extension is what somebody recognises, the designation is what
+        // the chat server addresses. Neither alone tells you who you are about to message.
+        compose.onNodeWithText("8102 (mcx8102)").assertIsDisplayed()
+        // The department on its own line. The extension used to be joined onto it and is
+        // now in the label above, and printing it twice reads as two different numbers.
+        compose.onNodeWithText("coral-test").assertIsDisplayed()
     }
 
     @Test
     fun `choosing a row hands back the contact, not a field off it`() {
-        val row = contact("1001", "Rahul Singh")
+        val row = contact("mcx8102", "8102", extension = "8102")
         setContent(ChatContactsUiState(contacts = listOf(row)))
 
-        compose.onNodeWithText("Rahul Singh").performClick()
+        compose.onNodeWithText("8102 (mcx8102)").performClick()
 
         assertEquals(row, selected)
     }
@@ -105,13 +116,13 @@ class ChatContactsScreenTest {
     fun `a failure over existing rows is a strip, and the rows stay`() {
         setContent(
             ChatContactsUiState(
-                contacts = listOf(contact("1001", "Rahul Singh")),
+                contacts = listOf(contact("mcx8102", "8102", extension = "8102")),
                 error = ChatAuthError.Network,
             ),
         )
 
         compose.onNodeWithTag(TAG_ERROR_STRIP).assertIsDisplayed()
-        compose.onNodeWithText("Rahul Singh").assertIsDisplayed()
+        compose.onNodeWithText("8102 (mcx8102)").assertIsDisplayed()
         compose.onNodeWithTag(TAG_ERROR).assertDoesNotExist()
     }
 

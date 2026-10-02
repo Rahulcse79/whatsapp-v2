@@ -65,6 +65,8 @@ fun ChatsRoute(
         onRetry = viewModel::refresh,
         onQueryChange = viewModel::setQuery,
         onTogglePin = viewModel::togglePin,
+        onMarkRead = viewModel::markRead,
+        onMarkUnread = viewModel::markUnread,
         snackbarHostState = snackbars,
         onOpenSettings = onOpenSettings,
         registrationIndicator = registrationIndicator,
@@ -125,12 +127,17 @@ fun ChatThreadRoute(
  * [onSignedIn] fires once, from the ViewModel's event channel rather than from its state.
  * A "signed in" flag in state would re-fire on every recomposition after a rotation and
  * navigate twice.
+ *
+ * Both callbacks default to doing nothing, because the app's gate needs neither: it draws
+ * this instead of the app while there is no session, so the session appearing is what
+ * dismisses it, and there is nothing behind it to go back to. A caller that navigates to
+ * this as a screen passes both.
  */
 @Composable
 fun ChatSignInRoute(
-    onSignedIn: () -> Unit,
-    onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    onSignedIn: () -> Unit = {},
+    onBack: (() -> Unit)? = null,
     viewModel: ChatSignInViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()

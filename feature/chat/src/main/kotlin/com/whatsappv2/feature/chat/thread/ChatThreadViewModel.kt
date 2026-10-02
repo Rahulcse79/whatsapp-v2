@@ -6,9 +6,13 @@ import androidx.lifecycle.viewModelScope
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.domain.call.userMessage
 import com.whatsappv2.domain.chat.ConversationId
+import com.whatsappv2.domain.chat.isSelfConversation
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.MediaProfile
+import com.whatsappv2.domain.repository.ChatContactRepository
+import com.whatsappv2.domain.repository.ChatReadRepository
 import com.whatsappv2.domain.repository.ChatRepository
+import com.whatsappv2.domain.repository.ChatSessionRepository
 import com.whatsappv2.domain.usecase.PlaceCallError
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import com.whatsappv2.domain.usecase.SendChatMessageUseCase
@@ -20,6 +24,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -54,6 +61,9 @@ sealed interface ChatThreadEvent {
 @HiltViewModel
 class ChatThreadViewModel @Inject constructor(
     private val chat: ChatRepository,
+    private val contacts: ChatContactRepository,
+    private val reads: ChatReadRepository,
+    private val sessions: ChatSessionRepository,
     private val sendMessage: SendChatMessageUseCase,
     private val sync: SyncConversationUseCase,
     private val placeCall: PlaceCallUseCase,
@@ -71,7 +81,9 @@ class ChatThreadViewModel @Inject constructor(
         },
     )
 
-    private val _state = MutableStateFlow(ChatThreadUiState(title = conversationId.value))
+    private val _state = MutableStateFlow(
+        ChatThreadUiState(title = conversationId.value, avatarName = conversationId.value),
+    )
     val state: StateFlow<ChatThreadUiState> = _state.asStateFlow()
 
     init {
@@ -81,17 +93,70 @@ class ChatThreadViewModel @Inject constructor(
                 chat.observeIdentity(),
                 chat.observeConnection(),
                 chat.observeConversations(),
-            ) { messages, identity, connection, conversations ->
+                // The directory, for the two things the conversation cannot answer: what to
+                // write in the bar, and which number to dial. See the join below. Paired
+                // with the session because `combine` is typed only to five arguments, and
+                // the session is what says whether this thread is the user talking to
+                // themselves.
+                combine(contacts.observeContacts(), sessions.observeSession(), ::Pair),
+            ) { messages, identity, connection, conversations, directoryAndSession ->
+                val (directory, session) = directoryAndSession
                 val conversation = conversations.firstOrNull { it.id == conversationId }
+                val handle = conversation?.title ?: _state.value.title
+                val contact = directory.firstOrNull { it.id == handle }
+                // A phantom conversation the old extension-keyed build left behind can be
+                // addressed to this very user — `guest-8102@guest.local` while signed in as
+                // mcx8102. Dialling it rings the handset doing the dialling.
+                val self = isSelfConversation(handle, session?.userId, session?.extension?.number)
+
                 _state.value.copy(
                     messages = messages,
                     identity = identity,
                     connection = connection,
-                    title = conversation?.title ?: _state.value.title,
-                    callableExtension = conversation?.callableExtension,
+                    // `8102 (mcx8102)` once the directory is in, the bare handle until then
+                    // — the same join the Chats list does, so a thread and its row agree.
+                    title = contact?.label ?: handle,
+                    avatarName = contact?.displayName ?: handle,
+                    // The directory FIRST, because the conversation's own answer is the
+                    // designation — `mcx8102` — and the PBX has never heard of it. The
+                    // fallback is for a party the directory does not list, where the handle
+                    // is the only candidate there is.
+                    // Null for a chat with yourself: a call button that rings your own
+                    // handset is never what was wanted, and this is the defect reported
+                    // from a device as "the call goes to my own number".
+                    callableExtension = if (self) {
+                        null
+                    } else {
+                        contact?.extension ?: conversation?.callableExtension
+                    },
                     isDirect = conversation?.isDirect ?: _state.value.isDirect,
                 )
             }.collect { next -> _state.update { next.copy(draft = it.draft) } }
+        }
+
+        // Having the thread open IS reading it. There is no other signal available: the SDK
+        // has no read API and chat-node refuses `message.read`, so the mark this device
+        // writes here is the only thing that will ever clear the row's badge.
+        //
+        // Driven off the messages rather than off `init`, so a message that lands while the
+        // thread is in front of the user is marked read too — otherwise coming back to the
+        // list would show a badge for something they just watched arrive.
+        viewModelScope.launch {
+            combine(
+                chat.observeMessages(conversationId).mapNotNull { messages ->
+                    messages.maxOfOrNull { it.createdAtMs }
+                },
+                // The server's running total at this moment. Stored with the mark so a later
+                // badge can be the DIFFERENCE rather than the total — chat-node's count never
+                // goes down, so raw it reads as "every message ever", which put 7 on a chat
+                // with one new message. See ChatReadMark.
+                chat.observeConversations().map { conversations ->
+                    conversations.firstOrNull { it.id == conversationId }?.unreadCount ?: 0
+                },
+                ::Pair,
+            )
+                .distinctUntilChanged()
+                .collect { (newest, serverUnread) -> reads.markRead(conversationId, newest, serverUnread) }
         }
 
         refresh()
@@ -139,10 +204,11 @@ class ChatThreadViewModel @Inject constructor(
      *
      * ## The chat server is not involved
      *
-     * This is the app's own calling, pointed at the extension the conversation names.
+     * This is the app's own calling, pointed at the extension the **directory** names.
      * The chat SDK has no call API and chat-node knows nothing about it; what connects
-     * the two is that on this deployment a person's chat handle and their extension are
-     * the same string.
+     * the two is the company directory, which carries one row per person holding both
+     * their chat designation and their extension. The handle alone will not do — a
+     * conversation is addressed to `mcx8102` and the PBX answers to `8102`.
      *
      * [PlaceCallUseCase] owns everything else — which account, whether to re-register
      * first, and the downgrade from video to audio when the camera cannot be used. A

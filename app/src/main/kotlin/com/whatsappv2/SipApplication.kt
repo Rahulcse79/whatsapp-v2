@@ -5,6 +5,7 @@ import com.whatsappv2.audio.CallAudioCoordinator
 import com.whatsappv2.call.IncomingCallPresenter
 import com.whatsappv2.calllog.CallHistoryPruner
 import com.whatsappv2.calllog.CallLogWriter
+import com.whatsappv2.data.chat.ChatDataSync
 import com.whatsappv2.data.chat.ChatEngineLifecycle
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.data.sip.SipEngineLifecycle
@@ -82,6 +83,9 @@ class SipApplication : Application() {
     lateinit var chatEngine: ChatEngineLifecycle
 
     @Inject
+    lateinit var chatDataSync: ChatDataSync
+
+    @Inject
     @ApplicationScope
     lateinit var scope: CoroutineScope
 
@@ -94,6 +98,11 @@ class SipApplication : Application() {
         // The engine follows the signed-in session and does nothing at all until there is
         // one, so on a fresh install this line costs a flow collector and no socket.
         chatEngine.start(scope)
+        // One place for the process, keeping the Chats list current as messages arrive and
+        // the directory loaded for the joins that need it. Without it nothing refreshed the
+        // list while the app was running, and the directory stayed empty until somebody
+        // opened the contact picker — see ChatDataSync for the two bugs that found.
+        chatDataSync.start(scope)
         // Registered at start, not before the first call: Telecom will not accept a
         // connection for an account it has never heard of, and the first call is exactly
         // when there is no time to find that out.

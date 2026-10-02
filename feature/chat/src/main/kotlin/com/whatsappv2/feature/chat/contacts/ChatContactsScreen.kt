@@ -158,22 +158,25 @@ private fun ContactRow(contact: ChatContact, onClick: () -> Unit) {
             .clickable(onClick = onClick)
             .padding(horizontal = AppTheme.spacing.large, vertical = AppTheme.spacing.medium),
     ) {
+        // The avatar takes the name, not the label: initials of `8102 (mcx8102)` are
+        // "8(", which reads as a rendering fault rather than as a person.
         Avatar(displayName = contact.displayName, photoUri = contact.avatarUrl)
 
         Column(modifier = Modifier.padding(start = AppTheme.spacing.large)) {
-            Text(text = contact.displayName, style = MaterialTheme.typography.bodyLarge)
+            // `8102 (mcx8102)`. Both halves, because the extension is what somebody
+            // recognises and the designation is what the chat server addresses - see
+            // ChatContact.label.
+            Text(text = contact.label, style = MaterialTheme.typography.bodyLarge)
 
-            // The extension and the department, when the directory carries them. Joined
-            // rather than stacked: two short facts on one line read faster than two lines.
-            listOfNotNull(contact.extension, contact.department)
-                .takeIf { it.isNotEmpty() }
-                ?.let { details ->
-                    Text(
-                        text = details.joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            // The department alone. The extension used to be here and is now in the line
+            // above, and printing it twice makes the row look like it has two of them.
+            contact.department?.let { department ->
+                Text(
+                    text = department,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -211,8 +214,22 @@ internal const val TAG_ERROR = "chat-contacts-error"
 internal const val TAG_ERROR_STRIP = "chat-contacts-error-strip"
 
 private val SAMPLE = listOf(
-    ChatContact("1001", "Rahul Singh", extension = "1001", department = "coral-test", avatarUrl = null),
-    ChatContact("1005", "Priya Nair", extension = "1005", department = "coral-test", avatarUrl = null),
+    ChatContact(
+        id = "mcx1001",
+        username = "mcx1001",
+        displayName = "Rahul Singh",
+        extension = "1001",
+        department = "coral-test",
+        avatarUrl = null,
+    ),
+    ChatContact(
+        id = "mcx1005",
+        username = "mcx1005",
+        displayName = "Priya Nair",
+        extension = "1005",
+        department = "coral-test",
+        avatarUrl = null,
+    ),
 )
 
 @ThemePreviews

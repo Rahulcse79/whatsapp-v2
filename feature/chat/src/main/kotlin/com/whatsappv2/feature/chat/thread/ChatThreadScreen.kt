@@ -251,7 +251,7 @@ private fun ThreadBar(
         // is often the only context the reader has.
         titleContent = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Avatar(displayName = state.title, size = AppTheme.sizing.avatarLarge / 3)
+                Avatar(displayName = state.avatarName, size = AppTheme.sizing.avatarLarge / 3)
                 Column(modifier = Modifier.padding(start = AppTheme.spacing.medium)) {
                     Text(
                         text = state.title,

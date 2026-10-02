@@ -132,7 +132,9 @@ internal class ChatSessionStore @Inject constructor(
      *
      * Pins go with the identity. They are this person's five conversations, and leaving
      * them would show the next person who signs in a pinned section built by somebody
-     * else — or, worse, five ids that resolve to nothing.
+     * else — or, worse, five ids that resolve to nothing. Read marks go for the same
+     * reason: they are a record of what THIS person has seen, and inheriting them would
+     * hide the next person's unread badges on conversations they have never opened.
      */
     suspend fun clearSession() {
         tokenFile.delete()
@@ -148,6 +150,7 @@ internal class ChatSessionStore @Inject constructor(
             preferences.remove(EXTENSION_SECURE)
             preferences.remove(DEPARTMENTS)
             preferences.remove(PINNED)
+            preferences.remove(READ_MARKS)
         }
     }
 
@@ -180,6 +183,36 @@ internal class ChatSessionStore @Inject constructor(
                 preferences.remove(PINNED)
             } else {
                 preferences[PINNED] = remaining.joinToString(PIN_SEPARATOR)
+            }
+        }
+    }
+
+    /** How far each conversation has been read: id to `(timestamp, server count then)`. */
+    fun observeReadMarks(): Flow<Map<String, Pair<Long, Int>>> = preferences().map { it.toReadMarks() }
+
+    /**
+     * Moves [id]'s read mark forward to [uptoMs], never backwards.
+     *
+     * Read-then-write inside one `edit`, for the reason [pin] is: comparing in a caller and
+     * writing afterwards lets a stale page that loaded slowly overwrite a newer mark, and
+     * the badge comes back on a chat the user is looking at.
+     */
+    suspend fun markRead(id: String, uptoMs: Long, serverUnreadCount: Int) {
+        dataStore.edit { preferences ->
+            val current = preferences.toReadMarks()
+            if ((current[id]?.first ?: 0L) >= uptoMs) return@edit
+            preferences[READ_MARKS] = (current + (id to (uptoMs to serverUnreadCount))).render()
+        }
+    }
+
+    /** Drops [id]'s read mark, so the server's count is what the row shows again. */
+    suspend fun clearRead(id: String) {
+        dataStore.edit { preferences ->
+            val remaining = preferences.toReadMarks() - id
+            if (remaining.isEmpty()) {
+                preferences.remove(READ_MARKS)
+            } else {
+                preferences[READ_MARKS] = remaining.render()
             }
         }
     }
@@ -245,6 +278,33 @@ internal class ChatSessionStore @Inject constructor(
         this[PINNED]?.split(PIN_SEPARATOR).orEmpty().filter { it.isNotBlank() }
 
     /**
+     * Parses `id=timestamp` lines, skipping anything that does not parse.
+     *
+     * A malformed entry costs that conversation its read mark — the badge comes back — and
+     * never the whole map. Throwing here would take the Chats list down over one bad line.
+     */
+    private fun Preferences.toReadMarks(): Map<String, Pair<Long, Int>> =
+        this[READ_MARKS]?.split(PIN_SEPARATOR).orEmpty()
+            .mapNotNull { entry ->
+                val at = entry.lastIndexOf(MARK_SEPARATOR).takeIf { it > 0 } ?: return@mapNotNull null
+                val id = entry.substring(0, at)
+                val fields = entry.substring(at + 1).split(FIELD_SEPARATOR)
+                val stamp = fields.getOrNull(0)?.toLongOrNull() ?: return@mapNotNull null
+                // A mark written before the baseline existed carries no count. Zero is the
+                // right reading of that: the whole of today's running total then shows,
+                // which is what an upgrade should do rather than hiding messages that
+                // arrived while the old format was in use.
+                id to (stamp to (fields.getOrNull(1)?.toIntOrNull() ?: 0))
+            }
+            .toMap()
+
+    /** `id=timestamp,count` per line. The inverse of [toReadMarks]. */
+    private fun Map<String, Pair<Long, Int>>.render(): String =
+        entries.joinToString(PIN_SEPARATOR) {
+            it.key + MARK_SEPARATOR + it.value.first + FIELD_SEPARATOR + it.value.second
+        }
+
+    /**
      * The stored origin, or the shipped default.
      *
      * A stored value that no longer parses falls back rather than failing: a build whose
@@ -268,9 +328,16 @@ internal class ChatSessionStore @Inject constructor(
         val EXTENSION_SECURE = booleanPreferencesKey("chat_extension_secure")
         val DEPARTMENTS = stringSetPreferencesKey("chat_departments")
         val PINNED = stringPreferencesKey("chat_pinned_conversations")
+        val READ_MARKS = stringPreferencesKey("chat_read_marks")
 
         /** Not a character a ULID can contain, so no id can split itself in two. */
         const val PIN_SEPARATOR = "\n"
+
+        /** Separates an id from its timestamp. Not a ULID character either. */
+        const val MARK_SEPARATOR = '='
+
+        /** Separates a mark's timestamp from the server count stored with it. */
+        const val FIELD_SEPARATOR = ','
     }
 }
 

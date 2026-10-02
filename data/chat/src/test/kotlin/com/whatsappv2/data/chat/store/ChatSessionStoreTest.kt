@@ -16,6 +16,7 @@ import com.whatsappv2.data.account.crypto.CredentialCipher
 import com.whatsappv2.data.chat.ROBOLECTRIC_SDK
 import com.whatsappv2.domain.chat.ChatSession
 import com.whatsappv2.domain.chat.CoralServerUrl
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Test
@@ -70,6 +71,67 @@ class ChatSessionStoreTest {
     @After
     fun tearDown() {
         directory.deleteRecursively()
+    }
+
+    @Test
+    fun `a read mark is remembered, and never moves backwards`() = runTest {
+        val store = store()
+
+        store.markRead("c1", 500, 6)
+        assertEquals(mapOf("c1" to (500L to 6)), store.observeReadMarks().first())
+
+        store.markRead("c1", 900, 7)
+        assertEquals(mapOf("c1" to (900L to 7)), store.observeReadMarks().first())
+
+        // Scrolling up through history must not un-read the newest message, and neither
+        // must an older page that finished loading late.
+        store.markRead("c1", 100, 1)
+        assertEquals(mapOf("c1" to (900L to 7)), store.observeReadMarks().first())
+    }
+
+    @Test
+    fun `read marks are per conversation`() = runTest {
+        val store = store()
+
+        store.markRead("c1", 500, 2)
+        store.markRead("c2", 700, 9)
+
+        assertEquals(mapOf("c1" to (500L to 2), "c2" to (700L to 9)), store.observeReadMarks().first())
+    }
+
+    @Test
+    fun `signing out forgets read marks, so the next person's badges are their own`() = runTest {
+        val store = store()
+        assertTrue(store.save(session, CoralServerUrl.DEFAULT))
+        store.markRead("c1", 500, 3)
+
+        store.clearSession()
+
+        assertEquals(emptyMap(), store.observeReadMarks().first())
+    }
+
+    @Test
+    fun `a malformed read mark costs that row its mark, not the whole map`() = runTest {
+        val store = store()
+        store.markRead("c1", 500, 4)
+        // A ULID cannot contain '=' or a newline, so the only way this appears is corruption.
+        dataStore.edit {
+            it[stringPreferencesKey("chat_read_marks")] = "c1=500,4\nrubbish\nc2=notanumber"
+        }
+
+        // The badge comes back for the broken rows. The Chats list does not come down.
+        assertEquals(mapOf("c1" to (500L to 4)), store.observeReadMarks().first())
+    }
+
+    @Test
+    fun `a mark written before the baseline existed reads as a zero baseline`() = runTest {
+        val store = store()
+        // The old one-field format, as an upgrading device would have on disk.
+        dataStore.edit { it[stringPreferencesKey("chat_read_marks")] = "c1=500" }
+
+        // Zero rather than dropping the row: the whole of today's total then shows, which is
+        // what an upgrade should do rather than hiding messages that arrived in between.
+        assertEquals(mapOf("c1" to (500L to 0)), store.observeReadMarks().first())
     }
 
     @Test
