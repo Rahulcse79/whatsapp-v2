@@ -355,15 +355,26 @@ internal class FakeSipCoreGateway :
         announcedRosters += callKey to document
     }
 
-    /** Whether each mix was asked to relay between members; false is a mesh. */
-    val conferenceRelays: MutableList<Boolean> = mutableListOf()
+    /**
+     * Who each mix was asked to carry. Empty is a pure mesh, all of the members is the
+     * star, and a subset is a conference that meshes some participants and relays others.
+     */
+    val conferenceRelayed: MutableList<Set<String>> = mutableListOf()
+
+    /** Whether each mix relayed between any members at all; false is a pure mesh. */
+    val conferenceRelays: MutableList<Boolean> get() = conferenceRelayed.mapTo(mutableListOf()) { it.isNotEmpty() }
+
+    /** Far ends this fake should report as other builds of this app — see the gateway. */
+    val coralxPeers: MutableSet<String> = mutableSetOf()
+
+    override fun peerIsCoralxClient(callKey: String): Boolean = callKey in coralxPeers
 
     override suspend fun setConferenceMembers(
         callKeys: Set<String>,
-        relay: Boolean,
+        relayed: Set<String>,
     ): Outcome<Set<String>, String> {
         conferenceMemberships += callKeys
-        conferenceRelays += relay
+        conferenceRelayed += relayed
         return success(callKeys)
     }
 
@@ -410,9 +421,17 @@ internal class FakeSipCoreGateway :
         rosterAvailable: Boolean = participants.isNotEmpty(),
         mesh: Boolean = false,
         entity: String? = null,
+        meshAck: Boolean = false,
     ) {
         conferenceEventFlow.tryEmit(
-            StackConferenceEvent(callKey, participants, rosterAvailable, entity = entity, mesh = mesh),
+            StackConferenceEvent(
+                callKey,
+                participants,
+                rosterAvailable,
+                entity = entity,
+                mesh = mesh,
+                meshAck = meshAck,
+            ),
         )
     }
 

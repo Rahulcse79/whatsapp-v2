@@ -36,12 +36,22 @@ class PjsipSipEngineMeshTest {
 
     private fun uri(value: String): SipUri = requireNotNull(SipUri.parse(value).getOrNull())
 
-    /** Two connected calls to *different* people, which is what a merge starts from. */
-    private suspend fun TestScope.twoConnected(): PjsipSipEngine = with(fixture) {
+    /**
+     * Two connected calls to *different* people, which is what a merge starts from.
+     *
+     * @param coralx which of the two far ends is another build of this app. Both by
+     *   default, because that is what a mesh is: a peer that does not name itself cannot
+     *   reconcile a roster, so the focus carries it instead and the conference is no
+     *   longer a pure mesh. Tests that want the mixed case pass a smaller set.
+     */
+    private suspend fun TestScope.twoConnected(
+        coralx: Set<SipUri> = setOf(bob, carol),
+    ): PjsipSipEngine = with(fixture) {
         val engine = registeredEngine()
         listOf(bob, carol).forEach { peer ->
             val id = engine.placeCall(fixture.account.id, peer, MediaProfile.AUDIO).getOrNull()!!
             runCurrent()
+            if (peer in coralx) gateway.coralxPeers += id.value
             gateway.emitCall(id.value, StackCallState.CONNECTED, remoteUri = peer.render())
             runCurrent()
         }
@@ -58,8 +68,55 @@ class PjsipSipEngineMeshTest {
         // The two halves of "no duplicates". Every pair in a mesh holds a dialog of its
         // own, so a cross-link on the audio bridge would be that pair heard twice and a
         // composed canvas would be every participant drawn twice.
-        assertEquals(false, fixture.gateway.conferenceRelays.last(), "the mesh relayed audio between members")
+        assertEquals(
+            emptySet(),
+            fixture.gateway.conferenceRelayed.last(),
+            "the mesh relayed audio between members",
+        )
         assertEquals(false, fixture.gateway.videoConferenceComposes.last(), "the mesh composed a canvas")
+    }
+
+    @Test
+    fun `a member that is not this app is carried, and only that member`() = runTest {
+        // The reported failure, at the engine. `carol` is a desk phone: she cannot
+        // reconcile a roster, so nobody will ever dial her and nobody she could dial.
+
+        // Before this, the whole conference was handed `relay = false` and the bridge
+        // opened nothing — so the focus heard both and `bob` and `carol` heard only the
+        // focus. Now exactly `carol` is carried, and `bob`, who can mesh, is not.
+        val engine = twoConnected(coralx = setOf(bob))
+        val carolLeg = engine.activeCalls.value.single { it.remote.user == "carol" }.callId
+
+        engine.mixCalls(engine.activeCalls.value.map { it.callId }.toSet())
+        advanceUntilIdle()
+
+        assertEquals(
+            setOf(carolLeg.value),
+            fixture.gateway.conferenceRelayed.last(),
+            "exactly the member that cannot mesh should be carried",
+        )
+    }
+
+    @Test
+    fun `the roster tells everybody which participant is being carried`() = runTest {
+        // The other half of "no duplicates", and the part that reaches the *other*
+        // devices: `bob` must not dial `carol`, because the focus is already relaying
+        // her and a direct leg would be carol heard twice.
+        val engine = twoConnected(coralx = setOf(bob))
+
+        engine.mixCalls(engine.activeCalls.value.map { it.callId }.toSet())
+        advanceUntilIdle()
+
+        val document = fixture.gateway.announcedRosters.last().second
+        assertTrue(document.contains("<${ConferenceInfoWriter.RELAYED}/>"), "no participant was marked: $document")
+        // Exactly one of them, and it is carol: a marker on bob would stop the one pair
+        // that can mesh from meshing.
+        assertEquals(1, Regex("<${ConferenceInfoWriter.RELAYED}/>").findAll(document).count())
+        val carolBlock = document.substringAfter("carol@").substringBefore("</user>")
+        assertTrue(
+            carolBlock.contains("<${ConferenceInfoWriter.RELAYED}/>"),
+            "the marker is not on carol: $document",
+        )
     }
 
     @Test
@@ -361,5 +418,46 @@ class PjsipSipEngineMeshTest {
             fixture.gateway.answeredCalls.any { it.first == "second-call" },
             "a genuine second call was answered without ringing",
         )
+    }
+
+    // ------------------------------------------------- learning who can mesh
+
+    @Test
+    fun `a member that answers the roster is never carried`() = runTest {
+        // The acknowledgement is the signal that survives the deployed B2BUA: a
+        // handset-to-handset INVITE arrives stamped FreeSWITCH, so the far end's
+        // User-Agent says nothing about it. A MESSAGE body crosses intact.
+        val engine = twoConnected(coralx = emptySet())
+        val legs = engine.activeCalls.value.map { it.callId }
+
+        engine.mixCalls(legs.toSet())
+        advanceUntilIdle()
+        // Both unknown at first, so both are carried rather than left inaudible.
+        assertEquals(legs.mapTo(mutableSetOf()) { it.value }, fixture.gateway.conferenceRelayed.last())
+
+        legs.forEach { fixture.gateway.emitConference(it.value, meshAck = true) }
+        advanceUntilIdle()
+
+        assertEquals(
+            emptySet(),
+            fixture.gateway.conferenceRelayed.last(),
+            "a conference whose members both answered should carry nobody",
+        )
+    }
+
+    @Test
+    fun `an acknowledgement carries no membership and must not empty the room`() = runTest {
+        // The trap in reusing the roster document: an ack has no <users>, and feeding it
+        // to the mapper would read as "everybody left".
+        val engine = twoConnected()
+        val legs = engine.activeCalls.value.map { it.callId }
+        engine.mixCalls(legs.toSet())
+        advanceUntilIdle()
+        val before = engine.activeCalls.value.size
+
+        fixture.gateway.emitConference(legs.first().value, meshAck = true)
+        advanceUntilIdle()
+
+        assertEquals(before, engine.activeCalls.value.size, "an ack changed the call list")
     }
 }

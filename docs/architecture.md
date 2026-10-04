@@ -818,6 +818,110 @@ frame is exactly two blocks.
 
 ---
 
+### ADR-011 — Conference audio: **a mesh with spokes — relay only the participants that cannot mesh**
+
+**Status:** Accepted · **Decided:** 2026-10-05 · **Decider:** stakeholder ·
+**Amends ADR-009 and the mesh topology that succeeded it**
+
+**Context.** A conference was all-star or all-mesh. `PjsipSipEngine.mixCalls` computed
+`relay = mesh == null`, and `openMeshIfAbsent` opens a mesh for every conference built on
+this device, so `ConferenceMix.wanted` was handed `relay = false` and opened **no
+cross-links at all**. Between two CoralX clients that is exactly right — they hold a dialog
+of their own, and a cross-link would be that pair heard twice.
+
+It is wrong for anything else. A desk phone, a server extension, any peer that is not this
+app receives the roster, cannot act on it, dials nobody and is dialled by nobody. Nothing
+was carrying it to the other participants. The reported symptom is the precise shape of
+that: **the host heard everyone and everyone else heard only the host.**
+
+`ConferenceMesh`'s own documentation recorded this as a deliberate cost — *"a pair whose
+direct call fails never will [hear each other] … A relay fallback would reintroduce the
+duplicate it exists to avoid."* True of a blanket fallback. Not true of a per-participant
+one.
+
+**Decision.**
+
+1. **The mesh stays the default.** CoralX-to-CoralX conferencing is unchanged: those pairs
+   dial each other and the bridge opens nothing between them.
+2. **A participant that cannot mesh is carried by the focus**, and is named as such in the
+   roster (`<coralx-relayed/>` per `<user>`), so **nobody dials it**. Its only path to the
+   other participants is this device's bridge, and there is therefore no second path to
+   double it. `ConferenceMesh.plan` filters relayed participants out of both `dial` and
+   `awaiting`, and — deliberately — out of neither `drop` nor the membership.
+3. **`ConferenceMix.wanted` takes a set, not a boolean.** A pair is linked **iff at least
+   one end is relayed**. The two old topologies are its extremes: `relayed = members` is
+   ADR-009's star, `relayed = {}` is the full mesh.
+4. **Who can mesh is learned from an acknowledgement**, not assumed.
+
+**Why an acknowledgement, and not `User-Agent`.** The obvious signal does not survive the
+deployed server. FreeSWITCH is a full B2BUA here: a handset-to-handset INVITE reaches the
+callee stamped `User-Agent: FreeSWITCH-mod_sofia/1.10.11` with
+`Contact: <sip:mod_sofia@…>`, and the originating client's identity is gone — measured on
+1003, 2026-10-05. Classifying on it would have relayed every CoralX peer and taken the mesh
+down with it, which is the one outcome this ADR is not allowed to produce.
+
+A MESSAGE body does survive — it is the channel the roster itself crosses on. So a member
+that adopts a mesh roster answers it with `<coralx-topology>mesh-ack</coralx-topology>` on
+the same dialog, and the focus marks that leg as meshing. `User-Agent` is kept as a second
+signal because it is free and it is correct wherever there is no B2BUA in the path.
+
+**Silence first, relaying second.** Classification is learned, and the answer "this is not
+a CoralX client" arrives as nothing at all. So a conference opens as a pure mesh, every
+participant has `MESH_ACK_GRACE_MILLIS` (3 s) to answer, and whoever has not is carried
+from then on. The other order — cross-link everybody immediately and unpick it as
+acknowledgements arrive — would make every meshed pair audible twice for those seconds. A
+pair that cannot hear each other for three seconds is a gap; a pair that hears each other
+twice is a conference nobody can use.
+
+Being wrong is safe in one direction only, and this is the right one: a CoralX peer
+mistaken for a stranger is **carried**, which costs this device a transcode and sounds
+correct; a stranger mistaken for a CoralX peer is a participant nobody can hear.
+
+**Transcoding is not a separate mechanism.** `pjmedia_conf` is a PCM bridge: every port
+decodes its own codec into the mix at `CORE_CLOCK_RATE` and re-encodes the mix in its own
+codec on the way out. A link between a Lyra leg and a PCMU leg *is* Lyra → PCM → PCMU; a
+link between two Lyra legs is Lyra(16 k) → PCM(48 k) → Lyra(16 k), resampling included.
+Opening the link is the whole of making transcoding happen, which is why there is no codec
+anywhere in `ConferenceMix`.
+
+**Verified.** 1388 unit tests, including an exhaustive hear-matrix over every way of
+splitting 2–5 participants into meshed and relayed — asserting both that everyone hears
+everyone **and** that nobody is heard twice (`ConferenceHearMatrixTest`). On a Samsung M23
+against the deployed FreeSWITCH, with its echo extensions standing in for participants that
+cannot mesh:
+
+| Participants | Carried | Links opened | Expected `n(n-1)` |
+|---|---|---|---|
+| 3 (host + 9196, 9190) | 2 of 2 | 2 | 2 |
+| 4 (host + 9196, 9190, 9191) | 3 of 3 | 6 | 6 |
+
+with all legs `audio lyra pt 96/96, rx ~47 pkt/s, tx 50 pkt/s, loss 0, jitter 4–6 ms` and
+no crash across the session.
+
+**Not verified on hardware, and why.** Five participants, and a genuinely mixed-codec
+conference. The rig is one handset plus three echo extensions — 9197 and 9198 answer
+`488 Not Acceptable Here`, and all three that work are pinned to Lyra by the server's
+`absolute_codec_string`. Both cases are covered by the hear-matrix and by the PCM-bridge
+argument above; neither has been heard. A second handset, or one echo extension given a
+different codec string, closes both.
+
+**Consequences.**
+
+- Two defects fixed in passing, both live before this. `ConferenceBridge.remove` omitted the
+  topology argument, so it defaulted to `relay = true` and planned a **star**: one
+  participant leaving a mesh cross-linked everybody who stayed, and each of them heard
+  every other twice. It also discarded `apply`'s result, so those links were never recorded
+  and nothing could close them.
+- A roster now carries two CoralX extension elements rather than one. Both are ignored by
+  any RFC 4575 reader that does not know them, which is the correct behaviour for a peer
+  that was never going to dial anybody.
+- **A CoralX pair whose direct leg fails is still not relayed.** The fallback is per
+  participant, as decided; a pair that can both mesh but whose dialog did not come up is
+  outside it. Making that case work needs the focus to know the adjacency, which is a
+  roster the members write to rather than only read. **DECIDE, unanswered.**
+
+---
+
 ## 2. Settled inputs to the rest of the plan
 
 | Question | Answer | Affects |

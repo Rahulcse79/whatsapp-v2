@@ -189,4 +189,80 @@ class ConferenceMeshTest {
         assertEquals(ConferenceMesh.key(uri("Alice", "Example.COM")), ConferenceMesh.key(uri("alice", "example.com")))
         assertFalse(ConferenceMesh.key(peerA) == ConferenceMesh.key(peerB))
     }
+
+    // ------------------------------------------------- participants that cannot mesh
+
+    @Test
+    fun `a relayed participant is never dialled`() {
+        // The whole of "no duplicate audio paths". The focus is already carrying peerB on
+        // its own bridge; a direct leg from here as well would be peerB heard twice.
+        val plan = ConferenceMesh.plan(
+            members = setOf(self, peerA, peerB),
+            self = self,
+            legs = emptyMap(),
+            relayed = setOf(peerB),
+        )
+
+        assertEquals(setOf(peerA), plan.dial, "a carried participant was dialled")
+    }
+
+    @Test
+    fun `a relayed participant is never waited for either`() {
+        // From the other end of the sort order, where this device would otherwise sit
+        // showing "connecting" for a call that is never coming.
+        val plan = ConferenceMesh.plan(
+            members = setOf(self, peerA, peerB),
+            self = peerC,
+            legs = emptyMap(),
+            relayed = setOf(peerB),
+        )
+
+        assertTrue(peerB !in plan.awaiting, "waiting for a call from a carried participant")
+        assertTrue(peerB !in plan.dial)
+        assertEquals(setOf(self, peerA), plan.awaiting + plan.dial)
+    }
+
+    @Test
+    fun `the focus does not hang up on the participants it is carrying`() {
+        // The trap in implementing this by filtering the membership instead: the focus
+        // holds a leg to every relayed participant - that leg IS the relay - and a plan
+        // that treats them as "not in the conference" closes it.
+        val legToB = CallId("leg-b")
+        val plan = ConferenceMesh.plan(
+            members = setOf(self, peerA, peerB),
+            self = self,
+            legs = mapOf(legToB to peerB),
+            relayed = setOf(peerB),
+        )
+
+        assertTrue(plan.drop.isEmpty(), "the relay's own leg was dropped: ${plan.drop}")
+    }
+
+    @Test
+    fun `a leg to somebody removed is still dropped, carried or not`() {
+        // And the converse, so the exemption above cannot be used to keep a stale leg:
+        // being relayed is not membership. peerC is in neither set.
+        val stale = CallId("leg-c")
+        val plan = ConferenceMesh.plan(
+            members = setOf(self, peerA, peerB),
+            self = self,
+            legs = mapOf(stale to peerC),
+            relayed = setOf(peerB),
+        )
+
+        assertEquals(setOf(stale), plan.drop)
+    }
+
+    @Test
+    fun `an all-CoralX conference is unchanged by the relayed parameter`() {
+        // The isolation requirement: normal CoralX-to-CoralX conferencing must behave
+        // exactly as it did, and the default is what proves it.
+        val members = setOf(self, peerA, peerB, peerC)
+        val legs = mapOf(CallId("x") to peerA)
+
+        assertEquals(
+            ConferenceMesh.plan(members, self, legs),
+            ConferenceMesh.plan(members, self, legs, relayed = emptySet()),
+        )
+    }
 }

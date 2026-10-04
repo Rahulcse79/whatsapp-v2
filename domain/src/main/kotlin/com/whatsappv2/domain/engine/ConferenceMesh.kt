@@ -30,9 +30,23 @@ import com.whatsappv2.domain.model.SipUri
  * which are handed `relay = false` for exactly this reason.
  *
  * The cost is stated rather than hidden: between the merge and a pair's direct call
- * connecting, that pair cannot hear each other, and a pair whose direct call *fails* never
- * will. Both are visible — the peer has no row and no tile until its leg is up — which is
- * the honest failure. A relay fallback would reintroduce the duplicate it exists to avoid.
+ * connecting, that pair cannot hear each other. That gap is visible — the peer has no row
+ * and no tile until its leg is up — which is the honest failure.
+ *
+ * ## A participant that cannot mesh at all is carried, and only that one
+ *
+ * The paragraph above used to end "and a pair whose direct call *fails* never will", with
+ * the note that a relay fallback would reintroduce the duplicate. That was true of a
+ * *blanket* fallback and it is what left a desk phone, or any peer that is not this app,
+ * hearing the focus and nobody else — the focus heard everyone and everyone heard only the
+ * focus.
+ *
+ * The fallback is per participant instead. One that cannot mesh is named as relayed in the
+ * roster, and from then on **nobody dials it and it waits for nobody** — [plan] filters it
+ * out of both `dial` and `awaiting` — so the focus's bridge is its only path and there is
+ * no second one to double it. A pair of meshing participants is untouched: they dial each
+ * other exactly as before and the bridge opens nothing between them. See
+ * `ConferenceMix.wanted`, which carries precisely the pairs with a relayed end.
  *
  * ## The roster is the membership, and reconciling to it is the whole protocol
  *
@@ -58,17 +72,35 @@ object ConferenceMesh {
      * @param legs the conference legs this device already holds, by the address each
      *   reaches. A leg that is still ringing counts: it is a dial already in flight, and
      *   dialling again would open a second dialog to the same peer.
+     * @param relayed participants the focus carries on its own bridge because they cannot
+     *   take part in the mesh. Never dialled and never waited for, so the bridge's copy of
+     *   them is the only one. Their legs are still never dropped — see the note inside.
      */
-    fun plan(members: Set<SipUri>, self: SipUri, legs: Map<CallId, SipUri>): MeshPlan {
+    fun plan(
+        members: Set<SipUri>,
+        self: SipUri,
+        legs: Map<CallId, SipUri>,
+        relayed: Set<SipUri> = emptySet(),
+    ): MeshPlan {
         val selfKey = key(self)
         val wanted = members.filterNot { key(it) == selfKey }.associateBy { key(it) }
         val held = legs.mapValues { (_, uri) -> key(uri) }
+        // Participants the focus carries on its own bridge because they cannot hold a leg
+        // to anybody. Nobody dials them and nobody waits for them — that is what keeps a
+        // relayed participant from also being heard directly, which would be twice.
+        //
+        // They stay in `wanted`, and only `dial` and `awaiting` are filtered. That is not
+        // a shortcut: `drop` closes legs to people the roster no longer names, and the
+        // focus itself holds a leg to every relayed participant. Taking them out of
+        // `wanted` instead would have the focus hang up on the very members it is
+        // relaying for.
+        val carried = relayed.mapTo(mutableSetOf(), ::key)
 
         return MeshPlan(
             // Only the peers we owe a call to: a pair opens one dialog, and [dials]
             // decides which end opens it.
             dial = wanted
-                .filterKeys { peer -> peer !in held.values && dials(selfKey, peer) }
+                .filterKeys { peer -> peer !in held.values && peer !in carried && dials(selfKey, peer) }
                 .values
                 .toSet(),
             // A leg to somebody the focus no longer lists. That is how a removal reaches
@@ -79,7 +111,7 @@ object ConferenceMesh {
             // to do but wait — but the screen shows them as connecting rather than as
             // absent, which is the difference between "still arriving" and "not coming".
             awaiting = wanted
-                .filterKeys { peer -> peer !in held.values && !dials(selfKey, peer) }
+                .filterKeys { peer -> peer !in held.values && peer !in carried && !dials(selfKey, peer) }
                 .values
                 .toSet(),
         )

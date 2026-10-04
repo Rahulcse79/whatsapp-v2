@@ -82,4 +82,38 @@ class ConferenceInfoMeshTest {
 
         assertEquals(listOf(false, true), roster.participants.map { it.isSelf })
     }
+
+    @Test
+    fun `a relayed participant survives the round trip, and only that one`() {
+        // The marker has to cross the wire intact, because it is an instruction and not a
+        // decoration: a member that misses it dials somebody the focus is already
+        // carrying, and that participant is then heard twice.
+        val deskPhone = members[1].copy(uri = "sip:4099@192.168.20.56", isRelayed = true)
+        val document = ConferenceInfoWriter.roster(
+            "sip:4030@192.168.20.56",
+            listOf(members[0], deskPhone),
+            mesh = true,
+        )
+
+        val roster = assertNotNull(ConferenceInfoParser.parse(message(document), selfUri = null))
+
+        assertTrue(roster.mesh, "the topology was lost")
+        assertEquals(
+            listOf("sip:4099@192.168.20.56"),
+            roster.participants.filter { it.isRelayed }.map { it.uri },
+        )
+        assertEquals(2, roster.participants.size)
+    }
+
+    @Test
+    fun `a roster with nobody relayed marks nobody`() {
+        // Normal CoralX-to-CoralX conferencing: the element must not appear at all, so a
+        // reader of an older build sees byte-for-byte what it always saw.
+        val document = ConferenceInfoWriter.roster("sip:4030@192.168.20.56", members, mesh = true)
+
+        assertFalse(document.contains(ConferenceInfoWriter.RELAYED), "an unrelayed roster carried the marker")
+
+        val roster = assertNotNull(ConferenceInfoParser.parse(message(document), selfUri = null))
+        assertTrue(roster.participants.none { it.isRelayed })
+    }
 }

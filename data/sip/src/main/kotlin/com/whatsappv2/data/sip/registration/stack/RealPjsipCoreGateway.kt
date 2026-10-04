@@ -1949,12 +1949,15 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     // -------------------------------------------------------------- conference
 
+    override fun peerIsCoralxClient(callKey: String): Boolean =
+        calls[callKey]?.peerIsCoralx == true
+
     override suspend fun setConferenceMembers(
         callKeys: Set<String>,
-        relay: Boolean,
+        relayed: Set<String>,
     ): Outcome<Set<String>, String> {
         val answer = CompletableDeferred<Set<String>>()
-        onPjsip("setConferenceMembers") { answer.complete(conference.set(callKeys, relay)) }
+        onPjsip("setConferenceMembers") { answer.complete(conference.set(callKeys, relayed)) }
         return withTimeoutOrNull(CONFERENCE_MIX_TIMEOUT_MILLIS) { success(answer.await()) }
             ?: failure("the stack did not answer in $CONFERENCE_MIX_TIMEOUT_MILLIS ms")
     }
@@ -2120,7 +2123,12 @@ internal class RealPjsipCoreGateway @Inject constructor(
             calls[callKey] = call
             // Read here because here is the only place it exists: the INVITE is gone by
             // the next callback, and pjsua2 offers no header lookup on a call.
-            val conference = runCatching { prm.rdata.wholeMsg }.getOrNull()?.let(::conferenceHeaderOf)
+            val invite = runCatching { prm.rdata.wholeMsg }.getOrNull()
+            val conference = invite?.let(::conferenceHeaderOf)
+            // An INVITE carrying the mesh header is this app by construction - nothing
+            // else writes it - so a peer is known to be CoralX even behind a B2BUA that
+            // rewrote User-Agent.
+            call.peerIsCoralx = conference != null || isCoralxAgent(invite?.let(::peerAgentOf))
             // 180 for a mesh leg too, and deliberately. The engine answers it a moment
             // later without ringing anything — the ringer is driven by `incomingCalls`,
             // not by this — and a leg that turns out *not* to be one this device should
@@ -2160,6 +2168,18 @@ internal class RealPjsipCoreGateway @Inject constructor(
         /** The capture device this call is using, for [switchCamera] to cycle from. */
         @Volatile
         var captureDevice: Int = CAPTURE_DEVICE_DEFAULT
+
+        /**
+         * Whether the far end of this call is another build of this application.
+         *
+         * Written once, from the first SIP message that names the peer - the INVITE if
+         * they called us, the answer if we called them - and read by [peerIsCoralxClient]
+         * when a conference has to decide who can mesh and who must be carried. A peer
+         * that never names itself stays false, which is the safe answer: see
+         * [isCoralxAgent].
+         */
+        @Volatile
+        var peerIsCoralx: Boolean = false
 
         /** True while a re-INVITE is held awaiting the user's answer (Task 54). */
         @Volatile
@@ -2372,7 +2392,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // dialog and the raw bytes of the message that drove it — which is enough,
             // because a NOTIFY for a subscription made in this dialog *is* a transaction
             // on this call. See [subscribeToConferenceRoster].
-            if (readRosterFrom(tsxState)) return
+            if (readMessageFrom(tsxState)) return
 
             if (!pendingResume.isOutstanding && !pendingHold.isOutstanding) return
             val tsx = runCatching { tsxState.tsx }.getOrNull() ?: return
@@ -2428,6 +2448,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     rosterAvailable = true,
                     entity = roster.entity,
                     mesh = roster.mesh,
+                    meshAck = roster.meshAck,
                 ),
             )
         }
@@ -2497,23 +2518,50 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
 
         /**
-         * Publishes the roster carried by [tsxState], and says whether there was one.
+         * Reads the message [tsxState] carries, and takes both things this call wants
+         * from it. Returns true when it was a roster, which is the caller's signal to
+         * stop.
          *
-         * Cheap first, expensive last. Every transaction on every call reaches
-         * [onCallTsxState] — re-INVITEs, session refreshes, OPTIONS — and `wholeMsg`
-         * copies an entire SIP message across the JNI boundary, so the method and the
-         * event type are checked before anything is read.
+         * One reader for two jobs, because there is one message and reading it is the
+         * expensive part: every transaction on every call reaches [onCallTsxState] —
+         * re-INVITEs, session refreshes, OPTIONS — and `wholeMsg` copies an entire SIP
+         * message across the JNI boundary. Two readers did it twice.
+         *
+         * The two jobs:
+         *
+         *  - **Who the peer is.** For a call this device placed, the INVITE is ours and
+         *    the far end names itself in the answer. Latched, so it is read once.
+         *  - **The roster.** pjsua2 exposes no API for the conference event package, but
+         *    it does expose every transaction on the dialog and the bytes that drove it —
+         *    which is enough, because a NOTIFY for a subscription made in this dialog *is*
+         *    a transaction on this call. See [subscribeToConferenceRoster].
          */
-        private fun readRosterFrom(tsxState: TsxStateEvent): Boolean {
+        private fun readMessageFrom(tsxState: TsxStateEvent): Boolean {
             // `src` is a union: `rdata` is only a message when a message is what changed
             // the transaction's state. Reading it on a timer event is reading whatever
             // else was in that memory.
             if (runCatching { tsxState.type }.getOrNull() != pjsip_event_id_e.PJSIP_EVENT_RX_MSG) return false
-            val tsx = runCatching { tsxState.tsx }.getOrNull() ?: return false
-            if (!tsx.method.equals("NOTIFY", ignoreCase = true)) return false
-
             val message = runCatching { tsxState.src.rdata.wholeMsg }.getOrNull()
             if (message.isNullOrEmpty()) return false
+
+            if (!peerIsCoralx && isCoralxAgent(peerAgentOf(message))) {
+                peerIsCoralx = true
+                logger.debug(TAG, "Conference: $callKey reaches a CoralX client; it can mesh")
+            }
+            return publishRosterFrom(tsxState, message)
+        }
+
+        /**
+         * Publishes the roster in [message], if that is what it is.
+         *
+         * Split from [readMessageFrom] rather than inlined because the two have different
+         * gates: the peer's identity is on any message at all, and a roster is only ever
+         * on a NOTIFY. Keeping them apart leaves each one's guards as a contiguous prefix,
+         * which is also what keeps them readable.
+         */
+        private fun publishRosterFrom(tsxState: TsxStateEvent, message: String): Boolean {
+            val tsx = runCatching { tsxState.tsx }.getOrNull() ?: return false
+            if (!tsx.method.equals("NOTIFY", ignoreCase = true)) return false
 
             val roster = ConferenceInfoParser.parse(message, selfUri = selfUri(), logger = logger)
                 ?: return false
@@ -2526,6 +2574,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     rosterAvailable = true,
                     entity = roster.entity,
                     mesh = roster.mesh,
+                    meshAck = roster.meshAck,
                 ),
             )
             return true
@@ -3633,6 +3682,45 @@ private fun sipCore(value: String): String = value.trim()
     .substringAfter("sip:").substringAfter("sips:")
     .substringBefore(";").substringBefore("?")
     .lowercase(Locale.ROOT)
+
+/**
+ * The far end's `User-Agent`, or on a response its `Server`, or null.
+ *
+ * The same raw-message read [conferenceHeaderOf] does and for the same reason: pjsua2
+ * exposes no header lookup on `SipRxData`. Both names are tried because a request carries
+ * one and a response the other, and a leg learns about its peer from whichever it sees
+ * first - an INVITE if the peer called us, a 200 OK if we called them.
+ */
+internal fun peerAgentOf(rawMessage: String): String? = rawMessage
+    .lineSequence()
+    .takeWhile { it.isNotBlank() }
+    .firstOrNull {
+        it.startsWith("User-Agent:", ignoreCase = true) || it.startsWith("Server:", ignoreCase = true)
+    }
+    ?.substringAfter(':')
+    ?.trim()
+    ?.takeIf { it.isNotEmpty() }
+
+/**
+ * Whether [agent] names a build of this application.
+ *
+ * Matched on the product token alone, not on [USER_AGENT] in full, so a version suffix or
+ * a proxy that appends its own comment still reads as this app.
+ *
+ * ## Being wrong here is safe in one direction only, and it is the right one
+ *
+ * A CoralX peer misread as a stranger is **relayed**: the conference carries it instead of
+ * letting it mesh, which costs this device a transcode and the far end nothing. A stranger
+ * misread as CoralX is told to mesh and cannot, and is then heard by the focus alone -
+ * the defect this whole path exists to remove. So the test is deliberately strict: an
+ * agent that is absent, rewritten by a B2BUA, or simply unrecognised comes out false and
+ * that participant is carried.
+ */
+internal fun isCoralxAgent(agent: String?): Boolean =
+    agent?.contains(CORALX_AGENT_TOKEN, ignoreCase = true) == true
+
+/** The product token in [USER_AGENT], which is what survives a version bump. */
+internal const val CORALX_AGENT_TOKEN = "whatsapp-v2"
 
 internal fun conferenceHeaderOf(rawMessage: String): String? = rawMessage
     .lineSequence()

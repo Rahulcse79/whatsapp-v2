@@ -50,14 +50,18 @@ internal class ConferenceBridge(
     private var links: Set<MixLink> = emptySet()
 
     /**
-     * Whether this device carries one member's audio to another — see
-     * [ConferenceMix.wanted].
+     * The members this device carries audio for — see [ConferenceMix.wanted].
      *
      * Held rather than passed to [remix], because [remix] is called from the media-state
      * callback, which knows a port moved and nothing about the conference's shape. Kept
      * beside [members] so the two can only ever be changed together, by [set].
+     *
+     * This was a `relay: Boolean`, the whole conference being a star or a mesh. A set
+     * instead, because the two are not exclusive: a conference of CoralX clients and one
+     * desk phone meshes the clients and carries the phone, and the only links wanted are
+     * the ones with the phone at an end.
      */
-    private var relay: Boolean = true
+    private var relayed: Set<String> = emptySet()
 
     /** The bridge port each linked member was linked on — see the class comment. */
     private val portIds = mutableMapOf<String, Int>()
@@ -71,18 +75,22 @@ internal class ConferenceBridge(
      * Idempotent. Fewer than two live members tears every link down, which is how a
      * conference ends — there is no separate teardown to forget.
      *
-     * @param relay false for a mesh, where every pair has a dialog of its own and a
-     *   cross-link here would be that pair heard twice. The membership is still recorded:
-     *   a mesh conference has members, it simply has no links between them.
+     * @param relayed the members whose audio this device must carry to the others,
+     *   because they hold no leg to them. Empty for a pure mesh — every pair has a dialog
+     *   of its own and a cross-link would be that pair heard twice. All of [callKeys] for
+     *   ADR-009's star. Anything between for a conference that is some of each.
      */
-    fun set(callKeys: Set<String>, relay: Boolean = true): Set<String> {
+    fun set(callKeys: Set<String>, relayed: Set<String> = callKeys): Set<String> {
         members = callKeys
-        this.relay = relay
+        this.relayed = relayed
         val live = remix()
         // An empty membership is a teardown, and [remix] has just closed every link to
         // get there. The port bookkeeping goes with them: keeping it would make the next
         // conference believe a member was already linked on a port that no longer exists.
-        if (members.isEmpty()) portIds.clear()
+        if (members.isEmpty()) {
+            portIds.clear()
+            this.relayed = emptySet()
+        }
         return live
     }
 
@@ -104,7 +112,7 @@ internal class ConferenceBridge(
         // plan when there is no conference and tears the real one down when there is.
         val live = members.filterTo(mutableSetOf()) { mediaOf(it) != null }
         forgetRebuiltPorts(live)
-        val plan = ConferenceMix.plan(links, live, relay)
+        val plan = ConferenceMix.plan(links, live, relayed)
         if (plan.isEmpty) return live
 
         val applied = apply(plan)
@@ -145,16 +153,33 @@ internal class ConferenceBridge(
     fun remove(callKey: String) {
         if (!isActive) return
         members = ConferenceMix.without(members, callKey)
+        relayed = relayed - callKey
         // The departing port may already be unusable, so close its links by plan — apply()
         // guards every call and drops them from the set either way.
-        val plan = ConferenceMix.plan(links, members.filterTo(mutableSetOf()) { mediaOf(it) != null })
-        apply(plan)
-        links = links - plan.disconnect
+        //
+        // `relayed` is passed, and the result of apply() is kept. Both were wrong here and
+        // both were live:
+        //
+        //  - the call omitted the topology argument, so it defaulted to `relay = true` and
+        //    planned the *star*. On a mesh — where [links] is empty — that made `connect`
+        //    every remaining pair, and apply() opened them. One participant leaving a mesh
+        //    therefore cross-linked everybody who stayed, and each of them heard every
+        //    other twice: once on their own dialog and once through this bridge.
+        //  - apply()'s return value was discarded, so those links were never recorded and
+        //    nothing could ever close them again.
+        val plan = ConferenceMix.plan(
+            links,
+            members.filterTo(mutableSetOf()) { mediaOf(it) != null },
+            relayed,
+        )
+        val applied = apply(plan)
+        links = links - plan.disconnect + applied.opened
         portIds -= callKey
         if (members.size < ConferenceMix.MINIMUM_MEMBERS) {
             logger.info(TAG, "Conference ended; ${members.size} member(s) left")
             members = emptySet()
             links = emptySet()
+            relayed = emptySet()
             portIds.clear()
         }
     }
