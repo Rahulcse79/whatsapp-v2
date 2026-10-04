@@ -13,6 +13,18 @@ python3 selftest.py      # 10 checks, seconds, no corpus, stdlib only
 python3 bench.py         # the full matrix; ~25 min on four cores
 ```
 
+There is a second question this directory answers, with its own two benches and its own
+results file:
+
+```bash
+python3 enrolment_bench.py   # can a voice profile tell the user from everybody else?
+python3 gate_bench.py        # what does a gate built on it do to a call?
+```
+
+Those need `work/speaker/ecapa512.onnx` and `work/speakers/`, both fetched by
+`fetch-corpus.sh`. **`VOICE-PROFILE.md` holds that run**, and it is what set every
+constant in `domain/.../voice/SpeakerGate.kt`.
+
 **`RESULTS.md` holds the run the shipped configuration was decided on.** Read that first;
 re-run `bench.py` when something changes, and `selftest.py` after every change to either
 harness or either vendored tree.

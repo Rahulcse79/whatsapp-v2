@@ -115,6 +115,35 @@ for pair in ".music.ogg:music" ".bells.opus:bells"; do
   echo "    made $(basename "$dst")"
 done
 
+# ------------------------------------------------------- the speaker embedding model
+#
+# WeSpeaker's voxceleb_ECAPA512_LM: ECAPA-TDNN, 192 dimensions, CC-BY-4.0, trained on
+# VoxCeleb. What `enrolment_bench.py` and `gate_bench.py` turn a minute of speech into.
+#
+# Pinned by SHA-256 like the DNSMOS models and for the same reason: it decides a gate
+# threshold, so a silently updated model moves every number in VOICE-PROFILE.md.
+echo "speaker embedding model (WeSpeaker ECAPA-TDNN, CC-BY-4.0):"
+mkdir -p "$work/speaker"
+get "https://huggingface.co/Wespeaker/wespeaker-ecapa-tdnn512-LM/resolve/main/voxceleb_ECAPA512_LM.onnx" \
+    "$work/speaker/ecapa512.onnx"
+( cd "$work/speaker" && shasum -a 256 -c /dev/stdin <<'SUMS'
+d71b85d9b48058ef68004f04f1b78acebefb9dfcf542e19b976a12a5ad1f10b0  ecapa512.onnx
+SUMS
+) || { echo "fetch-corpus: the embedding model does not match its pin." >&2; exit 1; }
+
+# -------------------------------------------------------------- speakers, for the gate
+#
+# Twelve speakers rather than the four the DNSMOS matrix needs: a verification bench with
+# four speakers has twelve impostor pairs, which is too few to put a number on a false
+# accept rate. Six utterances each - four to enrol on, the rest held out.
+echo "speakers (MS-SNSD clean_train, 12 speakers x 6 utterances):"
+mkdir -p "$work/speakers"
+for spk in p234 p237 p241 p245 p246 p247 p248 p249 p251 p255 p260 p263; do
+  for n in 001 002 003 004 005 006; do
+    get "$S/${spk}_${n}.wav" "$work/speakers/${spk}_${n}.wav" || true
+  done
+done
+
 echo
 echo "corpus ready: $work"
 echo "  speech: $(ls "$speech" | wc -l | tr -d ' ') files    noise: $(ls "$noise" | wc -l | tr -d ' ') classes"
