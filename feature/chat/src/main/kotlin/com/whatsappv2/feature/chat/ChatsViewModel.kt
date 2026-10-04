@@ -6,6 +6,7 @@ import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.domain.chat.ChatConnectionState
 import com.whatsappv2.domain.chat.ConversationId
 import com.whatsappv2.domain.repository.ChatContactRepository
+import com.whatsappv2.domain.repository.ChatGroupRepository
 import com.whatsappv2.domain.repository.ChatPinRepository
 import com.whatsappv2.domain.repository.ChatReadRepository
 import com.whatsappv2.domain.repository.ChatRepository
@@ -47,6 +48,7 @@ class ChatsViewModel @Inject constructor(
     private val pins: ChatPinRepository,
     private val reads: ChatReadRepository,
     private val contacts: ChatContactRepository,
+    private val groupRepository: ChatGroupRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ChatsUiState())
@@ -70,9 +72,12 @@ class ChatsViewModel @Inject constructor(
                 // Only to put an extension beside the handle: the chat server knows this
                 // person as `mcx8102` and the directory is the only thing that knows they
                 // are on 8102.
-                contacts.observeContacts(),
-            ) { session, connection, conversations, local, directory ->
+                // Paired for the same reason the two local lists are: five typed slots, and
+                // both of these describe who a row is.
+                combine(contacts.observeContacts(), groupRepository.observeGroups(), ::Pair),
+            ) { session, connection, conversations, local, directoryAndGroups ->
                 val (pinned, readMarks) = local
+                val (directory, groups) = directoryAndGroups
                 // Only the four server-and-storage facts. The query is typed into this
                 // ViewModel and must survive a conversation arriving mid-search, so it is
                 // never part of what this flow rebuilds.
@@ -89,6 +94,7 @@ class ChatsViewModel @Inject constructor(
                         pinned = pinned,
                         readMarks = readMarks,
                         directory = directory.associateBy { it.id },
+                        groups = groups,
                     )
                 }
             }.collect { apply -> _state.update(apply) }

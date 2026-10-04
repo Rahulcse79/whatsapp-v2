@@ -3,11 +3,13 @@ package com.whatsappv2.data.chat
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.core.common.result.Outcome
 import com.whatsappv2.domain.repository.ChatContactRepository
+import com.whatsappv2.domain.repository.ChatGroupRepository
 import com.whatsappv2.domain.repository.ChatSessionRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -69,6 +71,7 @@ import javax.inject.Singleton
 class ChatDataSync @Inject internal constructor(
     private val repository: ChatRepositoryImpl,
     private val contacts: ChatContactRepository,
+    private val groups: ChatGroupRepository,
     private val sessions: ChatSessionRepository,
     private val bus: ChatEventBus,
     private val logger: Logger,
@@ -90,7 +93,10 @@ class ChatDataSync @Inject internal constructor(
             bus.events()
                 .filter(ChatEvent::changesTheConversationList)
                 .conflate()
-                .collect { refresh() }
+                .collect {
+                    refresh()
+                    loadGroupsIfOneIsUnknown()
+                }
         }
 
         // The directory, once per signed-in identity. Keyed on the user rather than on the
@@ -100,7 +106,53 @@ class ChatDataSync @Inject internal constructor(
             sessions.observeSession()
                 .map { it?.userId }
                 .distinctUntilChanged()
-                .collect { user -> if (user != null) loadDirectory() }
+                .collect { user ->
+                    if (user != null) {
+                        loadDirectory()
+                        loadGroups()
+                    }
+                }
+        }
+    }
+
+    /**
+     * A group refresh, but only when the list holds a group this device cannot name.
+     *
+     * ## Why this is conditional and the directory is not
+     *
+     * [ChatEvent.changesTheConversationList] is true of **every message sent or received**, and
+     * a group refresh is not one request: it is `GET /groups` plus one `GET /members` per
+     * group, because chat-node has no endpoint that returns rosters together. Refreshing
+     * unconditionally would put six requests on the wire per message for somebody in five
+     * groups — on the hot path of messaging, paid in battery and in server load.
+     *
+     * The thing the refresh is actually for is narrow: a message arriving in a group this
+     * device has never seen, whose name therefore is not known. That is exactly the condition
+     * checked here, so the common case — a message in a group already on file — costs nothing.
+     *
+     * A membership change inside a group already known is not caught by this and does not need
+     * to be: the roster is re-read on every sign-in, and nothing on screen turns on it except
+     * the call rule, which is re-asked when the thread is opened.
+     */
+    private suspend fun loadGroupsIfOneIsUnknown() {
+        val known = groups.observeGroups().first().keys
+        val listed = repository.observeConversations().first()
+            .filter { !it.isDirect }
+            .map { it.id }
+
+        if (listed.any { it !in known }) loadGroups()
+    }
+
+    /**
+     * The groups, whose names live nowhere else.
+     *
+     * `GET /conversations` returns a GROUP row with a **null name** — the name is only on the
+     * group endpoints — so without this every group in the Chats list is an untitled row.
+     */
+    private suspend fun loadGroups() {
+        when (val outcome = groups.refresh()) {
+            is Outcome.Success -> Unit
+            is Outcome.Failure -> logger.debug(TAG, "A background group refresh failed: ${outcome.error}")
         }
     }
 

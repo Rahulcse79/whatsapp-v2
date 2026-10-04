@@ -43,10 +43,31 @@ interface ChatSessionRepository {
     suspend fun currentServerUrl(): CoralServerUrl
 
     /**
+     * Remembers [url] as the address to offer next time, with no session behind it.
+     *
+     * ## This reverses "persist the URL only on success", deliberately
+     *
+     * That rule said a typo which cannot sign in must not become the address every later
+     * attempt uses. The cost was paid on the wrong side: a user who corrected the server
+     * address and then got the password wrong — or reached a host that was briefly down —
+     * came back to a form prefilled with the **old** address, and had to retype the new one
+     * every attempt. The typo it protected against is visible in the field and one edit
+     * away; the retyping it caused was invisible and happened every time.
+     *
+     * So the address the user actually tried is what gets remembered. [signIn] still writes
+     * it again on success, which is harmless and keeps the session and its origin written
+     * together.
+     *
+     * Only a **parsed** origin reaches here — `CoralServerUrl` cannot hold an unparseable
+     * string — so this stores something that is at least a well-formed address.
+     */
+    suspend fun rememberServerUrl(url: CoralServerUrl)
+
+    /**
      * Signs in and, on success, persists both the session and [url].
      *
-     * Persisting the URL only on success is the point: a typo that cannot sign in must not
-     * become the address every later attempt uses.
+     * The URL is also remembered on a failed attempt, by [rememberServerUrl], which the
+     * sign-in use case calls before this. See its KDoc for why that changed.
      */
     suspend fun signIn(url: CoralServerUrl, credentials: ChatCredentials): Outcome<ChatSession, ChatAuthError>
 

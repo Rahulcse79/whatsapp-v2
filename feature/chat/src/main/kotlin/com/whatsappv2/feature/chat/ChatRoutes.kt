@@ -12,6 +12,8 @@ import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.feature.chat.contacts.ChatContactsScreen
 import com.whatsappv2.feature.chat.contacts.ChatContactsViewModel
+import com.whatsappv2.feature.chat.group.CreateGroupScreen
+import com.whatsappv2.feature.chat.group.CreateGroupViewModel
 import com.whatsappv2.feature.chat.signin.ChatSignInEvent
 import com.whatsappv2.feature.chat.signin.ChatSignInScreen
 import com.whatsappv2.feature.chat.signin.ChatSignInViewModel
@@ -30,11 +32,19 @@ import com.whatsappv2.feature.chat.thread.ChatThreadViewModel
  * [onOpenSettings] and [registrationIndicator] keep the signatures `ChatsPlaceholderScreen`
  * had. The gear and the registration indicator travel with the **route**, not with whatever
  * is drawn behind it, which is what its KDoc promised whoever replaced it.
+ *
+ * ## Both ends of the session are wired here, and nowhere else in the app
+ *
+ * [onSignIn] goes out to `:app` because the form is a destination in its graph; sign-out does
+ * not, because it is this ViewModel's own call and leaves the user exactly where they are.
+ * Decision D4 — the login gates this tab, not the application — is what keeps the pair
+ * together on one screen: see `ChatsScreen` for why it stopped gating everything.
  */
 @Composable
 fun ChatsRoute(
     onSignIn: () -> Unit,
     onNewConversation: () -> Unit,
+    onNewGroup: () -> Unit,
     onOpenConversation: (String) -> Unit,
     modifier: Modifier = Modifier,
     onOpenSettings: (() -> Unit)? = null,
@@ -58,7 +68,11 @@ fun ChatsRoute(
     ChatsScreen(
         state = state,
         onSignIn = onSignIn,
+        // Not a navigation callback like the others: signing out leaves you on this screen,
+        // which then draws its signed-out state. Nothing to pop and nowhere to go.
+        onSignOut = viewModel::signOut,
         onNewConversation = onNewConversation,
+        onNewGroup = onNewGroup,
         // The id is handed up as a String rather than a ConversationId: `:app` puts it in
         // a navigation argument, and a value class would only be unwrapped there anyway.
         onOpenConversation = { onOpenConversation(it.value) },
@@ -128,10 +142,11 @@ fun ChatThreadRoute(
  * A "signed in" flag in state would re-fire on every recomposition after a rotation and
  * navigate twice.
  *
- * Both callbacks default to doing nothing, because the app's gate needs neither: it draws
- * this instead of the app while there is no session, so the session appearing is what
- * dismisses it, and there is nothing behind it to go back to. A caller that navigates to
- * this as a screen passes both.
+ * Both callbacks still default to doing nothing, which is now only a convenience for a
+ * preview: the one real caller is a destination in `:app`'s graph reached from the Chats
+ * tab, and it passes both — [onSignedIn] pops back to the list the session has just filled,
+ * [onBack] pops without one. They were defaulted because this was once mounted as the
+ * whole app's gate, where there was nothing behind it to return to.
  */
 @Composable
 fun ChatSignInRoute(
@@ -193,6 +208,38 @@ fun ChatContactsRoute(
         onQueryChange = viewModel::setQuery,
         onContactSelected = viewModel::openConversationWith,
         onRetry = viewModel::refresh,
+        onBack = onBack,
+        modifier = modifier,
+    )
+}
+
+/**
+ * Making a group.
+ *
+ * [onCreated] fires from the ViewModel's channel rather than from state, for the reason
+ * [ChatSignInRoute] documents: a conversation id left in state navigates twice after a
+ * rotation. The thread it opens is an ordinary one — a group conversation is a conversation,
+ * and the only thing that differs is where its title and its call rule come from.
+ */
+@Composable
+fun CreateGroupRoute(
+    onCreated: (String) -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    viewModel: CreateGroupViewModel = hiltViewModel(),
+) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+
+    LaunchedEffect(viewModel) {
+        viewModel.created.collect { id -> onCreated(id.value) }
+    }
+
+    CreateGroupScreen(
+        state = state,
+        onNameChange = viewModel::setName,
+        onQueryChange = viewModel::setQuery,
+        onToggle = viewModel::toggle,
+        onCreate = viewModel::create,
         onBack = onBack,
         modifier = modifier,
     )

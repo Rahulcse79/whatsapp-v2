@@ -120,8 +120,39 @@ class CoralServerUrlTest {
     }
 
     @Test
-    fun `a bare IP address is accepted too, because that is what a lab server is`() {
-        assertEquals("https://192.168.250.201", accept("192.168.250.201").origin)
+    fun `a bare private IP is assumed to be http, because https cannot work there`() {
+        // The guess used to be https for everything, and for a lab literal that is the
+        // guess that FAILS: 192.168.3.151 serves CN=coraltesting.com over a self-signed
+        // chain, so https is refused by TLS before the login endpoint is ever reached.
+        // Measured against the live server on 2 Oct 2026 - curl without -k returns nothing.
+        assertEquals("http://192.168.250.201", accept("192.168.250.201").origin)
+        assertEquals("http://192.168.3.151", accept("192.168.3.151").origin)
+        assertFalse(accept("192.168.3.151").isSecure)
+
+        // Every private range, and a port does not change the answer.
+        assertEquals("http://10.0.0.5", accept("10.0.0.5").origin)
+        assertEquals("http://172.16.4.9", accept("172.16.4.9").origin)
+        assertEquals("http://172.31.0.1", accept("172.31.0.1").origin)
+        assertEquals("http://127.0.0.1:8080", accept("127.0.0.1:8080").origin)
+    }
+
+    @Test
+    fun `a public IP literal and any hostname still get https`() {
+        // The rule is about hosts that CANNOT be on a certificate, not about IPs in general.
+        assertEquals("https://8.8.8.8", accept("8.8.8.8").origin)
+        assertEquals("https://172.32.0.1", accept("172.32.0.1").origin)
+        assertEquals("https://172.15.0.1", accept("172.15.0.1").origin)
+        assertEquals("https://192.169.0.1", accept("192.169.0.1").origin)
+        // A name that happens to resolve privately is still a name: it can be on a cert.
+        assertEquals("https://lab.internal", accept("lab.internal").origin)
+    }
+
+    @Test
+    fun `a typed scheme is never second-guessed, not even for a private IP`() {
+        // The guess applies only when the user said nothing about the scheme.
+        assertEquals("https://192.168.3.151", accept("https://192.168.3.151").origin)
+        assertTrue(accept("https://192.168.3.151").isSecure)
+        assertEquals("http://192.168.3.151", accept("http://192.168.3.151").origin)
     }
 
     @Test

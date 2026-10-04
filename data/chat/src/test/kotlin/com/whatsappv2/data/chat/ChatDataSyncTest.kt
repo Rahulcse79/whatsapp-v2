@@ -2,13 +2,20 @@ package com.whatsappv2.data.chat
 
 import com.whatsappv2.core.common.dispatcher.DispatcherProvider
 import com.whatsappv2.core.common.logging.NoOpLogger
+import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.data.chat.sdk.FakeChatSdkHandle
 import com.whatsappv2.domain.chat.ChatConnectionState
+import com.whatsappv2.domain.chat.ChatCredentials
+import com.whatsappv2.domain.chat.ChatGroup
+import com.whatsappv2.domain.chat.ChatGroupMember
 import com.whatsappv2.domain.chat.ChatIdentity
 import com.whatsappv2.domain.chat.ChatMessage
 import com.whatsappv2.domain.chat.ChatMessageType
 import com.whatsappv2.domain.chat.ConversationId
+import com.whatsappv2.domain.chat.CoralServerUrl
+import com.whatsappv2.domain.chat.GroupRole
 import com.whatsappv2.domain.testing.FakeChatContactRepository
+import com.whatsappv2.domain.testing.FakeChatGroupRepository
 import com.whatsappv2.domain.testing.FakeChatSessionRepository
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -59,8 +66,9 @@ class ChatDataSyncTest {
 
     private val repository = ChatRepositoryImpl(sdk, engine, bus, outbox, cache, dispatchers)
     private val contacts = FakeChatContactRepository()
+    private val groupRepository = FakeChatGroupRepository()
     private val sessions = FakeChatSessionRepository()
-    private val sync = ChatDataSync(repository, contacts, sessions, bus, NoOpLogger)
+    private val sync = ChatDataSync(repository, contacts, groupRepository, sessions, bus, NoOpLogger)
 
     /** Starts the loop on the test's background job, so it is cancelled with the test. */
     private fun TestScope.startSync() = sync.start(backgroundScope)
@@ -68,6 +76,23 @@ class ChatDataSyncTest {
     private fun serverConversation(id: String, lastBody: String) = SdkConversation(
         id, "DIRECT", 0L, false, false, false,
         "guest-mcx8102@guest.local", "guest-mcx8102@guest.local",
+        "m1", lastBody, "TEXT", "me", 1L, "SENT", false, 0,
+    )
+
+    private fun group(id: String) = ChatGroup(
+        id = ConversationId(id),
+        name = "Ops",
+        createdBy = "owner-ulid",
+        members = listOf(
+            ChatGroupMember("owner-ulid", GroupRole.OWNER),
+            ChatGroupMember("01ULIDFOR8102", GroupRole.MEMBER),
+        ),
+    )
+
+    /** A GROUP row, which is how chat-node reports one: typed GROUP, with NO other party. */
+    private fun serverGroup(id: String, lastBody: String) = SdkConversation(
+        id, "GROUP", 0L, false, false, false,
+        null, null,
         "m1", lastBody, "TEXT", "me", 1L, "SENT", false, 0,
     )
 
@@ -157,5 +182,60 @@ class ChatDataSyncTest {
         // the rest of the process's life.
         assertEquals(1, sdk.conversationsCalls)
         assertEquals("first", cache.conversations.value.single().lastMessageBody)
+    }
+
+    @Test
+    fun `a message in a direct chat does not re-read every group roster`() = runTest(dispatcher) {
+        startSync()
+        sdk.conversationsResult = listOf(serverConversation("c1", "first"))
+
+        bus.publish(ChatEvent.Received(message("c1")))
+        testScheduler.advanceUntilIdle()
+
+        // The group refresh is `GET /groups` plus one `GET /members` PER GROUP, and this event
+        // fires on every message sent or received. Doing it unconditionally put six requests
+        // on the wire per message for somebody in five groups.
+        assertEquals(0, groupRepository.refreshCount, "a direct message triggered a group refresh")
+    }
+
+    @Test
+    fun `a message in a group this device cannot name does re-read the groups`() = runTest(dispatcher) {
+        startSync()
+        // A GROUP row arrives that nothing has a name for: `GET /conversations` returns its
+        // name as null, so without this the row would sit in the list untitled.
+        sdk.conversationsResult = listOf(serverGroup("g1", "first"))
+        groupRepository.serverGroups = listOf(group("g1"))
+
+        bus.publish(ChatEvent.Received(message("g1")))
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(1, groupRepository.refreshCount, "an unknown group was left unnamed")
+    }
+
+    @Test
+    fun `a second message in a group already on file costs nothing`() = runTest(dispatcher) {
+        startSync()
+        sdk.conversationsResult = listOf(serverGroup("g1", "first"))
+        groupRepository.serverGroups = listOf(group("g1"))
+        bus.publish(ChatEvent.Received(message("g1")))
+        testScheduler.advanceUntilIdle()
+        assertEquals(1, groupRepository.refreshCount)
+
+        // The group is known now, so the condition is false and the hot path is free. This is
+        // the case that happens on every message of an ordinary conversation.
+        bus.publish(ChatEvent.Received(message("g1")))
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(1, groupRepository.refreshCount, "a known group was refreshed again")
+    }
+
+    @Test
+    fun `signing in reads the groups unconditionally, because nothing is on file yet`() = runTest(dispatcher) {
+        startSync()
+
+        sessions.signIn(CoralServerUrl.DEFAULT, ChatCredentials("mcx8101", Secret("pw")))
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(1, groupRepository.refreshCount)
     }
 }

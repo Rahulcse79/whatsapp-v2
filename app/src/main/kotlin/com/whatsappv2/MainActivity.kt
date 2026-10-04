@@ -16,10 +16,8 @@ import com.whatsappv2.background.BackgroundAccessPrompt
 import com.whatsappv2.background.LocalBackgroundAccess
 import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.domain.repository.AppSettingsRepository
-import com.whatsappv2.feature.chat.ChatSignInRoute
 import com.whatsappv2.onboarding.FirstRunGate
 import com.whatsappv2.onboarding.FirstRunStore
-import com.whatsappv2.onboarding.SignInGate
 import com.whatsappv2.permission.LocalPermissionCoordinator
 import com.whatsappv2.permission.PermissionCoordinator
 import com.whatsappv2.permission.PermissionOnboarding
@@ -51,11 +49,17 @@ import javax.inject.Inject
  * `rememberSaveable`, so finishing the screen moves on without a second read and a
  * rotation mid-flow does not restart it.
  *
- * ## Then the login gate
+ * ## There is no login gate here, and that is decision D4
  *
- * Terms, tour and permissions are answered once; the login recurs, so it is a second gate
- * rather than a fourth step — see [SignInGate], which also records that this reverses
- * decision D4 and what that costs. The order matters: terms before credentials.
+ * The chat login gates the **Chats tab**, not the application. It was briefly mounted here,
+ * above `AppRoot`, which made a signed-out device an app with nothing in it: no dialler, no
+ * call log, no Settings, no account list. This app is a SIP client that also chats, and
+ * placing a call must not require a chat account — a SIP account is configured in Accounts
+ * and registers with no chat session anywhere near it.
+ *
+ * So the login lives where the thing it unlocks lives: `ChatsScreen` draws the signed-out
+ * state and its Sign in button, `AppDestination.CHAT_SIGN_IN` is the form, and Sign out is
+ * in the Chats header's overflow menu. Nothing outside that tab asks who you are.
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -127,30 +131,24 @@ class MainActivity : ComponentActivity() {
                             )
                         },
                     ) {
-                        // And then the login, which gates the whole app rather than the
-                        // Chats tab. Inside the first-run gate so terms are accepted before
-                        // anybody is asked for a password, and above AppRoot so no screen
-                        // can be reached around it. SignInGate's KDoc carries the reversal
-                        // of decision D4 and what it costs.
-                        SignInGate(signInScreen = { ChatSignInRoute() }) {
-                            // The camera is asked for when a video call is pressed, not only
-                            // on the first-run screen somebody may have skipped (Task 74).
-                            AppRoot(
-                                // Both asked for in context, not only on a first-run screen
-                                // somebody may have skipped (Task 74). The microphone gate
-                                // refuses the call when it is denied; the camera's downgrades
-                                // it to audio — see `MicrophoneGate` for why they differ.
-                                videoGate = rememberCameraGate(),
-                                callGate = rememberMicrophoneGate(),
-                                openDestination = openDestination,
-                                onDestinationOpened = { openDestination = null },
-                            )
-                            // Once somebody is logged in, and once only: the platform's own
-                            // dialog for staying alive in the background. Above the screens
-                            // so it appears wherever the first login happens.
-                            val wantsRegistration by registrationDemand.wanted.collectAsState()
-                            BackgroundAccessPrompt(wantsRegistration = wantsRegistration)
-                        }
+                        // Straight to the app. No sign-in gate — the chat login belongs to
+                        // the Chats tab, for the reason this class's KDoc gives.
+                        AppRoot(
+                            // Both asked for in context, not only on a first-run screen
+                            // somebody may have skipped (Task 74). The microphone gate
+                            // refuses the call when it is denied; the camera's downgrades
+                            // it to audio — see `MicrophoneGate` for why they differ.
+                            videoGate = rememberCameraGate(),
+                            callGate = rememberMicrophoneGate(),
+                            openDestination = openDestination,
+                            onDestinationOpened = { openDestination = null },
+                        )
+                        // Asked once, and keyed on a SIP registration actually being wanted
+                        // rather than on a chat login: battery optimisation is what stops a
+                        // phone ringing, and a device with a SIP account and no chat session
+                        // needs the question exactly as much.
+                        val wantsRegistration by registrationDemand.wanted.collectAsState()
+                        BackgroundAccessPrompt(wantsRegistration = wantsRegistration)
                     }
                 }
             }

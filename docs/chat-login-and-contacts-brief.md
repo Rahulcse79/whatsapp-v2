@@ -33,21 +33,33 @@ account can message; choosing one opens a direct conversation with them.
 ### 2.2 Where sign-in sits
 
 The app already has a first-run sequence — `FirstRunGate` runs terms → tour → permissions
-before handing over to the app shell for good. **Chat sign-in is a separate gate from that
-one**, because it can recur (after sign-out) whereas first-run cannot. It wraps the app
-shell, not the first-run gate.
+before handing over to the app shell for good. **Chat sign-in is not part of that
+sequence**, because it can recur (after sign-out) whereas first-run cannot.
 
-**~~A signed-out user must still be able to make and receive calls.~~** *Reversed on 2 Oct
-2026 — see D4 below.* The login now gates the **whole application**: `SignInGate` in `:app`
-draws it instead of the app shell until there is a session. The original rule said sign-in
-blocked the Chats tab only, so that a signed-out user kept a working Calls tab beside it.
+**A signed-out user must still be able to make and receive calls.** Sign-in gates the
+**Chats tab**, not the application: `ChatsScreen` draws its own signed-out state with a
+Sign in button, and `AppDestination.CHAT_SIGN_IN` is the form it pushes. The dialler, the
+call log, Settings and the account list are reachable with no chat session anywhere near
+them, because a SIP account is configured in Accounts and registers on its own.
+
+*This was reversed on 2 Oct 2026 and reversed back on the same day. For roughly one build
+a `SignInGate` composable in `:app` drew the login instead of the whole app shell; that made
+a signed-out device an app with nothing in it. It is gone — the file, its state enum and its
+ViewModel were deleted, not left unreferenced. See D4.*
 
 ### 2.3 Sign-out
 
-Reached from Settings, in its own "Chat account" section. Confirms first
-(`ConfirmDialog` exists in `:core:designsystem`). On confirm: disconnect the socket, clear
-the session, return the Chats tab to its signed-out state. **The Server URL survives
-sign-out** (decision D2) — the next sign-in is two fields, not three.
+Reached from the **Chats tab's overflow menu** (⋮, beside the gear and the registration
+indicator), which is shown only while signed in. Confirms first (`ConfirmDialog` exists in
+`:core:designsystem`). On confirm: disconnect the socket, clear the session, return the Chats
+tab to its signed-out state — the user does not move, because the screen they are on is the
+one that changes. **The Server URL survives sign-out** (decision D2) — the next sign-in is
+two fields, not three.
+
+*It was a "Chat account" section in Settings until 2 Oct 2026. Settings is reached from the
+Calls tab as well, which put the chat login's one exit outside the section it belongs to —
+on a screen somebody with no chat account opens to change their audio route. `SettingsViewModel`
+no longer injects `ChatSessionRepository` at all.*
 
 ### 2.4 Contacts
 
@@ -114,7 +126,7 @@ SDK. That has three consequences:
 | **D1** | The URL lives with the session, not in `AppSettings`. | It is an identity, not a preference. Putting it in Settings means it survives sign-out and can be edited into a state where the session no longer matches the server. |
 | **D2** | Sign-out clears credentials and the session; it **keeps** the URL. | Re-signing in is then two fields. The URL is a deployment fact, not a secret. |
 | **D3** | The password is **not stored** unless the API requires re-sending it. Store the session token / identity instead. | A stored password is a liability with no benefit if a token can be refreshed. If the API forces it, store it exactly as SIP passwords are stored — encrypted at rest in `:data:account`'s cipher — never in DataStore, which the settings store's own KDoc says is for nothing sensitive. |
-| **D4** | ~~Sign-in gates the **Chats tab only**.~~ **Reversed 2 Oct 2026: sign-in gates the whole application.** | The original reason was that calling must not require a chat account. It no longer holds: the Coral login is also what provisions the SIP extension the app calls from (`EnsureChatExtensionUseCase`), so a signed-out user had no account to call with in any case. Cost, stated: no dialler, call log, Settings or account list without a session. Incoming calls are unaffected in principle — they arrive through `SipConnectionService`, outside the gate — but a device with no session has no provisioned account to be reached on. |
+| **D4** | Sign-in gates the **Chats tab only** — and so does sign-out. *(Briefly reversed to "gates the whole application" on 2 Oct 2026 and restored the same day.)* | Calling must not require a chat account. The reversal's argument was that the Coral login also provisions the SIP extension (`EnsureChatExtensionUseCase`), so a signed-out user had no account to call with anyway — but that only holds for a *provisioned* extension. A SIP account entered by hand in Accounts registers with no chat session involved, and this app is a SIP client that also chats. Gating everything cost the dialler, the call log, Settings and the account list, which is not a trade worth one fewer gate. Scope of the restored decision: the Chats tab owns both ends of the session — `ChatsScreen`'s signed-out state signs in, its overflow menu signs out — and nothing outside `:feature:chat` observes `ChatSessionRepository` for UI purposes. |
 | **D5** | Contacts are server contacts. The device address book is untouched. | Architecture rule 9, and the two are genuinely different data. |
 
 ---

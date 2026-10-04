@@ -51,7 +51,21 @@ data class ChatAccountUiState(
     val serverOrigin: String,
 )
 
-/** App preferences. */
+/**
+ * App preferences.
+ *
+ * ## Sign out is here AND on the Chats tab, on purpose
+ *
+ * It was moved out of here when the login became the Chats tab's own (decision D4), on the
+ * grounds that Settings is reached from the Calls tab too and so sits outside the section
+ * the session belongs to. That argument holds for where the login *gate* lives and not for
+ * where its exit is findable: "Settings" is the first place a person looks to sign out of
+ * anything, and Chats' overflow menu is the first place they look while they are in Chats.
+ * Both reach the same `ChatSessionRepository.signOut`, so neither can drift from the other.
+ *
+ * Signing *in* is still the Chats tab's alone: this card is absent with no session, so
+ * Settings never asks for credentials.
+ */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val repository: AppSettingsRepository,
@@ -106,7 +120,8 @@ class SettingsViewModel @Inject constructor(
      * No `ChatSignOutUseCase` in front of it: §4.2 forbids pass-through use cases, and
      * this has no second collaborator to order — disconnecting the socket is `:data:chat`'s
      * business, triggered by the session it already watches. The confirmation that guards
-     * it is the screen's, because confirming is a UI decision.
+     * it is the screen's, because confirming is a UI decision. The same call backs the
+     * Chats tab's overflow item, so the two cannot behave differently.
      */
     fun signOutOfChat() = viewModelScope.launch { chatSessions.signOut() }
 

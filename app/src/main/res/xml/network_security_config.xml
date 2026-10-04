@@ -63,5 +63,20 @@
     <domain-config cleartextTrafficPermitted="true">
         <!-- The Coral UC platform under test (services-app). -->
         <domain includeSubdomains="false">192.168.250.201</domain>
+        <!--
+          The lab deployment this build is pointed at (services-app + chat-node + FreeSWITCH
+          on one box). Added 2 Oct 2026 because signing in against it could not work at all:
+
+            - `http://192.168.3.151`  was refused HERE, before the request left the device.
+            - `https://192.168.3.151` is refused by TLS, and will stay refused: the server
+              presents `CN=coraltesting.com` over a self-signed chain, so it names neither
+              the address it is served on nor an anchor in the system store. That is a
+              server-side fact and not something a client may paper over - the alternative
+              is a permissive TrustManager, which section 7 forbids outright.
+
+          So cleartext is the only honest route to this host, exactly as it is for
+          192.168.250.201 above, and for the same reason.
+        -->
+        <domain includeSubdomains="false">192.168.3.151</domain>
     </domain-config>
 </network-security-config>

@@ -40,11 +40,15 @@ import com.whatsappv2.domain.chat.ChatUrlViolation
 /**
  * Sign in: server, username, password.
  *
- * ## It is the application's login, not the Chats tab's
+ * ## It is the Chats tab's login, not the application's
  *
- * It began as the latter and is mounted above everything now — `SignInGate` in `:app` draws
- * it instead of the app until there is a session. That is why [onBack] is nullable: there is
- * nowhere behind a gate, and a back arrow that pops to nothing is a control that lies.
+ * Decision D4. It was briefly mounted above everything as the app's own gate, and that made
+ * a signed-out device an app with no dialler and no call log — so it went back to being a
+ * destination reached from the Chats tab, which is the only thing a chat session unlocks.
+ *
+ * [onBack] stays nullable from that period. The real caller now always passes one, because
+ * there is a conversation list behind this form; a preview does not, and a back arrow that
+ * pops to nothing is a control that lies.
  *
  * ## Why the URL is asked here and not in Settings
  *

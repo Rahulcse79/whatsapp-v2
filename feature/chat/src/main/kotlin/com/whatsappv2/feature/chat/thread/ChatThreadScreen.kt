@@ -277,7 +277,9 @@ private fun ThreadBar(
         actions = {
             // Only when there is a real extension behind them. A call button that cannot
             // work is worse than no call button, and a group has nobody to ring.
-            if (state.callableExtension == null) return@AppTopBar
+            // Groups answer this differently from direct chats — a group offers a call on
+            // its roster size, not on having an extension. See `canOfferCall`.
+            if (!state.canOfferCall) return@AppTopBar
 
             IconButton(
                 onClick = onVideoCall,
@@ -323,6 +325,9 @@ private fun Messages(
                     // who can be speaking, and the label the SDK can produce is a
                     // shortened user id rather than a name.
                     showSender = row.showSender && !state.isDirect,
+                    // Resolved by the state rather than off the message: `senderId` is a
+                    // ULID, and only the roster-and-directory join knows whose it is.
+                    senderLabel = state.senderLabelOf(row.message),
                     onRetry = onRetry,
                 )
             }
@@ -362,6 +367,7 @@ private fun MessageBubble(
     message: ChatMessage,
     identity: ChatIdentity?,
     showSender: Boolean,
+    senderLabel: String,
     onRetry: (String) -> Unit,
 ) {
     val mine = message.isMine(identity)
@@ -393,7 +399,7 @@ private fun MessageBubble(
             ) {
                 if (showSender && !mine) {
                     Text(
-                        text = message.senderLabel(),
+                        text = senderLabel,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = colors.senderName,

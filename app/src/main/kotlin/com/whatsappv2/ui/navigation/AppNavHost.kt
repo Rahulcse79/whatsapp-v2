@@ -29,6 +29,7 @@ import com.whatsappv2.feature.chat.ChatContactsRoute
 import com.whatsappv2.feature.chat.ChatSignInRoute
 import com.whatsappv2.feature.chat.ChatThreadRoute
 import com.whatsappv2.feature.chat.ChatsRoute
+import com.whatsappv2.feature.chat.CreateGroupRoute
 import com.whatsappv2.feature.chat.thread.ChatThreadViewModel
 import com.whatsappv2.feature.dialer.DialerScreen
 import com.whatsappv2.feature.history.HistoryRoute
@@ -129,74 +130,19 @@ private const val TAB_FADE_MILLIS = 180
 private const val PUSH_MILLIS = 260
 private const val PARALLAX_DIVISOR = 4
 
-/** The two tabs, and the two screens reached from them (Tasks 69, 70). */
+/**
+ * The two tabs, and the two screens reached from them (Tasks 69, 70).
+ *
+ * Every route here that can start a video call shares one [videoGate], and one launcher is
+ * enough: only one destination is on screen to press it.
+ */
 private fun NavGraphBuilder.callRoutes(
     navController: NavHostController,
     openCall: (CallId) -> Unit,
     videoGate: (proceed: () -> Unit) -> Unit,
     callGate: (proceed: () -> Unit) -> Unit,
 ) {
-    // All three routes that can start a video call share one gate. One launcher is
-    // enough: only one destination is on screen to press it.
-    composable(AppDestination.CHATS.route) {
-        // What the placeholder promised whoever replaced it: the module inherits the route,
-        // the gear and the registration indicator, and this is a one-import, one-call swap.
-        // `ChatsPlaceholderScreen` stays in the tree unreferenced until phase 3 is soaked —
-        // reverting this change is then a one-line edit rather than a file to restore.
-        ChatsRoute(
-            // Unreachable while `SignInGate` is mounted: nothing in this graph is drawn
-            // without a session. Kept wired as the fallback for a session ever allowed to
-            // expire in place rather than bouncing to the gate.
-            onSignIn = { navController.navigate(AppDestination.CHAT_SIGN_IN.route) },
-            onNewConversation = { navController.navigate(AppDestination.CHAT_CONTACTS.route) },
-            onOpenConversation = { navController.navigate(AppDestination.chatThreadRoute(it)) },
-            onOpenSettings = { navController.navigate(AppDestination.SETTINGS.route) },
-            registrationIndicator = {
-                // Straight to the account list, not to Settings and then the list: the
-                // person pressing this has a registration to fix or an account to add.
-                RegistrationIndicatorRoute(
-                    onManageAccounts = { navController.navigate(AppDestination.ACCOUNTS.route) },
-                )
-            },
-        )
-    }
-
-    composable(AppDestination.CHAT_SIGN_IN.route) {
-        ChatSignInRoute(
-            // Pops rather than navigating to Chats: the tab is what is underneath, and
-            // navigating would put a second copy of it on the stack for Back to walk through.
-            onSignedIn = { navController.popBackStack() },
-            onBack = { navController.popBackStack() },
-        )
-    }
-
-    composable(AppDestination.CHAT_CONTACTS.route) {
-        ChatContactsRoute(
-            onConversationOpened = { conversationId ->
-                // The picker is popped first, so Back from the thread returns to Chats
-                // rather than to the directory the user has finished with.
-                navController.popBackStack()
-                navController.navigate(AppDestination.chatThreadRoute(conversationId))
-            },
-            onBack = { navController.popBackStack() },
-        )
-    }
-
-    composable(
-        route = AppDestination.CHAT_THREAD.route,
-        arguments = listOf(navArgument(ChatThreadViewModel.CONVERSATION_ID) { type = NavType.StringType }),
-    ) {
-        // No id parameter: it reaches the ViewModel through SavedStateHandle, which is
-        // also what makes the thread survive process death without this route caring.
-        //
-        // openCall is the SAME lambda the dialler and the call log use. A call started
-        // from a conversation is not a different kind of call, and giving it its own
-        // route would be the second call screen Task 39 exists to prevent.
-        ChatThreadRoute(
-            onCallPlaced = openCall,
-            onBack = { navController.popBackStack() },
-        )
-    }
+    chatRoutes(navController = navController, openCall = openCall)
 
     composable(AppDestination.HISTORY.route) {
         HistoryRoute(
@@ -236,6 +182,94 @@ private fun NavGraphBuilder.callRoutes(
     // the screen that lists them owns their playback for as long as it is open.
     composable(AppDestination.RECORDINGS.route) {
         RecordingsRoute(onBack = { navController.popBackStack() })
+    }
+}
+
+/**
+ * The Chats tab and everything reached from it.
+ *
+ * Split out of [callRoutes] rather than left in it: the two sets share only the graph they
+ * are registered on, and one function holding both outgrew what can be read in a sitting.
+ * [openCall] is the SAME lambda the dialler and the call log are given — a call started from
+ * a conversation is not a different kind of call, and giving it its own route would be the
+ * second call screen Task 39 exists to prevent.
+ */
+private fun NavGraphBuilder.chatRoutes(
+    navController: NavHostController,
+    openCall: (CallId) -> Unit,
+) {
+    composable(AppDestination.CHATS.route) {
+        // What the placeholder promised whoever replaced it: the module inherits the route,
+        // the gear and the registration indicator, and this is a one-import, one-call swap.
+        // `ChatsPlaceholderScreen` stays in the tree unreferenced until phase 3 is soaked —
+        // reverting this change is then a one-line edit rather than a file to restore.
+        //
+        // This is also the only destination in the graph that cares about a chat session.
+        // Everything else — the dialler, the call log, Settings, the accounts — draws the
+        // same whether or not anybody is signed in to chat.
+        ChatsRoute(
+            // The login, and the only route to it: decision D4 puts it behind this tab
+            // rather than above the app, so a signed-out device still dials, still logs
+            // calls and still reaches Settings. Pressing Sign out on this screen lands
+            // back here, which is why nothing navigates on the way out.
+            onSignIn = { navController.navigate(AppDestination.CHAT_SIGN_IN.route) },
+            onNewConversation = { navController.navigate(AppDestination.CHAT_CONTACTS.route) },
+            onNewGroup = { navController.navigate(AppDestination.CHAT_NEW_GROUP.route) },
+            onOpenConversation = { navController.navigate(AppDestination.chatThreadRoute(it)) },
+            onOpenSettings = { navController.navigate(AppDestination.SETTINGS.route) },
+            registrationIndicator = {
+                // Straight to the account list, not to Settings and then the list: the
+                // person pressing this has a registration to fix or an account to add.
+                RegistrationIndicatorRoute(
+                    onManageAccounts = { navController.navigate(AppDestination.ACCOUNTS.route) },
+                )
+            },
+        )
+    }
+
+    composable(AppDestination.CHAT_SIGN_IN.route) {
+        ChatSignInRoute(
+            // Pops rather than navigating to Chats: the tab is what is underneath, and
+            // navigating would put a second copy of it on the stack for Back to walk through.
+            onSignedIn = { navController.popBackStack() },
+            onBack = { navController.popBackStack() },
+        )
+    }
+
+    composable(AppDestination.CHAT_NEW_GROUP.route) {
+        CreateGroupRoute(
+            onCreated = { conversationId ->
+                // Popped before pushing, for the reason the picker is: Back from a new
+                // group's thread belongs on Chats, not on the screen that made it.
+                navController.popBackStack()
+                navController.navigate(AppDestination.chatThreadRoute(conversationId))
+            },
+            onBack = { navController.popBackStack() },
+        )
+    }
+
+    composable(AppDestination.CHAT_CONTACTS.route) {
+        ChatContactsRoute(
+            onConversationOpened = { conversationId ->
+                // The picker is popped first, so Back from the thread returns to Chats
+                // rather than to the directory the user has finished with.
+                navController.popBackStack()
+                navController.navigate(AppDestination.chatThreadRoute(conversationId))
+            },
+            onBack = { navController.popBackStack() },
+        )
+    }
+
+    composable(
+        route = AppDestination.CHAT_THREAD.route,
+        arguments = listOf(navArgument(ChatThreadViewModel.CONVERSATION_ID) { type = NavType.StringType }),
+    ) {
+        // No id parameter: it reaches the ViewModel through SavedStateHandle, which is
+        // also what makes the thread survive process death without this route caring.
+        ChatThreadRoute(
+            onCallPlaced = openCall,
+            onBack = { navController.popBackStack() },
+        )
     }
 }
 

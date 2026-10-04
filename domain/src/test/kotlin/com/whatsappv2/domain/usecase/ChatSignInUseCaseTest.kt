@@ -142,10 +142,45 @@ class ChatSignInUseCaseTest {
     }
 
     @Test
-    fun `a bare IP signs in against its https form`() = runTest {
+    fun `a changed server is remembered even when the sign-in is rejected`() = runTest {
+        // The complaint this closes: correct the address, get the password wrong, and the
+        // form came back prefilled with the OLD address — so the new one had to be retyped
+        // on every attempt. The address the user tried is now what is offered next time.
+        repository.givenSignInFails(ChatAuthError.InvalidCredentials)
+
+        signIn("http://192.168.3.151", "sample-user", Secret("wrong-password"))
+
+        assertEquals("http://192.168.3.151", repository.rememberedUrls.single().origin)
+        assertEquals("http://192.168.3.151", repository.currentServerUrl().origin)
+    }
+
+    @Test
+    fun `a malformed server is not remembered, because there is nothing to remember`() = runTest {
+        // It never parses into a CoralServerUrl, so it cannot reach the store. The field
+        // keeps what the user typed on screen; what is PERSISTED stays the last good one.
+        val before = repository.currentServerUrl().origin
+
+        signIn("ftp://nope", "sample-user", Secret("not-a-real-password"))
+
+        assertTrue(repository.rememberedUrls.isEmpty())
+        assertEquals(before, repository.currentServerUrl().origin)
+    }
+
+    @Test
+    fun `a bare private IP signs in against its http form`() = runTest {
+        // The guess follows the kind of host: a lab literal cannot be on a certificate that
+        // names the address it answers on, so https there is the guess that fails. See
+        // CoralServerUrl's KDoc - this asserts the use case carries that through unchanged.
         signIn("192.168.250.201", "sample-user", Secret("not-a-real-password"))
 
-        assertEquals("https://192.168.250.201", repository.signInAttempts.single().url.origin)
+        assertEquals("http://192.168.250.201", repository.signInAttempts.single().url.origin)
+    }
+
+    @Test
+    fun `a bare hostname still signs in against its https form`() = runTest {
+        signIn("host.example", "sample-user", Secret("not-a-real-password"))
+
+        assertEquals("https://host.example", repository.signInAttempts.single().url.origin)
     }
 
     @Test
@@ -210,13 +245,19 @@ class ChatSignInUseCaseTest {
     }
 
     @Test
-    fun `a failed sign-in stores neither the session nor the URL`() = runTest {
+    fun `a failed sign-in stores no session, but DOES keep the URL that was tried`() = runTest {
+        // Reversed deliberately. This used to assert the URL was discarded too, on the
+        // grounds that a typo must not become the stored address. The cost landed on the
+        // wrong side: somebody who fixed the server address and then mistyped the password
+        // got the OLD address back in the form and had to retype the new one every attempt.
+        // A wrong address is visible in the field and one edit away; the retyping was not.
+        // See ChatSessionRepository.rememberServerUrl.
         repository.givenSignInFails(ChatAuthError.Network)
 
         signIn("https://typo.example", "sample-user", Secret("not-a-real-password"))
 
         assertEquals(null, repository.currentSession())
-        assertEquals(CoralServerUrl.DEFAULT, repository.currentServerUrl())
+        assertEquals("https://typo.example", repository.currentServerUrl().origin)
     }
 
     @Test

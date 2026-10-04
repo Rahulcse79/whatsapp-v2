@@ -70,9 +70,16 @@ sealed interface ChatUrlViolation {
  * relaxation for its own sake: `http://192.168.250.201` is a real deployment of this
  * platform, and a parser that refused it would refuse the server the app is pointed at.
  *
- * A **bare host** is accepted too and assumed to be `https://`. `192.168.250.201` is the
- * likeliest thing a person types; refusing it taught them nothing, and https is the safe
- * half of the guess.
+ * A **bare host** is accepted too, and the scheme is guessed from what kind of host it is.
+ * A name gets `https://`. A **private-network IP literal** gets `http://`, because for that
+ * kind of host https is not the safe guess — it is the guess that fails. A lab box on
+ * `192.168.x.x` is served a certificate that names a domain rather than the address it
+ * answers on, over a chain the device does not anchor, so `https://192.168.3.151` fails
+ * validation before it ever reaches the login endpoint. Guessing https there produced a
+ * TLS error for somebody who typed the address of a server that was working.
+ *
+ * Typing a scheme always wins. `https://192.168.3.151` is honoured exactly as written —
+ * this only decides what to do when the user said nothing.
  *
  * What the parser cannot decide is whether the *platform* will carry a cleartext request:
  * this app sets `usesCleartextTraffic=false`. [isSecure] is how a caller asks, so the
@@ -138,6 +145,15 @@ value class CoralServerUrl private constructor(val origin: String) {
         /** `host`, `host:8443`, `sub.host` — deliberately not a full RFC 3986 host grammar. */
         private val AUTHORITY = Regex("""^[A-Za-z0-9.\-]+(?::\d{1,5})?$""")
 
+        private const val IPV4_PARTS = 4
+        private const val MAX_OCTET = 255
+        private const val TEN = 10
+        private const val LOOPBACK = 127
+        private const val ONE_SEVEN_TWO = 172
+        private const val ONE_NINE_TWO = 192
+        private const val ONE_SIX_EIGHT = 168
+        private val PRIVATE_172_RANGE = 16..31
+
         /**
          * Parses what the user typed into an origin, discarding anything after it.
          *
@@ -147,25 +163,60 @@ value class CoralServerUrl private constructor(val origin: String) {
          * `/services/` to it would produce a URL that fails much later and much less
          * legibly.
          *
-         * **A bare host is assumed to be `https://`.** Three things are accepted —
-         * `host`, `http://host`, `https://host` — and only the last two say anything
-         * about the scheme, so the first has to be guessed. https is the half of that
-         * guess whose failure is loud.
+         * **A bare host's scheme is guessed from the host.** Three things are accepted —
+         * `host`, `http://host`, `https://host` — and only the last two say anything about
+         * the scheme, so the first has to be guessed. A name gets https; a private-network
+         * IP literal gets http, for the reason this class's KDoc gives. [isPrivateIpLiteral]
+         * is the whole of that rule.
          */
         fun parse(raw: String): Outcome<CoralServerUrl, ChatUrlViolation> {
             val trimmed = raw.trim()
             if (trimmed.isEmpty()) return failure(ChatUrlViolation.Blank)
 
             val separator = trimmed.indexOf(SCHEME_SEPARATOR)
-            val scheme = if (separator < 0) HTTPS_SCHEME else trimmed.substring(0, separator).lowercase()
             val rest = if (separator < 0) trimmed else trimmed.substring(separator + SCHEME_SEPARATOR.length)
             val authority = rest.substringBefore('/').substringBefore('?').lowercase()
+
+            // Guessed only when the user typed no scheme at all. A typed scheme is never
+            // second-guessed, so `https://192.168.3.151` still means https.
+            val scheme = when {
+                separator >= 0 -> trimmed.substring(0, separator).lowercase()
+                isPrivateIpLiteral(authority.substringBefore(':')) -> HTTP_SCHEME
+                else -> HTTPS_SCHEME
+            }
 
             return when {
                 authority.isEmpty() || !AUTHORITY.matches(authority) -> failure(ChatUrlViolation.Malformed)
                 scheme == HTTPS_SCHEME -> success(CoralServerUrl(HTTPS + authority))
                 scheme == HTTP_SCHEME -> success(CoralServerUrl(HTTP + authority))
                 else -> failure(ChatUrlViolation.UnsupportedScheme(scheme))
+            }
+        }
+
+        /**
+         * True for an RFC 1918 / loopback IPv4 literal — `10.x`, `172.16-31.x`, `192.168.x`, `127.x`.
+         *
+         * The same set the app's `network_security_config.xml` may permit cleartext for, and
+         * deliberately so: these are exactly the hosts whose certificates name something
+         * other than the address they answer on. A hostname — even one that resolves to a
+         * private address — is **not** matched, because a name can be on a certificate and
+         * these literals cannot.
+         *
+         * Hand-rolled rather than `InetAddress`, which would do a name lookup on anything
+         * that is not already a literal; this runs on whatever thread the sign-in screen
+         * validates on, and a DNS round trip there is both wrong and slow.
+         */
+        internal fun isPrivateIpLiteral(host: String): Boolean {
+            val parts = host.split('.')
+            if (parts.size != IPV4_PARTS) return false
+            val octets = parts.map { it.toIntOrNull() ?: return false }
+            if (octets.any { it !in 0..MAX_OCTET }) return false
+
+            return when (octets[0]) {
+                TEN, LOOPBACK -> true
+                ONE_SEVEN_TWO -> octets[1] in PRIVATE_172_RANGE
+                ONE_NINE_TWO -> octets[1] == ONE_SIX_EIGHT
+                else -> false
             }
         }
     }
