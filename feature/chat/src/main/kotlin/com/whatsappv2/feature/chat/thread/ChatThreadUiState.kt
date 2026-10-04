@@ -2,6 +2,7 @@ package com.whatsappv2.feature.chat.thread
 
 import com.whatsappv2.domain.chat.ChatConnectionState
 import com.whatsappv2.domain.chat.ChatFailure
+import com.whatsappv2.domain.chat.ChatGroup
 import com.whatsappv2.domain.chat.ChatIdentity
 import com.whatsappv2.domain.chat.ChatMessage
 
@@ -63,6 +64,28 @@ data class ChatThreadUiState(
      * conversation summary has not arrived yet should not show the id and then drop it.
      */
     val isDirect: Boolean = true,
+
+    /**
+     * The group this thread is, when it is one. Null for a direct conversation.
+     *
+     * Carries the roster, which is the only thing that can answer whether a group is small
+     * enough to call — see [ChatGroup.isCallable].
+     */
+    val group: ChatGroup? = null,
+
+    /**
+     * chat-node's ULIDs mapped to what to call the person, for the sender line on a group row.
+     *
+     * Needed because a message carries only `senderId`, which is a 26-character ULID. In a
+     * direct thread that never showed — the bar already names the one person who can be
+     * speaking — but a group draws a sender on every incoming bubble, and without this join
+     * every one of them reads `01M3TB3R`. Built from the roster and the directory, so it says
+     * `8102 (mcx8102)` exactly as the Chats list and the bar do.
+     *
+     * Partial by nature: a member this device has no direct conversation with cannot be
+     * resolved, and [senderLabelOf] falls back rather than showing nothing.
+     */
+    val senderNames: Map<String, String> = emptyMap(),
 ) {
 
     /**
@@ -84,10 +107,41 @@ data class ChatThreadUiState(
             else -> null
         }
 
+    /**
+     * What to write above an incoming bubble in a group.
+     *
+     * The directory's label when the ULID could be resolved, and the shortened id when it
+     * could not — a member of a group somebody else made is not in this device's conversation
+     * list, so there is nothing to resolve them against. Eight characters of ULID is a poor
+     * label, but it is a stable one, and it tells two unknown people apart.
+     */
+    fun senderLabelOf(message: ChatMessage): String {
+        val senderId = message.senderId.orEmpty()
+        return senderNames[senderId] ?: senderId.take(SHORTENED_SENDER_LENGTH)
+    }
+
     val isEmpty: Boolean get() = messages.isEmpty() && !isLoading && error == null
 
-    /** Whether the top bar offers to call. Shown only when there is a real extension behind it. */
-    val canCall: Boolean get() = callableExtension != null && !isPlacingCall
+    /**
+     * Whether the top bar offers to call at all.
+     *
+     * Three different answers, and they are genuinely different questions:
+     *
+     * - a **direct** conversation offers a call when the directory gave it a dialable
+     *   extension — see [callableExtension];
+     * - a **group** offers one when it has between two and [ChatGroup.MAX_CALLABLE_MEMBERS]
+     *   people in it, which is the app's four-party ceiling rather than a cost the conference
+     *   bridge imposes — see [ChatGroup.isCallable];
+     * - a group that is too big, or whose roster has not loaded, offers nothing.
+     *
+     * Absent rather than disabled throughout. A greyed-out call button on a nine-person group
+     * invites a tap and then has to explain itself; no button needs no explanation.
+     */
+    val canOfferCall: Boolean
+        get() = if (group != null) group.isCallable else callableExtension != null
+
+    /** Whether the call buttons are enabled right now. */
+    val canCall: Boolean get() = canOfferCall && !isPlacingCall
 
     /**
      * The line under the name — what the connection is doing, or nothing.
@@ -104,4 +158,9 @@ data class ChatThreadUiState(
             is ChatConnectionState.Disconnected -> "reconnecting…"
             ChatConnectionState.NotConfigured -> "not signed in"
         }
+
+    private companion object {
+        /** Enough ULID to tell two unresolved people apart without printing all 26 characters. */
+        const val SHORTENED_SENDER_LENGTH = 8
+    }
 }

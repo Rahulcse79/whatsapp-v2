@@ -10,16 +10,19 @@ import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.data.chat.ChatContactRepositoryImpl
 import com.whatsappv2.data.chat.ChatEngineLifecycle
 import com.whatsappv2.data.chat.ChatEngineState
+import com.whatsappv2.data.chat.ChatGroupRepositoryImpl
 import com.whatsappv2.data.chat.ChatPinRepositoryImpl
 import com.whatsappv2.data.chat.ChatReadRepositoryImpl
 import com.whatsappv2.data.chat.ChatRepositoryImpl
 import com.whatsappv2.data.chat.ChatSessionRepositoryImpl
 import com.whatsappv2.data.chat.net.BearerTokenSource
+import com.whatsappv2.data.chat.net.ChatIdentitySource
 import com.whatsappv2.data.chat.sdk.ChatSdkHandle
 import com.whatsappv2.data.chat.sdk.RealChatSdkHandle
 import com.whatsappv2.data.chat.store.ChatTokenFile
 import com.whatsappv2.data.chat.store.PrivateChatTokenFile
 import com.whatsappv2.domain.repository.ChatContactRepository
+import com.whatsappv2.domain.repository.ChatGroupRepository
 import com.whatsappv2.domain.repository.ChatPinRepository
 import com.whatsappv2.domain.repository.ChatReadRepository
 import com.whatsappv2.domain.repository.ChatRepository
@@ -84,6 +87,16 @@ internal abstract class ChatDataModule {
     @Binds
     @Singleton
     abstract fun bindChatReadRepository(impl: ChatReadRepositoryImpl): ChatReadRepository
+
+    /** Groups, over chat-node's HTTP API — the SDK has none. See `ChatGroup`. */
+    @Binds
+    @Singleton
+    abstract fun bindChatGroupRepository(impl: ChatGroupRepositoryImpl): ChatGroupRepository
+
+    /** The same instance again, under the identity role this module's own client reads. */
+    @Binds
+    @Singleton
+    abstract fun bindChatIdentitySource(impl: ChatSessionRepositoryImpl): ChatIdentitySource
 
     /**
      * The seam over the static `ChatSdk`.

@@ -9,6 +9,7 @@ import com.whatsappv2.core.common.result.success
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.data.chat.crypto.CoralCipherMaterial
 import com.whatsappv2.data.chat.net.BearerTokenSource
+import com.whatsappv2.data.chat.net.ChatIdentitySource
 import com.whatsappv2.data.chat.net.CoralClientFactory
 import com.whatsappv2.data.chat.net.CoralErrorMapper
 import com.whatsappv2.data.chat.net.dto.LoginData
@@ -64,7 +65,7 @@ internal class ChatSessionRepositoryImpl @Inject constructor(
     private val outbox: ChatSendOutbox,
     private val dispatchers: DispatcherProvider,
     private val logger: Logger,
-) : ChatSessionRepository, BearerTokenSource {
+) : ChatSessionRepository, BearerTokenSource, ChatIdentitySource {
 
     private val live = MutableStateFlow<ChatSession?>(null)
 
@@ -93,6 +94,14 @@ internal class ChatSessionRepositoryImpl @Inject constructor(
 
     override suspend fun currentServerUrl(): CoralServerUrl = withContext(dispatchers.io) {
         store.currentServerUrl()
+    }
+
+    /**
+     * A DataStore write, so it hops to io like every other call here — a suspend port that
+     * blocks the caller's thread is the main-thread trap this class's dispatchers exist for.
+     */
+    override suspend fun rememberServerUrl(url: CoralServerUrl) = withContext(dispatchers.io) {
+        store.saveServerUrl(url)
     }
 
     /**
@@ -166,6 +175,18 @@ internal class ChatSessionRepositoryImpl @Inject constructor(
         outbox.clear()
         withContext(dispatchers.io) { store.clearSession() }
     }
+
+    /**
+     * chat-node's `deviceKey`, for this app's own group requests — see `ChatIdentitySource`.
+     *
+     * The SAME value the SDK is initialised with, deliberately: a different one would make
+     * chat-node provision a second identity for one signed-in person, which is exactly the
+     * phantom this codebase has already been bitten by.
+     */
+    override fun currentDeviceKey(): String? = live.value?.userId?.takeIf { it.isNotBlank() }
+
+    /** The Coral `deviceId`, sent as the install id — the same one the SDK is given. */
+    override fun currentDeviceId(): String? = live.value?.deviceId?.takeIf { it.isNotBlank() }
 
     override fun currentToken(): String? = live.value?.token?.reveal()
 

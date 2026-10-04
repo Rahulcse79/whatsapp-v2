@@ -4,6 +4,7 @@ import com.whatsappv2.domain.chat.ChatConnectionState
 import com.whatsappv2.domain.chat.ChatContact
 import com.whatsappv2.domain.chat.ChatConversation
 import com.whatsappv2.domain.chat.ChatFailure
+import com.whatsappv2.domain.chat.ChatGroup
 import com.whatsappv2.domain.chat.ChatReadMark
 import com.whatsappv2.domain.chat.ConversationId
 import com.whatsappv2.domain.chat.isSelfConversation
@@ -81,6 +82,15 @@ data class ChatsUiState(
 
     /** The signed-in user's extension (`8102`), for the same reason — see [isSelfConversation]. */
     val myExtension: String? = null,
+
+    /**
+     * The groups this user is in, by conversation id.
+     *
+     * Needed because `GET /conversations` returns a GROUP row with a **null name** — the name
+     * lives only on chat-node's group endpoints. Without this join every group is an untitled
+     * row, and nothing can tell whether it is small enough to call.
+     */
+    val groups: Map<ConversationId, ChatGroup> = emptyMap(),
 ) {
 
     /**
@@ -156,8 +166,18 @@ data class ChatsUiState(
      * The fallback is not a failure case — a conversation with somebody outside the
      * directory has no extension to show, and the handle is the honest answer.
      */
-    fun titleOf(conversation: ChatConversation): String =
-        directory[conversation.title]?.label ?: conversation.title
+    fun titleOf(conversation: ChatConversation): String {
+        // A group is named, and its name is the only sensible title: the handle for a
+        // two-person group is whichever member chat-node happened to put in `otherUser`,
+        // which would label a group as one of the people in it.
+        groups[conversation.id]?.let { group ->
+            return group.name?.takeIf { it.isNotBlank() } ?: "Group"
+        }
+        return directory[conversation.title]?.label ?: conversation.title
+    }
+
+    /** The group behind [conversation], or null when it is a direct chat. */
+    fun groupOf(conversation: ChatConversation): ChatGroup? = groups[conversation.id]
 
     /**
      * What the avatar should take its initials from — a name, never the label.
@@ -166,8 +186,10 @@ data class ChatsUiState(
      * than as a person. So the avatar gets the directory's display name, and the handle
      * when there is no directory row to ask.
      */
-    fun avatarNameOf(conversation: ChatConversation): String =
-        directory[conversation.title]?.displayName ?: conversation.title
+    fun avatarNameOf(conversation: ChatConversation): String {
+        groups[conversation.id]?.let { group -> return group.name?.takeIf { it.isNotBlank() } ?: "Group" }
+        return directory[conversation.title]?.displayName ?: conversation.title
+    }
 
     /**
      * Which read action to offer for [conversation], or null when neither would do anything.

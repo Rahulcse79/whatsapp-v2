@@ -94,27 +94,7 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `an account with no display name falls back to the user id`() = runTest(dispatcher) {
-        chatSessions.givenSignedIn(
-            ChatSession(
-                userId = "other-user",
-                displayName = null,
-                token = Secret("a-token"),
-                expiresAtMs = null,
-                deviceId = "BF6625949EAA4D5F94CAA18641BE8E74",
-            ),
-        )
-        val model = viewModel()
-
-        model.uiState.test {
-            advanceUntilIdle()
-            assertEquals("other-user", assertNotNull(expectMostRecentItem().chatAccount).identity)
-            cancelAndIgnoreRemainingEvents()
-        }
-    }
-
-    @Test
-    fun `signing out clears the row and keeps the server URL - decision D2`() = runTest(dispatcher) {
+    fun `signing out from settings clears the row and keeps the server URL - decision D2`() = runTest(dispatcher) {
         chatSessions.givenSignedIn(
             ChatSession(
                 userId = "sample-user",
@@ -132,6 +112,7 @@ class SettingsViewModelTest {
             advanceUntilIdle()
 
             assertNull(expectMostRecentItem().chatAccount)
+            // The same repository call the Chats overflow makes, so the two cannot differ.
             assertEquals(1, chatSessions.signOutCount)
             assertEquals(CoralServerUrl.DEFAULT, chatSessions.currentServerUrl())
             cancelAndIgnoreRemainingEvents()

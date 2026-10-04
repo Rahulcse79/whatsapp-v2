@@ -2,8 +2,11 @@ package com.whatsappv2.feature.chat
 
 import com.whatsappv2.domain.chat.ChatContact
 import com.whatsappv2.domain.chat.ChatConversation
+import com.whatsappv2.domain.chat.ChatGroup
+import com.whatsappv2.domain.chat.ChatGroupMember
 import com.whatsappv2.domain.chat.ChatReadMark
 import com.whatsappv2.domain.chat.ConversationId
+import com.whatsappv2.domain.chat.GroupRole
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -43,6 +46,16 @@ class ChatsUiStateTitleTest {
         extension = extension,
         department = "coral-test",
         avatarUrl = null,
+    )
+
+    private fun group(id: ConversationId, name: String?) = ChatGroup(
+        id = id,
+        name = name,
+        createdBy = "owner-ulid",
+        members = listOf(
+            ChatGroupMember("owner-ulid", GroupRole.OWNER),
+            ChatGroupMember("01ULIDFOR8102", GroupRole.MEMBER),
+        ),
     )
 
     private fun state(vararg directory: ChatContact) = ChatsUiState(
@@ -292,5 +305,64 @@ class ChatsUiStateTitleTest {
         assertEquals(1, state.copy(query = "mcx8102").otherConversations.size)
         assertEquals(1, state.copy(query = "8102").otherConversations.size)
         assertEquals(0, state.copy(query = "Rahul").otherConversations.size)
+    }
+
+    @Test
+    fun `a group row reads its name, which only the group endpoints carry`() {
+        // `GET /conversations` returns a GROUP row with a NULL name, so without this join the
+        // row is titled by whichever member chat-node happened to put in `otherUser` — a
+        // group labelled as one of the people in it.
+        val row = conversation("mcx8102")
+        val state = ChatsUiState(
+            isSignedIn = true,
+            conversations = listOf(row),
+            directory = mapOf("mcx8102" to contact(username = "mcx8102", extension = "8102")),
+            groups = mapOf(row.id to group(row.id, name = "Ops")),
+        )
+
+        assertEquals("Ops", state.titleOf(row))
+        // The avatar too: initials from a person's name on a group is the same mislabelling
+        // one layer down.
+        assertEquals("Ops", state.avatarNameOf(row))
+    }
+
+    @Test
+    fun `a group whose name has not loaded says Group, never blank and never a member`() {
+        val row = conversation("mcx8102")
+        val state = ChatsUiState(
+            isSignedIn = true,
+            conversations = listOf(row),
+            directory = mapOf("mcx8102" to contact(username = "mcx8102", extension = "8102")),
+            // Null means "not loaded" — the roster request has not come back yet.
+            groups = mapOf(row.id to group(row.id, name = null)),
+        )
+
+        assertEquals("Group", state.titleOf(row))
+        assertEquals("Group", state.avatarNameOf(row))
+    }
+
+    @Test
+    fun `the group join never touches a direct row`() {
+        val row = conversation("mcx8102")
+        val other = conversation("mcx8103")
+        val state = ChatsUiState(
+            isSignedIn = true,
+            conversations = listOf(row, other),
+            directory = mapOf("mcx8103" to contact(username = "mcx8103", extension = "8103")),
+            groups = mapOf(row.id to group(row.id, name = "Ops")),
+        )
+
+        // Keyed on the conversation id, so one group in the map must not re-title the rest.
+        assertEquals("8103 (mcx8103)", state.titleOf(other))
+        assertEquals(null, state.groupOf(other))
+    }
+
+    @Test
+    fun `groupOf is what tells a row apart, not the conversation type string`() {
+        val row = conversation("mcx8102")
+        val state = ChatsUiState(conversations = listOf(row), groups = mapOf(row.id to group(row.id, "Ops")))
+
+        assertEquals("Ops", state.groupOf(row)?.name)
+        assertEquals(2, state.groupOf(row)?.size)
     }
 }

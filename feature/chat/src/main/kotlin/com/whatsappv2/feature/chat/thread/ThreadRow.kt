@@ -68,10 +68,6 @@ internal fun List<ChatMessage>.withDayBreaks(): List<ThreadRow> {
 /** `14:05`. The platform's 24-hour setting is not consulted; the format is the app's. */
 internal fun ChatMessage.timeLabel(): String = TIME.format(Date(createdAtMs))
 
-/** The sender, shortened. A chat-node user id is a 26-character ULID, which is not a name. */
-internal fun ChatMessage.senderLabel(): String =
-    senderId?.take(SENDER_LABEL_LENGTH).orEmpty()
-
 /**
  * What to draw for a message.
  *
@@ -115,6 +111,3 @@ private fun Calendar.isSameDayAs(other: Calendar): Boolean =
 private val TIME = SimpleDateFormat("HH:mm", Locale.getDefault())
 private val DAY = SimpleDateFormat("d MMMM", Locale.getDefault())
 private val DAY_WITH_YEAR = SimpleDateFormat("d MMMM yyyy", Locale.getDefault())
-
-/** Enough to tell two people apart without printing a whole ULID. */
-private const val SENDER_LABEL_LENGTH = 8

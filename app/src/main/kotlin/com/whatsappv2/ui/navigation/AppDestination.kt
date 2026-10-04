@@ -4,6 +4,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Dialpad
+import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PersonSearch
@@ -78,6 +79,15 @@ enum class AppDestination(
      * device, and architecture rule 9 is what keeps the two apart.
      */
     CHAT_CONTACTS("chat-contacts", "New conversation", Icons.Filled.PersonSearch),
+
+    /**
+     * Making a group: a name and up to three other people.
+     *
+     * Capped at `ChatGroup.MAX_MEMBERS`, which is a **calling** limit rather than a
+     * messaging one: a group this app makes is one it can also ring. See
+     * `ChatGroup.isCallable` for why that is the app's own ceiling and not the bridge's.
+     */
+    CHAT_NEW_GROUP("chat-new-group", "New group", Icons.Filled.Group),
 
     /**
      * One conversation's messages.

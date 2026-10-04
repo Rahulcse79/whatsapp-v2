@@ -54,6 +54,14 @@ class FakeChatSessionRepository(
 
     override suspend fun currentServerUrl(): CoralServerUrl = serverUrl.first()
 
+    /** Every origin remembered, in order, so a test can assert a failed attempt kept it. */
+    val rememberedUrls: MutableList<CoralServerUrl> = mutableListOf()
+
+    override suspend fun rememberServerUrl(url: CoralServerUrl) {
+        rememberedUrls += url
+        serverUrl.value = url
+    }
+
     override suspend fun signIn(
         url: CoralServerUrl,
         credentials: ChatCredentials,
@@ -62,8 +70,10 @@ class FakeChatSessionRepository(
 
         return when (val result = nextResult ?: success(sessionFor(credentials))) {
             is Outcome.Success -> {
-                // Persisting both only on success is the contract, not an implementation
-                // detail: a URL that could not sign in must not become the stored one.
+                // The session is persisted only on success, which is still the contract.
+                // The URL is not part of that any more — `rememberServerUrl` stores it on
+                // the way in, so a failed attempt keeps the address the user typed. Written
+                // here as well because the real store writes both together on success.
                 session.value = result.value
                 serverUrl.value = url
                 result

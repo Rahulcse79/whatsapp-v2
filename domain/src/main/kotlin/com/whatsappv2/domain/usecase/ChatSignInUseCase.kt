@@ -113,6 +113,12 @@ class ChatSignInUseCase @Inject constructor(
             return failure(ChatSignInError.InvalidInput(violations))
         }
 
+        // Remembered before the attempt, not after it: the address the user actually tried
+        // is the one the form should offer next time, whether or not the password was right.
+        // Only reached once the URL has parsed and the other fields are present, so a
+        // half-typed host on a rejected submit is not what gets stored.
+        repository.rememberServerUrl(url)
+
         val credentials = ChatCredentials(username = trimmedUsername, password = password)
         return when (val result = repository.signIn(url, credentials)) {
             is Outcome.Success -> {

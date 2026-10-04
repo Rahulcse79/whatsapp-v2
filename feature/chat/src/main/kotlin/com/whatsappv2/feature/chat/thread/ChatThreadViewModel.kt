@@ -10,9 +10,11 @@ import com.whatsappv2.domain.chat.isSelfConversation
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.MediaProfile
 import com.whatsappv2.domain.repository.ChatContactRepository
+import com.whatsappv2.domain.repository.ChatGroupRepository
 import com.whatsappv2.domain.repository.ChatReadRepository
 import com.whatsappv2.domain.repository.ChatRepository
 import com.whatsappv2.domain.repository.ChatSessionRepository
+import com.whatsappv2.domain.usecase.JoinConferenceUseCase
 import com.whatsappv2.domain.usecase.PlaceCallError
 import com.whatsappv2.domain.usecase.PlaceCallUseCase
 import com.whatsappv2.domain.usecase.SendChatMessageUseCase
@@ -67,6 +69,8 @@ class ChatThreadViewModel @Inject constructor(
     private val sendMessage: SendChatMessageUseCase,
     private val sync: SyncConversationUseCase,
     private val placeCall: PlaceCallUseCase,
+    private val joinConference: JoinConferenceUseCase,
+    private val groups: ChatGroupRepository,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -98,9 +102,15 @@ class ChatThreadViewModel @Inject constructor(
                 // with the session because `combine` is typed only to five arguments, and
                 // the session is what says whether this thread is the user talking to
                 // themselves.
-                combine(contacts.observeContacts(), sessions.observeSession(), ::Pair),
-            ) { messages, identity, connection, conversations, directoryAndSession ->
-                val (directory, session) = directoryAndSession
+                combine(
+                    contacts.observeContacts(),
+                    sessions.observeSession(),
+                    groups.observeGroups(),
+                    ::Triple,
+                ),
+            ) { messages, identity, connection, conversations, joined ->
+                val (directory, session, allGroups) = joined
+                val group = allGroups[conversationId]
                 val conversation = conversations.firstOrNull { it.id == conversationId }
                 val handle = conversation?.title ?: _state.value.title
                 val contact = directory.firstOrNull { it.id == handle }
@@ -115,8 +125,12 @@ class ChatThreadViewModel @Inject constructor(
                     connection = connection,
                     // `8102 (mcx8102)` once the directory is in, the bare handle until then
                     // — the same join the Chats list does, so a thread and its row agree.
-                    title = contact?.label ?: handle,
-                    avatarName = contact?.displayName ?: handle,
+                    // A group is named, and its name is the only sensible title: the handle
+                    // for a two-person group is whichever member chat-node put in
+                    // `otherUser`, which would label the group as one of the people in it.
+                    title = group?.name?.takeIf { it.isNotBlank() } ?: contact?.label ?: handle,
+                    group = group,
+                    avatarName = group?.name?.takeIf { it.isNotBlank() } ?: contact?.displayName ?: handle,
                     // The directory FIRST, because the conversation's own answer is the
                     // designation — `mcx8102` — and the PBX has never heard of it. The
                     // fallback is for a party the directory does not list, where the handle
@@ -130,6 +144,17 @@ class ChatThreadViewModel @Inject constructor(
                         contact?.extension ?: conversation?.callableExtension
                     },
                     isDirect = conversation?.isDirect ?: _state.value.isDirect,
+                    // ULID -> `8102 (mcx8102)`, in two hops, because no single source has
+                    // both ends: the roster turns a ULID into a designation and the directory
+                    // turns the designation into a label. Without it a group's sender lines
+                    // are truncated ULIDs.
+                    senderNames = group?.members.orEmpty()
+                        .mapNotNull { member ->
+                            val designation = member.username ?: return@mapNotNull null
+                            val label = directory.firstOrNull { it.id == designation }?.label ?: designation
+                            member.userId to label
+                        }
+                        .toMap(),
                 )
             }.collect { next -> _state.update { next.copy(draft = it.draft) } }
         }
@@ -215,12 +240,22 @@ class ChatThreadViewModel @Inject constructor(
      * screen that decided any of that would be a second copy of those rules.
      */
     fun call(media: MediaProfile) {
-        val extension = _state.value.callableExtension ?: return
-        if (_state.value.isPlacingCall) return
+        val current = _state.value
+        if (current.isPlacingCall || !current.canOfferCall) return
 
         _state.update { it.copy(isPlacingCall = true) }
         viewModelScope.launch {
-            val outcome = placeCall(input = extension, media = media)
+            val outcome = if (current.group != null) {
+                // A group goes to the conference rather than to one person. Everybody in the
+                // group dials the same room, which is what makes it a group call rather than
+                // three separate ones.
+                joinConference(
+                    input = GROUP_CONFERENCE,
+                    withVideo = media == MediaProfile.AUDIO_VIDEO,
+                )
+            } else {
+                placeCall(input = current.callableExtension ?: return@launch, media = media)
+            }
             _state.update { it.copy(isPlacingCall = false) }
 
             when (outcome) {
@@ -251,5 +286,18 @@ class ChatThreadViewModel @Inject constructor(
     companion object {
         /** The navigation argument's name. `:app`'s route must use the same string. */
         const val CONVERSATION_ID = "conversationId"
+
+        /**
+         * The conference room a group call dials.
+         *
+         * This deployment's number, given on 2 Oct 2026 — not derived from anything, which
+         * is why it is one named constant rather than a rule spread across the call path.
+         *
+         * **One room for every group**, which is the honest limitation of dialling a fixed
+         * number: two groups calling at once meet each other. A room per group needs either
+         * a number chat-node hands back with the group or a mesh that dials each member, and
+         * neither exists yet — the group API carries no conference field.
+         */
+        const val GROUP_CONFERENCE = "9999999"
     }
 }

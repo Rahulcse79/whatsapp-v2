@@ -59,7 +59,19 @@ import com.whatsappv2.domain.model.ThemeMode
  * Settings stopped being a tab and became the screen behind the gear at the top right of
  * Chats. The accounts list moved with it, because both are "set the app up" rather than
  * "make a call", and neither earns a permanent tab on a phone whose primary job is the
- * latter. Nothing here was removed: every control this screen had, it still has.
+ * latter.
+ *
+ * ## The chat account card left and came back
+ *
+ * It was removed when the login became the Chats tab's own (decision D4), on the grounds
+ * that this screen is reached from the **Calls** tab too. That argument settles where the
+ * login *gate* lives; it does not settle where its exit should be findable. "Settings" is
+ * the first place a person looks to sign out of anything. So the card is back, and Sign out
+ * now exists in two places that call the same repository — here, and the Chats header's
+ * overflow menu.
+ *
+ * Signing *in* is still the Chats tab's alone: the card is absent with no session, so this
+ * screen never asks for credentials. Every SIP control this screen had, it still has.
  */
 @Composable
 fun SettingsScreen(
@@ -297,6 +309,72 @@ private fun IdentityCards(
 }
 
 /**
+ * The signed-in chat identity, and the one thing that can be done about it.
+ *
+ * ## It confirms, and the confirmation is here rather than in the ViewModel
+ *
+ * Signing out clears the session and the token, and the only way back is to type a
+ * password again — so it is guarded. Whether to confirm is a UI decision, which is why
+ * `ConfirmDialog` is raised here and `signOutOfChat()` is called only on the way out of it.
+ *
+ * The Chats header's overflow menu raises its own dialog over the same repository call.
+ * Two dialogs rather than one shared composable because the wording differs — that one can
+ * say the tab you are standing in is about to empty — and because a shared confirm would
+ * couple `:feature:settings` to `:feature:chat` for the sake of four lines.
+ *
+ * ## The server address is shown and cannot be edited
+ *
+ * Decision D1: the URL is an identity, not a preference. It is captured on the sign-in
+ * screen beside the credentials it belongs to and saved only when they work. Editable
+ * here, it could be changed to a host the stored session never came from, and the result
+ * would look to a user like an account that had broken by itself.
+ */
+@Composable
+private fun ChatAccountRow(account: ChatAccountUiState, onSignOut: () -> Unit) {
+    var confirming by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = AppTheme.spacing.small)
+            .testTag(TAG_CHAT_ACCOUNT),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.medium),
+    ) {
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.Chat,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Chat account", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "${account.identity} · ${account.serverOrigin}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        TextButton(onClick = { confirming = true }, modifier = Modifier.testTag(TAG_CHAT_SIGN_OUT)) {
+            Text("Sign out")
+        }
+    }
+
+    if (confirming) {
+        ConfirmDialog(
+            title = "Sign out of chat?",
+            message = "You will need your password to sign in again. Calls are not affected.",
+            confirmLabel = "Sign out",
+            destructive = true,
+            onConfirm = {
+                confirming = false
+                onSignOut()
+            },
+            onDismiss = { confirming = false },
+        )
+    }
+}
+
+/**
  * The two places reachable from here, or nothing in a preview.
  *
  * Accounts first, because it is the one thing without which the app cannot do anything
@@ -494,67 +572,6 @@ private fun AccountsRow(onClick: () -> Unit) {
             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-/**
- * The signed-in chat identity, and the one thing that can be done about it.
- *
- * ## It confirms, and the confirmation is here rather than in the ViewModel
- *
- * Signing out clears the session and the token, and the only way back is to type a
- * password again — so it is guarded. Whether to confirm is a UI decision, which is why
- * `ConfirmDialog` is raised here and `signOutOfChat()` is called only on the way out of it.
- *
- * ## The server address is shown and cannot be edited
- *
- * Decision D1: the URL is an identity, not a preference. It is captured on the sign-in
- * screen beside the credentials it belongs to and saved only when they work. Editable
- * here, it could be changed to a host the stored session never came from, and the result
- * would look to a user like an account that had broken by itself.
- */
-@Composable
-private fun ChatAccountRow(account: ChatAccountUiState, onSignOut: () -> Unit) {
-    var confirming by remember { mutableStateOf(false) }
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = AppTheme.spacing.small)
-            .testTag(TAG_CHAT_ACCOUNT),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(AppTheme.spacing.medium),
-    ) {
-        Icon(
-            imageVector = Icons.AutoMirrored.Filled.Chat,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-        )
-        Column(modifier = Modifier.weight(1f)) {
-            Text("Chat account", style = MaterialTheme.typography.titleMedium)
-            Text(
-                text = "${account.identity} · ${account.serverOrigin}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        TextButton(onClick = { confirming = true }, modifier = Modifier.testTag(TAG_CHAT_SIGN_OUT)) {
-            Text("Sign out")
-        }
-    }
-
-    if (confirming) {
-        ConfirmDialog(
-            title = "Sign out of chat?",
-            message = "You will need your password to sign in again. Calls are not affected.",
-            confirmLabel = "Sign out",
-            destructive = true,
-            onConfirm = {
-                confirming = false
-                onSignOut()
-            },
-            onDismiss = { confirming = false },
         )
     }
 }
