@@ -721,12 +721,18 @@ internal class RealPjsipCoreGateway @Inject constructor(
      *  - **`ecTailLen` was implicit.** Stated now, because an echo canceller whose tail
      *    is shorter than the device's acoustic path cancels nothing.
      *
-     * The echo canceller **algorithm** is deliberately left at pjmedia's default rather
-     * than forced to `PJMEDIA_ECHO_WEBRTC_AEC3`. AEC3 has to be compiled into the native
-     * library to exist, the native build has never completed a run, and an `ecOptions`
-     * naming an algorithm that is not there is worse than the default - it is no echo
-     * cancellation at all. That is a change to make once P-1 is green and the build's
-     * feature flags can be read rather than assumed.
+     * The echo canceller **algorithm is named** now, by [EC_OPTIONS], and the noise
+     * suppressor is switched on with it.
+     *
+     * This paragraph used to say the opposite: that the algorithm had to stay at
+     * pjmedia's default because AEC3 "has to be compiled into the native library to
+     * exist, the native build has never completed a run", and an `ecOptions` naming an
+     * absent algorithm is worse than no `ecOptions` at all. The last clause is still
+     * true and is the rule [EC_OPTIONS] is built on. The premise is not: the native
+     * build has been green since ADR-008 Exit A, so the feature flags can be *read*
+     * rather than assumed, and [EC_OPTIONS] documents the `nm`/`strings` dump of the
+     * packaged `libpjsua2.so` that each of its flags - and each of the two it refuses -
+     * was decided from. AEC3 is indeed absent, so it is still not named.
      *
      * These are principled starting points, not measured ones. P-7 is where they get
      * checked against a real handset and a real link; nothing here has been heard yet.
@@ -783,6 +789,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             channelCount = MONO
             quality = RESAMPLE_QUALITY
             ecTailLen = EC_TAIL_MS
+            ecOptions = EC_OPTIONS
             // `noVad` reads backwards: true disables voice activity detection.
             noVad = true
             // Adaptive, but bounded. An unbounded jitter buffer trades a defect the user
@@ -3398,6 +3405,111 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
         /** Echo tail, ms. Shorter than the device's acoustic path cancels nothing. */
         const val EC_TAIL_MS = 200L
+
+        /**
+         * `PJMEDIA_ECHO_USE_SPEECH_ENHANCER` - `echo.h:148`, added by
+         * `pjsip/patches/0007-capture-path-speech-enhancement.patch`. See [EC_OPTIONS].
+         *
+         * Bit 11 rather than the lowest free bit (512) on purpose: an upstream pjproject
+         * that adds a flag to `pjmedia_echo_flag` will take the lowest, and a collision
+         * there would be two different meanings for one bit discovered on a handset.
+         * `tools/vendor/apply-patches.sh` runs `patch -F0`, so if upstream ever does reach
+         * bit 11 the patch fails to apply rather than applying somewhere near where it
+         * used to.
+         */
+        private const val ECHO_USE_SPEECH_ENHANCER = 2048L
+
+        /**
+         * `medConfig.ecOptions` - the capture path's speech enhancement switch (§5.2).
+         *
+         * This was `0`. It is now exactly one bit, and the three that are **not** here are
+         * the more interesting half: each was tried, and each was removed on evidence.
+         *
+         * **`PJMEDIA_ECHO_USE_SPEECH_ENHANCER` = 2048 - the only flag set.** Not an
+         * upstream flag: patch 0007 adds it and the `pjmedia_speech_enh` it switches on -
+         * an RNNoise denoiser in `pjmedia_snd_port`'s capture callback, after the echo
+         * canceller and before the conference bridge. It lives in this word because this
+         * word is the one pjsua already carries down to the capture path
+         * (`pjsua_aud.c:1032`: `param.ec_options = pjsua_var.media_cfg.ec_options`), so a
+         * boolean reaches `sound_port.c` with no new pjsua field, no SWIG regeneration,
+         * and no contact with the swig-4.2.0 pin.
+         *
+         * **`PJMEDIA_ECHO_WEBRTC` = 3 - REMOVED, because it aborts the process.**
+         *
+         * It was set first, on the reasoning that `strings libpjsua2.so` finds the whole
+         * WebRTC AEC API and so the algorithm is really there. It is there, and naming it
+         * killed the app on the first captured frame of the first call (Samsung M23,
+         * 2026-10-04):
+         *
+         * ```
+         * Fatal signal 6 (SIGABRT) in tid 28348 (Thread-27)
+         * Abort message: 'aec_core.c:1765: WebRtcAec_ProcessFrames:
+         *                 assertion "aec->num_bands == num_bands" failed'
+         *   #02 WebRtcAec_ProcessFrames  #04 WebRtcAec_Process
+         *   #05 webrtc_aec_cancel_echo   #07 pjmedia_echo_capture   #08 rec_cb
+         * ```
+         *
+         * The cause is a plain confusion of two concepts in pjmedia.
+         * `WebRtcAec_Init(inst, clock_rate, clock_rate)` makes WebRTC compute
+         * `aec->num_bands = sampFreq / 16000` (`aec_core.c:1547`), which at this app's
+         * [CORE_CLOCK_RATE] is **3**. `webrtc_aec_cancel_echo` then calls
+         * `WebRtcAec_Process(..., echo->channel_count, ...)` (`echo_webrtc.c:326`) - the
+         * **channel** count, which is 1 - into the parameter WebRTC reads as the **band**
+         * count. 3 != 1, and the assertion is not compiled out. So
+         * `PJMEDIA_ECHO_WEBRTC` is unusable at any clock rate above 16 kHz, and this app
+         * mixes at 48 kHz by deliberate choice.
+         *
+         * Leaving the algorithm field at 0 is therefore not a retreat to an unknown.
+         * `PJMEDIA_ECHO_DEFAULT` is resolved by an `else if` chain in `echo_common.c` that
+         * tests **Speex first** (`:212`) and WebRTC second (`:219`), so `0` has always
+         * meant the Speex canceller - the one ADR-009 measured at ~70% of a core and the
+         * one every call this app has ever made has used. The field is left alone because
+         * what it already selects is the thing that works.
+         *
+         * **`PJMEDIA_ECHO_USE_NOISE_SUPPRESSOR` = 128 - REMOVED, as collateral.** It is
+         * read in exactly one place, `echo_webrtc.c:192`, so it is a WebRTC-backend flag
+         * and the WebRTC backend cannot be used here. It was worth 4.6 dB when it could
+         * be measured; RNNoise is worth 26.8 dB and does not need it. Note the
+         * consequence for the fallback: there is no second denoiser behind the enhancer
+         * any more, so a stream RNNoise refuses is simply a call with no denoising -
+         * which is exactly what every call did before this change, and is the fallback
+         * being aimed for rather than a gap in it.
+         *
+         * **`PJMEDIA_ECHO_AGGRESSIVENESS_MODERATE` = 0x2000 - REMOVED, same reason.**
+         * `set_config()` is WebRTC-only and spends it on `AecConfig.nlpMode`
+         * (`echo_webrtc.c:88`-`106`). It never reached `WebRtcNs_set_policy`, so it was
+         * never the background-noise dial its name suggests, and with the backend gone it
+         * is not anything at all.
+         *
+         * **`PJMEDIA_ECHO_USE_GAIN_CONTROLLER` = 256 and `PJMEDIA_ECHO_WEBRTC_AEC3` = 4 -
+         * never set.** The first is declared at `echo.h:129` and read by no backend in
+         * pjmedia; the library also carries no `WebRtcAgc_*` symbol. The second has zero
+         * matches for `aec3`, case-insensitive, anywhere in the 25 MB library.
+         *
+         * **What the denoiser is worth, measured rather than predicted.**
+         * `tools/speech-enhancement` mixes clean speech with real noise at a stated SNR,
+         * runs it through the *actual* vendored denoiser sources compiled for the host,
+         * and scores it with DNSMOS P.835. Mean over seven noise classes at 5 dB SNR, as
+         * SIG/BAK:
+         *
+         * ```
+         *   clean reference (the ceiling)   3.62 / 3.99
+         *   unprocessed                     2.57 / 2.06
+         *   WebRTC NS, as pjmedia runs it   2.57 / 2.33       4.6 dB
+         *   WebRTC NS at policy 3           2.77 / 3.09      10.5 dB
+         *   RNNoise                         3.38 / 3.93      26.8 dB
+         * ```
+         *
+         * RNNoise reaches the clean reference's background score while costing 0.24 of
+         * SIG, which is inside DNSMOS's own run-to-run spread. See
+         * `tools/speech-enhancement/RESULTS.md` and ADR-010.
+         *
+         * Note what the SIG column says about the exit criterion this work was given.
+         * "SIG >= 3.8" is not reachable on that corpus by any denoiser, because the clean
+         * speech itself scores 3.62. The criterion that survives a ceiling is **SIG within
+         * DNSMOS's noise of the clean reference, and BAK at least the clean reference's**.
+         */
+        const val EC_OPTIONS: Long = ECHO_USE_SPEECH_ENHANCER
 
         /** Jitter buffer ceiling, ms. Beyond this, delay is the worse defect. */
         /**

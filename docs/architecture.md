@@ -663,6 +663,161 @@ re-measuring for Lyra, whose per-stream cost is higher, before raising it.
 
 ---
 
+### ADR-010 — Capture-path speech enhancement: **RNNoise in `pjmedia_snd_port`, not DeepFilterNet3, not TFLite**
+
+**Status:** Accepted · **Decided:** 2026-10-04 · **Decider:** stakeholder
+
+**Context.** Background noise goes out on every call and Lyra makes it worse than merely
+audible. At 3.2 kbit/s Lyra is generative: it resynthesises speech from a learned prior
+rather than coding the waveform, so noise at its input does not pass through — it spends
+bits and steers the generator. Denoising after the codec is not an alternative, because by
+then the noise is part of what the decoder invented. The pipeline the stakeholder specified
+is therefore `mic → AEC/NS → ML denoiser → VAD → Lyra 16 kHz → SIP`, with every stage
+on-device: no microphone audio leaves the handset, and the Railway backend stays out of the
+real-time path entirely.
+
+**Scope.** Removing background *human voices* is explicitly **not** in this decision.
+Separating a known talker from other talkers needs target-speaker extraction and voice
+enrolment; that is deferred (Phase 2). `babble` is measured below to quantify the
+limitation, not to be tuned away.
+
+**Decision.**
+
+1. **RNNoise** (`v0.2`, BSD-3-Clause), vendored at `third_party/rnnoise` and compiled into
+   `libpjsua2.so`.
+2. Called from **`rec_cb()` in `pjmedia/src/pjmedia/sound_port.c`**, between
+   `pjmedia_echo_capture()` and `pjmedia_port_put_frame()` — patch `0007`.
+3. Switched on by **`PJMEDIA_ECHO_USE_SPEECH_ENHANCER`**, a new bit in the `ec_options` word
+   pjsua already carries from `MediaConfig.ecOptions` down to the sound port, so no pjsua
+   field is added and no SWIG surface is regenerated.
+4. **The echo canceller is left alone.** `ecOptions`' algorithm field stays at
+   `PJMEDIA_ECHO_DEFAULT`, which `echo_common.c` resolves to Speex — see the finding below.
+   `start_sound_device()` still clears `PJMEDIA_ECHO_USE_NOISE_SUPPRESSOR` when the
+   enhancer starts, so that two suppressors can never run in series, but on this build that
+   guard is unexercised because the flag is not set.
+
+**Why `rec_cb()` and nowhere else.** Every captured frame passes that point exactly once.
+Everything downstream of `pjmedia_port_put_frame()` is per-leg: ADR-009's conference is a
+local mix and the video mesh is a full mesh, so in a four-party call there are three
+encoders and three RTP streams. A denoiser placed after the bridge would run three times on
+the same microphone audio. Here **the cost is constant in party count** — which, given
+ADR-009's measured ~70 % fixed and ~40 % per-Lyra-stream budget, is the difference between
+affordable and not.
+
+**A finding that changed the first half of this work: `PJMEDIA_ECHO_WEBRTC` aborts the
+process.** The plan was to switch on WebRTC's echo canceller and its noise suppressor
+first, as a configuration change, on the evidence that `strings libpjsua2.so` finds the
+whole WebRTC AEC API. The API is there. Naming it killed the app on the first captured
+frame of the first call (Samsung M23, 2026-10-04):
+
+```
+Fatal signal 6 (SIGABRT) in tid 28348 (Thread-27)
+Abort message: 'aec_core.c:1765: WebRtcAec_ProcessFrames:
+                assertion "aec->num_bands == num_bands" failed'
+  #02 WebRtcAec_ProcessFrames  #04 WebRtcAec_Process
+  #05 webrtc_aec_cancel_echo   #07 pjmedia_echo_capture   #08 rec_cb
+```
+
+`WebRtcAec_Init(inst, clock_rate, clock_rate)` makes WebRTC compute
+`aec->num_bands = sampFreq / 16000` (`aec_core.c:1547`), which at 48 kHz is **3**.
+`webrtc_aec_cancel_echo` then passes `echo->channel_count` — the **channel** count, 1 —
+into the parameter WebRTC reads as the **band** count (`echo_webrtc.c:326`). The assertion
+is not compiled out, so `PJMEDIA_ECHO_WEBRTC` is unusable at any clock rate above 16 kHz,
+and this app mixes at 48 kHz by deliberate choice. It is left unfixed: the correct fix is a
+band split, which is a real DSP change to vendored code, and the Speex canceller the
+default already selects has worked on every call this app has ever made.
+
+The consequence for this ADR is that `PJMEDIA_ECHO_USE_NOISE_SUPPRESSOR` goes with it — it
+is read only at `echo_webrtc.c:192` — so the shipped `ecOptions` is **one bit**, the
+enhancer's, and the fallback behind RNNoise is no denoising rather than a weaker denoiser.
+That is the fallback this work was asked for: if the ML denoiser cannot start, frames pass
+through untouched on exactly today's path.
+
+**The gate, measured before the integration.** `tools/speech-enhancement` compiles the
+*vendored* denoiser sources for the host, drives them through the same call sequence the
+device uses, and scores the output with DNSMOS P.835. Clean speech mixed with seven real
+noise classes at 0, 5 and 10 dB SNR; mean over all seven at 5 dB, as SIG/BAK:
+
+| Candidate | SIG | BAK | Attenuation |
+|---|---|---|---|
+| **clean reference — the ceiling** | **3.62** | **3.99** | — |
+| Nothing (what shipped: `ecOptions` was 0, so no suppressor was built) | 2.57 | 2.06 | 0 dB |
+| WebRTC NS, as pjmedia drives it | 2.57 | 2.33 | 4.6 dB |
+| WebRTC NS at policy 3 | 2.77 | 3.09 | 10.5 dB |
+| WebRTC NS at policy 3, driven at 16 kHz | 2.99 | 2.95 | 11.9 dB |
+| **RNNoise** | **3.38** | **3.93** | **26.8 dB** |
+
+Three findings, each of which closed an option that looked reasonable beforehand.
+
+- **pjmedia's existing suppressor cannot do this job, and it is not a tuning problem.**
+  `echo_webrtc.c` creates it and never calls `WebRtcNs_set_policy`, so it runs at the
+  `aggrMode = 0` that `WebRtcNs_InitCore` assigns, whose `denoiseBound = 0.5f` caps
+  attenuation near **6 dB** however loud the noise is. On music and bells it does
+  essentially nothing (BAK 1.30 and 1.19 against an unprocessed 1.15 and 1.17).
+- **Raising that policy is not the answer either.** Mode 3 buys 10.5 dB and spends 0.6 of
+  SIG on the four ordinary noise classes. Part of why is that pjmedia drives the suppressor
+  at the wrong block size — 160 samples is 10 ms at 16 kHz and 3.33 ms at this app's 48 kHz
+  `CORE_CLOCK_RATE` — and running the identical policy at 16 kHz recovers 0.22 of SIG. That
+  is a real second defect, recorded and deliberately not fixed, because the backend chosen
+  instead does not have it: RNNoise is natively 48 kHz in 480-sample blocks and 960 samples
+  per 20 ms frame is exactly two of them.
+- **RNNoise reaches the clean reference on both axes**, and on fan, traffic, train and
+  street it scores *above* it (BAK 4.08, 4.15, 4.06, 4.07) because it also strips the
+  corpus's own recording noise floor.
+
+**Why not DeepFilterNet3, which was the first choice.** It is the better denoiser on paper
+and it is a PyTorch model with no official TFLite export; its deep-filtering stage is built
+on complex-valued operations the torch → onnx → tf → tflite route does not carry across
+intact. Putting it on this handset is a model-conversion project with an uncertain outcome,
+not an integration task. RNNoise needs no conversion at all: the weights are 4.9 MB of
+`src/rnnoise_data.c` in the tree, so there is no model file to package into the APK or fail
+to load, and the TFLite runtime ADR-008 already links is not dragged into the audio capture
+path. It is also BSD-3-Clause — the one native dependency here that *reduces* exposure
+against ADR-002's unresolved GPLv2 position rather than adding to it.
+
+RNNoise is a 2017-generation GRU with a small model, and the table above is what it is worth
+rather than what it is reputed to be.
+
+**On the exit criteria this was given.** They were `BAK >= 4.0 AND SIG >= 3.8 at 5 dB SNR`.
+**`SIG >= 3.8` is not reachable on this corpus by any denoiser, because the clean, unmixed
+speech scores 3.62** — MS-SNSD is downsampled VCTK and carries its own noise floor, and no
+processing can exceed its input's speech quality. `BAK >= 4.0` is the ceiling to within a
+hundredth. The criterion that survives contact with a ceiling, and the one this is accepted
+against, is **SIG within DNSMOS's noise (±0.2) of the clean reference and BAK at least the
+clean reference's**. The CPU and latency halves — `< 15 %` of one core, `< 40 ms` — are
+properties of a handset and were measured there, on a Samsung M23 over a live call to the
+echo extension, sampling `/proc/<pid>/stat` utime+stime over 30 s:
+
+| | % of one core |
+|---|---|
+| enhancer on, three runs | 99.1, 100.0, 100.4 |
+| enhancer off, one run | 100.6 |
+
+The two arms are indistinguishable: the control sits above two of the three enhancer runs,
+so **the added CPU is below the ~1.5-point noise floor of the measurement** — against a
+15 % budget. (Debug build, so the absolute ~100 % is pessimistic and in the same family as
+ADR-009's 106–122 % for one Lyra stream on a TC15; the arms are what matter and both are
+the same build type.) Added latency is structural rather than measured: one RNNoise block,
+**10 ms**, against a 40 ms budget, and no buffering is added because 960 samples per 20 ms
+frame is exactly two blocks.
+
+**Consequences.**
+
+- A fifth unconditional vendored tree (`docs/native-dependencies.md` §1), and two more
+  patches in the series (`0007`, and `0008` for a header RNNoise 0.2 omits so that its ARM
+  path cannot compile as released).
+- `PJMEDIA_HAS_RNNOISE 0` is a complete, working configuration, not a broken one: the
+  enhancer compiles to a no-op, `rec_cb()` is byte-for-byte what it was, and the WebRTC
+  suppressor is left switched on in its place. The same path is taken at run time whenever
+  the backend refuses the capture format.
+- **VAD comes free and is not yet used.** `rnnoise_process_frame` returns the model's own
+  speech probability and `pjmedia_speech_enh_get_speech_prob()` exposes it. PJSIP's own VAD
+  stays off (`noVad = true`) for the reason recorded on `RealPjsipCoreGateway` — silence
+  suppression clips the first syllable after every pause. Gating transmission on the
+  denoiser's probability instead is a decision this ADR does not take. **DECIDE, unanswered.**
+
+---
+
 ## 2. Settled inputs to the rest of the plan
 
 | Question | Answer | Affects |

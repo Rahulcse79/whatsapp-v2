@@ -14,7 +14,7 @@ pinned anyway, because an unpinned tool is a silently different `.so` and defeat
 
 ---
 
-## 1. The four unconditional trees
+## 1. The five unconditional trees
 
 | Name | Upstream | Version | Commit | Licence | Why it is here |
 |---|---|---|---|---|---|
@@ -22,13 +22,22 @@ pinned anyway, because an unpinned tool is a silently different `.so` and defeat
 | **OpenSSL** | https://github.com/openssl/openssl | `openssl-3.5.0` | `636dfadc70ce26f2473870570bfd9ec352806b1d` | Apache-2.0 | **TLS transport.** Without it `configure-android` builds a stack with no TLS and does not complain — DoD 13 and `docs/security.md` §Transport both fail silently |
 | **Opus** | https://downloads.xiph.org/releases/opus/ — **the release tarball, not the GitHub tag; see §1.3** | `1.5.2` | `ddbe48383984d56acd9e1ab6a090c54ca6b735a6` | BSD-3-Clause (GitHub reports `NOASSERTION`; the tree's `COPYING` is the 3-clause BSD) | The only wideband audio codec in the build. `CodecPreferences.DEFAULT` lists it first (`domain/…/model/Codecs.kt:78-82`) |
 | **libvpx** | https://github.com/webmproject/libvpx | `v1.17.0` | `6df3ec34557879fff673706f4a1d9fbd0f3a6f0e` | BSD-3-Clause | **VP8** — the only video codec both ends can negotiate. The deployed FreeSWITCH offers VP8 and VP9 and no H.264 (`docs/reconciliation.md` A-1b) |
+| **RNNoise** | https://github.com/xiph/rnnoise — **the release tarball, not the GitHub tag; the same trap as Opus, see §1.3** | `v0.2` | `904a876dce1f9ab8860c0a5000ed151f9f6eef58` | BSD-3-Clause | **Capture-path speech enhancement** (patch `0007`). Removes background noise before Lyra, which at 3.2 kbit/s resynthesises speech from a learned prior and so spends bits on noise rather than passing it through. Measured at 26.8 dB of attenuation for 0.24 of DNSMOS SIG — `tools/speech-enhancement`. Vendored at `third_party/rnnoise` |
 
-**These are the versions the green build already uses**, not new choices: they are the
-`workflow_dispatch` defaults at `.github/workflows/build-pjsip.yml:33-47`, proven by run
+**The first four are the versions the green build already uses**, not new choices: they are
+the `workflow_dispatch` defaults at `.github/workflows/build-pjsip.yml:33-47`, proven by run
 `34317978694` (`docs/reconciliation.md` B-7). Vendoring changes *where the source comes
 from*, not *which source*.
 
-**A dependency with no answer in the "why" column is removed.** All four have one.
+**RNNoise is the one addition since**, and it is the only tree here whose licence *reduces*
+exposure rather than adding to it: BSD-3-Clause, against ADR-002's unresolved GPLv2
+position. It also brings no new toolchain and no model file — the weights are 4.9 MB of
+`src/rnnoise_data.c` in the tree, so there is nothing to download, convert, package into
+the APK, or fail to load at run time. §1.3's lesson applies to it verbatim: the GitHub tag
+archive ships no generated `configure` and `autogen.sh` on master fetches the model over the
+network, so the **release tarball** is what is pinned.
+
+**A dependency with no answer in the "why" column is removed.** All five have one.
 
 ### 1.0 The Lyra closure — nineteen trees for one codec (ADR-008, Exit A, 2026-09-10)
 
@@ -272,11 +281,21 @@ not yet proven itself"*.
 
 ## 2. Local patches
 
-`pjsip/patches/` holds one patch and `vendored-tree.sha256`, rule 12's manifest.
+`pjsip/patches/` holds the numbered series and `vendored-tree.sha256`, rule 12's manifest.
 
 | # | Subject | Tree | Reason | Upstream |
 |---|---|---|---|---|
 | `0001` | `lyra-config-without-protobuf` | lyra | **Adds** `lyra/lyra_config.pb.h`, the file `protoc` would generate for `lyra_config.proto`, as a hand-written proto2 parser of that one-field message (`optional int32 identifier = 1`). The only file ever parsed with it is two bytes. Removes protobuf — a host `protoc` build plus `libprotobuf-lite` — from the closure. Skips unknown fields and groups, so a `.binarypb` that grows still parses. No upstream file is modified | Not sent: upstream builds with Bazel and has no reason to want this |
+| `0007` | `capture-path-speech-enhancement` | pjproject | **Adds** `pjmedia/speech_enh.{h,c}` — an RNNoise denoiser — and calls it from `rec_cb()` in `sound_port.c`, between `pjmedia_echo_capture()` and `pjmedia_port_put_frame()`. That point is the last one before the conference bridge, so a four-party mesh denoises **once** rather than once per leg. Switched on by a new `PJMEDIA_ECHO_USE_SPEECH_ENHANCER` bit in `echo.h` — bit 11 of the word pjsua already carries from `pjsua_media_config.ec_options` down to the sound port, which is what avoids an ABI change and a SWIG regeneration for a boolean. With `PJMEDIA_HAS_RNNOISE` 0 the whole thing compiles to a no-op and `rec_cb()` is byte-for-byte upstream's | Not sent: RNNoise is not a pjproject dependency, and the `ec_options` bit is a local accommodation of pjsua's plumbing rather than a design upstream would want |
+| `0008` | `rnnoise-os-support-header` | rnnoise | **Adds** `src/os_support.h`, which RNNoise 0.2's release tarball omits and both its ARM NEON path (`vec_neon.h:35`) and its scalar path (`vec.h:44`) include. It is an Opus header; RNNoise shares this vectorisation code with Opus, where it resolves. Without it the NDK build fails on the first file that pulls in `vec.h` — and the x86_64 host build does not, because it takes the `vec_avx.h` branch and never looks for the file. Three macros, verbatim from Opus's `celt/os_support.h` | Worth sending: a packaging bug in the 0.2 release, not a local preference |
+
+> **This table is incomplete and has been since `0002`.** Patches `0002`-`0006` — the
+> MediaCodec encoder selection, the video frame counters, the VP8 descriptor and decoder
+> discovery, the av-sync delay bound and the VP8 reference-trust fix — are in
+> `pjsip/patches/` with their reasoning in their own headers and have no row here. Each
+> patch file carries its full rationale, so nothing is lost; what is missing is the index.
+> Listing them is a documentation task in its own right and is noted rather than done
+> silently as part of a change about audio.
 
 **The rule (N-7).** Every local change is a **numbered patch file**, applied by the build in
 order, never an edit to the vendored tree. Each carries: what it changes, why, and whether

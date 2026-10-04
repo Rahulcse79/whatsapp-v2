@@ -1,0 +1,134 @@
+rnnoise: add the os_support.h its ARM and scalar paths include and the tarball omits
+
+RNNoise 0.2 cannot be compiled for arm64 as released. `src/vec.h` selects an
+implementation by preprocessor:
+
+    #if defined(__AVX__) || defined(__SSE2__)
+    #include "vec_avx.h"
+    #elif (defined(__ARM_NEON__) || defined(__ARM_NEON)) && !defined(DISABLE_NEON)
+    #include "vec_neon.h"
+    #else
+    #include "os_support.h"
+
+and both of the branches that are not `vec_avx.h` need `os_support.h` - the NEON one at
+`vec_neon.h:35`, the scalar one at `vec.h:44`. That file is not in the release tarball. It
+is an **Opus** header, and RNNoise shares this vectorisation code with Opus and LPCNet,
+where it resolves because the file sits in the same tree.
+
+So the NDK build fails on the first file that pulls in `vec.h`:
+
+    src/vec_neon.h:35:10: fatal error: 'os_support.h' file not found
+    make[3]: *** [src/nnet.lo] Error 1
+
+and nothing warns beforehand, because the x86_64 host build takes the `vec_avx.h` branch
+and never looks for the file. A denoiser that builds on a developer's Mac and not for the
+handset is exactly the shape of defect this is.
+
+## What is added, and what deliberately is not
+
+One header, with three macros, copied verbatim from Opus's `celt/os_support.h`:
+`OPUS_COPY`, `OPUS_MOVE`, `OPUS_CLEAR`. That is the entire surface rnnoise uses - `grep`
+finds `OPUS_CLEAR` at `vec.h:53`, `:87`, `:127` and `vec_neon.h:305`, and the other two
+nowhere, so they are here only because a header that defines one third of a familiar triple
+is a trap for the next reader.
+
+Opus's own `os_support.h` also wraps `malloc`/`free`/`realloc` behind
+`opus_alloc`/`opus_free` and carries a stack-allocation helper. None of that is reproduced.
+rnnoise calls none of it, and copying an allocator this tree does not use would be three
+more definitions that can silently drift away from the Opus they were taken from.
+
+The `0*((dst)-(src))` term in COPY and MOVE is kept exactly as Opus writes it. It is not
+decoration: pointer subtraction is only valid between pointers of the same type, so the term
+is a compile-time type check that turns a copy between mismatched types into a compile error
+rather than a copy of the wrong number of bytes.
+
+## Why a file and not an include path
+
+Pointing rnnoise's `CFLAGS` at `third_party/opus/celt` would also work, and would make the
+rnnoise build depend on the internal layout of a different vendored tree - so that an Opus
+bump could break the denoiser, with a missing-header error naming neither. One 68-line
+header inside the tree that needs it has no such edge.
+
+`Makefile.am`'s `noinst_HEADERS` is deliberately NOT extended. It affects `make dist` and
+nothing the build does, and touching `Makefile.am` would make automake want to regenerate
+`Makefile.in` with whatever autotools version happens to be installed - which is precisely
+the "the release tarball ships a pre-generated configure" property that made this dependency
+vendorable in the first place.
+
+Upstream: worth sending. This is a packaging bug in the 0.2 release rather than a local
+preference, and the fix upstream would want is probably to ship the file rather than to add
+this one - either way the report is the useful part.
+diff --git a/third_party/rnnoise/src/os_support.h b/third_party/rnnoise/src/os_support.h
+new file mode 100644
+index 00000000..0aca35c5
+--- /dev/null
++++ b/third_party/rnnoise/src/os_support.h
+@@ -0,0 +1,68 @@
++/* Copyright (C) 2007 Jean-Marc Valin
++ *
++ * File: os_support.h
++ * Memory macros, with the definitions Opus gives them.
++ *
++ * This file is NOT in the rnnoise 0.2 release tarball. It is added by
++ * pjsip/patches/0008-rnnoise-os-support-header.patch; see that patch for why rnnoise
++ * cannot be built for ARM without it.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ *
++ * - Redistributions of source code must retain the above copyright
++ * notice, this list of conditions and the following disclaimer.
++ *
++ * - Redistributions in binary form must reproduce the above copyright
++ * notice, this list of conditions and the following disclaimer in the
++ * documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE FOUNDATION OR
++ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
++ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
++ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
++ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
++ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
++ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
++ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#ifndef OS_SUPPORT_H
++#define OS_SUPPORT_H
++
++#include <string.h>
++
++/* Only the three memory macros, and only because `vec.h` and `vec_neon.h` use them.
++ *
++ * Opus's own os_support.h additionally wraps malloc/free/realloc behind
++ * opus_alloc/opus_free and carries a stack-allocation helper. None of that is reproduced:
++ * rnnoise references none of it, and copying an allocator this tree does not call would be
++ * three more things that could diverge from upstream Opus without anybody noticing.
++ *
++ * The definitions are Opus's verbatim, including the `0*((dst)-(src))` term - which is not
++ * decoration. It is a compile-time type check: the subtraction is only valid when both
++ * pointers have the same type, so a COPY between mismatched types fails to compile instead
++ * of copying the wrong number of bytes.
++ */
++
++/** Copy n elements from src to dst. The 0* term provides compile-time type checking  */
++#ifndef OVERRIDE_OPUS_COPY
++#define OPUS_COPY(dst, src, n) (memcpy((dst), (src), (n)*sizeof(*(dst)) + 0*((dst)-(src)) ))
++#endif
++
++/** Copy n elements from src to dst, allowing overlapping regions. The 0* term
++    provides compile-time type checking */
++#ifndef OVERRIDE_OPUS_MOVE
++#define OPUS_MOVE(dst, src, n) (memmove((dst), (src), (n)*sizeof(*(dst)) + 0*((dst)-(src)) ))
++#endif
++
++/** Set n elements of dst to zero */
++#ifndef OVERRIDE_OPUS_CLEAR
++#define OPUS_CLEAR(dst, n) (memset((dst), 0, (n)*sizeof(*(dst))))
++#endif
++
++#endif /* OS_SUPPORT_H */

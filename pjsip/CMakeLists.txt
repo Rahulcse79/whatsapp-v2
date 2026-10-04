@@ -55,7 +55,7 @@ set(CONFIG_SITE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/config")
 set(NATIVE_STAGE "${CMAKE_CURRENT_BINARY_DIR}/native")
 set(PREFIX "${NATIVE_STAGE}/prefix")
 
-foreach(tree pjproject openssl opus libvpx)
+foreach(tree pjproject openssl opus libvpx rnnoise)
     if(NOT EXISTS "${VENDOR_ROOT}/${tree}")
         message(FATAL_ERROR
             "third_party/${tree} is missing. The native stack is built from vendored "

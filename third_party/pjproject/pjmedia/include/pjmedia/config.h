@@ -818,6 +818,23 @@
  *
  * By default is disabled.
  */
+/**
+ * Specify whether the capture-path speech enhancer (pjmedia/speech_enh.h) is built with
+ * its RNNoise backend.
+ *
+ * Zero compiles the no-op fallback instead: pjmedia_speech_enh_create() returns
+ * PJ_ENOTSUP, pjmedia_snd_port holds no enhancer, and the capture callback is the one that
+ * shipped before the enhancer existed. Nothing else in pjmedia changes shape, so this is
+ * safe to leave at 0 and is the correct value for any build that does not link
+ * librnnoise.
+ *
+ * Default: 0
+ */
+#ifndef PJMEDIA_HAS_RNNOISE
+#   define PJMEDIA_HAS_RNNOISE                  0
+#endif
+
+
 #ifndef PJMEDIA_HAS_WEBRTC_AEC
 #   define PJMEDIA_HAS_WEBRTC_AEC               0
 #endif

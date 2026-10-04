@@ -33,6 +33,7 @@ check_pin pjproject "$PJPROJECT_SHA"
 check_pin openssl   "$OPENSSL_SHA"
 check_pin opus      "$OPUS_SHA"
 check_pin libvpx    "$LIBVPX_SHA"
+check_pin rnnoise   "$RNNOISE_SHA"
 for entry in "${LYRA_TREES[@]}"; do
   name="${entry%%:*}"; sha_var="${entry##*:}_SHA"
   check_pin "$name" "${!sha_var}"

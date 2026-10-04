@@ -79,10 +79,39 @@ export PATH="$toolchain_bin:$PATH"
 jobs="$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )"
 
 # A marker per tree, so a re-run does not redo an hour of work. The marker records the
-# vendored tree's hash, so a bumped or patched dependency rebuilds and an unchanged one
-# does not — the same input-tracking Gradle does, at the granularity Gradle cannot see.
+# vendored tree's content hash, so a bumped or patched dependency rebuilds and an unchanged
+# one does not — the same input-tracking Gradle does, at the granularity Gradle cannot see.
+#
+# ## This hash was vacuous and the cache was therefore permanent
+#
+# It used to be
+#
+#     find "$VENDOR_ROOT/$1" -type f -newer /dev/null | LC_ALL=C sort \
+#       | xargs shasum -a 256 2>/dev/null | shasum -a 256 | cut -d' ' -f1
+#
+# and `-newer /dev/null` is the defect. On macOS /dev/null's mtime is set at boot, so the
+# predicate means "modified since this machine last booted" — and on any machine that has
+# rebooted since it vendored, `find` matches NOTHING. Every tree then hashed to
+# e3b0c44298fc…b855, which is the SHA-256 of the empty string, every tree hashed to the
+# same value as its own stamp, and `up_to_date` returned true for ever. Bump a pin, patch
+# a vendored tree, and the build happily relinked last month's archive. Found while warming
+# this cache deliberately: all four stamps came out as the empty digest.
+#
+# Two further things were wrong with it even where it did match. `xargs shasum` hashes
+# ABSOLUTE paths, so the same tree in two worktrees produced two different hashes; and a
+# tree large enough to split `xargs` into several invocations produced a hash that depended
+# on the argument limit.
+#
+# The replacement is the construction record-hashes.sh and ArchitectureRules.hashTree
+# already use: every file's path relative to the tree, a NUL, then its bytes, sorted by
+# path. Location-independent, no argument limit, and a rename counts as a change — which it
+# is. LC_ALL=C so the sort is byte order on every machine rather than the runner's locale.
 stamp() { echo "$work/.$1.stamp"; }
-current_hash() { find "$VENDOR_ROOT/$1" -type f -newer /dev/null | LC_ALL=C sort | xargs shasum -a 256 2>/dev/null | shasum -a 256 | cut -d' ' -f1; }
+current_hash() {
+  ( cd "$VENDOR_ROOT/$1" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do
+      printf '%s' "${f#./}"; printf '\0'; cat "$f"
+    done | shasum -a 256 | cut -d' ' -f1 )
+}
 up_to_date() { [ -f "$(stamp "$1")" ] && [ "$(cat "$(stamp "$1")")" = "$(current_hash "$1")" ]; }
 mark_done() { current_hash "$1" > "$(stamp "$1")"; }
 
@@ -128,6 +157,47 @@ if ! up_to_date opus; then
     make -j"$jobs" && make install )
   mark_done opus
 fi
+
+# ---------------------------------------------------------------- RNNoise (capture-path
+# speech enhancement, stage 2)
+#
+# AR/RANLIB/NM/STRIP for the same reason Opus names them: left to itself autotools looks for
+# `aarch64-linux-android-ar`, does not find it, and falls back to the HOST `ar`.
+#
+# `make librnnoise.la` and NOT the default target. `Makefile.am:57-59` declares three
+# noinst_PROGRAMS — `dump_features`, `dump_weights_blob` and `examples/rnnoise_demo` — which
+# are training and demo tools, are of no use cross-compiled for a handset that will never
+# run them, and are three more things that can fail a build for no gain. Naming the library
+# target skips them; the two `install-*` targets below are automake's own, derived from
+# `lib_LTLIBRARIES` and `include_HEADERS`, and a plain `make install` would depend on `all`
+# and build the programs after all.
+#
+# --disable-examples / --disable-doc are deliberately NOT passed: rnnoise's configure
+# declares neither, and a flag autotools does not know is accepted, ignored, and reported
+# only as a line in config.log nobody reads.
+if ! up_to_date rnnoise; then
+  echo "==> RNNoise ($ABI)"
+  sync_tree rnnoise
+  ( cd "$work/rnnoise"
+    ./configure --host="$HOST_TRIPLE" \
+      CC="$HOST_TRIPLE$ANDROID_API-clang" \
+      AR=llvm-ar RANLIB=llvm-ranlib NM=llvm-nm STRIP=llvm-strip \
+      --prefix="$prefix" --disable-shared --enable-static
+    make -j"$jobs" librnnoise.la
+    make install-libLTLIBRARIES install-includeHEADERS )
+  mark_done rnnoise
+fi
+
+# The denoiser has to actually be there before pjproject is told it is: config_site.h sets
+# PJMEDIA_HAS_RNNOISE 1, and patch 0007's speech_enh.c is compiled against that. A missing
+# archive here is a wall of undefined `rnnoise_*` symbols at the wrapper link, four minutes
+# later and nowhere near the cause.
+[ -f "$prefix/lib/librnnoise.a" ] || {
+  echo "::error::librnnoise.a was not installed into $prefix/lib." >&2
+  echo "  config_site.h declares PJMEDIA_HAS_RNNOISE 1, so pjmedia will reference" >&2
+  echo "  rnnoise_create/process_frame and the wrapper link will fail on them." >&2
+  exit 1
+}
 
 # ---------------------------------------------------------------- libvpx (VP8 — the only
 # video codec both ends can negotiate; the deployed FreeSWITCH has no H.264 at all)
@@ -243,6 +313,16 @@ cp "$CONFIG_SITE_DIR/pj/config_site.h" pjlib/include/pj/config_site.h
 export LDFLAGS="${LDFLAGS:-} -Wl,-z,max-page-size=16384"
 export ANDROID_NDK_ROOT
 
+# `rnnoise.h` for patch 0007's pjmedia/src/pjmedia/speech_enh.c.
+#
+# This is appended to CFLAGS rather than routed through a `--with-rnnoise=` switch because
+# there is no such switch: pjproject's configure knows about ssl, opus, vpx and lyra, and
+# teaching it a fifth would mean patching aconfigure.ac and regenerating `configure` with
+# the exact autoconf upstream used. CFLAGS is the documented seam, pjproject's own
+# `--use-ndk-cflags` appends to it rather than replacing it, and a `-I` that points at a
+# directory with one header in it has no way to shadow anything.
+export CFLAGS="${CFLAGS:-} -I$prefix/include"
+
 # THE ABI. `configure-android` reads TARGET_ABI and defaults to arm64 without it, so every
 # ABI configured as aarch64: libopus.a and libvpx.a were built correctly for armeabi-v7a and
 # the wrapper then refused them — `libopus.a(bands.o) is incompatible with aarch64linux`,
@@ -341,7 +421,9 @@ echo "::endgroup::"
 # which is the correct position for static archives — after the objects that reference them.
 # `-llyra` joins them for the same reason, and `-llog` after it: glog inside the archive
 # logs through __android_log_write, which nothing else on this link line pulls in.
-( export LDFLAGS="-L$prefix/lib -lopus -lvpx -llyra -llog"; cd pjsip-apps/src/swig && make java )
+# `-lrnnoise` is here for patch 0007's speech_enh.c, and its position matters for the same
+# reason every other one does: it is referenced by a pjmedia object, so it must come after.
+( export LDFLAGS="-L$prefix/lib -lopus -lvpx -llyra -lrnnoise -llog"; cd pjsip-apps/src/swig && make java )
 
 jni_so="$work/pjproject/pjsip-apps/src/swig/java/android/pjsua2/src/main/jniLibs/$ABI/libpjsua2.so"
 [ -f "$jni_so" ] || { echo "::error::the SWIG Java build produced no $jni_so" >&2

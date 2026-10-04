@@ -37,6 +37,21 @@ LIBVPX_TAG="v1.17.0"
 LIBVPX_SHA="6df3ec34557879fff673706f4a1d9fbd0f3a6f0e"
 LIBVPX_URL="https://github.com/webmproject/libvpx/archive/refs/tags/${LIBVPX_TAG}.tar.gz"
 
+# RNNoise — the ML speech denoiser in the capture path (stage 2).
+#
+# From the RELEASE tarball for the same reason Opus is, and the trap is the same one in the
+# same place: the git tag archive ships no generated `configure`, and `autogen.sh` on master
+# reaches for the model weights over the network. The release tarball has `configure`
+# pre-generated and carries the weights as `src/rnnoise_data.c` — 4.9 MB of them, in the
+# tree — so there is no model file to download, convert, package into the APK, or fail to
+# load at runtime. 64 files, 6.4 MB, and nothing is fetched at build time (N-2).
+#
+# Licence is BSD-3 (Xiph / Mozilla / Valin / Amazon), which is the one dependency here that
+# ADDS no obligation: see docs/native-dependencies.md §4.
+RNNOISE_TAG="v0.2"
+RNNOISE_SHA="904a876dce1f9ab8860c0a5000ed151f9f6eef58"
+RNNOISE_URL="https://github.com/xiph/rnnoise/releases/download/${RNNOISE_TAG}/rnnoise-0.2.tar.gz"
+
 # ---------------------------------------------------------------------------
 # The Lyra closure — ADR-008, Exit A (2026-09-10).
 #
@@ -255,6 +270,19 @@ OPUS_PRUNE=(
   # Nothing. `configure.ac:1039` declares `doc/Makefile` and `Makefile.am:10` names
   # `./doc`, so `autoreconf` requires both directories to exist whatever the build does
   # with them. Opus is 16 MB; there is nothing here worth breaking a cross-compile for.
+)
+
+RNNOISE_PRUNE=(
+  # Nothing, and it was checked rather than assumed. `Makefile.am:82` lists `doc/Doxyfile.in`
+  # and `doc/Makefile` in EXTRA_DIST and `:59` names `examples/rnnoise_demo` in
+  # noinst_PROGRAMS, so both directories are referenced by the build system and pruning
+  # either is exactly the breakage tools/vendor/verify-prune.sh exists to catch. The whole
+  # tree is 6.4 MB, of which 4.9 MB is the model; there is nothing to save.
+  #
+  # The demo and the two `dump_*` tools are not pruned and also not BUILT: build-native.sh
+  # asks for `librnnoise.la` rather than the default target, so the three noinst_PROGRAMS
+  # never reach the cross-compiler. Not building something is cheaper and safer than
+  # deleting it.
 )
 
 LIBVPX_PRUNE=(

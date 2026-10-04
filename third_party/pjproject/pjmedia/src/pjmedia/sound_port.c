@@ -17,6 +17,7 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA 
  */
 #include <pjmedia/sound_port.h>
+#include <pjmedia/speech_enh.h>
 #include <pjmedia/alaw_ulaw.h>
 #include <pjmedia/delaybuf.h>
 #include <pjmedia/echo.h>
@@ -69,6 +70,13 @@ struct pjmedia_snd_port
     pj_bool_t            ec_suspended;
     unsigned             ec_suspend_count;
     unsigned             ec_suspend_limit;
+
+    /* capture-path speech enhancement (pjmedia/speech_enh.h). NULL whenever no backend is
+     * compiled in, the flag was not requested, or the backend refused this stream's
+     * format - and a NULL here is what makes rec_cb() identical to the one that shipped
+     * before the enhancer existed.
+     */
+    pjmedia_speech_enh  *speech_enh;
 
     /* audio frame preview callbacks */
     void                *user_data;
@@ -173,6 +181,18 @@ static pj_status_t rec_cb(void *user_data, pjmedia_frame *frame)
     /* Cancel echo */
     if (snd_port->ec_state && !snd_port->ec_suspended) {
         pjmedia_echo_capture(snd_port->ec_state, (pj_int16_t*) frame->buf, 0);
+    }
+
+    /* Enhance speech.
+     *
+     * After the echo canceller, because the enhancer must not be asked to model the far
+     * end's voice as noise, and before pjmedia_port_put_frame(), because that is the
+     * conference bridge: everything downstream of here is per-leg, and this is the last
+     * point at which one call does the work for every participant.
+     */
+    if (snd_port->speech_enh) {
+        pjmedia_speech_enh_capture(snd_port->speech_enh,
+                                   (pj_int16_t*) frame->buf);
     }
 
     port = snd_port->port;
@@ -384,6 +404,59 @@ static pj_status_t start_sound_device( pj_pool_t *pool,
                                  (snd_port->clock_rate / 
                                   snd_port->samples_per_frame);
 
+    /* Create the capture-path speech enhancer, if asked for.
+     *
+     * Before the echo canceller below, and not merely for tidiness: when the enhancer is
+     * created successfully, PJMEDIA_ECHO_USE_NOISE_SUPPRESSOR is cleared from the options
+     * the canceller is then given. Two noise suppressors in series over-attenuate and
+     * damage speech - measured, on the same corpus, as a loss of more than half a MOS
+     * point of signal quality - so exactly one of them runs. Setting both flags is the
+     * intended configuration and this is where the choice is made: the enhancer when the
+     * backend is there and accepts the format, the statistical suppressor when it is not.
+     *
+     * Only for PCM. The enhancer rewrites 16-bit samples in place, and the non-PCM
+     * capture path (rec_cb_ext) carries encoded frames this must never touch.
+     */
+    if ((snd_port->prm_ec_options & PJMEDIA_ECHO_USE_SPEECH_ENHANCER) &&
+        param_copy.ext_fmt.id == PJMEDIA_FORMAT_PCM)
+    {
+        /* A LOCAL status, and this is load-bearing rather than a style choice.
+         *
+         * The tail of this function reads
+         *
+         *     if (!(snd_port->options & PJMEDIA_SND_PORT_NO_AUTO_START)) {
+         *         status = pjmedia_aud_stream_start(snd_port->aud_stream);
+         *         ...
+         *     }
+         *     if (status != PJ_SUCCESS)
+         *         goto on_error;
+         *
+         * and that last test is OUTSIDE the block that assigns it. With NO_AUTO_START set,
+         * `status` is therefore whatever the last thing to write it left behind. Upstream
+         * is safe by accident: every earlier writer either succeeded or jumped away. This
+         * is the first that can leave a failure in `status` and carry on by design - a
+         * refused enhancer is a normal outcome - so writing to `status` here would send a
+         * perfectly good sound port to `on_error` and kill audio altogether, on the one
+         * device whose capture format RNNoise happens not to accept.
+         */
+        pj_status_t enh_status = pjmedia_speech_enh_create(pool,
+                                                         snd_port->clock_rate,
+                                                         snd_port->channel_count,
+                                                         snd_port->samples_per_frame,
+                                                         0,
+                                                         &snd_port->speech_enh);
+        if (enh_status == PJ_SUCCESS) {
+            snd_port->prm_ec_options &= ~PJMEDIA_ECHO_USE_NOISE_SUPPRESSOR;
+        } else {
+            /* NOT an error, and NOT propagated. speech_enh.c has already logged which
+             * format it refused. A denoiser that cannot start must cost nothing more than
+             * the denoising, so the call goes on with the statistical suppressor the
+             * canceller is still being asked for.
+             */
+            snd_port->speech_enh = NULL;
+        }
+    }
+
     /* Create software EC if parameter specifies EC and
      * (app specifically requests software EC or device
      * doesn't support EC). Only do this if the format is PCM!
@@ -522,6 +595,15 @@ static pj_status_t stop_sound_device( pjmedia_snd_port *snd_port )
     if (snd_port->ec_state) {
         pjmedia_echo_destroy(snd_port->ec_state);
         snd_port->ec_state = NULL;
+    }
+
+    /* Destroy the speech enhancer. After the audio stream is stopped above, which is what
+     * guarantees no capture callback is in rec_cb() holding this pointer. The backend's
+     * state is a malloc of its own and does not go with the pool.
+     */
+    if (snd_port->speech_enh) {
+        pjmedia_speech_enh_destroy(snd_port->speech_enh);
+        snd_port->speech_enh = NULL;
     }
 
     return PJ_SUCCESS;
