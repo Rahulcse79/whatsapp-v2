@@ -809,6 +809,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
             quality = RESAMPLE_QUALITY
             ecTailLen = EC_TAIL_MS
             ecOptions = EC_OPTIONS
+            // See [SOUND_USE_SW_CLOCK]. This is the single largest latency item on the
+            // path, and it is two delay buffers that exist only while this is on.
+            sndUseSwClock = SOUND_USE_SW_CLOCK
             // `noVad` reads backwards: true disables voice activity detection.
             noVad = true
             // Adaptive, but bounded. An unbounded jitter buffer trades a defect the user
@@ -3505,6 +3508,38 @@ internal class RealPjsipCoreGateway @Inject constructor(
         /** Resampler quality, 1..10. PJSIP defaults to 8. */
         const val RESAMPLE_QUALITY = 10L
 
+        /**
+         * `medConfig.sndUseSwClock` - off, against a pjsua default of on
+         * (`PJSUA_DEFAULT_SND_USE_SW_CLOCK`, `pjsua.h:7692`).
+         *
+         * On, pjmedia drives the media flow from its own `pjmedia_clock` and parks a
+         * `pjmedia_delay_buf` on each of capture and playback to absorb the difference
+         * between that clock and the device's. Those two buffers are the reason a call
+         * between two handsets on one Wi-Fi sounded late:
+         *
+         *  - `PJMEDIA_SOUND_BUFFER_COUNT` is `(PJMEDIA_SND_DEFAULT_PLAY_LATENCY+20)/20`
+         *    (`config.h:368`), and `PLAY_LATENCY` is 140 (`config.h:233`), so 8 frames.
+         *  - `sound_port.c:506-524` sizes both buffers at `8 x 20 ms` = 160 ms.
+         *  - `delaybuf.c:117-118` starts each at `max_cnt >> 1`, so **80 ms on capture and
+         *    80 ms on playback immediately**, and the learner grows them toward 160 ms
+         *    each under uneven load.
+         *
+         * That is 160-320 ms of round trip buying nothing on a LAN. Off, `sound_port.c:104`
+         * and `:204` skip the buffers entirely and the device's own callbacks clock the
+         * flow - the ordinary arrangement on every other pjsip platform. The jitter buffer
+         * ([JITTER_BUFFER_MAX_MS]) still absorbs network jitter, which is what actually
+         * varies here; what is given up is smoothing of capture-vs-playback clock drift,
+         * and the symptom if a handset ever needs it is a periodic tick, not lateness.
+         *
+         * Do **not** reach for `sndRecLatency`/`sndPlayLatency` instead. On this backend
+         * they are inert: `android_jni_dev.c:487-488` reports them as defaults and nothing
+         * reads them back - the AudioRecord/AudioTrack buffers come from
+         * `getMinBufferSize()` alone. Shrinking the delay buffers while keeping the
+         * software clock would mean `PJMEDIA_SOUND_BUFFER_COUNT` in `config_site.h`, a
+         * compile-time change and a native rebuild.
+         */
+        const val SOUND_USE_SW_CLOCK = false
+
         /** Echo tail, ms. Shorter than the device's acoustic path cancels nothing. */
         const val EC_TAIL_MS = 200L
 
@@ -4247,7 +4282,7 @@ private fun Endpoint.tuneVideoCodecs(
 }
 
 /**
- * Points the Lyra codec at its model files (ADR-008, Exit A).
+ * Points the Lyra codec at its model files (ADR-008, Exit A) and sets its bit rate.
  *
  * After `libInit`, which is when the codec registers and writes its *default* path —
  * the relative string `"model_coeffs"`, which exists nowhere on a device — and before
@@ -4272,6 +4307,7 @@ private fun Endpoint.tuneLyra(context: Context, logger: Logger): String? {
     return runCatching {
         val lyra = codecLyraConfig
         lyra.modelPath = dir.absolutePath
+        lyra.bitRate = LYRA_BITRATE
         codecLyraConfig = lyra
     }.exceptionOrNull()?.let { failure ->
         // The library was built without PJMEDIA_HAS_LYRA_CODEC, or the setter refused
@@ -4280,6 +4316,25 @@ private fun Endpoint.tuneLyra(context: Context, logger: Logger): String? {
         "pjsua2 refused the Lyra configuration: ${failure.message}"
     }
 }
+
+/**
+ * Lyra's bit rate, bps. One of 3200, 6000 or 9200 - `lyra.cpp:30` - and this build asked
+ * for none of them, so it inherited `PJMEDIA_CODEC_LYRA_DEFAULT_BIT_RATE`, the 3200 floor
+ * (`pjmedia-codec/config.h:584`).
+ *
+ * 3200 is the wrong default here. Lyra is generative: it does not quantise the waveform,
+ * it resynthesises speech from a learned prior, and at its floor the prior is doing most
+ * of the work - which is what "clear enough to understand, obviously not the speaker"
+ * sounds like. 9200 is the top mode and still only 9.2 kbps, so on the LAN these handsets
+ * share the extra 6 kbps is free; this was never a bandwidth decision, only an unexamined
+ * default.
+ *
+ * Safe against a peer that disagrees. `lyra.cpp:323` advertises `bitrate=9200` in the
+ * fmtp and `get_bit_rate_from_fmtp` (`:430`) reads the answer per direction, falling back
+ * to 3200 for anything absent or not one of the three - so an older CoralX build, or a
+ * leg that negotiates down, still interoperates at the rate it offered.
+ */
+private const val LYRA_BITRATE = 9_200L
 
 private const val LYRA_TAG = "PjsipGateway"
 
