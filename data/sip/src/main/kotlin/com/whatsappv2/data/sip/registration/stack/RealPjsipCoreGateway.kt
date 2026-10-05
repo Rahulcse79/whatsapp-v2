@@ -119,6 +119,8 @@ import javax.inject.Singleton
 import kotlin.math.roundToLong
 import com.whatsappv2.domain.video.DisplayCeiling
 import com.whatsappv2.domain.video.VideoBudget
+import com.whatsappv2.domain.voice.SpeakerEmbedder
+import com.whatsappv2.domain.voice.VoiceProfileRepository
 
 /**
  * The real SIP stack, behind the gateway seam (ADR-006).
@@ -193,7 +195,24 @@ internal class RealPjsipCoreGateway @Inject constructor(
     @ApplicationContext private val context: Context,
     private val trustStore: PjsipTrustStore,
     private val logger: Logger,
+    /** The voice profile, watched so the gate follows enrolment and deletion (ADR-013). */
+    private val voiceProfiles: VoiceProfileRepository,
+    /** Runs the speaker model; the gate does not start without one. */
+    private val speakerEmbedder: SpeakerEmbedder,
 ) : SipCoreGateway, SipCallGateway, SipVideoGateway, SipRecordingGateway, SipConferenceGateway {
+
+    /**
+     * Keeps the microphone open only while the enrolled user is talking (ADR-013).
+     *
+     * Held here because the capture device is here, and started from the media-state
+     * callback for the same reason the microphone itself is wired there: that is the
+     * moment a call actually has audio. Does nothing at all when there is no profile.
+     */
+    private val voiceGate = VoiceGateController(
+        embedder = speakerEmbedder,
+        logger = logger,
+        onPjsip = { name, block -> onPjsip(name) { block() } },
+    )
 
     private val events = MutableSharedFlow<StackRegistrationEvent>(
         replay = 0,
@@ -850,6 +869,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // open until a finalizer happens to run, which for a recording the user asked
             // to keep is a truncated file. After libDestroy the native port is already
             // gone and deleting it would be worse than not.
+            // The voice gate first, and before anything touches the conference bridge:
+            // it holds a director port the bridge is transmitting into, and letting
+            // libDestroy take that would free a port pjmedia still has a pointer to.
+            // Stopping also restores the capture level, so a stack that comes back up
+            // does not inherit a muted microphone.
+            runCatching { voiceGate.stop() }
+
             recorders.values.forEach { runCatching { it.delete() } }
             recorders.clear()
 
@@ -1949,6 +1975,29 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     // -------------------------------------------------------------- conference
 
+    /**
+     * Starts the voice gate if the user has a profile, or stops it if they have not.
+     *
+     * Called from the media-state callback, so it runs whenever a call gains audio — and
+     * is idempotent, because [VoiceGateController.start] returns immediately when it is
+     * already gating against the same profile. That is also what makes enrolment and
+     * deletion take effect on the next call without anything watching a Flow from here.
+     *
+     * The profile is read with `runBlocking` on the PJSIP thread, and that is defensible
+     * precisely once: it is a field read on a `@Singleton` that loaded the profile from a
+     * sub-kilobyte file at construction, so it does not touch the disk. See
+     * `FileVoiceProfileStore.load` for why the read is eager.
+     */
+    private fun startVoiceGate(running: Endpoint) {
+        val profile = kotlinx.coroutines.runBlocking { voiceProfiles.current() }
+        if (profile == null) {
+            if (voiceGate.isRunning) voiceGate.stop()
+            return
+        }
+        runCatching { voiceGate.start(running.audDevManager().captureDevMedia, profile) }
+            .onFailure { logger.warn(TAG, "The voice gate could not start: ${it.message}") }
+    }
+
     override fun peerIsCoralxClient(callKey: String): Boolean =
         calls[callKey]?.peerIsCoralx == true
 
@@ -2333,6 +2382,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
                             if (!microphoneMuted) {
                                 running.audDevManager().captureDevMedia.startTransmit(stream)
                             }
+                            // The gate watches the same microphone, so it starts where
+                            // the microphone is wired. Idempotent across calls and
+                            // re-INVITEs: one device, one gate, one tap.
+                            startVoiceGate(running)
                             stream.startTransmit(running.audDevManager().playbackDevMedia)
                         }.onFailure { logger.error(TAG, "Could not connect audio: ${it.message}") }
                     }

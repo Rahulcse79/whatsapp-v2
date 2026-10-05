@@ -14,7 +14,7 @@ pinned anyway, because an unpinned tool is a silently different `.so` and defeat
 
 ---
 
-## 1. The five unconditional trees
+## 1. The five unconditional trees, and one model
 
 | Name | Upstream | Version | Commit | Licence | Why it is here |
 |---|---|---|---|---|---|
@@ -23,6 +23,7 @@ pinned anyway, because an unpinned tool is a silently different `.so` and defeat
 | **Opus** | https://downloads.xiph.org/releases/opus/ — **the release tarball, not the GitHub tag; see §1.3** | `1.5.2` | `ddbe48383984d56acd9e1ab6a090c54ca6b735a6` | BSD-3-Clause (GitHub reports `NOASSERTION`; the tree's `COPYING` is the 3-clause BSD) | The only wideband audio codec in the build. `CodecPreferences.DEFAULT` lists it first (`domain/…/model/Codecs.kt:78-82`) |
 | **libvpx** | https://github.com/webmproject/libvpx | `v1.17.0` | `6df3ec34557879fff673706f4a1d9fbd0f3a6f0e` | BSD-3-Clause | **VP8** — the only video codec both ends can negotiate. The deployed FreeSWITCH offers VP8 and VP9 and no H.264 (`docs/reconciliation.md` A-1b) |
 | **RNNoise** | https://github.com/xiph/rnnoise — **the release tarball, not the GitHub tag; the same trap as Opus, see §1.3** | `v0.2` | `904a876dce1f9ab8860c0a5000ed151f9f6eef58` | BSD-3-Clause | **Capture-path speech enhancement** (patch `0007`). Removes background noise before Lyra, which at 3.2 kbit/s resynthesises speech from a learned prior and so spends bits on noise rather than passing it through. Measured at 26.8 dB of attenuation for 0.24 of DNSMOS SIG — `tools/speech-enhancement`. Vendored at `third_party/rnnoise` |
+| **WeSpeaker** (model only) | https://huggingface.co/Wespeaker/wespeaker-ecapa-tdnn512-LM | `voxceleb_ECAPA512_LM` | SHA-256 `d71b85d9b48058ef68004f04f1b78acebefb9dfcf542e19b976a12a5ad1f10b0` | **CC-BY-4.0** (model card); toolkit Apache-2.0; trained on VoxCeleb | **The voice profile's speaker embedding** (ADR-013). ECAPA-TDNN, 192 dimensions, 24 MB of ONNX. Not source and not built here — one weights file, staged into the APK by `:app` exactly as Lyra's coefficients are. Vendored at `third_party/wespeaker`; see its README for why it ships as ONNX rather than TFLite |
 
 **The first four are the versions the green build already uses**, not new choices: they are
 the `workflow_dispatch` defaults at `.github/workflows/build-pjsip.yml:33-47`, proven by run
@@ -37,7 +38,15 @@ the APK, or fail to load at run time. §1.3's lesson applies to it verbatim: the
 archive ships no generated `configure` and `autogen.sh` on master fetches the model over the
 network, so the **release tarball** is what is pinned.
 
-**A dependency with no answer in the "why" column is removed.** All five have one.
+**A dependency with no answer in the "why" column is removed.** All of them have one.
+
+**WeSpeaker is the one row that is not a source tree**, and it is the only entry whose
+licence *asks* for something rather than merely permitting: CC-BY-4.0 requires attribution,
+so the About screen names it. It is pinned by file hash rather than by a commit because
+there is no commit — it is a published artefact, and `fetch-corpus.sh` and
+`third_party/wespeaker/README.md` both carry the same SHA-256. It is therefore **not**
+fetched by `tools/vendor/vendor.sh`, which deals in source tarballs; the file is committed
+and nothing downloads it.
 
 ### 1.0 The Lyra closure — nineteen trees for one codec (ADR-008, Exit A, 2026-09-10)
 

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:tools="http://schemas.android.com/tools"
+    xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
       Declared here, modelled in AppPermission, and requested in context by
@@ -236,6 +237,25 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- ONNX Runtime's telemetry, removed (ADR-013).
+
+             The AAR ships a ContentProvider that builds an HttpClient and registers a
+             network callback the moment the process starts - visible in logcat as
+             `ai.onnxruntime.telemetry.HttpClient.<init>` from `TelemetryInitializer`.
+             Microsoft's own component, not ours, and it runs whether or not a model is
+             ever loaded.
+
+             The voice profile's entire premise is that nothing about the user's voice
+             leaves the handset. A telemetry channel opened by the library that computes
+             the embedding is not something to leave in and document; it is removed, and
+             `VoicePrivacyTest` asserts it stays removed. The AAR's INTERNET and
+             ACCESS_NETWORK_STATE permissions are already held by this app for SIP and
+             chat, so nothing is gained by trying to drop those as well. -->
+        <provider
+            android:name="ai.onnxruntime.TelemetryInitializer"
+            android:authorities="${applicationId}.onnxruntime_telemetry_initializer"
+            tools:node="remove" />
 
     </application>
 

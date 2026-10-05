@@ -1,7 +1,7 @@
 package com.whatsappv2.domain.voice
 
 /**
- * Decides, moment to moment, whether the microphone is carrying the user (ADR-012).
+ * Decides, moment to moment, whether the microphone is carrying the user (ADR-013).
  *
  * The capture path already removes *noise* — RNNoise, in `pjmedia_snd_port` — and the one
  * thing a noise suppressor structurally cannot remove is other people's speech, because

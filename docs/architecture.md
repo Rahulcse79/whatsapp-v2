@@ -922,6 +922,111 @@ different codec string, closes both.
 
 ---
 
+### ADR-013 — Personalised voice: **a speaker gate, on ONNX Runtime, measured before it was built**
+
+**Status:** Accepted · **Decided:** 2026-10-05 · **Decider:** stakeholder ·
+**Builds on ADR-010**
+
+**Context.** ADR-010 put RNNoise in the capture path and it removes noise well — ~26.8 dB,
+reaching the clean reference's background score. The one thing it structurally cannot
+remove is **other people's speech**, because speech is what a noise suppressor keeps.
+Measured, babble is its worst class by a distance. The ask was a personalised profile that
+keeps only the user.
+
+**The measurement came first, and it set everything.** Twelve speakers, WeSpeaker
+ECAPA-TDNN, enrolled on ~25 s each — `tools/speech-enhancement/VOICE-PROFILE.md`.
+
+Verification alone said the feature was marginal: at 1 s windows in babble at 5 dB the
+false-reject rate is 13.7%, and 32.3% after RNNoise. Two controls located that precisely —
+a 16 k→48 k→16 k round trip costs nothing and RNNoise on *clean* speech costs nothing at
+2 s, so the damage is **residual babble**: the embedding of a two-speaker mixture sits
+between the two speakers.
+
+A gate is not a classifier, though. It decides over time and may be asymmetric:
+
+| close delay | threshold | user cut | others let through |
+|---|---|---|---|
+| 0.75 s | 0.35 | 1.5% | 4.6% |
+| **1.0 s** | **0.35** | **0.0%** | **6.9%** |
+| 1.5 s | 0.35 | 0.0% | 11.4% |
+
+**The leak is the closing delay, not misclassification** — identical at 0.35/0.40/0.45,
+moving only with the delay. So the threshold is set by where the user stops being cut and
+the delay by how much of somebody else's sentence is tolerable. Three windows starts
+cutting the user, which is the line this does not cross.
+
+**Decision.**
+
+1. **A gate, not extraction.** 2 s rolling window, a decision every 250 ms, open on one
+   matching window, close after four that do not. `domain/voice/SpeakerGate`.
+2. **Every bias points one way.** Starts open, reopens on one window, and treats a window
+   it cannot score as the user's. No profile, no model, a model that throws, a port the
+   stack refuses — all leave the microphone alone. Muting the user is the failure this
+   cannot have and the one they could not diagnose.
+3. **One profile, replaced not merged.** 192 floats in `filesDir`. The audio never reaches
+   storage: enrolment turns it into a vector and discards it.
+4. **ONNX Runtime Android**, not the TFLite already linked for Lyra — on evidence.
+   `onnx2tf` aborts at `BatchNormalization_11` on a 1-D convolution layout mismatch, with
+   and without `-kat`; int8 dynamic quantisation gives 6.1 MB with no CPU kernel
+   (`ConvInteger`). Both recorded in `third_party/wespeaker/README.md`. Running the ONNX
+   unchanged also means the thresholds above describe the file that ships.
+5. **Applied with `adjustRxLevel` on the capture slot**, not a patch inside `rec_cb`.
+   Same position in the signal path — after RNNoise, before every encoder, so Lyra encodes
+   digital silence — using one existing call instead of a new vendored patch, a JNI
+   bridge and a native rebuild. `adjustRxLevel(0)` is exact silence, not attenuation:
+   pjsua passes `(level-1)*128`, so `rx_adj_level` is 0 and `conference.c` computes
+   `sample * 0 / 128`. It is also independent of the user's own mute, which works by
+   `stopTransmit`, so the two compose rather than fight.
+
+**ONNX Runtime's telemetry is removed, and a test keeps it removed.** The AAR ships a
+`ContentProvider` that builds an HTTP client and registers a network callback at process
+start — `ai.onnxruntime.telemetry.HttpClient.<init>` from `TelemetryInitializer`, running
+whether or not a model is ever loaded. In the library that computes the voice embedding,
+in a feature sold on nothing leaving the handset, that is not something to document and
+leave in. `tools:node="remove"` deletes it and `VoicePrivacyTest` asserts against the
+**merged** manifest that it stays deleted, including under a future rename.
+
+**Measured on the device** (Samsung M23, live call to the echo extension,
+`/proc/<pid>/stat` over 30 s):
+
+| | % of one core |
+|---|---|
+| gate on | 118.4, 122.1 |
+| gate off (no profile) | 94.0, 95.4 |
+
+**~25 points of one core**, against ~22% predicted from the host. Not free. The obvious
+halving is to run the embedder only when RNNoise's voice probability says there is speech
+— it already computes one per block — and that is not done yet.
+
+The chain was verified end to end on the handset: the 24 MB model loads, the tap attaches,
+and the gate closed 2.9 s after a call started against a deliberately non-matching
+profile — a 2 s window fill plus the 1 s close delay, which is the designed timing. With
+the profile deleted the gate never starts.
+
+**Not verified, and it needs a person.** A real enrolment, and therefore the on-device
+false-reject and leakage numbers. Enrolment needs ~90 s of someone actually speaking into
+the handset; the counter correctly stays at 0 in a silent room, and playing speech at the
+phone from the development machine did not reach it. The host numbers above stand in, and
+`VOICE-PROFILE.md` says what they are worth — MS-SNSD is one microphone and one room, so
+they are an upper bound.
+
+**Consequences.**
+
+- **The APK goes from 55 MB to 109 MB**: ~24 MB of model, the rest ONNX Runtime's native
+  libraries. Quantisation would have halved the model and does not work (above).
+- A sixth vendored tree, `third_party/wespeaker`, **CC-BY-4.0** — the only dependency here
+  whose licence asks for something rather than merely permitting, so the attribution is
+  carried in its README and belongs in the About screen. Training data is VoxCeleb.
+- **Overlapped speech is not addressed and cannot be by a gate**: 82–94% let through,
+  which is the correct behaviour since the alternative is cutting the user off whenever
+  somebody talks over them. Tier 2 — true target-speaker extraction — is explicitly not
+  started. **DECIDE, unanswered.**
+- No claim of "100% noise removal" is made anywhere, because it is not achievable: every
+  suppressor trades background against signal, and Lyra resynthesises the result in any
+  case.
+
+---
+
 ## 2. Settled inputs to the rest of the plan
 
 | Question | Answer | Affects |

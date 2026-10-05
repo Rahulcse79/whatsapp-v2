@@ -97,6 +97,7 @@ fun SettingsScreen(
     }
 
     SettingsScreen(
+        voiceProfile = { VoiceProfileSection() },
         state = state,
         actions = actions,
         links = SettingsLinks(onOpenAccounts = onOpenAccounts, backgroundAccess = backgroundAccess),
@@ -160,6 +161,13 @@ fun SettingsScreen(
     /** Where the accounts and recordings rows lead. Null in a preview, where there is nowhere to go. */
     links: SettingsLinks? = null,
     onBack: (() -> Unit)? = null,
+    /**
+     * The voice-profile card. Empty by default, which is what keeps this overload
+     * stateless: the card owns a ViewModel, and a `hiltViewModel()` reached from here
+     * would make every preview and every Compose test of this screen need a Hilt graph.
+     * The stateful overload above supplies the real one.
+     */
+    voiceProfile: @Composable ColumnScope.() -> Unit = {},
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -184,17 +192,27 @@ fun SettingsScreen(
             actions = actions,
             links = links,
             modifier = Modifier.padding(innerPadding),
+            voiceProfile = voiceProfile,
         )
     }
 }
 
-/** The scrolling body, split out so the screen above it stays a layout. */
+/**
+ * The scrolling body, split out so the screen above it stays a layout.
+ *
+ * [voiceProfile] is a slot and not a call, because the voice card owns a ViewModel of its
+ * own (enrolment holds the microphone for two minutes, which is a lifecycle this screen's
+ * state has no business carrying). A `hiltViewModel()` inside this tree would also make
+ * every Compose test of this screen need a Hilt graph it does not otherwise want — which
+ * is exactly what it did, and `SettingsScreenTest` said so.
+ */
 @Composable
 private fun SettingsContent(
     state: SettingsUiState,
     actions: SettingsActions,
     links: SettingsLinks?,
     modifier: Modifier = Modifier,
+    voiceProfile: @Composable ColumnScope.() -> Unit = {},
 ) {
     Column(
         modifier = modifier
@@ -222,6 +240,11 @@ private fun SettingsContent(
         }
 
         CallCards(state = state, actions = actions)
+
+        // Beside the call settings, because that is what it changes. Its own ViewModel:
+        // enrolment holds the microphone for up to two minutes and that is a lifecycle
+        // `SettingsViewModel` has no business owning - see VoiceProfileViewModel.
+        SettingsCard { voiceProfile() }
 
         SettingsCard {
             TlsVerificationToggle(

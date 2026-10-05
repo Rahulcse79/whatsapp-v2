@@ -63,6 +63,11 @@ include(":pjsip:api")
 include(":data:calllog")
 include(":data:contacts")
 
+// The voice profile (ADR-013): enrolment, the speaker embedding, and the profile store.
+// Apart from :data:sip so that ONNX Runtime and the 24 MB model are a dependency of the
+// feature that needs them rather than of the SIP stack.
+include(":data:voice")
+
 // The chat SDK (com.chatserver.sdk), vendored as source rather than consumed as an AAR:
 // architecture rule 11 forbids a committed .aar, and source is what lets this build prove
 // what it ships. Its Java is upstream's and is not modified — only its build file was
