@@ -164,9 +164,25 @@ internal class VoiceGateController(
         runCatching {
             val target = profile ?: return@runCatching
             val window = snapshot() ?: return@runCatching
+
+            val startedAt = System.nanoTime()
             val live = embedder.embed(window)
+            val tookMillis = (System.nanoTime() - startedAt) / 1_000_000
+
+            val score = live?.let { target.similarityTo(it) }
             val wasOpen = gate.isOpen
-            val nowOpen = gate.onWindow(live?.let { target.similarityTo(it) })
+            val nowOpen = gate.onWindow(score)
+
+            // Every hop, at debug. Four lines a second is a lot for a log and exactly
+            // right for this one: the score and the time it took are the only way to see
+            // what the gate is doing on a real handset in a real room, and both were
+            // asked for by name. `isLoggable` keeps it free when the level is off.
+            logger.debug(
+                TAG,
+                "window score=${score?.let { "%.3f".format(it) } ?: "none"} " +
+                    "took=${tookMillis}ms open=$nowOpen",
+            )
+
             if (nowOpen != wasOpen) apply(nowOpen)
         }.onFailure { logger.warn(TAG, "Voice gate decision failed, leaving the microphone open: ${it.message}") }
     }

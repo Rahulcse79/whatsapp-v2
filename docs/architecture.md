@@ -1003,6 +1003,13 @@ and the gate closed 2.9 s after a call started against a deliberately non-matchi
 profile — a 2 s window fill plus the 1 s close delay, which is the designed timing. With
 the profile deleted the gate never starts.
 
+**Per-window inference on the handset is 148 ms (median of 171 windows, min 133, max
+264)** — nearly 3x the 56 ms measured on the host, against a 250 ms hop. It keeps up, but
+with ~100 ms of headroom, which is the thing to watch under thermal pressure. Raising the
+hop is the wrong lever: the hop is the *opening* latency, and a longer one clips more of
+the user's first word when they resume. Running the embedder only on windows RNNoise's
+voice probability says carry speech is the right one, and is not done.
+
 **Not verified, and it needs a person.** A real enrolment, and therefore the on-device
 false-reject and leakage numbers. Enrolment needs ~90 s of someone actually speaking into
 the handset; the counter correctly stays at 0 in a silent room, and playing speech at the

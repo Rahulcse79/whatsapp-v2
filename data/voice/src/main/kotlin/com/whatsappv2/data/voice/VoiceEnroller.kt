@@ -15,6 +15,7 @@ import com.whatsappv2.domain.voice.VoiceProfile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import javax.inject.Inject
@@ -70,38 +71,15 @@ class VoiceEnroller @Inject constructor(
             return@flow
         }
 
-        val speech = ArrayList<Short>(Fbank.SAMPLE_RATE * EnrolmentRules.TARGET_SECONDS)
-        val chunk = ShortArray(CHUNK_SAMPLES)
-        var loudest = 0.0
-        var lastReported = -1
-
-        try {
+        val samples = try {
             recorder.startRecording()
-            emit(EnrolmentProgress.Recording(0, 0f))
-
-            while (speech.size < Fbank.SAMPLE_RATE * EnrolmentRules.MAXIMUM_SECONDS) {
-                coroutineContext.ensureActive()
-                val read = recorder.read(chunk, 0, chunk.size)
-                if (read <= 0) continue
-
-                val level = levelOf(chunk, read)
-                if (level > loudest) loudest = level
-                if (isSpeech(level, loudest)) {
-                    for (i in 0 until read) speech.add(chunk[i])
-                }
-
-                val seconds = speech.size / Fbank.SAMPLE_RATE
-                if (seconds != lastReported) {
-                    lastReported = seconds
-                    emit(EnrolmentProgress.Recording(seconds, EnrolmentRules.progress(seconds)))
-                }
-            }
+            record(recorder)
         } finally {
             runCatching { recorder.stop() }
             runCatching { recorder.release() }
         }
 
-        val seconds = speech.size / Fbank.SAMPLE_RATE
+        val seconds = samples.size / Fbank.SAMPLE_RATE
         if (!EnrolmentRules.isEnough(seconds)) {
             logger.info(TAG, "Enrolment abandoned: only ${seconds}s of speech")
             emit(EnrolmentProgress.Failed(EnrolmentProgress.Failed.Reason.TOO_LITTLE_SPEECH))
@@ -109,9 +87,6 @@ class VoiceEnroller @Inject constructor(
         }
 
         emit(EnrolmentProgress.Building)
-        val samples = ShortArray(speech.size) { speech[it] }
-        speech.clear()
-
         val embedding = embedder.embed(samples)
         val profile = embedding?.let { VoiceProfile.of(it, seconds, System.currentTimeMillis()) }
         if (profile == null) {
@@ -122,6 +97,41 @@ class VoiceEnroller @Inject constructor(
         logger.info(TAG, "Voice profile built from ${seconds}s of speech")
         emit(EnrolmentProgress.Ready(profile))
     }.flowOn(Dispatchers.IO)
+
+    /**
+     * Collects speech until the target is reached, reporting progress as it goes.
+     *
+     * Returns only the frames that carried speech, so the number the user watches is the
+     * number the model is given.
+     */
+    private suspend fun FlowCollector<EnrolmentProgress>.record(recorder: AudioRecord): ShortArray {
+        val speech = ArrayList<Short>(Fbank.SAMPLE_RATE * EnrolmentRules.TARGET_SECONDS)
+        val chunk = ShortArray(CHUNK_SAMPLES)
+        val target = Fbank.SAMPLE_RATE * EnrolmentRules.MAXIMUM_SECONDS
+        val deadline = System.nanoTime() + WALL_CLOCK_LIMIT_SECONDS * NANOS_PER_SECOND
+        var loudest = 0.0
+        var lastReported = -1
+
+        emit(EnrolmentProgress.Recording(0, 0f))
+        while (speech.size < target && System.nanoTime() <= deadline) {
+            coroutineContext.ensureActive()
+            val read = recorder.read(chunk, 0, chunk.size)
+            if (read <= 0) continue
+
+            val level = levelOf(chunk, read)
+            if (level > loudest) loudest = level
+            if (isSpeech(level, loudest)) {
+                for (i in 0 until read) speech.add(chunk[i])
+            }
+
+            val seconds = speech.size / Fbank.SAMPLE_RATE
+            if (seconds != lastReported) {
+                lastReported = seconds
+                emit(EnrolmentProgress.Recording(seconds, EnrolmentRules.progress(seconds)))
+            }
+        }
+        return ShortArray(speech.size) { speech[it] }
+    }
 
     private fun levelOf(chunk: ShortArray, read: Int): Double {
         var sumOfSquares = 0.0
@@ -175,5 +185,18 @@ class VoiceEnroller @Inject constructor(
 
         /** And never below this, so a silent room's own noise cannot enrol a profile. */
         const val ABSOLUTE_FLOOR = 150.0
+
+        /**
+         * How long recording may run in total, however little speech arrives.
+         *
+         * Five minutes against a 90-second target: somebody reading aloud with ordinary
+         * pauses reaches the target in two to three, so this only ever fires when
+         * something is wrong - a silent room, a muted microphone, a handset held too far
+         * away. When it does, the result is the honest "that was not enough speech"
+         * rather than a recorder left open.
+         */
+        const val WALL_CLOCK_LIMIT_SECONDS = 300L
+
+        const val NANOS_PER_SECOND = 1_000_000_000L
     }
 }
