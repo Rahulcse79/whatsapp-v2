@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.whatsappv2.domain.voice.EnrolmentProgress
+import com.whatsappv2.domain.voice.EnrolmentRules
 import com.whatsappv2.domain.voice.VoiceProfile
 import java.text.DateFormat
 import java.util.Date
@@ -65,7 +66,8 @@ internal fun ColumnScope.VoiceProfileSection(
     )
 
     when (val progress = state.progress) {
-        is EnrolmentProgress.Recording -> Recording(progress, viewModel.targetSeconds, viewModel::cancel)
+        is EnrolmentProgress.Recording ->
+            Recording(progress, viewModel.targetSeconds, viewModel::cancel, viewModel::finish)
         EnrolmentProgress.Building -> Text(
             "Building your voice signature…",
             style = MaterialTheme.typography.bodyMedium,
@@ -119,6 +121,7 @@ private fun ColumnScope.Recording(
     progress: EnrolmentProgress.Recording,
     targetSeconds: Int,
     onCancel: () -> Unit,
+    onFinish: () -> Unit,
 ) {
     Text("Keep talking… ${progress.seconds} of $targetSeconds seconds", style = MaterialTheme.typography.bodyMedium)
     LinearProgressIndicator(
@@ -132,7 +135,18 @@ private fun ColumnScope.Recording(
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
-    TextButton(onClick = onCancel) { Text("Stop") }
+    // The one button has to say which of the two things it does, because they are not the
+    // same thing and the user cannot undo the wrong one. Before the minimum there is no
+    // profile to keep, so it abandons and says so. Past the minimum it keeps the recording
+    // — which is what "Stop" looked like it did, and did not: it cancelled the coroutine
+    // and discarded ninety seconds of speech without a word. See
+    // [com.whatsappv2.domain.voice.VoiceEnrolment.requestFinish].
+    val enough = EnrolmentRules.isEnough(progress.seconds)
+    if (enough) {
+        TextButton(onClick = onFinish) { Text("Done") }
+    } else {
+        TextButton(onClick = onCancel) { Text("Cancel") }
+    }
 }
 
 @Composable

@@ -2028,6 +2028,17 @@ internal class RealPjsipCoreGateway @Inject constructor(
             if (voiceGate.isRunning) voiceGate.stop()
             return
         }
+        // No call means there is no microphone to gate, and asking the device manager for
+        // `captureDevMedia` is not a read: it brings the sound device up. This guard used
+        // not to be here, and [setLiveCallFiltering] calls this directly, so merely turning
+        // the setting on opened the microphone and left it open — measured at 16m50s of
+        // `RECORD_AUDIO: allow; (running)` with zero calls on the server, the indicator lit
+        // the whole time, and the embedder running four times a second for all of it.
+        // Nothing but force-stopping the app closed it again.
+        if (calls.isEmpty()) {
+            if (voiceGate.isRunning) voiceGate.stop()
+            return
+        }
         val profile = kotlinx.coroutines.runBlocking { voiceProfiles.current() }
         if (profile == null) {
             if (voiceGate.isRunning) voiceGate.stop()
@@ -2489,6 +2500,17 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 // Only now. The native peer is finished with this director, and holding it
                 // any longer is the leak; releasing it any earlier is a crash.
                 calls -= callKey
+                // The gate outlives one call on purpose — there is one microphone and one
+                // gate, and a second call still up is still worth gating. The last call is
+                // different: nothing is left to gate, and leaving it running holds the
+                // capture device open with the indicator lit for as long as the app lives.
+                // Forced open as it stops, for the same reason [setLiveCallFiltering] does:
+                // a gate removed while closed would leave the next call's microphone
+                // silenced with nothing left running to reopen it.
+                if (calls.isEmpty() && voiceGate.isRunning) {
+                    runCatching { voiceGate.stop() }
+                    voiceGateOpen = true
+                }
                 recorders -= callKey
                 // The counters outlive the streams they measured, but not the call: kept
                 // until here so a rebuild late in the call is still counted, dropped here
