@@ -1,5 +1,6 @@
 package com.whatsappv2.data.sip.call
 
+import com.whatsappv2.domain.engine.VideoHealth
 import com.whatsappv2.domain.engine.VideoSizes
 import com.whatsappv2.domain.engine.VideoSurfaceController
 import kotlinx.coroutines.flow.StateFlow
@@ -39,4 +40,7 @@ internal class StackVideoSurfaceController @Inject constructor(
 
     /** Straight through: the stack is the only thing that knows what it decoded. */
     override val videoSizes: StateFlow<VideoSizes> get() = gateway.videoSizes
+
+    /** Likewise: the decode counters behind this are native. */
+    override val videoHealth: StateFlow<VideoHealth> get() = gateway.videoHealth
 }

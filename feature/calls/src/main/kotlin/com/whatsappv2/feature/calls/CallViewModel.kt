@@ -311,8 +311,12 @@ class CallViewModel @Inject constructor(
             ticker(),
             contactFor(callId),
             inFlight,
-            surfaces.videoSizes,
-        ) { state, now, contact, busy, sizes ->
+            // Paired rather than a sixth source: `combine`'s typed overload stops at five,
+            // and these two are read together by every tile anyway — a frame shape and
+            // whether anything is still filling it.
+            combine(surfaces.videoSizes, surfaces.videoHealth, ::Pair),
+        ) { state, now, contact, busy, video ->
+            val (sizes, health) = video
             val call = state.calls.firstOrNull { it.callId == callId }
             if (call != null) {
                 seen = true
@@ -357,6 +361,7 @@ class CallViewModel @Inject constructor(
                     mixedCallCount = state.mixed.size,
                     pendingActions = busy,
                     videoSizes = sizes,
+                    videoHealth = health,
                 )
                 // Absent after it was present means the call ended. Absent before it was
                 // ever present means the engine has not published it yet, which happens

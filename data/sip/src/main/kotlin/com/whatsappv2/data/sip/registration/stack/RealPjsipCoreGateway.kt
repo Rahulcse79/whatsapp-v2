@@ -31,8 +31,13 @@ import com.whatsappv2.data.sip.registration.StackRegistrationState
 import com.whatsappv2.domain.codec.CodecAudit
 import com.whatsappv2.domain.codec.CodecPriorities
 import com.whatsappv2.domain.engine.SipConferenceController
+import com.whatsappv2.domain.engine.VideoHealth
 import com.whatsappv2.domain.engine.VideoSize
 import com.whatsappv2.domain.engine.VideoSizes
+import com.whatsappv2.domain.engine.VideoTileReading
+import com.whatsappv2.domain.engine.VideoTileState
+import com.whatsappv2.domain.engine.VideoTileStateReducer
+import com.whatsappv2.domain.video.VideoFrameRate
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.BufferOverflow
@@ -362,6 +367,18 @@ internal class RealPjsipCoreGateway @Inject constructor(
      */
     private val videoSizeFlow = MutableStateFlow(VideoSizes.UNKNOWN)
     override val videoSizes: StateFlow<VideoSizes> = videoSizeFlow.asStateFlow()
+
+    private val videoHealthFlow = MutableStateFlow(VideoHealth.UNKNOWN)
+    override val videoHealth: StateFlow<VideoHealth> = videoHealthFlow.asStateFlow()
+
+    /**
+     * The previous tile reading per call, so a decode rate can be differenced.
+     *
+     * Keyed by call, cleared with the call. Separate from [PjCall.rtpCounters] because that
+     * one is reset by the media-statistics tick on its own fifteen-second cadence, and a
+     * health verdict taken every five seconds cannot share a baseline with it.
+     */
+    private val previousTileReadings = mutableMapOf<String, VideoTileReading>()
 
     private var endpoint: Endpoint? = null
 
@@ -1192,6 +1209,16 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * TCP are left alone; nothing about them changed, and dropping their bindings would
      * cost calls for a setting that does not apply to them.
      */
+    /**
+     * The user's frame-rate preference, handed to the quality coordinator.
+     *
+     * On the executor like every other coordinator call, because a live policy may be
+     * rebuilt by it and the coordinator's state belongs to that thread.
+     */
+    override fun setVideoFrameRate(rate: VideoFrameRate) {
+        onPjsip("setVideoFrameRate") { videoQuality.onFrameRate(rate) }
+    }
+
     override fun setTlsCertificateVerification(verify: Boolean) {
         onPjsip("setTlsCertificateVerification") {
             if (verifyTlsCertificates == verify) return@onPjsip
@@ -2144,15 +2171,32 @@ internal class RealPjsipCoreGateway @Inject constructor(
             val roster = ConferenceInfoParser.parse(message, selfUri = accountUri(), logger = logger) ?: return
 
             val from = NameAddr.of(runCatching { prm.fromUri }.getOrNull()).uri
-            val leg = calls.values.firstOrNull { call ->
-                call.accountKey == accountKey && sameSipAddress(call.remoteAddress(), from)
-            }
+            val mine = calls.values.filter { it.accountKey == accountKey }
+            // Exact first. The address match is the honest one and is what a direct dialog,
+            // or a proxy that forwards rather than re-originates, will satisfy.
+            val leg = mine.firstOrNull { sameSipAddress(it.remoteAddress(), from) }
+                // Then the user alone, and only when exactly one leg could be meant. See
+                // [sameSipUser]: the B2BUA re-originates this MESSAGE from the sender's own
+                // contact, so the host on the `From` is the far handset while the host on the
+                // leg is the server, and the two are never equal on this deployment. Guarded
+                // by `singleOrNull` rather than `firstOrNull` because a user part is not an
+                // identity — with two legs to the same extension on different hosts there is
+                // no evidence here to choose between them, and attributing a roster to the
+                // wrong leg would mesh the wrong pair.
+                ?: mine.singleOrNull { sameSipUser(it.remoteAddress(), from) }
             if (leg == null) {
                 logger.debug(TAG, "A conference roster arrived from somebody this device is not talking to")
                 return
             }
 
-            logger.info(TAG, "Conference roster for ${leg.callKey}: ${roster.participants.size} in the room")
+            if (roster.meshAck) {
+                // Said differently from a roster because it is a different document: an
+                // acknowledgement carries no membership, so "0 in the room" would be a
+                // reading of it rather than a fact about the conference.
+                logger.info(TAG, "Conference mesh-ack for ${leg.callKey}: the far end meshes")
+            } else {
+                logger.info(TAG, "Conference roster for ${leg.callKey}: ${roster.participants.size} in the room")
+            }
             conferenceEventFlow.tryEmit(
                 StackConferenceEvent(
                     callKey = leg.callKey,
@@ -2160,6 +2204,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     rosterAvailable = true,
                     entity = roster.entity,
                     mesh = roster.mesh,
+                    // Carried, where it used to be dropped. Both in-dialog handlers pass it
+                    // and this one did not, so on the deployment where FreeSWITCH
+                    // re-originates the MESSAGE — the only path these ever take here — every
+                    // acknowledgement arrived looking like an empty roster.
+                    meshAck = roster.meshAck,
                 ),
             )
         }
@@ -3181,6 +3230,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
     private fun scheduleVideoQuality() {
         pjsip.schedule(
             {
+                // Before the early return, because a tile is drawn for what this device is
+                // *receiving* and the policy below only counts what it is sending. A leg
+                // that receives video while this end sends none still has a picture on
+                // screen that can freeze.
+                runCatching { publishVideoHealth() }
+                    .onFailure { logger.warn(TAG, "Video health tick failed: ${it.message}") }
+
                 val legs = videoLegSamples()
                 if (legs.isEmpty()) {
                     // Nothing is transmitting video. Stop the timer, and distinguish the two
@@ -3190,6 +3246,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     // gone is the tier discarded, so the next call measures the device afresh.
                     videoQualityTicking = false
                     if (calls.isEmpty()) videoQuality.onNoCalls() else videoQuality.onVideoPaused()
+                    // ...but keep the tick alive while a tile is still being drawn. The
+                    // policy has nothing left to decide; the health of a receive-only leg
+                    // still changes, and stopping here would freeze its status at whatever
+                    // it last said.
+                    if (videoHealthFlow.value.byCall.isNotEmpty()) {
+                        videoQualityTicking = true
+                        scheduleVideoQuality()
+                    }
                     return@schedule
                 }
                 runCatching { videoQuality.onSample(legs, System.currentTimeMillis()) }
@@ -3200,6 +3264,57 @@ internal class RealPjsipCoreGateway @Inject constructor(
             VIDEO_QUALITY_TICK_MILLIS,
             TimeUnit.MILLISECONDS,
         )
+    }
+
+    /**
+     * What each live call's tile should be showing, recomputed from the decode counters.
+     *
+     * Runs on the adaptive-quality tick rather than the media-statistics one because five
+     * seconds is the longest a tile may go on showing a frozen picture before saying so;
+     * fifteen is long enough for a person to conclude the call is broken and hang up.
+     *
+     * Reads the **decoder**, not the RTP counters. Packets continuing to arrive is not the
+     * same claim as a picture continuing to move — the measured failure was a peer whose
+     * encoder kept sending at a healthy 19 pkt/s while the frame inside never changed, and
+     * an rx rate would have called that live.
+     */
+    private fun publishVideoHealth() {
+        val now = System.currentTimeMillis()
+        val next = mutableMapOf<String, VideoTileState>()
+        val sizes = videoSizeFlow.value
+
+        calls.values.forEach { call ->
+            val info = call.infoOrNull() ?: return@forEach
+            if (info.state != pjsip_inv_state.PJSIP_INV_STATE_CONFIRMED) return@forEach
+
+            val media = info.media.firstOrNull { it.isDecodingVideo }
+            val stream = media?.let { runCatching { call.getStreamInfo(it.index) }.getOrNull() }
+            val peer = stream?.remoteRtpAddress.orEmpty()
+
+            val reading = VideoTileReading(
+                streamActive = media != null,
+                frameKnown = sizes.remoteFor(call.callKey).isKnown,
+                decoded = peer.takeIf { it.isNotBlank() }
+                    ?.let(telemetry::framesFor)?.decoded ?: 0L,
+                atMillis = now,
+                configuredFps = runCatching {
+                    stream?.vidCodecParam?.encFmt?.fpsNum?.toInt()?.takeIf { it > 0 }
+                }.getOrNull(),
+            )
+
+            next[call.callKey] = VideoTileStateReducer.reduce(
+                previous = previousTileReadings[call.callKey],
+                current = reading,
+            )
+            previousTileReadings[call.callKey] = reading
+        }
+
+        // Calls that have gone take their baseline with them, or a redial that reuses a key
+        // would be differenced against a stream that ended minutes ago.
+        previousTileReadings.keys.retainAll(next.keys)
+
+        val published = VideoHealth(next)
+        if (published != videoHealthFlow.value) videoHealthFlow.value = published
     }
 
     /**
@@ -3347,6 +3462,21 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 ).toLong()
         }
     }
+
+    /**
+     * True for a video stream this device is **decoding** — the half a tile draws.
+     *
+     * Decoding, not merely negotiated: a `sendonly` leg costs this device a decoder it never
+     * uses and puts no picture in a tile, so counting it would report a participant as live
+     * on the strength of a stream that was never going to show anything.
+     */
+    private val org.pjsip.pjsua2.CallMediaInfo.isDecodingVideo: Boolean
+        get() {
+            if (type != pjmedia_type.PJMEDIA_TYPE_VIDEO) return false
+            if (status != pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE) return false
+            return dir == pjmedia_dir.PJMEDIA_DIR_DECODING ||
+                dir == pjmedia_dir.PJMEDIA_DIR_ENCODING_DECODING
+        }
 
     /** True for an audio stream that is carrying, or held by the far end and still there. */
     private val org.pjsip.pjsua2.CallMediaInfo.isLive: Boolean
@@ -3765,11 +3895,49 @@ internal fun sameSipAddress(one: String?, other: String?): Boolean {
     return sipCore(one) == sipCore(other)
 }
 
+// Lowercased FIRST, not last. RFC 3261 §19.1.1 makes the scheme case-insensitive, and
+// stripping it before folding the case left `SIP:1002@host` reading as a user part of
+// `sip:1002` — a peer that would never match itself written the other way.
 private fun sipCore(value: String): String = value.trim()
+    .lowercase(Locale.ROOT)
     .removePrefix("<").substringBefore(">")
     .substringAfter("sip:").substringAfter("sips:")
     .substringBefore(";").substringBefore("?")
-    .lowercase(Locale.ROOT)
+
+/**
+ * The user part of a SIP address — `1002` out of `<sip:1002@10.31.0.14;ob>` — or null.
+ *
+ * Deliberately weaker than [sameSipAddress], and only ever used as its fallback, because
+ * a user part alone is not an identity: two hosts can both have a `1002`.
+ */
+internal fun sipUserOf(value: String?): String? = value
+    ?.takeIf { it.isNotBlank() }
+    ?.let { sipCore(it) }
+    ?.substringBefore('@')
+    ?.takeIf { it.isNotEmpty() }
+
+/**
+ * Whether two SIP addresses name the same user, whatever host each was written against.
+ *
+ * ## Why the host has to be allowed to differ
+ *
+ * Because the B2BUA rewrites it, and in opposite directions on the two messages that have
+ * to be matched to each other. A conference roster and its `mesh-ack` are in-dialog
+ * MESSAGEs that FreeSWITCH terminates and re-originates towards the registered *contact*,
+ * so the acknowledgement B sends A arrives stamped
+ * `From: <sip:1002@10.31.0.14;ob>` — **B's own handset address** — while the leg A holds to
+ * B records `sip:1002@10.31.0.214:5060`, the address A dialled, which is the *server*.
+ * Same person, same dialog, two hosts that have never been equal (measured on 1001/1002/1003,
+ * 2026-10-05).
+ *
+ * [sameSipAddress] therefore answered false for every acknowledgement, every peer failed
+ * `meshes()`, and a three-party conference silently relayed its audio through the focus and
+ * carried **no video between the spokes at all** — there was no leg for it to cross.
+ */
+internal fun sameSipUser(one: String?, other: String?): Boolean {
+    val user = sipUserOf(one) ?: return false
+    return user == sipUserOf(other)
+}
 
 /**
  * The far end's `User-Agent`, or on a response its `Server`, or null.

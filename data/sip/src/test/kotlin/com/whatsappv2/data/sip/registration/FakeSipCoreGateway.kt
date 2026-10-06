@@ -13,7 +13,9 @@ import com.whatsappv2.data.sip.call.StackConferenceEvent
 import com.whatsappv2.data.sip.call.StackParticipant
 import com.whatsappv2.data.sip.call.StackTransferEvent
 import com.whatsappv2.domain.codec.CodecAudit
+import com.whatsappv2.domain.engine.VideoHealth
 import com.whatsappv2.domain.engine.VideoSizes
+import com.whatsappv2.domain.video.VideoFrameRate
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -234,6 +236,13 @@ internal class FakeSipCoreGateway :
         tlsVerificationChanges += verify
     }
 
+    /** Every rate the engine pushed, in order, so a test can assert it is not churned. */
+    val videoFrameRates = mutableListOf<VideoFrameRate>()
+
+    override fun setVideoFrameRate(rate: VideoFrameRate) {
+        videoFrameRates += rate
+    }
+
     override fun setNetworkReachable(reachable: Boolean) {
         reachabilitySignals += reachable
     }
@@ -329,6 +338,11 @@ internal class FakeSipCoreGateway :
     val videoSizeFlow: MutableStateFlow<VideoSizes> = MutableStateFlow(VideoSizes.UNKNOWN)
 
     override val videoSizes: StateFlow<VideoSizes> = videoSizeFlow
+
+    /** Settable, so a test can drive a tile from connecting to live to frozen. */
+    val videoHealthFlow: MutableStateFlow<VideoHealth> = MutableStateFlow(VideoHealth.UNKNOWN)
+
+    override val videoHealth: StateFlow<VideoHealth> = videoHealthFlow
 
     override fun transferCall(callKey: String, destination: String) {
         blindTransfers += callKey to destination

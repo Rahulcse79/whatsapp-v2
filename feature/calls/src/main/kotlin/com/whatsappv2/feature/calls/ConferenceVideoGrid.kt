@@ -40,8 +40,10 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.viewinterop.AndroidView
 import com.whatsappv2.core.designsystem.theme.AppTheme
+import com.whatsappv2.domain.engine.VideoHealth
 import com.whatsappv2.domain.engine.VideoSize
 import com.whatsappv2.domain.engine.VideoSizes
+import com.whatsappv2.domain.engine.VideoTileState
 
 /**
  * One tile per participant, arranged by this app (Task 61, §2.2 option b).
@@ -97,6 +99,7 @@ internal fun ConferenceVideoGrid(
     participants: List<ConferenceParticipantRow>,
     columns: Int,
     sizes: VideoSizes,
+    health: VideoHealth,
     onSurfaces: (Map<String, Any?>) -> Unit,
     modifier: Modifier = Modifier,
     onTileHeight: (Int) -> Unit = {},
@@ -178,6 +181,10 @@ internal fun ConferenceVideoGrid(
                             // This participant's own decoded shape, never the conference's
                             // most recent one. See the class KDoc.
                             frame = sizes.remoteFor(participant.id),
+                            // Whether anything is still filling that shape. A tile keeps its
+                            // frame size long after its decoder stops, so the shape alone
+                            // cannot tell a live picture from a frozen one.
+                            state = health.stateFor(participant.id),
                             // The last row of an odd count spreads across the width rather
                             // than leaving a hole beside it, which is the difference
                             // between a grid and a grid with a gap in it.
@@ -236,6 +243,7 @@ private fun ParticipantTile(
     participant: ConferenceParticipantRow,
     view: TextureView,
     frame: VideoSize,
+    state: VideoTileState,
     modifier: Modifier = Modifier,
 ) {
     val shape: Shape = RoundedCornerShape(AppTheme.radius.large)
@@ -260,14 +268,6 @@ private fun ParticipantTile(
             .testTag("$TAG_TILE_PREFIX${participant.id}"),
         contentAlignment = Alignment.Center,
     ) {
-        // Behind the picture, and only until there is one. A `TextureView` draws nothing
-        // before its first frame, so this shows through the whole tile while a stream is
-        // still coming up and is covered the moment it is not -- which is the difference
-        // between "connecting" and "this call is broken" for anybody looking at the screen.
-        if (!frame.isKnown) {
-            TilePlaceholder(participant)
-        }
-
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val available = VideoSize(
                 width = constraints.maxWidth.takeIf { it != Constraints.Infinity } ?: 0,
@@ -292,6 +292,35 @@ private fun ParticipantTile(
             )
         }
 
+        // AFTER the view, so it covers the picture rather than showing through it.
+        //
+        // Order is the whole of this. While a stream is coming up a `TextureView` draws
+        // nothing and either order would do, which is why the placeholder used to sit
+        // behind. A decoder that *stops* keeps its last frame on the surface, so a
+        // placeholder behind it is invisible exactly when it is most needed — measured
+        // 2026-10-05, a peer whose capture fell to 0 fps while its encoder went on sending
+        // the same frame, leaving a still picture that read as a working call.
+        //
+        // Drawn over the view rather than in place of it so the renderer's surface is never
+        // torn down by a status change; rebuilding one is the black flash this file's
+        // `views` map exists to avoid.
+        if (!frame.isKnown || !state.showsPicture) {
+            TilePlaceholder(participant = participant, state = state)
+        } else if (state == VideoTileState.LOW_QUALITY) {
+            // A badge, not the placeholder. The picture is still moving and still worth
+            // looking at -- covering a usable if choppy stream with an avatar would take
+            // away more than the warning is worth, and a status the user can see is wrong
+            // ("unavailable", over a moving picture) costs every other status its
+            // credibility.
+            TileStatusBadge(
+                text = tileStatusLabel(state).orEmpty(),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(AppTheme.spacing.small)
+                    .testTag("$TAG_TILE_STATUS_PREFIX${participant.id}"),
+            )
+        }
+
         NameChip(
             participant = participant,
             modifier = Modifier.align(Alignment.BottomStart).padding(AppTheme.spacing.small),
@@ -307,19 +336,72 @@ private fun ParticipantTile(
  * rectangle, which is indistinguishable from the failure modes this app has actually had.
  */
 @Composable
-private fun TilePlaceholder(participant: ConferenceParticipantRow) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
+private fun TilePlaceholder(participant: ConferenceParticipantRow, state: VideoTileState) {
+    Box(
+        // Opaque, and that is the point: this is drawn *over* the renderer, so without a
+        // ground of its own the stale frame underneath would show through the gaps between
+        // the avatar and the text and the tile would read as a picture with writing on it.
+        modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = PLACEHOLDER_SCRIM)),
+        contentAlignment = Alignment.Center,
     ) {
-        Avatar(displayName = participant.label, size = AppTheme.sizing.videoTileAvatar)
-        Text(
-            text = participant.label,
-            style = MaterialTheme.typography.labelLarge,
-            color = Color.White.copy(alpha = PLACEHOLDER_LABEL_ALPHA),
-            maxLines = 1,
-        )
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.small),
+        ) {
+            Avatar(displayName = participant.label, size = AppTheme.sizing.videoTileAvatar)
+            Text(
+                text = participant.label,
+                style = MaterialTheme.typography.labelLarge,
+                color = Color.White.copy(alpha = PLACEHOLDER_LABEL_ALPHA),
+                maxLines = 1,
+            )
+            tileStatusLabel(state)?.let { status ->
+                Text(
+                    text = status,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = PLACEHOLDER_STATUS_ALPHA),
+                    maxLines = 1,
+                    modifier = Modifier.testTag("$TAG_TILE_STATUS_PREFIX${participant.id}"),
+                )
+            }
+        }
     }
+}
+
+/**
+ * The words under the avatar, or null when the tile is showing a picture and needs none.
+ *
+ * Plain and few. A status line on a video tile is read at a glance by somebody who is
+ * already half-listening to a call, so each says what is true of the picture and nothing
+ * about the mechanism behind it — "Video unavailable" covers a camera that was never
+ * offered, a decoder that stopped and a frame that froze, because to the person looking at
+ * the tile those are one thing, and the media trace is where the three are told apart.
+ */
+internal fun tileStatusLabel(state: VideoTileState): String? = when (state) {
+    VideoTileState.CONNECTING -> "Connecting…"
+    VideoTileState.LOW_QUALITY -> "Low video quality"
+    VideoTileState.UNAVAILABLE -> "Video unavailable"
+    VideoTileState.LIVE -> null
+}
+
+/**
+ * A small pill over a picture that is still moving but badly.
+ *
+ * The same shape as [NameChip] and in the opposite corner, so a tile that is carrying both
+ * reads as one object with two marks on it rather than as a dashboard.
+ */
+@Composable
+private fun TileStatusBadge(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        color = Color.White,
+        maxLines = 1,
+        modifier = modifier
+            .clip(RoundedCornerShape(AppTheme.radius.full))
+            .background(Color.Black.copy(alpha = CHIP_SCRIM))
+            .padding(horizontal = AppTheme.spacing.small, vertical = AppTheme.spacing.extraSmall),
+    )
 }
 
 /**
@@ -393,6 +475,17 @@ private const val TILE_EDGE_ALPHA = 0.14f
 /** The waiting name, quieter than the name plate because it is a placeholder. */
 private const val PLACEHOLDER_LABEL_ALPHA = 0.7f
 
+/** Dimmer than the name: a status is a footnote to who you are waiting for, not a headline. */
+private const val PLACEHOLDER_STATUS_ALPHA = 0.55f
+
+/**
+ * Nearly opaque, because this covers a stale frame.
+ *
+ * Not fully: a hint of the last picture behind the avatar reads as a paused video rather
+ * than a dead panel, which is what it is.
+ */
+private const val PLACEHOLDER_SCRIM = 0.82f
+
 /**
  * The shape a tile assumes before its own stream has reported one.
  *
@@ -404,4 +497,7 @@ private val NEUTRAL_FRAME = VideoSize(16, 9)
 
 internal const val TAG_CONFERENCE_GRID = "conference-grid"
 internal const val TAG_TILE_PREFIX = "conference-tile-"
+
+/** The status line or badge on a tile, for the tests that assert what a tile is saying. */
+internal const val TAG_TILE_STATUS_PREFIX = "conference-tile-status-"
 internal const val TAG_MUTE_PREFIX = "conference-mute-"

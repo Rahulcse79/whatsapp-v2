@@ -7,6 +7,7 @@ import com.whatsappv2.domain.contacts.Contact
 import com.whatsappv2.domain.engine.CallDirection
 import com.whatsappv2.domain.engine.CallSnapshot
 import com.whatsappv2.domain.engine.SipConferenceController
+import com.whatsappv2.domain.engine.VideoHealth
 import com.whatsappv2.domain.engine.VideoSizes
 import com.whatsappv2.domain.model.CallId
 
@@ -367,6 +368,14 @@ sealed interface CallUiState {
          * every video call.
          */
         val videoSizes: VideoSizes = VideoSizes.UNKNOWN,
+
+        /**
+         * What each tile should be showing, when it should not be showing a picture.
+         *
+         * Beside [videoSizes] rather than folded into it: a shape says what arrived once,
+         * this says whether anything is arriving now, and the tile needs both.
+         */
+        val videoHealth: VideoHealth = VideoHealth.UNKNOWN,
 
         /**
          * Actions asked of the engine that it has not answered yet (Task 76).

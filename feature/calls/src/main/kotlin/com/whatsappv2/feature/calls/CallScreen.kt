@@ -198,6 +198,7 @@ private fun ActiveCall(state: CallUiState.Active, actions: CallActions) {
                 conference = conference,
                 actions = actions,
                 sizes = state.videoSizes,
+                health = state.videoHealth,
                 onPictureTap = toggleChrome,
                 pictureTapLabel = toggleLabel,
                 modifier = videoLayer,

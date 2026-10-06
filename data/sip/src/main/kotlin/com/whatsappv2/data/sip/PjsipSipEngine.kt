@@ -550,6 +550,17 @@ internal class PjsipSipEngine @Inject constructor(
                 .collect { gateway.setTlsCertificateVerification(it) }
         }
         collectors += scope.launch {
+            // The third of these, and the same story again: `videoFrameRate` was modelled,
+            // persisted and read by `AdaptiveVideoPolicy`'s constructor, and nothing ever
+            // carried the stored value to it — so every call ran the ladder at the default
+            // whatever Settings said. Collected before the first call so a rate chosen while
+            // idle is already in force when one starts.
+            settings.observeSettings()
+                .map { it.videoFrameRate }
+                .distinctUntilChanged()
+                .collect { gateway.setVideoFrameRate(it) }
+        }
+        collectors += scope.launch {
             gateway.registrationEvents.collect { event ->
                 val id = AccountId(event.accountKey)
                 val expiry = requestedExpiry[event.accountKey] ?: DEFAULT_EXPIRY_SECONDS
@@ -1974,7 +1985,21 @@ internal class PjsipSipEngine @Inject constructor(
         if (!meshAcked.add(callId)) return
         logger.info(TAG, "Mesh: $callId answered the roster; it meshes and will not be carried")
         val live = mixed.value
-        if (live.size >= SipConferenceController.MINIMUM_MIXED) mixCalls(live)
+        if (live.size < SipConferenceController.MINIMUM_MIXED) return
+        mixCalls(live)
+        // And say so, which `mixCalls` alone does not. The roster is announced by a
+        // collector on `mixed`, and `mixed` is a StateFlow: re-publishing the same
+        // membership is not a distinct value, so nothing is emitted and no second document
+        // goes out. The membership genuinely has not changed — what has changed is this
+        // device's *classification* of a member, which travels inside the document as
+        // `isRelayed` and reaches nobody until it is re-sent.
+        //
+        // Measured on 1001/1002/1003, 2026-10-06: the first roster leaves while the focus
+        // is still carrying everybody, so it marks both peers relayed; the acknowledgements
+        // arrive 200 ms later and correct the focus's own state, and the spokes went on
+        // believing they were relayed for the life of the conference. A relayed member does
+        // not dial, so the mesh never opened and the spokes had no leg to carry video on.
+        announceRoster(live)
     }
 
     /**

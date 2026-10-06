@@ -2,6 +2,7 @@ package com.whatsappv2.data.sip.registration
 
 import com.whatsappv2.data.sip.network.TransportRebinder
 import com.whatsappv2.domain.codec.CodecAudit
+import com.whatsappv2.domain.video.VideoFrameRate
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -103,6 +104,20 @@ internal interface SipCoreGateway : TransportRebinder {
      * why the choice is the user's.
      */
     fun setTlsCertificateVerification(verify: Boolean)
+
+    /**
+     * The frame rate outgoing video should run at, from Settings.
+     *
+     * Not a request to the camera, which delivers 30 fps whatever is asked of it, and not a
+     * command to a running encoder, which `pjmedia` cannot reconfigure — see
+     * `VideoQualityAction.appliesTo` for the measurement behind that. It sets what the
+     * adaptive ladder's rungs *mean*, so the rate reaches the encoder at the next stream
+     * build: call start, video off→on, hold→unhold, camera switch, or a participant joining.
+     *
+     * The adaptive policy may still step down the ladder underneath it. This is the ceiling
+     * the user asked for, not a guarantee about any one leg.
+     */
+    fun setVideoFrameRate(rate: VideoFrameRate)
 
     fun stop()
 }

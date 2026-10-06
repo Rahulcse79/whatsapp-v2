@@ -101,6 +101,16 @@ interface VideoSurfaceController {
      * a zero axis.
      */
     val videoSizes: StateFlow<VideoSizes>
+
+    /**
+     * What each established call's tile should be showing, when it is not a picture.
+     *
+     * Separate from [videoSizes] because a shape answers "has anything arrived" once and
+     * never again, while this answers "is anything arriving *now*" on every telemetry tick.
+     * A stream that decodes for a minute and then stops keeps its shape — see
+     * [VideoTileState] for the measurement that made that distinction necessary.
+     */
+    val videoHealth: StateFlow<VideoHealth>
 }
 
 /** The controller for a context with no stack. Draws nothing and holds nothing. */
@@ -110,4 +120,5 @@ object NoVideoSurfaces : VideoSurfaceController {
     override fun setRemoteTileHeight(heightPx: Int) = Unit
     override fun setDisplayRotation(degrees: Int) = Unit
     override val videoSizes: StateFlow<VideoSizes> = MutableStateFlow(VideoSizes.UNKNOWN)
+    override val videoHealth: StateFlow<VideoHealth> = MutableStateFlow(VideoHealth.UNKNOWN)
 }

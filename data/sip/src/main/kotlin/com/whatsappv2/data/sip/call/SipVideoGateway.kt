@@ -1,5 +1,6 @@
 package com.whatsappv2.data.sip.call
 
+import com.whatsappv2.domain.engine.VideoHealth
 import com.whatsappv2.domain.engine.VideoSizes
 import kotlinx.coroutines.flow.StateFlow
 
@@ -86,4 +87,13 @@ internal interface SipVideoGateway {
      * at the same time.
      */
     val videoSizes: StateFlow<VideoSizes>
+
+    /**
+     * What each call's tile should be showing, when it should not be showing a picture.
+     *
+     * Beside [videoSizes] because only the stack can answer it: the decode counters are
+     * native and the shape alone cannot say whether anything is still arriving. See
+     * `VideoTileState`.
+     */
+    val videoHealth: StateFlow<VideoHealth>
 }

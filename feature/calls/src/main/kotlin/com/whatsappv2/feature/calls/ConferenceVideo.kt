@@ -36,6 +36,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import com.whatsappv2.core.designsystem.theme.AppTheme
+import com.whatsappv2.domain.engine.VideoHealth
 import com.whatsappv2.domain.engine.VideoSizes
 
 /**
@@ -78,6 +79,7 @@ internal fun ConferenceVideo(
     conference: ConferenceUiState,
     actions: CallActions,
     sizes: VideoSizes = VideoSizes.UNKNOWN,
+    health: VideoHealth = VideoHealth.UNKNOWN,
     onPictureTap: (() -> Unit)? = null,
     pictureTapLabel: String? = null,
     modifier: Modifier = Modifier,
@@ -127,6 +129,7 @@ internal fun ConferenceVideo(
                 actions = actions,
                 columns = mode.columns,
                 sizes = sizes,
+                health = health,
                 onPictureTap = onPictureTap,
                 pictureTapLabel = pictureTapLabel,
                 previewClearance = previewClearance,
@@ -175,6 +178,7 @@ private fun ConferenceTiles(
     actions: CallActions,
     columns: Int,
     sizes: VideoSizes,
+    health: VideoHealth,
     onPictureTap: (() -> Unit)?,
     pictureTapLabel: String?,
     previewClearance: Int,
@@ -235,6 +239,7 @@ private fun ConferenceTiles(
             // Every shape, so each tile crops its *own* picture to fill its cell. One
             // shared remote size laid every tile out on whichever stream decoded last.
             sizes = sizes,
+            health = health,
             onSurfaces = { remoteSurfaces = it },
             onTileHeight = actions.onRemoteTileHeight,
         )
