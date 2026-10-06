@@ -55,6 +55,11 @@ import java.util.concurrent.TimeUnit
  * stack refuses — every one of those leaves the microphone alone. The gate also starts
  * open and reopens on a single matching window. Muting the user is the failure this
  * feature cannot have, and it is the one they could not diagnose.
+ *
+ * It is also the failure this feature shipped with, which is why [ENABLED] is false: the
+ * reopen promised above cannot happen, because closing the gate silences the very tap the
+ * reopen decision reads. A handset found it; [ENABLED] carries the measurement and the
+ * fix. Everything below this line is correct only once that edge moves.
  */
 internal class VoiceGateController(
     private val embedder: SpeakerEmbedder,
@@ -81,6 +86,10 @@ internal class VoiceGateController(
      * Idempotent for the same profile. Called on the PJSIP thread.
      */
     fun start(captureMedia: AudioMedia, against: VoiceProfile) {
+        if (!ENABLED) {
+            logger.info(TAG, "Voice gate held off: $DISABLED_BECAUSE")
+            return
+        }
         if (tap != null && profile == against) return
         stop()
 
@@ -236,6 +245,45 @@ internal class VoiceGateController(
     }
 
     private companion object {
+        /**
+         * Off until the tap stops reading its own output (measured 2026-10-05, M23/1001).
+         *
+         * The gate closes with `pjmedia_conf_adjust_rx_level` on the capture slot, and the
+         * tap is a listener of that same slot. `conference.c:2838-2857` applies
+         * `rx_adj_level` **in place on the source port's own buffer**, before the frame is
+         * distributed to any listener - so the instant the gate closes, the tap reads the
+         * zeroes the gate just wrote. The embedder then scores digital silence for ever,
+         * the score can never climb back over the threshold, and the gate cannot reopen.
+         *
+         * On a handset this is not subtle. A call to 9196 with a profile enrolled:
+         *
+         *     13:29:02.363  window score=-0.139 took=254ms open=true
+         *     13:29:02.997  window score=-0.139 took=137ms open=false
+         *     13:29:02.997  Voice gate closed: this is not the enrolled speaker
+         *     ... every window to the end of the call: open=false
+         *
+         * The score is identical to three decimals in all 19 windows, including the three
+         * taken while the gate was still open and the microphone unattenuated: the room was
+         * quiet, RNNoise took it to exact zero, and four such windows are all it takes.
+         * [stop] reopens the level, so each new call gets its first few seconds and then
+         * goes silent - which is what "voice not clear" turned out to be.
+         *
+         * The KDoc above promises the gate "reopens on a single matching window". It cannot:
+         * closing destroys the evidence reopening depends on. Fails-open covers a gate that
+         * never closes, not one that cannot un-close.
+         *
+         * The fix is to gate a different edge from the one the tap listens to - attenuate
+         * capture->leg per connection and leave capture->tap alone. `pjmedia` has exactly
+         * that in `pjmedia_conf_adjust_conn_level` (`conference.h:901`), unexposed in the
+         * Java bindings; without a native rebuild the same thing is `stopTransmit` /
+         * `startTransmit` per call leg, which needs the live legs plumbed in here and needs
+         * to reconcile with the user's own mute, since both would own that connection.
+         * Enrolment, the profile store and the UI are unaffected and stay as they are.
+         */
+        const val ENABLED = false
+        const val DISABLED_BECAUSE =
+            "closing it mutes its own analysis tap, so it cannot reopen (see ENABLED)"
+
         const val TAG = "VoiceGate"
         const val PORT_NAME = "coralx-voice-gate"
         const val SAMPLE_RATE = 16_000

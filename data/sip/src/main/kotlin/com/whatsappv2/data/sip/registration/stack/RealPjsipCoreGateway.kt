@@ -4318,23 +4318,32 @@ private fun Endpoint.tuneLyra(context: Context, logger: Logger): String? {
 }
 
 /**
- * Lyra's bit rate, bps. One of 3200, 6000 or 9200 - `lyra.cpp:30` - and this build asked
- * for none of them, so it inherited `PJMEDIA_CODEC_LYRA_DEFAULT_BIT_RATE`, the 3200 floor
- * (`pjmedia-codec/config.h:584`).
+ * Lyra's bit rate, bps. One of 3200, 6000 or 9200 (`lyra.cpp:30`).
  *
- * 3200 is the wrong default here. Lyra is generative: it does not quantise the waveform,
- * it resynthesises speech from a learned prior, and at its floor the prior is doing most
- * of the work - which is what "clear enough to understand, obviously not the speaker"
- * sounds like. 9200 is the top mode and still only 9.2 kbps, so on the LAN these handsets
- * share the extra 6 kbps is free; this was never a bandwidth decision, only an unexamined
- * default.
+ * **3200, and raising it needs the server checked first.** 9200 was tried on 2026-10-05 and
+ * reverted the same day: it silences real calls between two clients.
  *
- * Safe against a peer that disagrees. `lyra.cpp:323` advertises `bitrate=9200` in the
- * fmtp and `get_bit_rate_from_fmtp` (`:430`) reads the answer per direction, falling back
- * to 3200 for anything absent or not one of the three - so an older CoralX build, or a
- * leg that negotiates down, still interoperates at the rate it offered.
+ * The reasoning for 9200 still holds in the abstract - Lyra is generative, at its floor the
+ * learned prior does most of the work, and 9.2 kbps is free on this LAN. What does not hold
+ * is that both ends get there. A call 1002 -> 1001 negotiated `a=fmtp:96 bitrate=9200` and
+ * FreeSWITCH *answered* `bitrate=9200`, yet the receiving stream logged
+ * `codec parsed 0 frames` 598 times and no audio arrived: a Lyra frame's size follows its
+ * bit rate, so a decoder set to 9200 cannot parse 3200 frames at all. FreeSWITCH echoes the
+ * `bitrate=` it was offered back into its answer without that answer binding what the
+ * bridged leg actually emits.
+ *
+ * It looked verified because it was tested against the echo extensions (9196/9190/9191),
+ * and those loop RTP back - our own 9200 frames returned to our own decoder and parsed
+ * perfectly. **An echo extension cannot test codec interop.** Only a bridged call between
+ * two real endpoints can, because only there does one party decode what a *different* party
+ * encoded.
+ *
+ * To raise it: confirm the server's own Lyra really honours the rate (not just parrots the
+ * fmtp), confirm every client in the mesh ships the same value - a mixed fleet is a mixed
+ * frame size - and prove it on a client-to-client call by checking the receiving stream logs
+ * no `codec parsed 0 frames`.
  */
-private const val LYRA_BITRATE = 9_200L
+private const val LYRA_BITRATE = 3_200L
 
 private const val LYRA_TAG = "PjsipGateway"
 
