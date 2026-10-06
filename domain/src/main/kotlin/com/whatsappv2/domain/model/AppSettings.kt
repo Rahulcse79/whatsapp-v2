@@ -171,18 +171,38 @@ data class AppSettings(
     /**
      * Whether a trained voice profile is used to keep other speakers off the call.
      *
-     * **On by default, and it does nothing without a profile.** The gate needs an enrolled
-     * voice to compare against; with none it never starts, which is why defaulting to on
-     * costs a user who has not trained anything precisely nothing. Turning it off is for
-     * somebody who *has* trained and wants the microphone passed through untouched — a
-     * shared handset, a speakerphone in a room, or a call where a colleague is meant to be
-     * heard.
+     * **Off by default, until the gate stops cutting the person it is supposed to keep.**
+     * This defaulted to on, on the reasoning that the gate needs an enrolled voice and so
+     * costs an untrained user nothing. That part is still true and is not the problem. The
+     * problem is what it does to a user who *has* trained, measured on two people and two
+     * handsets on 2026-10-06, 60-second turns through the real capture chain:
+     *
+     * ```
+     *   speaker vs their own profile   p50 +0.322 and +0.319   threshold 0.35
+     *   speaker vs the other profile   p50 +0.185 and +0.213
+     *   nobody speaking                p50 +0.005 and +0.091
+     * ```
+     *
+     * Other voices and room noise are held — 0 of 452 impostor windows and 0 of 513 ambient
+     * windows crossed the threshold. But the enrolled speaker's own median sits *below* it,
+     * so the gate cuts them roughly half the time, in closures of up to 4.2 seconds while
+     * they are still talking. No threshold fixes it: at no setting does the user get through
+     * 95% of the time with under 10% leak, because the two distributions overlap that far.
+     *
+     * The cause is not the threshold but the chain. Scoring reads the capture bridge, which
+     * is downstream of RNNoise (`EC_OPTIONS = ECHO_USE_SPEECH_ENHANCER`); `VoiceEnroller`
+     * records through `AudioRecord`, which never sees it. So the profile describes audio
+     * that no live window will ever look like. Until enrolment and scoring run through the
+     * same processing, this must not be on for somebody who has not asked for it.
+     *
+     * Everything to switch it on is still here and still works, because that is how the
+     * fix gets measured. See `VOICE-GATE-FINDINGS-2026-10-06.md`.
      *
      * Independent of the user's own mute. Both can silence the microphone and neither can
      * undo the other: see `RealPjsipCoreGateway.applyCaptureRouting`, which owns that one
      * connection on behalf of both.
      */
-    val liveCallFilteringEnabled: Boolean = true,
+    val liveCallFilteringEnabled: Boolean = false,
 ) {
     companion object {
         /** What a fresh install starts with. */

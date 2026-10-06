@@ -2054,9 +2054,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * Read on the PJSIP thread and written from the engine's collector, so volatile. The
      * gate is started and stopped from it rather than consulted inside the audio path: a
      * check per frame would be a check in the wrong place.
+     *
+     * Starts false, matching `AppSettings.liveCallFilteringEnabled`'s own default, so the
+     * window between the stack coming up and the settings collector's first emission is
+     * not one where the gate may run against a setting the user never chose. It is only a
+     * default: the collector's value wins the moment it arrives, either way.
      */
     @Volatile
-    private var liveCallFilteringEnabled: Boolean = true
+    private var liveCallFilteringEnabled: Boolean = false
 
     /**
      * The gate's standing decision, device-wide. True means the microphone may transmit.

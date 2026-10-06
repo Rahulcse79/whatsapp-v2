@@ -108,7 +108,8 @@ class DataStoreAppSettingsRepository @Inject constructor(
             ?: AppSettings.DEFAULT.videoFrameRate,
         sipTraceEnabled = this[SIP_TRACE] ?: AppSettings.DEFAULT.sipTraceEnabled,
         // Absent means a fresh install, or an upgrade from a build that predates the
-        // setting - and the default is on, so both get filtering once they train a voice.
+        // setting - and the default is off, so neither gets a gate they did not ask for.
+        // Somebody who has already chosen has a value stored here, and keeps it.
         liveCallFilteringEnabled = this[LIVE_CALL_FILTERING]
             ?: AppSettings.DEFAULT.liveCallFilteringEnabled,
         verifyTlsCertificates = this[VERIFY_TLS] ?: AppSettings.DEFAULT.verifyTlsCertificates,
