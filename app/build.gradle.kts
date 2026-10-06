@@ -106,8 +106,8 @@ android {
         // every installed build reported a version nobody would recognise and the package
         // manager saw no upgrade between them. versionCode must increase for Android to
         // accept an update, so it tracks the version rather than staying at 1.
-        versionCode = 6
-        versionName = "1.0.6"
+        versionCode = 7
+        versionName = "1.0.7"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
