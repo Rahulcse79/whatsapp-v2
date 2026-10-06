@@ -1,0 +1,4 @@
+# Downloaded test fixtures and DNSMOS models. See fetch-corpus.sh: nothing here is
+# vendored, committed, or needed to build or ship the app.
+*
+!.gitignore

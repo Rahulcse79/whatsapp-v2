@@ -51,6 +51,10 @@ javaxInject = "1"
 # Run "Report dependency versions" against these coordinates before merge and bump here
 # if it reports newer — the header rule above applies to them like everything else.
 okhttp = "4.12.0"
+
+# Queried from Maven Central on 2026-10-05, not written from memory (see the header).
+# Runs the vendored WeSpeaker ECAPA model for the voice profile — ADR-013.
+onnxruntime = "1.30.0"
 retrofit = "2.11.0"
 gson = "2.11.0"
 ulidCreator = "5.2.3"
@@ -153,6 +157,7 @@ androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = 
 # one process is a pair of bugs waiting to be told apart. Note :chatsdk's dependencies are
 # `implementation`, so nothing is inherited from it — :data:chat declares these itself.
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntime" }
 okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
 retrofit = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit" }
 retrofit-converter-gson = { group = "com.squareup.retrofit2", name = "converter-gson", version.ref = "retrofit" }

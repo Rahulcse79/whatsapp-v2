@@ -11,6 +11,7 @@ import com.whatsappv2.domain.video.DisplayCeiling
 import com.whatsappv2.domain.video.EncoderConditions
 import com.whatsappv2.domain.video.VideoBudget
 import com.whatsappv2.domain.video.VideoConditions
+import com.whatsappv2.domain.video.VideoFrameRate
 import com.whatsappv2.domain.video.VideoQualityProfile
 import com.whatsappv2.domain.video.VideoQualityTransition
 
@@ -122,6 +123,16 @@ internal class VideoQualityCoordinator(
     private var warnedBudgetExhausted = false
     private var lastHeldReportAtMillis = 0L
 
+    /**
+     * The rate the user picked in Settings, which is what the ladder's rungs are built at.
+     *
+     * Held here rather than read from the policy because the policy does not outlive a call
+     * and the preference does: a rate chosen between calls has to be waiting for the next
+     * [AdaptiveVideoPolicy] this coordinator builds, and the two construction sites below
+     * are the only places that happens.
+     */
+    private var frameRate: VideoFrameRate = VideoFrameRate.DEFAULT
+
     /** The tier in force, or null before the first video leg. For the trace line. */
     val current: VideoQualityProfile? get() = policy?.current
 
@@ -139,6 +150,7 @@ internal class VideoQualityCoordinator(
                 thresholds = thresholds,
                 initialBudget = budget,
                 initialDisplayCeiling = displayCeiling,
+                frameRate = frameRate,
             ).current
         return VideoEncoderSettings.of(profile, budget)
     }
@@ -146,6 +158,22 @@ internal class VideoQualityCoordinator(
     /** Tells the coordinator how big the tiles are, from the call screen's own layout. */
     fun onDisplayCeiling(ceiling: DisplayCeiling) {
         displayCeiling = ceiling
+    }
+
+    /**
+     * The user's frame-rate preference, from Settings.
+     *
+     * Applied to a live policy as well as remembered for the next one, so a rate changed
+     * during a call takes effect on that call. `AdaptiveVideoPolicy.applyFrameRate` rebuilds
+     * the ladder at the new rate and is a no-op when the rate has not moved; what it cannot
+     * do is reconfigure a *running* stream, so the new rungs reach the encoder at the next
+     * stream boundary like every other quality change.
+     */
+    fun onFrameRate(rate: VideoFrameRate) {
+        if (rate == frameRate) return
+        frameRate = rate
+        policy?.applyFrameRate(rate)
+        logger.info(TAG, "Video frame rate is now ${rate.fps} fps - applied at the next stream build")
     }
 
     /**
@@ -225,6 +253,7 @@ internal class VideoQualityCoordinator(
             thresholds = thresholds,
             initialBudget = budget,
             initialDisplayCeiling = displayCeiling,
+            frameRate = frameRate,
         ).also { policy = it }
 
         val perLeg = legs.mapNotNull { leg ->

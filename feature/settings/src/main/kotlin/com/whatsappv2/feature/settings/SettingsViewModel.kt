@@ -10,6 +10,7 @@ import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.ThemeMode
 import com.whatsappv2.domain.repository.AppSettingsRepository
 import com.whatsappv2.domain.repository.ChatSessionRepository
+import com.whatsappv2.domain.video.VideoFrameRate
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -113,6 +114,9 @@ class SettingsViewModel @Inject constructor(
 
     fun setCallHistoryRetention(retention: CallHistoryRetention) =
         viewModelScope.launch { repository.setCallHistoryRetention(retention) }
+
+    fun setVideoFrameRate(rate: VideoFrameRate) =
+        viewModelScope.launch { repository.setVideoFrameRate(rate) }
 
     /**
      * Signs out of chat. The repository call and nothing else.

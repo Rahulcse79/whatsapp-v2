@@ -16,7 +16,7 @@ package com.whatsappv2.domain.video
  *
  * So the setting exists because people ask for it and because a higher rate genuinely is
  * smoother on a good link, and [dividesCameraRate] exists so the screen offering it can say
- * which of the five are even and which are not. It says so rather than hiding the uneven
+ * which of the six are even and which are not. It says so rather than hiding the uneven
  * ones: 25 fps on a link that can carry it still looks better than 15 to most people, and
  * that is the user's call to make with the facts in front of them.
  *
@@ -29,6 +29,15 @@ package com.whatsappv2.domain.video
  * mean, not what the call is guaranteed to get.
  */
 enum class VideoFrameRate(val fps: Int) {
+    /**
+     * The floor, for a link that cannot carry motion at all.
+     *
+     * Divides the camera's rate evenly (every sixth frame), so it judders no more than 15
+     * does. Offered because a still-ish picture that arrives is worth more than a smooth one
+     * that does not: on a leg that the adaptive policy has already driven to the bottom rung,
+     * the remaining choice is between few frames and none.
+     */
+    FPS_5(5),
     FPS_10(10),
     FPS_15(15),
     FPS_20(20),
@@ -40,7 +49,7 @@ enum class VideoFrameRate(val fps: Int) {
     /**
      * Whether [CAMERA_FPS] divides evenly into this rate.
      *
-     * True for 10, 15 and 30 — every third frame, every second frame, every frame. False for
+     * True for 5, 10, 15 and 30 — every sixth, third, second and every frame. False for
      * 20 and 25, which the encoder can only reach by dropping frames on an uneven pattern.
      */
     val dividesCameraRate: Boolean get() = CAMERA_FPS % fps == 0

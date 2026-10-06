@@ -14,6 +14,7 @@ import com.whatsappv2.domain.model.CallHistoryRetention
 import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.ThemeMode
+import com.whatsappv2.domain.video.VideoFrameRate
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -42,6 +43,7 @@ class SettingsScreenTest {
         onTheme: (ThemeMode) -> Unit = {},
         onRetention: (CallHistoryRetention) -> Unit = {},
         onVerifyTls: (Boolean) -> Unit = {},
+        onFrameRate: (VideoFrameRate) -> Unit = {},
         backgroundAccess: BackgroundAccessLink? = null,
         onChatSignOut: () -> Unit = {},
     ) {
@@ -57,6 +59,7 @@ class SettingsScreenTest {
                         onSipTraceChange = onTrace,
                         onVerifyTlsChange = onVerifyTls,
                         onRetentionChange = onRetention,
+                        onVideoFrameRateChange = onFrameRate,
                         onChatSignOut = onChatSignOut,
                     ),
                     links = SettingsLinks(onOpenAccounts = {}, backgroundAccess = backgroundAccess),
@@ -314,6 +317,54 @@ class SettingsScreenTest {
         setContent()
 
         compose.onNodeWithTag(TAG_APP_VERSION).performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `the frame rate field shows the stored rate and offers every option`() {
+        setContent(state = SettingsUiState(settings = AppSettings.DEFAULT))
+
+        compose.onNodeWithTag(TAG_FRAME_RATE).performScrollTo().assertIsDisplayed()
+        // The default is named, so a user who has changed it can find their way back.
+        compose.onNodeWithText("15 fps (default)").assertIsDisplayed()
+    }
+
+    @Test
+    fun `choosing a rate reports it`() {
+        var chosen: VideoFrameRate? = null
+        setContent(onFrameRate = { chosen = it })
+
+        compose.onNodeWithTag(TAG_FRAME_RATE).performScrollTo().performClick()
+        compose.onNodeWithTag(frameRateOptionTag(VideoFrameRate.FPS_30)).performClick()
+
+        assertEquals(VideoFrameRate.FPS_30, chosen)
+    }
+
+    @Test
+    fun `a rate that does not divide the camera rate says so`() {
+        // The judder is a property of the choice, not a fault, so it is stated next to it
+        // rather than hidden or refused.
+        setContent(
+            state = SettingsUiState(
+                settings = AppSettings.DEFAULT.copy(videoFrameRate = VideoFrameRate.FPS_25),
+            ),
+        )
+
+        compose.onNodeWithText(
+            "25 fps does not divide the camera's 30 fps evenly, so frames arrive " +
+                "unevenly spaced. It may look less smooth than 15 or 30.",
+        ).performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `an even rate carries no warning`() {
+        setContent(
+            state = SettingsUiState(
+                settings = AppSettings.DEFAULT.copy(videoFrameRate = VideoFrameRate.FPS_5),
+            ),
+        )
+
+        compose.onNodeWithText("5 fps", substring = true).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("does not divide", substring = true).assertDoesNotExist()
     }
 
     private companion object {

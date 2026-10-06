@@ -30,9 +30,33 @@ val lyraAssets = tasks.register<StageLyraAssets>("stageLyraAssets") {
     output.set(layout.buildDirectory.dir("generated/lyra-assets"))
 }
 
+// The speaker-embedding model (ADR-013), staged the same way and for the same reasons:
+// one home under third_party/, pinned, and copied rather than referenced so the APK's
+// contents are a build output instead of a path that happens to resolve.
+abstract class StageVoiceAssets : DefaultTask() {
+    @get:InputFile
+    abstract val model: RegularFileProperty
+
+    @get:OutputDirectory
+    abstract val output: DirectoryProperty
+
+    @TaskAction
+    fun stage() {
+        val target = output.get().asFile.apply { mkdirs() }
+        val source = model.get().asFile
+        source.copyTo(target.resolve(source.name), overwrite = true)
+    }
+}
+
+val voiceAssets = tasks.register<StageVoiceAssets>("stageVoiceAssets") {
+    model.set(rootProject.layout.projectDirectory.file("third_party/wespeaker/voxceleb_ECAPA512_LM.onnx"))
+    output.set(layout.buildDirectory.dir("generated/voice-assets"))
+}
+
 androidComponents {
     onVariants { variant ->
         variant.sources.assets?.addGeneratedSourceDirectory(lyraAssets, StageLyraAssets::output)
+        variant.sources.assets?.addGeneratedSourceDirectory(voiceAssets, StageVoiceAssets::output)
     }
 }
 
@@ -187,6 +211,7 @@ dependencies {
     implementation(project(":data:contacts"))
     implementation(project(":data:settings"))
     implementation(project(":data:sip"))
+    implementation(project(":data:voice"))
     implementation(project(":feature:accounts"))
     implementation(project(":feature:calls"))
     implementation(project(":feature:chat"))

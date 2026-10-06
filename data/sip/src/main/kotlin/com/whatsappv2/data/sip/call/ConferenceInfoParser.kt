@@ -58,6 +58,14 @@ internal object ConferenceInfoParser {
          * treated as one. See [ConferenceInfoWriter.TOPOLOGY].
          */
         val mesh: Boolean = false,
+
+        /**
+         * True when this document is a member saying it is meshing, not a roster.
+         *
+         * The focus reads it as "this participant can hold legs to the others, so do not
+         * carry it". Everything else about such a document is empty by construction.
+         */
+        val meshAck: Boolean = false,
     )
 
     /**
@@ -86,6 +94,10 @@ internal object ConferenceInfoParser {
             entity = root.getAttribute("entity").takeIf { it.isNotBlank() },
             mesh = root.childrenNamed("conference-description")
                 .any { it.textOf(ConferenceInfoWriter.TOPOLOGY).equals(ConferenceInfoWriter.MESH, true) },
+            // A member answering a roster rather than a focus announcing one. Carries no
+            // membership and must never be read as one — see [ConferenceInfoWriter.meshAck].
+            meshAck = root.childrenNamed("conference-description")
+                .any { it.textOf(ConferenceInfoWriter.TOPOLOGY).equals(ConferenceInfoWriter.MESH_ACK, true) },
             participants = root.childrenNamed("users")
                 .flatMap { it.childrenNamed("user") }
                 .mapNotNull { it.toParticipant(selfUri) },
@@ -151,6 +163,10 @@ internal object ConferenceInfoParser {
             hasVideoStream = media.video()?.let { it.status() !in SILENT } ?: false,
             joinedAtEpochMillis = endpoint?.childrenNamed("joining-info")
                 ?.firstOrNull()?.textOf("when")?.let(::epochMillisOf),
+            // Presence alone, not a value: the element exists or it does not. A focus
+            // that does not relay anybody writes none of these, and a bridge that is not
+            // this app never has.
+            isRelayed = childrenNamed(ConferenceInfoWriter.RELAYED).isNotEmpty(),
         )
     }
 

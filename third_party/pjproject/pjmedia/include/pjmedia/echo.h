@@ -127,7 +127,26 @@ typedef enum pjmedia_echo_flag
      * Currently this is only effective on WebRTC AEC3 backend.
      */
     PJMEDIA_ECHO_USE_GAIN_CONTROLLER = 256,
-    
+
+    /**
+     * If PJMEDIA_ECHO_USE_SPEECH_ENHANCER flag is specified, pjmedia_snd_port will
+     * additionally run a machine-learning speech enhancer over each captured frame,
+     * after echo cancellation (see pjmedia/speech_enh.h).
+     *
+     * This flag also SUPPRESSES PJMEDIA_ECHO_USE_NOISE_SUPPRESSOR whenever the enhancer
+     * is created successfully, because cascading two noise suppressors over-attenuates
+     * and audibly damages speech. Setting both is therefore the intended configuration:
+     * the enhancer when it is available, the statistical suppressor when it is not.
+     *
+     * Note that this is not an echo canceller setting. It lives in this word because this
+     * is the word pjsua already carries from the application down to pjmedia_snd_port
+     * (pjsua_media_config.ec_options -> pjmedia_snd_port_param.ec_options), and the
+     * alternative - a new field in pjsua_media_config - is an ABI and binding change for
+     * a boolean. Bit 11 is used rather than the next free one (512) so that an upstream
+     * addition, which would take the lowest, collides with nothing here.
+     */
+    PJMEDIA_ECHO_USE_SPEECH_ENHANCER = 2048,
+
     /**
      * Use default aggressiveness setting for the echo canceller algorithm. 
      * This setting is mutually exclusive with the other aggressiveness

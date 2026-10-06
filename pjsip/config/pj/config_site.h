@@ -127,6 +127,29 @@
  * 48 kHz off by default). No deployed server offers it — it is app-to-app only. */
 #define PJMEDIA_HAS_LYRA_CODEC 1
 
+/* RNNoise IS compiled, and it is what the capture path denoises with (patch 0007,
+ * pjmedia/speech_enh.h). The declared-feature rule N-8 is why this is here and not
+ * implied: the pjmedia source branches on it, so a build that links librnnoise and does
+ * not set this gets the no-op fallback and silently never denoises.
+ *
+ * build-native.sh is the other half. It builds third_party/rnnoise for the ABI, asserts
+ * librnnoise.a was installed before pjproject is configured, puts the header on CFLAGS and
+ * -lrnnoise on the wrapper's link line. Set this to 0 and the whole thing compiles to the
+ * fallback - which is a real configuration, not a broken one: pjmedia_speech_enh_create()
+ * returns PJ_ENOTSUP, pjmedia_snd_port keeps a NULL enhancer, and rec_cb() is byte-for-byte
+ * the callback that shipped before any of this. There is no second denoiser behind it:
+ * WebRTC's statistical suppressor needs PJMEDIA_ECHO_WEBRTC, and that backend aborts the
+ * process at this app's 48 kHz clock rate (see RealPjsipCoreGateway.EC_OPTIONS). So the
+ * fallback is "no denoising", which is exactly what every call did before.
+ *
+ * Measured on the offline bench (tools/speech-enhancement): at 5 dB SNR against fan noise,
+ * DNSMOS P.835 background score 4.08 with speech quality 3.44, where the untouched mixture
+ * scores 2.65/3.43 and the clean reference itself scores 3.99/3.62. On a Samsung M23 the
+ * added CPU is below the ~1.5-point noise floor of a /proc/<pid>/stat measurement over a
+ * live call: three runs with it on read 99.1%, 100.0% and 100.4% of one core, one run with
+ * it off read 100.6%. */
+#define PJMEDIA_HAS_RNNOISE 1
+
 /*
  * Assertions log, they do not abort. pjlib's pj_assert() is assert() while PJ_DEBUG is
  * set, and PJ_DEBUG defaults to 1 because configure-android strips -DNDEBUG from the NDK

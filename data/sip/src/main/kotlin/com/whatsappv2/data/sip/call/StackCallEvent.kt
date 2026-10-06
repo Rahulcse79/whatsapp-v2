@@ -222,6 +222,16 @@ internal data class StackParticipant(
     val isSelf: Boolean,
     val hasVideoStream: Boolean,
     val joinedAtEpochMillis: Long?,
+    /**
+     * True when the focus carries this participant on its own bridge rather than the
+     * participant holding a leg to everybody.
+     *
+     * The one thing a reader must act on rather than display: a relayed participant is
+     * **not dialled**, because the focus is already carrying them and a direct leg would
+     * be that participant heard twice. Default false, so a roster from a server bridge —
+     * or from a build that predates this — reads exactly as it did.
+     */
+    val isRelayed: Boolean = false,
 )
 
 /**
@@ -257,4 +267,10 @@ internal data class StackConferenceEvent(
      * both of which leave this device a spoke receiving one composed picture.
      */
     val mesh: Boolean = false,
+
+    /**
+     * True when this is a member answering a mesh roster rather than a focus announcing
+     * one — see [ConferenceInfoWriter.meshAck]. Carries no membership.
+     */
+    val meshAck: Boolean = false,
 )

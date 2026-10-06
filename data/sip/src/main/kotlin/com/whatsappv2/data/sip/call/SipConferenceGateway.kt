@@ -36,16 +36,32 @@ internal interface SipConferenceGateway {
      * Fewer than two members tears the bridge down, which is how a conference ends: there
      * is no separate teardown to forget to call.
      *
-     * @param relay whether this device carries one member's audio to another. True for
-     *   ADR-009's star. **False for a mesh**, where every pair holds a dialog of its own
-     *   and a cross-link here would be that pair heard twice — see `ConferenceMesh`. The
-     *   membership is still stated either way; only the links between members go.
+     * @param relayed the members this device must carry audio for, because they hold no
+     *   leg to the other members. All of [callKeys] is ADR-009's star; empty is a full
+     *   mesh, where every pair holds a dialog of its own and a cross-link here would be
+     *   that pair heard twice (see `ConferenceMesh`); a subset is a conference that is
+     *   some of each — CoralX clients meshing while a desk phone is carried. The
+     *   membership is stated the same way whichever it is; only the links differ.
      * @return the members actually mixed, which is [callKeys] minus any whose media was
      *   not available. A caller that needs to know the conference is whole compares them.
      */
+    /**
+     * Whether [callKey]'s far end is another build of this application.
+     *
+     * The whole of how a conference decides who can mesh and who this device must carry.
+     * A CoralX peer reconciles its own legs against the roster and dials the participants
+     * it owes; anything else - a desk phone, a server extension, a softphone - receives
+     * the roster, ignores it, and would otherwise hear the focus and nobody else.
+     *
+     * False for a peer that has not named itself. That is the safe direction: a
+     * participant wrongly carried costs this device a transcode, while one wrongly
+     * expected to mesh is a participant nobody can hear.
+     */
+    fun peerIsCoralxClient(callKey: String): Boolean
+
     suspend fun setConferenceMembers(
         callKeys: Set<String>,
-        relay: Boolean = true,
+        relayed: Set<String> = callKeys,
     ): Outcome<Set<String>, String>
 
     /**

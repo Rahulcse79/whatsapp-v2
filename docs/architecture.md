@@ -663,6 +663,377 @@ re-measuring for Lyra, whose per-stream cost is higher, before raising it.
 
 ---
 
+### ADR-010 — Capture-path speech enhancement: **RNNoise in `pjmedia_snd_port`, not DeepFilterNet3, not TFLite**
+
+**Status:** Accepted · **Decided:** 2026-10-04 · **Decider:** stakeholder
+
+**Context.** Background noise goes out on every call and Lyra makes it worse than merely
+audible. At 3.2 kbit/s Lyra is generative: it resynthesises speech from a learned prior
+rather than coding the waveform, so noise at its input does not pass through — it spends
+bits and steers the generator. Denoising after the codec is not an alternative, because by
+then the noise is part of what the decoder invented. The pipeline the stakeholder specified
+is therefore `mic → AEC/NS → ML denoiser → VAD → Lyra 16 kHz → SIP`, with every stage
+on-device: no microphone audio leaves the handset, and the Railway backend stays out of the
+real-time path entirely.
+
+**Scope.** Removing background *human voices* is explicitly **not** in this decision.
+Separating a known talker from other talkers needs target-speaker extraction and voice
+enrolment; that is deferred (Phase 2). `babble` is measured below to quantify the
+limitation, not to be tuned away.
+
+**Decision.**
+
+1. **RNNoise** (`v0.2`, BSD-3-Clause), vendored at `third_party/rnnoise` and compiled into
+   `libpjsua2.so`.
+2. Called from **`rec_cb()` in `pjmedia/src/pjmedia/sound_port.c`**, between
+   `pjmedia_echo_capture()` and `pjmedia_port_put_frame()` — patch `0007`.
+3. Switched on by **`PJMEDIA_ECHO_USE_SPEECH_ENHANCER`**, a new bit in the `ec_options` word
+   pjsua already carries from `MediaConfig.ecOptions` down to the sound port, so no pjsua
+   field is added and no SWIG surface is regenerated.
+4. **The echo canceller is left alone.** `ecOptions`' algorithm field stays at
+   `PJMEDIA_ECHO_DEFAULT`, which `echo_common.c` resolves to Speex — see the finding below.
+   `start_sound_device()` still clears `PJMEDIA_ECHO_USE_NOISE_SUPPRESSOR` when the
+   enhancer starts, so that two suppressors can never run in series, but on this build that
+   guard is unexercised because the flag is not set.
+
+**Why `rec_cb()` and nowhere else.** Every captured frame passes that point exactly once.
+Everything downstream of `pjmedia_port_put_frame()` is per-leg: ADR-009's conference is a
+local mix and the video mesh is a full mesh, so in a four-party call there are three
+encoders and three RTP streams. A denoiser placed after the bridge would run three times on
+the same microphone audio. Here **the cost is constant in party count** — which, given
+ADR-009's measured ~70 % fixed and ~40 % per-Lyra-stream budget, is the difference between
+affordable and not.
+
+**A finding that changed the first half of this work: `PJMEDIA_ECHO_WEBRTC` aborts the
+process.** The plan was to switch on WebRTC's echo canceller and its noise suppressor
+first, as a configuration change, on the evidence that `strings libpjsua2.so` finds the
+whole WebRTC AEC API. The API is there. Naming it killed the app on the first captured
+frame of the first call (Samsung M23, 2026-10-04):
+
+```
+Fatal signal 6 (SIGABRT) in tid 28348 (Thread-27)
+Abort message: 'aec_core.c:1765: WebRtcAec_ProcessFrames:
+                assertion "aec->num_bands == num_bands" failed'
+  #02 WebRtcAec_ProcessFrames  #04 WebRtcAec_Process
+  #05 webrtc_aec_cancel_echo   #07 pjmedia_echo_capture   #08 rec_cb
+```
+
+`WebRtcAec_Init(inst, clock_rate, clock_rate)` makes WebRTC compute
+`aec->num_bands = sampFreq / 16000` (`aec_core.c:1547`), which at 48 kHz is **3**.
+`webrtc_aec_cancel_echo` then passes `echo->channel_count` — the **channel** count, 1 —
+into the parameter WebRTC reads as the **band** count (`echo_webrtc.c:326`). The assertion
+is not compiled out, so `PJMEDIA_ECHO_WEBRTC` is unusable at any clock rate above 16 kHz,
+and this app mixes at 48 kHz by deliberate choice. It is left unfixed: the correct fix is a
+band split, which is a real DSP change to vendored code, and the Speex canceller the
+default already selects has worked on every call this app has ever made.
+
+The consequence for this ADR is that `PJMEDIA_ECHO_USE_NOISE_SUPPRESSOR` goes with it — it
+is read only at `echo_webrtc.c:192` — so the shipped `ecOptions` is **one bit**, the
+enhancer's, and the fallback behind RNNoise is no denoising rather than a weaker denoiser.
+That is the fallback this work was asked for: if the ML denoiser cannot start, frames pass
+through untouched on exactly today's path.
+
+**The gate, measured before the integration.** `tools/speech-enhancement` compiles the
+*vendored* denoiser sources for the host, drives them through the same call sequence the
+device uses, and scores the output with DNSMOS P.835. Clean speech mixed with seven real
+noise classes at 0, 5 and 10 dB SNR; mean over all seven at 5 dB, as SIG/BAK:
+
+| Candidate | SIG | BAK | Attenuation |
+|---|---|---|---|
+| **clean reference — the ceiling** | **3.62** | **3.99** | — |
+| Nothing (what shipped: `ecOptions` was 0, so no suppressor was built) | 2.57 | 2.06 | 0 dB |
+| WebRTC NS, as pjmedia drives it | 2.57 | 2.33 | 4.6 dB |
+| WebRTC NS at policy 3 | 2.77 | 3.09 | 10.5 dB |
+| WebRTC NS at policy 3, driven at 16 kHz | 2.99 | 2.95 | 11.9 dB |
+| **RNNoise** | **3.38** | **3.93** | **26.8 dB** |
+
+Three findings, each of which closed an option that looked reasonable beforehand.
+
+- **pjmedia's existing suppressor cannot do this job, and it is not a tuning problem.**
+  `echo_webrtc.c` creates it and never calls `WebRtcNs_set_policy`, so it runs at the
+  `aggrMode = 0` that `WebRtcNs_InitCore` assigns, whose `denoiseBound = 0.5f` caps
+  attenuation near **6 dB** however loud the noise is. On music and bells it does
+  essentially nothing (BAK 1.30 and 1.19 against an unprocessed 1.15 and 1.17).
+- **Raising that policy is not the answer either.** Mode 3 buys 10.5 dB and spends 0.6 of
+  SIG on the four ordinary noise classes. Part of why is that pjmedia drives the suppressor
+  at the wrong block size — 160 samples is 10 ms at 16 kHz and 3.33 ms at this app's 48 kHz
+  `CORE_CLOCK_RATE` — and running the identical policy at 16 kHz recovers 0.22 of SIG. That
+  is a real second defect, recorded and deliberately not fixed, because the backend chosen
+  instead does not have it: RNNoise is natively 48 kHz in 480-sample blocks and 960 samples
+  per 20 ms frame is exactly two of them.
+- **RNNoise reaches the clean reference on both axes**, and on fan, traffic, train and
+  street it scores *above* it (BAK 4.08, 4.15, 4.06, 4.07) because it also strips the
+  corpus's own recording noise floor.
+
+**Why not DeepFilterNet3, which was the first choice.** It is the better denoiser on paper
+and it is a PyTorch model with no official TFLite export; its deep-filtering stage is built
+on complex-valued operations the torch → onnx → tf → tflite route does not carry across
+intact. Putting it on this handset is a model-conversion project with an uncertain outcome,
+not an integration task. RNNoise needs no conversion at all: the weights are 4.9 MB of
+`src/rnnoise_data.c` in the tree, so there is no model file to package into the APK or fail
+to load, and the TFLite runtime ADR-008 already links is not dragged into the audio capture
+path. It is also BSD-3-Clause — the one native dependency here that *reduces* exposure
+against ADR-002's unresolved GPLv2 position rather than adding to it.
+
+RNNoise is a 2017-generation GRU with a small model, and the table above is what it is worth
+rather than what it is reputed to be.
+
+**On the exit criteria this was given.** They were `BAK >= 4.0 AND SIG >= 3.8 at 5 dB SNR`.
+**`SIG >= 3.8` is not reachable on this corpus by any denoiser, because the clean, unmixed
+speech scores 3.62** — MS-SNSD is downsampled VCTK and carries its own noise floor, and no
+processing can exceed its input's speech quality. `BAK >= 4.0` is the ceiling to within a
+hundredth. The criterion that survives contact with a ceiling, and the one this is accepted
+against, is **SIG within DNSMOS's noise (±0.2) of the clean reference and BAK at least the
+clean reference's**. The CPU and latency halves — `< 15 %` of one core, `< 40 ms` — are
+properties of a handset and were measured there, on a Samsung M23 over a live call to the
+echo extension, sampling `/proc/<pid>/stat` utime+stime over 30 s:
+
+| | % of one core |
+|---|---|
+| enhancer on, three runs | 99.1, 100.0, 100.4 |
+| enhancer off, one run | 100.6 |
+
+The two arms are indistinguishable: the control sits above two of the three enhancer runs,
+so **the added CPU is below the ~1.5-point noise floor of the measurement** — against a
+15 % budget. (Debug build, so the absolute ~100 % is pessimistic and in the same family as
+ADR-009's 106–122 % for one Lyra stream on a TC15; the arms are what matter and both are
+the same build type.) Added latency is structural rather than measured: one RNNoise block,
+**10 ms**, against a 40 ms budget, and no buffering is added because 960 samples per 20 ms
+frame is exactly two blocks.
+
+**Consequences.**
+
+- A fifth unconditional vendored tree (`docs/native-dependencies.md` §1), and two more
+  patches in the series (`0007`, and `0008` for a header RNNoise 0.2 omits so that its ARM
+  path cannot compile as released).
+- `PJMEDIA_HAS_RNNOISE 0` is a complete, working configuration, not a broken one: the
+  enhancer compiles to a no-op, `rec_cb()` is byte-for-byte what it was, and the WebRTC
+  suppressor is left switched on in its place. The same path is taken at run time whenever
+  the backend refuses the capture format.
+- **VAD comes free and is not yet used.** `rnnoise_process_frame` returns the model's own
+  speech probability and `pjmedia_speech_enh_get_speech_prob()` exposes it. PJSIP's own VAD
+  stays off (`noVad = true`) for the reason recorded on `RealPjsipCoreGateway` — silence
+  suppression clips the first syllable after every pause. Gating transmission on the
+  denoiser's probability instead is a decision this ADR does not take. **DECIDE, unanswered.**
+
+---
+
+### ADR-011 — Conference audio: **a mesh with spokes — relay only the participants that cannot mesh**
+
+**Status:** Accepted · **Decided:** 2026-10-05 · **Decider:** stakeholder ·
+**Amends ADR-009 and the mesh topology that succeeded it**
+
+**Context.** A conference was all-star or all-mesh. `PjsipSipEngine.mixCalls` computed
+`relay = mesh == null`, and `openMeshIfAbsent` opens a mesh for every conference built on
+this device, so `ConferenceMix.wanted` was handed `relay = false` and opened **no
+cross-links at all**. Between two CoralX clients that is exactly right — they hold a dialog
+of their own, and a cross-link would be that pair heard twice.
+
+It is wrong for anything else. A desk phone, a server extension, any peer that is not this
+app receives the roster, cannot act on it, dials nobody and is dialled by nobody. Nothing
+was carrying it to the other participants. The reported symptom is the precise shape of
+that: **the host heard everyone and everyone else heard only the host.**
+
+`ConferenceMesh`'s own documentation recorded this as a deliberate cost — *"a pair whose
+direct call fails never will [hear each other] … A relay fallback would reintroduce the
+duplicate it exists to avoid."* True of a blanket fallback. Not true of a per-participant
+one.
+
+**Decision.**
+
+1. **The mesh stays the default.** CoralX-to-CoralX conferencing is unchanged: those pairs
+   dial each other and the bridge opens nothing between them.
+2. **A participant that cannot mesh is carried by the focus**, and is named as such in the
+   roster (`<coralx-relayed/>` per `<user>`), so **nobody dials it**. Its only path to the
+   other participants is this device's bridge, and there is therefore no second path to
+   double it. `ConferenceMesh.plan` filters relayed participants out of both `dial` and
+   `awaiting`, and — deliberately — out of neither `drop` nor the membership.
+3. **`ConferenceMix.wanted` takes a set, not a boolean.** A pair is linked **iff at least
+   one end is relayed**. The two old topologies are its extremes: `relayed = members` is
+   ADR-009's star, `relayed = {}` is the full mesh.
+4. **Who can mesh is learned from an acknowledgement**, not assumed.
+
+**Why an acknowledgement, and not `User-Agent`.** The obvious signal does not survive the
+deployed server. FreeSWITCH is a full B2BUA here: a handset-to-handset INVITE reaches the
+callee stamped `User-Agent: FreeSWITCH-mod_sofia/1.10.11` with
+`Contact: <sip:mod_sofia@…>`, and the originating client's identity is gone — measured on
+1003, 2026-10-05. Classifying on it would have relayed every CoralX peer and taken the mesh
+down with it, which is the one outcome this ADR is not allowed to produce.
+
+A MESSAGE body does survive — it is the channel the roster itself crosses on. So a member
+that adopts a mesh roster answers it with `<coralx-topology>mesh-ack</coralx-topology>` on
+the same dialog, and the focus marks that leg as meshing. `User-Agent` is kept as a second
+signal because it is free and it is correct wherever there is no B2BUA in the path.
+
+**Silence first, relaying second.** Classification is learned, and the answer "this is not
+a CoralX client" arrives as nothing at all. So a conference opens as a pure mesh, every
+participant has `MESH_ACK_GRACE_MILLIS` (3 s) to answer, and whoever has not is carried
+from then on. The other order — cross-link everybody immediately and unpick it as
+acknowledgements arrive — would make every meshed pair audible twice for those seconds. A
+pair that cannot hear each other for three seconds is a gap; a pair that hears each other
+twice is a conference nobody can use.
+
+Being wrong is safe in one direction only, and this is the right one: a CoralX peer
+mistaken for a stranger is **carried**, which costs this device a transcode and sounds
+correct; a stranger mistaken for a CoralX peer is a participant nobody can hear.
+
+**Transcoding is not a separate mechanism.** `pjmedia_conf` is a PCM bridge: every port
+decodes its own codec into the mix at `CORE_CLOCK_RATE` and re-encodes the mix in its own
+codec on the way out. A link between a Lyra leg and a PCMU leg *is* Lyra → PCM → PCMU; a
+link between two Lyra legs is Lyra(16 k) → PCM(48 k) → Lyra(16 k), resampling included.
+Opening the link is the whole of making transcoding happen, which is why there is no codec
+anywhere in `ConferenceMix`.
+
+**Verified.** 1388 unit tests, including an exhaustive hear-matrix over every way of
+splitting 2–5 participants into meshed and relayed — asserting both that everyone hears
+everyone **and** that nobody is heard twice (`ConferenceHearMatrixTest`). On a Samsung M23
+against the deployed FreeSWITCH, with its echo extensions standing in for participants that
+cannot mesh:
+
+| Participants | Carried | Links opened | Expected `n(n-1)` |
+|---|---|---|---|
+| 3 (host + 9196, 9190) | 2 of 2 | 2 | 2 |
+| 4 (host + 9196, 9190, 9191) | 3 of 3 | 6 | 6 |
+
+with all legs `audio lyra pt 96/96, rx ~47 pkt/s, tx 50 pkt/s, loss 0, jitter 4–6 ms` and
+no crash across the session.
+
+**Not verified on hardware, and why.** Five participants, and a genuinely mixed-codec
+conference. The rig is one handset plus three echo extensions — 9197 and 9198 answer
+`488 Not Acceptable Here`, and all three that work are pinned to Lyra by the server's
+`absolute_codec_string`. Both cases are covered by the hear-matrix and by the PCM-bridge
+argument above; neither has been heard. A second handset, or one echo extension given a
+different codec string, closes both.
+
+**Consequences.**
+
+- Two defects fixed in passing, both live before this. `ConferenceBridge.remove` omitted the
+  topology argument, so it defaulted to `relay = true` and planned a **star**: one
+  participant leaving a mesh cross-linked everybody who stayed, and each of them heard
+  every other twice. It also discarded `apply`'s result, so those links were never recorded
+  and nothing could close them.
+- A roster now carries two CoralX extension elements rather than one. Both are ignored by
+  any RFC 4575 reader that does not know them, which is the correct behaviour for a peer
+  that was never going to dial anybody.
+- **A CoralX pair whose direct leg fails is still not relayed.** The fallback is per
+  participant, as decided; a pair that can both mesh but whose dialog did not come up is
+  outside it. Making that case work needs the focus to know the adjacency, which is a
+  roster the members write to rather than only read. **DECIDE, unanswered.**
+
+---
+
+### ADR-013 — Personalised voice: **a speaker gate, on ONNX Runtime, measured before it was built**
+
+**Status:** Accepted · **Decided:** 2026-10-05 · **Decider:** stakeholder ·
+**Builds on ADR-010**
+
+**Context.** ADR-010 put RNNoise in the capture path and it removes noise well — ~26.8 dB,
+reaching the clean reference's background score. The one thing it structurally cannot
+remove is **other people's speech**, because speech is what a noise suppressor keeps.
+Measured, babble is its worst class by a distance. The ask was a personalised profile that
+keeps only the user.
+
+**The measurement came first, and it set everything.** Twelve speakers, WeSpeaker
+ECAPA-TDNN, enrolled on ~25 s each — `tools/speech-enhancement/VOICE-PROFILE.md`.
+
+Verification alone said the feature was marginal: at 1 s windows in babble at 5 dB the
+false-reject rate is 13.7%, and 32.3% after RNNoise. Two controls located that precisely —
+a 16 k→48 k→16 k round trip costs nothing and RNNoise on *clean* speech costs nothing at
+2 s, so the damage is **residual babble**: the embedding of a two-speaker mixture sits
+between the two speakers.
+
+A gate is not a classifier, though. It decides over time and may be asymmetric:
+
+| close delay | threshold | user cut | others let through |
+|---|---|---|---|
+| 0.75 s | 0.35 | 1.5% | 4.6% |
+| **1.0 s** | **0.35** | **0.0%** | **6.9%** |
+| 1.5 s | 0.35 | 0.0% | 11.4% |
+
+**The leak is the closing delay, not misclassification** — identical at 0.35/0.40/0.45,
+moving only with the delay. So the threshold is set by where the user stops being cut and
+the delay by how much of somebody else's sentence is tolerable. Three windows starts
+cutting the user, which is the line this does not cross.
+
+**Decision.**
+
+1. **A gate, not extraction.** 2 s rolling window, a decision every 250 ms, open on one
+   matching window, close after four that do not. `domain/voice/SpeakerGate`.
+2. **Every bias points one way.** Starts open, reopens on one window, and treats a window
+   it cannot score as the user's. No profile, no model, a model that throws, a port the
+   stack refuses — all leave the microphone alone. Muting the user is the failure this
+   cannot have and the one they could not diagnose.
+3. **One profile, replaced not merged.** 192 floats in `filesDir`. The audio never reaches
+   storage: enrolment turns it into a vector and discards it.
+4. **ONNX Runtime Android**, not the TFLite already linked for Lyra — on evidence.
+   `onnx2tf` aborts at `BatchNormalization_11` on a 1-D convolution layout mismatch, with
+   and without `-kat`; int8 dynamic quantisation gives 6.1 MB with no CPU kernel
+   (`ConvInteger`). Both recorded in `third_party/wespeaker/README.md`. Running the ONNX
+   unchanged also means the thresholds above describe the file that ships.
+5. **Applied with `adjustRxLevel` on the capture slot**, not a patch inside `rec_cb`.
+   Same position in the signal path — after RNNoise, before every encoder, so Lyra encodes
+   digital silence — using one existing call instead of a new vendored patch, a JNI
+   bridge and a native rebuild. `adjustRxLevel(0)` is exact silence, not attenuation:
+   pjsua passes `(level-1)*128`, so `rx_adj_level` is 0 and `conference.c` computes
+   `sample * 0 / 128`. It is also independent of the user's own mute, which works by
+   `stopTransmit`, so the two compose rather than fight.
+
+**ONNX Runtime's telemetry is removed, and a test keeps it removed.** The AAR ships a
+`ContentProvider` that builds an HTTP client and registers a network callback at process
+start — `ai.onnxruntime.telemetry.HttpClient.<init>` from `TelemetryInitializer`, running
+whether or not a model is ever loaded. In the library that computes the voice embedding,
+in a feature sold on nothing leaving the handset, that is not something to document and
+leave in. `tools:node="remove"` deletes it and `VoicePrivacyTest` asserts against the
+**merged** manifest that it stays deleted, including under a future rename.
+
+**Measured on the device** (Samsung M23, live call to the echo extension,
+`/proc/<pid>/stat` over 30 s):
+
+| | % of one core |
+|---|---|
+| gate on | 118.4, 122.1 |
+| gate off (no profile) | 94.0, 95.4 |
+
+**~25 points of one core**, against ~22% predicted from the host. Not free. The obvious
+halving is to run the embedder only when RNNoise's voice probability says there is speech
+— it already computes one per block — and that is not done yet.
+
+The chain was verified end to end on the handset: the 24 MB model loads, the tap attaches,
+and the gate closed 2.9 s after a call started against a deliberately non-matching
+profile — a 2 s window fill plus the 1 s close delay, which is the designed timing. With
+the profile deleted the gate never starts.
+
+**Per-window inference on the handset is 148 ms (median of 171 windows, min 133, max
+264)** — nearly 3x the 56 ms measured on the host, against a 250 ms hop. It keeps up, but
+with ~100 ms of headroom, which is the thing to watch under thermal pressure. Raising the
+hop is the wrong lever: the hop is the *opening* latency, and a longer one clips more of
+the user's first word when they resume. Running the embedder only on windows RNNoise's
+voice probability says carry speech is the right one, and is not done.
+
+**Not verified, and it needs a person.** A real enrolment, and therefore the on-device
+false-reject and leakage numbers. Enrolment needs ~90 s of someone actually speaking into
+the handset; the counter correctly stays at 0 in a silent room, and playing speech at the
+phone from the development machine did not reach it. The host numbers above stand in, and
+`VOICE-PROFILE.md` says what they are worth — MS-SNSD is one microphone and one room, so
+they are an upper bound.
+
+**Consequences.**
+
+- **The APK goes from 55 MB to 109 MB**: ~24 MB of model, the rest ONNX Runtime's native
+  libraries. Quantisation would have halved the model and does not work (above).
+- A sixth vendored tree, `third_party/wespeaker`, **CC-BY-4.0** — the only dependency here
+  whose licence asks for something rather than merely permitting, so the attribution is
+  carried in its README and belongs in the About screen. Training data is VoxCeleb.
+- **Overlapped speech is not addressed and cannot be by a gate**: 82–94% let through,
+  which is the correct behaviour since the alternative is cutting the user off whenever
+  somebody talks over them. Tier 2 — true target-speaker extraction — is explicitly not
+  started. **DECIDE, unanswered.**
+- No claim of "100% noise removal" is made anywhere, because it is not achievable: every
+  suppressor trades background against signal, and Lyra resynthesises the result in any
+  case.
+
+---
+
 ## 2. Settled inputs to the rest of the plan
 
 | Question | Answer | Affects |

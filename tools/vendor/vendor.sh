@@ -84,6 +84,7 @@ fetch_and_prune pjproject "$PJPROJECT_URL" "$PJPROJECT_SHA" ${PJPROJECT_PRUNE[@]
 fetch_and_prune openssl   "$OPENSSL_URL"   "$OPENSSL_SHA"   ${OPENSSL_PRUNE[@]+"${OPENSSL_PRUNE[@]}"}
 fetch_and_prune opus      "$OPUS_URL"      "$OPUS_SHA"      ${OPUS_PRUNE[@]+"${OPUS_PRUNE[@]}"}
 fetch_and_prune libvpx    "$LIBVPX_URL"    "$LIBVPX_SHA"    ${LIBVPX_PRUNE[@]+"${LIBVPX_PRUNE[@]}"}
+fetch_and_prune rnnoise   "$RNNOISE_URL"   "$RNNOISE_SHA"   ${RNNOISE_PRUNE[@]+"${RNNOISE_PRUNE[@]}"}
 
 # ---------------------------------------------------------------- the Lyra closure
 #

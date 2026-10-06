@@ -31,8 +31,13 @@ import com.whatsappv2.data.sip.registration.StackRegistrationState
 import com.whatsappv2.domain.codec.CodecAudit
 import com.whatsappv2.domain.codec.CodecPriorities
 import com.whatsappv2.domain.engine.SipConferenceController
+import com.whatsappv2.domain.engine.VideoHealth
 import com.whatsappv2.domain.engine.VideoSize
 import com.whatsappv2.domain.engine.VideoSizes
+import com.whatsappv2.domain.engine.VideoTileReading
+import com.whatsappv2.domain.engine.VideoTileState
+import com.whatsappv2.domain.engine.VideoTileStateReducer
+import com.whatsappv2.domain.video.VideoFrameRate
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.BufferOverflow
@@ -119,6 +124,8 @@ import javax.inject.Singleton
 import kotlin.math.roundToLong
 import com.whatsappv2.domain.video.DisplayCeiling
 import com.whatsappv2.domain.video.VideoBudget
+import com.whatsappv2.domain.voice.SpeakerEmbedder
+import com.whatsappv2.domain.voice.VoiceProfileRepository
 
 /**
  * The real SIP stack, behind the gateway seam (ADR-006).
@@ -193,7 +200,24 @@ internal class RealPjsipCoreGateway @Inject constructor(
     @ApplicationContext private val context: Context,
     private val trustStore: PjsipTrustStore,
     private val logger: Logger,
+    /** The voice profile, watched so the gate follows enrolment and deletion (ADR-013). */
+    private val voiceProfiles: VoiceProfileRepository,
+    /** Runs the speaker model; the gate does not start without one. */
+    private val speakerEmbedder: SpeakerEmbedder,
 ) : SipCoreGateway, SipCallGateway, SipVideoGateway, SipRecordingGateway, SipConferenceGateway {
+
+    /**
+     * Keeps the microphone open only while the enrolled user is talking (ADR-013).
+     *
+     * Held here because the capture device is here, and started from the media-state
+     * callback for the same reason the microphone itself is wired there: that is the
+     * moment a call actually has audio. Does nothing at all when there is no profile.
+     */
+    private val voiceGate = VoiceGateController(
+        embedder = speakerEmbedder,
+        logger = logger,
+        onPjsip = { name, block -> onPjsip(name) { block() } },
+    )
 
     private val events = MutableSharedFlow<StackRegistrationEvent>(
         replay = 0,
@@ -343,6 +367,18 @@ internal class RealPjsipCoreGateway @Inject constructor(
      */
     private val videoSizeFlow = MutableStateFlow(VideoSizes.UNKNOWN)
     override val videoSizes: StateFlow<VideoSizes> = videoSizeFlow.asStateFlow()
+
+    private val videoHealthFlow = MutableStateFlow(VideoHealth.UNKNOWN)
+    override val videoHealth: StateFlow<VideoHealth> = videoHealthFlow.asStateFlow()
+
+    /**
+     * The previous tile reading per call, so a decode rate can be differenced.
+     *
+     * Keyed by call, cleared with the call. Separate from [PjCall.rtpCounters] because that
+     * one is reset by the media-statistics tick on its own fifteen-second cadence, and a
+     * health verdict taken every five seconds cannot share a baseline with it.
+     */
+    private val previousTileReadings = mutableMapOf<String, VideoTileReading>()
 
     private var endpoint: Endpoint? = null
 
@@ -721,12 +757,18 @@ internal class RealPjsipCoreGateway @Inject constructor(
      *  - **`ecTailLen` was implicit.** Stated now, because an echo canceller whose tail
      *    is shorter than the device's acoustic path cancels nothing.
      *
-     * The echo canceller **algorithm** is deliberately left at pjmedia's default rather
-     * than forced to `PJMEDIA_ECHO_WEBRTC_AEC3`. AEC3 has to be compiled into the native
-     * library to exist, the native build has never completed a run, and an `ecOptions`
-     * naming an algorithm that is not there is worse than the default - it is no echo
-     * cancellation at all. That is a change to make once P-1 is green and the build's
-     * feature flags can be read rather than assumed.
+     * The echo canceller **algorithm is named** now, by [EC_OPTIONS], and the noise
+     * suppressor is switched on with it.
+     *
+     * This paragraph used to say the opposite: that the algorithm had to stay at
+     * pjmedia's default because AEC3 "has to be compiled into the native library to
+     * exist, the native build has never completed a run", and an `ecOptions` naming an
+     * absent algorithm is worse than no `ecOptions` at all. The last clause is still
+     * true and is the rule [EC_OPTIONS] is built on. The premise is not: the native
+     * build has been green since ADR-008 Exit A, so the feature flags can be *read*
+     * rather than assumed, and [EC_OPTIONS] documents the `nm`/`strings` dump of the
+     * packaged `libpjsua2.so` that each of its flags - and each of the two it refuses -
+     * was decided from. AEC3 is indeed absent, so it is still not named.
      *
      * These are principled starting points, not measured ones. P-7 is where they get
      * checked against a real handset and a real link; nothing here has been heard yet.
@@ -783,6 +825,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
             channelCount = MONO
             quality = RESAMPLE_QUALITY
             ecTailLen = EC_TAIL_MS
+            ecOptions = EC_OPTIONS
+            // See [SOUND_USE_SW_CLOCK]. This is the single largest latency item on the
+            // path, and it is two delay buffers that exist only while this is on.
+            sndUseSwClock = SOUND_USE_SW_CLOCK
             // `noVad` reads backwards: true disables voice activity detection.
             noVad = true
             // Adaptive, but bounded. An unbounded jitter buffer trades a defect the user
@@ -843,6 +889,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // open until a finalizer happens to run, which for a recording the user asked
             // to keep is a truncated file. After libDestroy the native port is already
             // gone and deleting it would be worse than not.
+            // The voice gate first, and before anything touches the conference bridge:
+            // it holds a director port the bridge is transmitting into, and letting
+            // libDestroy take that would free a port pjmedia still has a pointer to.
+            // Stopping also restores the capture level, so a stack that comes back up
+            // does not inherit a muted microphone.
+            runCatching { voiceGate.stop() }
+
             recorders.values.forEach { runCatching { it.delete() } }
             recorders.clear()
 
@@ -1156,6 +1209,16 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * TCP are left alone; nothing about them changed, and dropping their bindings would
      * cost calls for a setting that does not apply to them.
      */
+    /**
+     * The user's frame-rate preference, handed to the quality coordinator.
+     *
+     * On the executor like every other coordinator call, because a live policy may be
+     * rebuilt by it and the coordinator's state belongs to that thread.
+     */
+    override fun setVideoFrameRate(rate: VideoFrameRate) {
+        onPjsip("setVideoFrameRate") { videoQuality.onFrameRate(rate) }
+    }
+
     override fun setTlsCertificateVerification(verify: Boolean) {
         onPjsip("setTlsCertificateVerification") {
             if (verifyTlsCertificates == verify) return@onPjsip
@@ -1942,12 +2005,38 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     // -------------------------------------------------------------- conference
 
+    /**
+     * Starts the voice gate if the user has a profile, or stops it if they have not.
+     *
+     * Called from the media-state callback, so it runs whenever a call gains audio — and
+     * is idempotent, because [VoiceGateController.start] returns immediately when it is
+     * already gating against the same profile. That is also what makes enrolment and
+     * deletion take effect on the next call without anything watching a Flow from here.
+     *
+     * The profile is read with `runBlocking` on the PJSIP thread, and that is defensible
+     * precisely once: it is a field read on a `@Singleton` that loaded the profile from a
+     * sub-kilobyte file at construction, so it does not touch the disk. See
+     * `FileVoiceProfileStore.load` for why the read is eager.
+     */
+    private fun startVoiceGate(running: Endpoint) {
+        val profile = kotlinx.coroutines.runBlocking { voiceProfiles.current() }
+        if (profile == null) {
+            if (voiceGate.isRunning) voiceGate.stop()
+            return
+        }
+        runCatching { voiceGate.start(running.audDevManager().captureDevMedia, profile) }
+            .onFailure { logger.warn(TAG, "The voice gate could not start: ${it.message}") }
+    }
+
+    override fun peerIsCoralxClient(callKey: String): Boolean =
+        calls[callKey]?.peerIsCoralx == true
+
     override suspend fun setConferenceMembers(
         callKeys: Set<String>,
-        relay: Boolean,
+        relayed: Set<String>,
     ): Outcome<Set<String>, String> {
         val answer = CompletableDeferred<Set<String>>()
-        onPjsip("setConferenceMembers") { answer.complete(conference.set(callKeys, relay)) }
+        onPjsip("setConferenceMembers") { answer.complete(conference.set(callKeys, relayed)) }
         return withTimeoutOrNull(CONFERENCE_MIX_TIMEOUT_MILLIS) { success(answer.await()) }
             ?: failure("the stack did not answer in $CONFERENCE_MIX_TIMEOUT_MILLIS ms")
     }
@@ -2082,15 +2171,32 @@ internal class RealPjsipCoreGateway @Inject constructor(
             val roster = ConferenceInfoParser.parse(message, selfUri = accountUri(), logger = logger) ?: return
 
             val from = NameAddr.of(runCatching { prm.fromUri }.getOrNull()).uri
-            val leg = calls.values.firstOrNull { call ->
-                call.accountKey == accountKey && sameSipAddress(call.remoteAddress(), from)
-            }
+            val mine = calls.values.filter { it.accountKey == accountKey }
+            // Exact first. The address match is the honest one and is what a direct dialog,
+            // or a proxy that forwards rather than re-originates, will satisfy.
+            val leg = mine.firstOrNull { sameSipAddress(it.remoteAddress(), from) }
+                // Then the user alone, and only when exactly one leg could be meant. See
+                // [sameSipUser]: the B2BUA re-originates this MESSAGE from the sender's own
+                // contact, so the host on the `From` is the far handset while the host on the
+                // leg is the server, and the two are never equal on this deployment. Guarded
+                // by `singleOrNull` rather than `firstOrNull` because a user part is not an
+                // identity — with two legs to the same extension on different hosts there is
+                // no evidence here to choose between them, and attributing a roster to the
+                // wrong leg would mesh the wrong pair.
+                ?: mine.singleOrNull { sameSipUser(it.remoteAddress(), from) }
             if (leg == null) {
                 logger.debug(TAG, "A conference roster arrived from somebody this device is not talking to")
                 return
             }
 
-            logger.info(TAG, "Conference roster for ${leg.callKey}: ${roster.participants.size} in the room")
+            if (roster.meshAck) {
+                // Said differently from a roster because it is a different document: an
+                // acknowledgement carries no membership, so "0 in the room" would be a
+                // reading of it rather than a fact about the conference.
+                logger.info(TAG, "Conference mesh-ack for ${leg.callKey}: the far end meshes")
+            } else {
+                logger.info(TAG, "Conference roster for ${leg.callKey}: ${roster.participants.size} in the room")
+            }
             conferenceEventFlow.tryEmit(
                 StackConferenceEvent(
                     callKey = leg.callKey,
@@ -2098,6 +2204,11 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     rosterAvailable = true,
                     entity = roster.entity,
                     mesh = roster.mesh,
+                    // Carried, where it used to be dropped. Both in-dialog handlers pass it
+                    // and this one did not, so on the deployment where FreeSWITCH
+                    // re-originates the MESSAGE — the only path these ever take here — every
+                    // acknowledgement arrived looking like an empty roster.
+                    meshAck = roster.meshAck,
                 ),
             )
         }
@@ -2113,7 +2224,12 @@ internal class RealPjsipCoreGateway @Inject constructor(
             calls[callKey] = call
             // Read here because here is the only place it exists: the INVITE is gone by
             // the next callback, and pjsua2 offers no header lookup on a call.
-            val conference = runCatching { prm.rdata.wholeMsg }.getOrNull()?.let(::conferenceHeaderOf)
+            val invite = runCatching { prm.rdata.wholeMsg }.getOrNull()
+            val conference = invite?.let(::conferenceHeaderOf)
+            // An INVITE carrying the mesh header is this app by construction - nothing
+            // else writes it - so a peer is known to be CoralX even behind a B2BUA that
+            // rewrote User-Agent.
+            call.peerIsCoralx = conference != null || isCoralxAgent(invite?.let(::peerAgentOf))
             // 180 for a mesh leg too, and deliberately. The engine answers it a moment
             // later without ringing anything — the ringer is driven by `incomingCalls`,
             // not by this — and a leg that turns out *not* to be one this device should
@@ -2153,6 +2269,18 @@ internal class RealPjsipCoreGateway @Inject constructor(
         /** The capture device this call is using, for [switchCamera] to cycle from. */
         @Volatile
         var captureDevice: Int = CAPTURE_DEVICE_DEFAULT
+
+        /**
+         * Whether the far end of this call is another build of this application.
+         *
+         * Written once, from the first SIP message that names the peer - the INVITE if
+         * they called us, the answer if we called them - and read by [peerIsCoralxClient]
+         * when a conference has to decide who can mesh and who must be carried. A peer
+         * that never names itself stays false, which is the safe answer: see
+         * [isCoralxAgent].
+         */
+        @Volatile
+        var peerIsCoralx: Boolean = false
 
         /** True while a re-INVITE is held awaiting the user's answer (Task 54). */
         @Volatile
@@ -2306,6 +2434,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
                             if (!microphoneMuted) {
                                 running.audDevManager().captureDevMedia.startTransmit(stream)
                             }
+                            // The gate watches the same microphone, so it starts where
+                            // the microphone is wired. Idempotent across calls and
+                            // re-INVITEs: one device, one gate, one tap.
+                            startVoiceGate(running)
                             stream.startTransmit(running.audDevManager().playbackDevMedia)
                         }.onFailure { logger.error(TAG, "Could not connect audio: ${it.message}") }
                     }
@@ -2365,7 +2497,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // dialog and the raw bytes of the message that drove it — which is enough,
             // because a NOTIFY for a subscription made in this dialog *is* a transaction
             // on this call. See [subscribeToConferenceRoster].
-            if (readRosterFrom(tsxState)) return
+            if (readMessageFrom(tsxState)) return
 
             if (!pendingResume.isOutstanding && !pendingHold.isOutstanding) return
             val tsx = runCatching { tsxState.tsx }.getOrNull() ?: return
@@ -2421,6 +2553,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     rosterAvailable = true,
                     entity = roster.entity,
                     mesh = roster.mesh,
+                    meshAck = roster.meshAck,
                 ),
             )
         }
@@ -2490,23 +2623,50 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
 
         /**
-         * Publishes the roster carried by [tsxState], and says whether there was one.
+         * Reads the message [tsxState] carries, and takes both things this call wants
+         * from it. Returns true when it was a roster, which is the caller's signal to
+         * stop.
          *
-         * Cheap first, expensive last. Every transaction on every call reaches
-         * [onCallTsxState] — re-INVITEs, session refreshes, OPTIONS — and `wholeMsg`
-         * copies an entire SIP message across the JNI boundary, so the method and the
-         * event type are checked before anything is read.
+         * One reader for two jobs, because there is one message and reading it is the
+         * expensive part: every transaction on every call reaches [onCallTsxState] —
+         * re-INVITEs, session refreshes, OPTIONS — and `wholeMsg` copies an entire SIP
+         * message across the JNI boundary. Two readers did it twice.
+         *
+         * The two jobs:
+         *
+         *  - **Who the peer is.** For a call this device placed, the INVITE is ours and
+         *    the far end names itself in the answer. Latched, so it is read once.
+         *  - **The roster.** pjsua2 exposes no API for the conference event package, but
+         *    it does expose every transaction on the dialog and the bytes that drove it —
+         *    which is enough, because a NOTIFY for a subscription made in this dialog *is*
+         *    a transaction on this call. See [subscribeToConferenceRoster].
          */
-        private fun readRosterFrom(tsxState: TsxStateEvent): Boolean {
+        private fun readMessageFrom(tsxState: TsxStateEvent): Boolean {
             // `src` is a union: `rdata` is only a message when a message is what changed
             // the transaction's state. Reading it on a timer event is reading whatever
             // else was in that memory.
             if (runCatching { tsxState.type }.getOrNull() != pjsip_event_id_e.PJSIP_EVENT_RX_MSG) return false
-            val tsx = runCatching { tsxState.tsx }.getOrNull() ?: return false
-            if (!tsx.method.equals("NOTIFY", ignoreCase = true)) return false
-
             val message = runCatching { tsxState.src.rdata.wholeMsg }.getOrNull()
             if (message.isNullOrEmpty()) return false
+
+            if (!peerIsCoralx && isCoralxAgent(peerAgentOf(message))) {
+                peerIsCoralx = true
+                logger.debug(TAG, "Conference: $callKey reaches a CoralX client; it can mesh")
+            }
+            return publishRosterFrom(tsxState, message)
+        }
+
+        /**
+         * Publishes the roster in [message], if that is what it is.
+         *
+         * Split from [readMessageFrom] rather than inlined because the two have different
+         * gates: the peer's identity is on any message at all, and a roster is only ever
+         * on a NOTIFY. Keeping them apart leaves each one's guards as a contiguous prefix,
+         * which is also what keeps them readable.
+         */
+        private fun publishRosterFrom(tsxState: TsxStateEvent, message: String): Boolean {
+            val tsx = runCatching { tsxState.tsx }.getOrNull() ?: return false
+            if (!tsx.method.equals("NOTIFY", ignoreCase = true)) return false
 
             val roster = ConferenceInfoParser.parse(message, selfUri = selfUri(), logger = logger)
                 ?: return false
@@ -2519,6 +2679,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     rosterAvailable = true,
                     entity = roster.entity,
                     mesh = roster.mesh,
+                    meshAck = roster.meshAck,
                 ),
             )
             return true
@@ -3069,6 +3230,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
     private fun scheduleVideoQuality() {
         pjsip.schedule(
             {
+                // Before the early return, because a tile is drawn for what this device is
+                // *receiving* and the policy below only counts what it is sending. A leg
+                // that receives video while this end sends none still has a picture on
+                // screen that can freeze.
+                runCatching { publishVideoHealth() }
+                    .onFailure { logger.warn(TAG, "Video health tick failed: ${it.message}") }
+
                 val legs = videoLegSamples()
                 if (legs.isEmpty()) {
                     // Nothing is transmitting video. Stop the timer, and distinguish the two
@@ -3078,6 +3246,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     // gone is the tier discarded, so the next call measures the device afresh.
                     videoQualityTicking = false
                     if (calls.isEmpty()) videoQuality.onNoCalls() else videoQuality.onVideoPaused()
+                    // ...but keep the tick alive while a tile is still being drawn. The
+                    // policy has nothing left to decide; the health of a receive-only leg
+                    // still changes, and stopping here would freeze its status at whatever
+                    // it last said.
+                    if (videoHealthFlow.value.byCall.isNotEmpty()) {
+                        videoQualityTicking = true
+                        scheduleVideoQuality()
+                    }
                     return@schedule
                 }
                 runCatching { videoQuality.onSample(legs, System.currentTimeMillis()) }
@@ -3088,6 +3264,57 @@ internal class RealPjsipCoreGateway @Inject constructor(
             VIDEO_QUALITY_TICK_MILLIS,
             TimeUnit.MILLISECONDS,
         )
+    }
+
+    /**
+     * What each live call's tile should be showing, recomputed from the decode counters.
+     *
+     * Runs on the adaptive-quality tick rather than the media-statistics one because five
+     * seconds is the longest a tile may go on showing a frozen picture before saying so;
+     * fifteen is long enough for a person to conclude the call is broken and hang up.
+     *
+     * Reads the **decoder**, not the RTP counters. Packets continuing to arrive is not the
+     * same claim as a picture continuing to move — the measured failure was a peer whose
+     * encoder kept sending at a healthy 19 pkt/s while the frame inside never changed, and
+     * an rx rate would have called that live.
+     */
+    private fun publishVideoHealth() {
+        val now = System.currentTimeMillis()
+        val next = mutableMapOf<String, VideoTileState>()
+        val sizes = videoSizeFlow.value
+
+        calls.values.forEach { call ->
+            val info = call.infoOrNull() ?: return@forEach
+            if (info.state != pjsip_inv_state.PJSIP_INV_STATE_CONFIRMED) return@forEach
+
+            val media = info.media.firstOrNull { it.isDecodingVideo }
+            val stream = media?.let { runCatching { call.getStreamInfo(it.index) }.getOrNull() }
+            val peer = stream?.remoteRtpAddress.orEmpty()
+
+            val reading = VideoTileReading(
+                streamActive = media != null,
+                frameKnown = sizes.remoteFor(call.callKey).isKnown,
+                decoded = peer.takeIf { it.isNotBlank() }
+                    ?.let(telemetry::framesFor)?.decoded ?: 0L,
+                atMillis = now,
+                configuredFps = runCatching {
+                    stream?.vidCodecParam?.encFmt?.fpsNum?.toInt()?.takeIf { it > 0 }
+                }.getOrNull(),
+            )
+
+            next[call.callKey] = VideoTileStateReducer.reduce(
+                previous = previousTileReadings[call.callKey],
+                current = reading,
+            )
+            previousTileReadings[call.callKey] = reading
+        }
+
+        // Calls that have gone take their baseline with them, or a redial that reuses a key
+        // would be differenced against a stream that ended minutes ago.
+        previousTileReadings.keys.retainAll(next.keys)
+
+        val published = VideoHealth(next)
+        if (published != videoHealthFlow.value) videoHealthFlow.value = published
     }
 
     /**
@@ -3235,6 +3462,21 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 ).toLong()
         }
     }
+
+    /**
+     * True for a video stream this device is **decoding** — the half a tile draws.
+     *
+     * Decoding, not merely negotiated: a `sendonly` leg costs this device a decoder it never
+     * uses and puts no picture in a tile, so counting it would report a participant as live
+     * on the strength of a stream that was never going to show anything.
+     */
+    private val org.pjsip.pjsua2.CallMediaInfo.isDecodingVideo: Boolean
+        get() {
+            if (type != pjmedia_type.PJMEDIA_TYPE_VIDEO) return false
+            if (status != pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE) return false
+            return dir == pjmedia_dir.PJMEDIA_DIR_DECODING ||
+                dir == pjmedia_dir.PJMEDIA_DIR_ENCODING_DECODING
+        }
 
     /** True for an audio stream that is carrying, or held by the far end and still there. */
     private val org.pjsip.pjsua2.CallMediaInfo.isLive: Boolean
@@ -3396,8 +3638,145 @@ internal class RealPjsipCoreGateway @Inject constructor(
         /** Resampler quality, 1..10. PJSIP defaults to 8. */
         const val RESAMPLE_QUALITY = 10L
 
+        /**
+         * `medConfig.sndUseSwClock` - off, against a pjsua default of on
+         * (`PJSUA_DEFAULT_SND_USE_SW_CLOCK`, `pjsua.h:7692`).
+         *
+         * On, pjmedia drives the media flow from its own `pjmedia_clock` and parks a
+         * `pjmedia_delay_buf` on each of capture and playback to absorb the difference
+         * between that clock and the device's. Those two buffers are the reason a call
+         * between two handsets on one Wi-Fi sounded late:
+         *
+         *  - `PJMEDIA_SOUND_BUFFER_COUNT` is `(PJMEDIA_SND_DEFAULT_PLAY_LATENCY+20)/20`
+         *    (`config.h:368`), and `PLAY_LATENCY` is 140 (`config.h:233`), so 8 frames.
+         *  - `sound_port.c:506-524` sizes both buffers at `8 x 20 ms` = 160 ms.
+         *  - `delaybuf.c:117-118` starts each at `max_cnt >> 1`, so **80 ms on capture and
+         *    80 ms on playback immediately**, and the learner grows them toward 160 ms
+         *    each under uneven load.
+         *
+         * That is 160-320 ms of round trip buying nothing on a LAN. Off, `sound_port.c:104`
+         * and `:204` skip the buffers entirely and the device's own callbacks clock the
+         * flow - the ordinary arrangement on every other pjsip platform. The jitter buffer
+         * ([JITTER_BUFFER_MAX_MS]) still absorbs network jitter, which is what actually
+         * varies here; what is given up is smoothing of capture-vs-playback clock drift,
+         * and the symptom if a handset ever needs it is a periodic tick, not lateness.
+         *
+         * Do **not** reach for `sndRecLatency`/`sndPlayLatency` instead. On this backend
+         * they are inert: `android_jni_dev.c:487-488` reports them as defaults and nothing
+         * reads them back - the AudioRecord/AudioTrack buffers come from
+         * `getMinBufferSize()` alone. Shrinking the delay buffers while keeping the
+         * software clock would mean `PJMEDIA_SOUND_BUFFER_COUNT` in `config_site.h`, a
+         * compile-time change and a native rebuild.
+         */
+        const val SOUND_USE_SW_CLOCK = false
+
         /** Echo tail, ms. Shorter than the device's acoustic path cancels nothing. */
         const val EC_TAIL_MS = 200L
+
+        /**
+         * `PJMEDIA_ECHO_USE_SPEECH_ENHANCER` - `echo.h:148`, added by
+         * `pjsip/patches/0007-capture-path-speech-enhancement.patch`. See [EC_OPTIONS].
+         *
+         * Bit 11 rather than the lowest free bit (512) on purpose: an upstream pjproject
+         * that adds a flag to `pjmedia_echo_flag` will take the lowest, and a collision
+         * there would be two different meanings for one bit discovered on a handset.
+         * `tools/vendor/apply-patches.sh` runs `patch -F0`, so if upstream ever does reach
+         * bit 11 the patch fails to apply rather than applying somewhere near where it
+         * used to.
+         */
+        private const val ECHO_USE_SPEECH_ENHANCER = 2048L
+
+        /**
+         * `medConfig.ecOptions` - the capture path's speech enhancement switch (§5.2).
+         *
+         * This was `0`. It is now exactly one bit, and the three that are **not** here are
+         * the more interesting half: each was tried, and each was removed on evidence.
+         *
+         * **`PJMEDIA_ECHO_USE_SPEECH_ENHANCER` = 2048 - the only flag set.** Not an
+         * upstream flag: patch 0007 adds it and the `pjmedia_speech_enh` it switches on -
+         * an RNNoise denoiser in `pjmedia_snd_port`'s capture callback, after the echo
+         * canceller and before the conference bridge. It lives in this word because this
+         * word is the one pjsua already carries down to the capture path
+         * (`pjsua_aud.c:1032`: `param.ec_options = pjsua_var.media_cfg.ec_options`), so a
+         * boolean reaches `sound_port.c` with no new pjsua field, no SWIG regeneration,
+         * and no contact with the swig-4.2.0 pin.
+         *
+         * **`PJMEDIA_ECHO_WEBRTC` = 3 - REMOVED, because it aborts the process.**
+         *
+         * It was set first, on the reasoning that `strings libpjsua2.so` finds the whole
+         * WebRTC AEC API and so the algorithm is really there. It is there, and naming it
+         * killed the app on the first captured frame of the first call (Samsung M23,
+         * 2026-10-04):
+         *
+         * ```
+         * Fatal signal 6 (SIGABRT) in tid 28348 (Thread-27)
+         * Abort message: 'aec_core.c:1765: WebRtcAec_ProcessFrames:
+         *                 assertion "aec->num_bands == num_bands" failed'
+         *   #02 WebRtcAec_ProcessFrames  #04 WebRtcAec_Process
+         *   #05 webrtc_aec_cancel_echo   #07 pjmedia_echo_capture   #08 rec_cb
+         * ```
+         *
+         * The cause is a plain confusion of two concepts in pjmedia.
+         * `WebRtcAec_Init(inst, clock_rate, clock_rate)` makes WebRTC compute
+         * `aec->num_bands = sampFreq / 16000` (`aec_core.c:1547`), which at this app's
+         * [CORE_CLOCK_RATE] is **3**. `webrtc_aec_cancel_echo` then calls
+         * `WebRtcAec_Process(..., echo->channel_count, ...)` (`echo_webrtc.c:326`) - the
+         * **channel** count, which is 1 - into the parameter WebRTC reads as the **band**
+         * count. 3 != 1, and the assertion is not compiled out. So
+         * `PJMEDIA_ECHO_WEBRTC` is unusable at any clock rate above 16 kHz, and this app
+         * mixes at 48 kHz by deliberate choice.
+         *
+         * Leaving the algorithm field at 0 is therefore not a retreat to an unknown.
+         * `PJMEDIA_ECHO_DEFAULT` is resolved by an `else if` chain in `echo_common.c` that
+         * tests **Speex first** (`:212`) and WebRTC second (`:219`), so `0` has always
+         * meant the Speex canceller - the one ADR-009 measured at ~70% of a core and the
+         * one every call this app has ever made has used. The field is left alone because
+         * what it already selects is the thing that works.
+         *
+         * **`PJMEDIA_ECHO_USE_NOISE_SUPPRESSOR` = 128 - REMOVED, as collateral.** It is
+         * read in exactly one place, `echo_webrtc.c:192`, so it is a WebRTC-backend flag
+         * and the WebRTC backend cannot be used here. It was worth 4.6 dB when it could
+         * be measured; RNNoise is worth 26.8 dB and does not need it. Note the
+         * consequence for the fallback: there is no second denoiser behind the enhancer
+         * any more, so a stream RNNoise refuses is simply a call with no denoising -
+         * which is exactly what every call did before this change, and is the fallback
+         * being aimed for rather than a gap in it.
+         *
+         * **`PJMEDIA_ECHO_AGGRESSIVENESS_MODERATE` = 0x2000 - REMOVED, same reason.**
+         * `set_config()` is WebRTC-only and spends it on `AecConfig.nlpMode`
+         * (`echo_webrtc.c:88`-`106`). It never reached `WebRtcNs_set_policy`, so it was
+         * never the background-noise dial its name suggests, and with the backend gone it
+         * is not anything at all.
+         *
+         * **`PJMEDIA_ECHO_USE_GAIN_CONTROLLER` = 256 and `PJMEDIA_ECHO_WEBRTC_AEC3` = 4 -
+         * never set.** The first is declared at `echo.h:129` and read by no backend in
+         * pjmedia; the library also carries no `WebRtcAgc_*` symbol. The second has zero
+         * matches for `aec3`, case-insensitive, anywhere in the 25 MB library.
+         *
+         * **What the denoiser is worth, measured rather than predicted.**
+         * `tools/speech-enhancement` mixes clean speech with real noise at a stated SNR,
+         * runs it through the *actual* vendored denoiser sources compiled for the host,
+         * and scores it with DNSMOS P.835. Mean over seven noise classes at 5 dB SNR, as
+         * SIG/BAK:
+         *
+         * ```
+         *   clean reference (the ceiling)   3.62 / 3.99
+         *   unprocessed                     2.57 / 2.06
+         *   WebRTC NS, as pjmedia runs it   2.57 / 2.33       4.6 dB
+         *   WebRTC NS at policy 3           2.77 / 3.09      10.5 dB
+         *   RNNoise                         3.38 / 3.93      26.8 dB
+         * ```
+         *
+         * RNNoise reaches the clean reference's background score while costing 0.24 of
+         * SIG, which is inside DNSMOS's own run-to-run spread. See
+         * `tools/speech-enhancement/RESULTS.md` and ADR-010.
+         *
+         * Note what the SIG column says about the exit criterion this work was given.
+         * "SIG >= 3.8" is not reachable on that corpus by any denoiser, because the clean
+         * speech itself scores 3.62. The criterion that survives a ceiling is **SIG within
+         * DNSMOS's noise of the clean reference, and BAK at least the clean reference's**.
+         */
+        const val EC_OPTIONS: Long = ECHO_USE_SPEECH_ENHANCER
 
         /** Jitter buffer ceiling, ms. Beyond this, delay is the worse defect. */
         /**
@@ -3516,11 +3895,88 @@ internal fun sameSipAddress(one: String?, other: String?): Boolean {
     return sipCore(one) == sipCore(other)
 }
 
+// Lowercased FIRST, not last. RFC 3261 §19.1.1 makes the scheme case-insensitive, and
+// stripping it before folding the case left `SIP:1002@host` reading as a user part of
+// `sip:1002` — a peer that would never match itself written the other way.
 private fun sipCore(value: String): String = value.trim()
+    .lowercase(Locale.ROOT)
     .removePrefix("<").substringBefore(">")
     .substringAfter("sip:").substringAfter("sips:")
     .substringBefore(";").substringBefore("?")
-    .lowercase(Locale.ROOT)
+
+/**
+ * The user part of a SIP address — `1002` out of `<sip:1002@10.31.0.14;ob>` — or null.
+ *
+ * Deliberately weaker than [sameSipAddress], and only ever used as its fallback, because
+ * a user part alone is not an identity: two hosts can both have a `1002`.
+ */
+internal fun sipUserOf(value: String?): String? = value
+    ?.takeIf { it.isNotBlank() }
+    ?.let { sipCore(it) }
+    ?.substringBefore('@')
+    ?.takeIf { it.isNotEmpty() }
+
+/**
+ * Whether two SIP addresses name the same user, whatever host each was written against.
+ *
+ * ## Why the host has to be allowed to differ
+ *
+ * Because the B2BUA rewrites it, and in opposite directions on the two messages that have
+ * to be matched to each other. A conference roster and its `mesh-ack` are in-dialog
+ * MESSAGEs that FreeSWITCH terminates and re-originates towards the registered *contact*,
+ * so the acknowledgement B sends A arrives stamped
+ * `From: <sip:1002@10.31.0.14;ob>` — **B's own handset address** — while the leg A holds to
+ * B records `sip:1002@10.31.0.214:5060`, the address A dialled, which is the *server*.
+ * Same person, same dialog, two hosts that have never been equal (measured on 1001/1002/1003,
+ * 2026-10-05).
+ *
+ * [sameSipAddress] therefore answered false for every acknowledgement, every peer failed
+ * `meshes()`, and a three-party conference silently relayed its audio through the focus and
+ * carried **no video between the spokes at all** — there was no leg for it to cross.
+ */
+internal fun sameSipUser(one: String?, other: String?): Boolean {
+    val user = sipUserOf(one) ?: return false
+    return user == sipUserOf(other)
+}
+
+/**
+ * The far end's `User-Agent`, or on a response its `Server`, or null.
+ *
+ * The same raw-message read [conferenceHeaderOf] does and for the same reason: pjsua2
+ * exposes no header lookup on `SipRxData`. Both names are tried because a request carries
+ * one and a response the other, and a leg learns about its peer from whichever it sees
+ * first - an INVITE if the peer called us, a 200 OK if we called them.
+ */
+internal fun peerAgentOf(rawMessage: String): String? = rawMessage
+    .lineSequence()
+    .takeWhile { it.isNotBlank() }
+    .firstOrNull {
+        it.startsWith("User-Agent:", ignoreCase = true) || it.startsWith("Server:", ignoreCase = true)
+    }
+    ?.substringAfter(':')
+    ?.trim()
+    ?.takeIf { it.isNotEmpty() }
+
+/**
+ * Whether [agent] names a build of this application.
+ *
+ * Matched on the product token alone, not on [USER_AGENT] in full, so a version suffix or
+ * a proxy that appends its own comment still reads as this app.
+ *
+ * ## Being wrong here is safe in one direction only, and it is the right one
+ *
+ * A CoralX peer misread as a stranger is **relayed**: the conference carries it instead of
+ * letting it mesh, which costs this device a transcode and the far end nothing. A stranger
+ * misread as CoralX is told to mesh and cannot, and is then heard by the focus alone -
+ * the defect this whole path exists to remove. So the test is deliberately strict: an
+ * agent that is absent, rewritten by a B2BUA, or simply unrecognised comes out false and
+ * that participant is carried.
+ */
+internal fun isCoralxAgent(agent: String?): Boolean =
+    agent?.contains(CORALX_AGENT_TOKEN, ignoreCase = true) == true
+
+/** The product token in [USER_AGENT], which is what survives a version bump. */
+internal const val CORALX_AGENT_TOKEN = "whatsapp-v2"
 
 internal fun conferenceHeaderOf(rawMessage: String): String? = rawMessage
     .lineSequence()
@@ -3994,7 +4450,7 @@ private fun Endpoint.tuneVideoCodecs(
 }
 
 /**
- * Points the Lyra codec at its model files (ADR-008, Exit A).
+ * Points the Lyra codec at its model files (ADR-008, Exit A) and sets its bit rate.
  *
  * After `libInit`, which is when the codec registers and writes its *default* path —
  * the relative string `"model_coeffs"`, which exists nowhere on a device — and before
@@ -4019,6 +4475,7 @@ private fun Endpoint.tuneLyra(context: Context, logger: Logger): String? {
     return runCatching {
         val lyra = codecLyraConfig
         lyra.modelPath = dir.absolutePath
+        lyra.bitRate = LYRA_BITRATE
         codecLyraConfig = lyra
     }.exceptionOrNull()?.let { failure ->
         // The library was built without PJMEDIA_HAS_LYRA_CODEC, or the setter refused
@@ -4027,6 +4484,34 @@ private fun Endpoint.tuneLyra(context: Context, logger: Logger): String? {
         "pjsua2 refused the Lyra configuration: ${failure.message}"
     }
 }
+
+/**
+ * Lyra's bit rate, bps. One of 3200, 6000 or 9200 (`lyra.cpp:30`).
+ *
+ * **3200, and raising it needs the server checked first.** 9200 was tried on 2026-10-05 and
+ * reverted the same day: it silences real calls between two clients.
+ *
+ * The reasoning for 9200 still holds in the abstract - Lyra is generative, at its floor the
+ * learned prior does most of the work, and 9.2 kbps is free on this LAN. What does not hold
+ * is that both ends get there. A call 1002 -> 1001 negotiated `a=fmtp:96 bitrate=9200` and
+ * FreeSWITCH *answered* `bitrate=9200`, yet the receiving stream logged
+ * `codec parsed 0 frames` 598 times and no audio arrived: a Lyra frame's size follows its
+ * bit rate, so a decoder set to 9200 cannot parse 3200 frames at all. FreeSWITCH echoes the
+ * `bitrate=` it was offered back into its answer without that answer binding what the
+ * bridged leg actually emits.
+ *
+ * It looked verified because it was tested against the echo extensions (9196/9190/9191),
+ * and those loop RTP back - our own 9200 frames returned to our own decoder and parsed
+ * perfectly. **An echo extension cannot test codec interop.** Only a bridged call between
+ * two real endpoints can, because only there does one party decode what a *different* party
+ * encoded.
+ *
+ * To raise it: confirm the server's own Lyra really honours the rate (not just parrots the
+ * fmtp), confirm every client in the mesh ships the same value - a mixed fleet is a mixed
+ * frame size - and prove it on a client-to-client call by checking the receiving stream logs
+ * no `codec parsed 0 frames`.
+ */
+private const val LYRA_BITRATE = 3_200L
 
 private const val LYRA_TAG = "PjsipGateway"
 

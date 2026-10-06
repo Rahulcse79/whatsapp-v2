@@ -89,6 +89,11 @@ internal object ConferenceInfoWriter {
         displayName?.takeIf { it.isNotBlank() }?.let {
             append("<display-text>${it.escaped()}</display-text>")
         }
+        // Before the endpoint, so a reader that stops at the first unknown element has
+        // still seen it. An RFC 4575 reader that does not know the element ignores it and
+        // treats the participant as any other, which is the right behaviour for a peer
+        // that was never going to dial anybody in the first place.
+        if (isRelayed) append("<$RELAYED/>")
         append("<endpoint entity=\"${address.escaped()}\">")
         append(media(type = "audio", sending = !isMuted))
         append(media(type = "video", sending = hasVideoStream))
@@ -101,6 +106,60 @@ internal object ConferenceInfoWriter {
 
     /** Its value for a conference every participant holds a leg into. */
     const val MESH = "mesh"
+
+    /**
+     * A member's answer to a mesh roster: "I am a CoralX client and I am meshing."
+     *
+     * ## Why an acknowledgement exists at all
+     *
+     * The focus has to know which participants can hold legs to each other, because the
+     * ones that cannot have to be carried on its bridge instead — and until it knows, a
+     * desk phone in a conference hears the focus and nobody else.
+     *
+     * Nothing already on the wire answers that question. The obvious candidate,
+     * `User-Agent`, does not survive: the deployed FreeSWITCH is a full B2BUA, and a
+     * handset-to-handset INVITE arrives stamped `FreeSWITCH-mod_sofia/1.10.11` with
+     * `Contact: <sip:mod_sofia@…>` — the originating client's identity is gone (measured
+     * on 1003, 2026-10-04). Classifying on it would relay every CoralX peer and take the
+     * mesh down with it.
+     *
+     * A MESSAGE body does survive, because that is the channel the roster itself crosses
+     * on. So the answer goes back the way the question came.
+     *
+     * @param entity the conference this is an answer about, echoed back so a focus
+     *   hosting one conference cannot be told about another.
+     */
+    fun meshAck(entity: String): String = buildString {
+        append("""<?xml version="1.0" encoding="UTF-8"?>""")
+        append("<conference-info state=\"full\" entity=\"${entity.escaped()}\">")
+        append("<conference-description>")
+        append("<$TOPOLOGY>$MESH_ACK</$TOPOLOGY>")
+        append("</conference-description>")
+        // No users. A member does not know the membership and must not appear to state
+        // one: the focus owns the roster, and a document with a `<users>` in it would be
+        // a second opinion about who is in the room.
+        append("</conference-info>")
+    }
+
+    /**
+     * The topology value a member sends back to say it is meshing. See [meshAck].
+     *
+     * A value of the same element rather than a new one, so a reader that does not know
+     * it falls through the `== MESH` test and treats the document as the non-mesh roster
+     * it effectively is.
+     */
+    const val MESH_ACK = "mesh-ack"
+
+    /**
+     * The per-user element naming a participant the focus carries on its own bridge.
+     *
+     * Read by [ConferenceInfoParser] into [StackParticipant.isRelayed], and the whole of
+     * what stops a mesh participant dialling somebody who is already being relayed —
+     * which would be that participant heard twice, once directly and once through the
+     * focus. A conference can be a mesh *and* contain one of these; the topology element
+     * says how the conference works and this says who is an exception to it.
+     */
+    const val RELAYED = "coralx-relayed"
 
     private fun media(type: String, sending: Boolean): String =
         "<media><type>$type</type><status>${if (sending) "sendrecv" else "recvonly"}</status></media>"

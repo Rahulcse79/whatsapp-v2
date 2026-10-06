@@ -58,6 +58,7 @@
 #include <pjmedia/silencedet.h>
 #include <pjmedia/sound.h>
 #include <pjmedia/sound_port.h>
+#include <pjmedia/speech_enh.h>
 #include <pjmedia/splitcomb.h>
 #include <pjmedia/stereo.h>
 #include <pjmedia/stream.h>

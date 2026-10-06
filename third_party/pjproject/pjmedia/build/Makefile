@@ -70,7 +70,8 @@ export PJMEDIA_OBJS += $(OS_OBJS) $(M_OBJS) $(CC_OBJS) $(HOST_OBJS) \
 			resample_resample.o resample_libsamplerate.o resample_speex.o \
 			resample_port.o rtcp.o rtcp_xr.o rtcp_fb.o rtp.o \
 			sdp.o sdp_cmp.o sdp_neg.o session.o silencedet.o \
-			sound_legacy.o sound_port.o stereo_port.o stream_common.o \
+			sound_legacy.o sound_port.o speech_enh.o \
+			stereo_port.o stream_common.o \
 			stream.o stream_info.o tonegen.o transport_adapter_sample.o \
 			transport_ice.o transport_loop.o transport_srtp.o transport_udp.o \
 			types.o txt_stream.o vid_codec.o vid_codec_util.o \

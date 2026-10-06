@@ -17,11 +17,11 @@ import com.whatsappv2.data.sip.call.SipCallGateway
 import com.whatsappv2.data.sip.call.SipConferenceGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
-import com.whatsappv2.data.sip.call.StackParticipant
-import com.whatsappv2.data.sip.call.VideoMix
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.StackConferenceEvent
+import com.whatsappv2.data.sip.call.StackParticipant
 import com.whatsappv2.data.sip.call.TransferEventMapper
+import com.whatsappv2.data.sip.call.VideoMix
 import com.whatsappv2.data.sip.di.SipStackScope
 import com.whatsappv2.data.sip.network.DeviceWakeMonitor
 import com.whatsappv2.data.sip.network.NetworkMonitor
@@ -76,6 +76,7 @@ import com.whatsappv2.domain.repository.SipAccountRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -549,6 +550,17 @@ internal class PjsipSipEngine @Inject constructor(
                 .collect { gateway.setTlsCertificateVerification(it) }
         }
         collectors += scope.launch {
+            // The third of these, and the same story again: `videoFrameRate` was modelled,
+            // persisted and read by `AdaptiveVideoPolicy`'s constructor, and nothing ever
+            // carried the stored value to it — so every call ran the ladder at the default
+            // whatever Settings said. Collected before the first call so a rate chosen while
+            // idle is already in force when one starts.
+            settings.observeSettings()
+                .map { it.videoFrameRate }
+                .distinctUntilChanged()
+                .collect { gateway.setVideoFrameRate(it) }
+        }
+        collectors += scope.launch {
             gateway.registrationEvents.collect { event ->
                 val id = AccountId(event.accountKey)
                 val expiry = requestedExpiry[event.accountKey] ?: DEFAULT_EXPIRY_SECONDS
@@ -765,6 +777,14 @@ internal class PjsipSipEngine @Inject constructor(
                 logger.info(TAG, "$id is a conference: the far end published a roster")
             }
 
+            // An acknowledgement, not a roster. It carries no membership, so it must not
+            // reach the session mapper or the mesh adopter — both of which would read an
+            // empty document as "the conference is now empty".
+            if (event.meshAck) {
+                noteMeshAck(id)
+                return@collect
+            }
+
             conferenceSessions.update { sessions ->
                 sessions.map { if (it.callId == id) ConferenceMapper.apply(it, event) else it }
             }
@@ -803,6 +823,14 @@ internal class PjsipSipEngine @Inject constructor(
         members += entity
         if (members.size < SipConferenceController.MINIMUM_MIXED) return
 
+        // Participants the focus has said it is carrying. They are members like any other
+        // and are drawn like any other; what they are not is dialled. Dialling one would
+        // open a second path to a participant the focus is already relaying, and that
+        // participant would then be heard twice by everybody who did it.
+        val relayed = event.participants
+            .filter { it.isRelayed }
+            .mapNotNullTo(mutableSetOf()) { it.uri?.let { uri -> SipUri.parse(uri).getOrNull() } }
+
         val self = selfUriFor(leg.accountId) ?: return
         val current = meshConference.value
         val updated = MeshConference(
@@ -810,6 +838,7 @@ internal class PjsipSipEngine @Inject constructor(
             accountId = leg.accountId,
             self = self,
             members = members,
+            relayed = relayed,
             hosted = false,
             // What the leg to the focus is actually carrying. A conference joined with
             // video meshes with video; one joined without does not light three cameras.
@@ -819,6 +848,14 @@ internal class PjsipSipEngine @Inject constructor(
 
         meshConference.value = updated
         logger.info(TAG, "Mesh: a conference of ${members.size} was announced on ${leg.callId}")
+        // Answer the focus, so it knows this participant can hold legs to the others and
+        // does not need carrying. Sent on the leg the roster came in on, every time one
+        // arrives: an acknowledgement that is lost costs a participant nothing worse than
+        // being relayed, and one that is repeated is a set membership written twice.
+        conferenceGateway.announceRoster(
+            leg.callId.value,
+            ConferenceInfoWriter.meshAck(entity.render()),
+        )
         reconcileMesh()
     }
 
@@ -1641,6 +1678,9 @@ internal class PjsipSipEngine @Inject constructor(
         val opening = meshConference.value == null
         val mesh = openMeshIfAbsent(established)
         val relay = mesh == null
+        // Start the clock on classification the first time a conference opens here. After
+        // it, whoever has not answered is carried — see [scheduleMeshClassification].
+        if (opening && mesh != null) scope.scheduleMeshClassification()
 
         // Published as the intent, before a single resume goes out. Telecom answers each
         // resume by holding another member within milliseconds, and the bridge that
@@ -1705,8 +1745,10 @@ internal class PjsipSipEngine @Inject constructor(
             dropVideoForMix(droppable, logger) { videoGateway.setVideoEnabled(it.value, false) }
         }
 
+        val relayedKeys = relayedFor(live, relay)
+
         val mixedAudio = publishMix(
-            conferenceGateway.setConferenceMembers(live.map { it.value }.toSet(), relay = relay),
+            conferenceGateway.setConferenceMembers(live.map { it.value }.toSet(), relayed = relayedKeys),
             mixed,
             logger,
         ) {
@@ -1746,6 +1788,36 @@ internal class PjsipSipEngine @Inject constructor(
         // dialling whichever of them this end of each pair owes a call to.
         if (opening && mesh != null) reconcileMesh()
         return mixedAudio
+    }
+
+    /**
+     * Which of [live] this device has to carry, and which can carry themselves.
+     *
+     * This is the fix for "the host hears everyone and everyone hears only the host".
+     * The conference used to be all-star or all-mesh: `relay = mesh == null`, and a mesh
+     * opens for every locally built conference, so `ConferenceMix` was handed
+     * `relay = false` and opened **no cross-links at all**. Correct between two CoralX
+     * clients, which hold a dialog of their own — and it left a desk phone, or any peer
+     * that is not this app, audible to this device alone. It cannot dial the other
+     * participants and nothing was carrying it to them.
+     *
+     * So the decision is per participant rather than per conference. A peer that has
+     * shown it can mesh does, exactly as before; anything else is carried, and
+     * `ConferenceMix.wanted` opens links for precisely the pairs with a carried end.
+     *
+     * @param relay true when there is no mesh at all, in which case everybody is carried
+     *   — which is the same set the old boolean produced for ADR-009's star.
+     */
+    private fun relayedFor(live: Set<CallId>, relay: Boolean): Set<String> {
+        if (relay) return live.mapTo(mutableSetOf()) { it.value }
+        val carried = live.filterNotTo(mutableSetOf()) { meshes(it) }.mapTo(mutableSetOf()) { it.value }
+        if (carried.isNotEmpty()) {
+            logger.info(
+                TAG,
+                "Conference: carrying ${carried.size} of ${live.size} member(s) that cannot mesh",
+            )
+        }
+        return carried
     }
 
     /**
@@ -1814,6 +1886,11 @@ internal class PjsipSipEngine @Inject constructor(
                         isSelf = false,
                         hasVideoStream = leg.media.hasVideo,
                         joinedAtEpochMillis = leg.connectedAtEpochMillis,
+                        // The instruction the other members act on: this participant is
+                        // carried here, so do not dial it. Only meaningful in a mesh — in
+                        // a star nobody dials anybody — and only true of a peer that is
+                        // not another build of this app.
+                        isRelayed = mesh != null && !meshes(leg.callId),
                     ),
                 )
             }
@@ -1827,6 +1904,14 @@ internal class PjsipSipEngine @Inject constructor(
             // legs against this list and the conference builds itself.
             mesh = mesh != null,
         )
+        // What the focus just told everybody, kept so its own plan agrees with it. Without
+        // this the focus would go on listing a carried participant as one it is waiting
+        // for a call from, which is a row that says "connecting" for ever.
+        if (mesh != null) {
+            val carried = legs.filterNot { meshes(it.callId) }.mapTo(mutableSetOf()) { it.remote }
+            if (carried != mesh.relayed) meshConference.value = mesh.copy(relayed = carried)
+        }
+
         logger.info(TAG, "Announcing the roster to ${legs.size} member(s): ${participants.size} in the room")
         legs.forEach { conferenceGateway.announceRoster(it.callId.value, document) }
     }
@@ -1848,6 +1933,100 @@ internal class PjsipSipEngine @Inject constructor(
      *
      * @return the mesh this device is now in, or null when it is in none.
      */
+    /**
+     * How long a conference stays a pure mesh before whoever has not answered is carried.
+     *
+     * Long enough for a roster to reach a member, be adopted, and be answered across the
+     * server — two round trips and an XML parse — and short enough that a desk phone is
+     * not mute to the other participants for an awkward length of time. Measured round
+     * trips on this LAN are ~25 ms, so this is two orders of magnitude of headroom rather
+     * than a tuned value.
+     */
+    private val meshAckGrace = MESH_ACK_GRACE_MILLIS
+
+    /**
+     * The legs whose far end has said it is meshing — see [ConferenceInfoWriter.meshAck].
+     *
+     * Call keys rather than addresses, because the question is about a dialog: the same
+     * person on a different leg is a different leg to carry or not carry.
+     */
+    private val meshAcked = mutableSetOf<CallId>()
+
+    /**
+     * Whether [callId]'s far end can take part in the mesh, and so must NOT be carried.
+     *
+     * Two signals, and the first is the one that works through the deployed server. An
+     * acknowledgement is a MESSAGE body, which crosses the B2BUA intact — the same
+     * channel the roster it answers arrived on. `User-Agent` does not: a
+     * handset-to-handset INVITE reaches the callee stamped `FreeSWITCH-mod_sofia/1.10.11`
+     * with `Contact: <sip:mod_sofia@…>`, the originating client's identity already gone
+     * (measured on 1003, 2026-10-04). It is kept as the second signal because it is free
+     * and it is correct whenever there is no B2BUA in the path — a direct call, or a
+     * proxy that only forwards.
+     *
+     * False until something says otherwise, and that default is the whole safety
+     * argument: an unanswered participant is carried, which is audible to everybody, and
+     * the cost of being wrong is a transcode this device can afford rather than a
+     * participant nobody can hear.
+     */
+    private fun meshes(callId: CallId): Boolean =
+        callId in meshAcked || conferenceGateway.peerIsCoralxClient(callId.value)
+
+    /**
+     * Records that [callId]'s far end is a CoralX client, and re-states the mix if that
+     * is news.
+     *
+     * Re-stating is what moves the participant out of the relayed set, which closes the
+     * cross-links the bridge had opened for it while it was unknown. Doing nothing when
+     * it is not news keeps a repeated acknowledgement — one arrives on every roster —
+     * from churning the bridge.
+     */
+    private suspend fun noteMeshAck(callId: CallId) {
+        if (!meshAcked.add(callId)) return
+        logger.info(TAG, "Mesh: $callId answered the roster; it meshes and will not be carried")
+        val live = mixed.value
+        if (live.size < SipConferenceController.MINIMUM_MIXED) return
+        mixCalls(live)
+        // And say so, which `mixCalls` alone does not. The roster is announced by a
+        // collector on `mixed`, and `mixed` is a StateFlow: re-publishing the same
+        // membership is not a distinct value, so nothing is emitted and no second document
+        // goes out. The membership genuinely has not changed — what has changed is this
+        // device's *classification* of a member, which travels inside the document as
+        // `isRelayed` and reaches nobody until it is re-sent.
+        //
+        // Measured on 1001/1002/1003, 2026-10-06: the first roster leaves while the focus
+        // is still carrying everybody, so it marks both peers relayed; the acknowledgements
+        // arrive 200 ms later and correct the focus's own state, and the spokes went on
+        // believing they were relayed for the life of the conference. A relayed member does
+        // not dial, so the mesh never opened and the spokes had no leg to carry video on.
+        announceRoster(live)
+    }
+
+    /**
+     * Re-states the mix once the acknowledgement window has passed.
+     *
+     * Classification is learned, and the quiet answer — a participant that is not a
+     * CoralX client — arrives as *nothing at all*. So the conference starts as a mesh,
+     * every participant is given [MESH_ACK_GRACE_MILLIS] to say it is meshing, and
+     * whoever has not said so by then is carried from that moment on.
+     *
+     * Silence first and relaying second, deliberately. The other order would cross-link
+     * every participant the instant a conference opened and unpick it as the
+     * acknowledgements arrived, and for those few seconds a pair with a direct leg would
+     * be heard twice. A pair that cannot hear each other for two seconds is a gap; a pair
+     * that hears each other twice is a conference nobody can use.
+     */
+    private fun CoroutineScope.scheduleMeshClassification() = launch {
+        delay(meshAckGrace)
+        val live = mixed.value
+        if (live.size < SipConferenceController.MINIMUM_MIXED) return@launch
+        if (meshConference.value == null) return@launch
+        val unanswered = live.count { it !in meshAcked }
+        if (unanswered == 0) return@launch
+        logger.info(TAG, "Mesh: $unanswered participant(s) did not answer; carrying them")
+        mixCalls(live)
+    }
+
     private suspend fun openMeshIfAbsent(live: Set<CallId>): MeshConference? {
         meshConference.value?.let { return grownToFit(it, live) }
         if (live.size < SipConferenceController.MINIMUM_MIXED) return null
@@ -1937,7 +2116,7 @@ internal class PjsipSipEngine @Inject constructor(
     private suspend fun reconcileMesh() {
         val mesh = meshConference.value ?: return
         val legs = meshLegs(mesh)
-        val plan = ConferenceMesh.plan(mesh.members, mesh.self, legs)
+        val plan = ConferenceMesh.plan(mesh.members, mesh.self, legs, mesh.relayed)
 
         // Dropped first. A member the focus no longer lists is somebody this device must
         // stop drawing and stop sending a camera to, and doing it before the dials keeps
@@ -2439,6 +2618,21 @@ internal class PjsipSipEngine @Inject constructor(
          * mistaken for one that refused.
          */
         const val RESUME_FOR_MIX_TIMEOUT_MILLIS = 5_000L
+
+        /**
+         * How long a conference stays a pure mesh before whoever has not answered the
+         * roster is carried on this device's bridge instead.
+         *
+         * Long enough for a roster to reach a member, be adopted and be answered across
+         * the server - two round trips and an XML parse. Measured round trips on this LAN
+         * are ~25 ms, so this is three orders of magnitude of headroom rather than a
+         * tuned value, and the cost of it being generous is a few seconds in which a
+         * participant that cannot mesh is not yet audible to the others.
+         *
+         * Short enough that those seconds are not an awkward silence, which is the other
+         * half of the trade.
+         */
+        const val MESH_ACK_GRACE_MILLIS = 3_000L
     }
 }
 
@@ -2667,6 +2861,18 @@ internal data class MeshConference(
 
     /** Everybody in the conference, this device included. */
     val members: Set<SipUri>,
+
+    /**
+     * The participants the focus carries on its own bridge, and which therefore nobody
+     * dials.
+     *
+     * A subset of [members]: they are in the conference and are drawn like anybody else,
+     * they simply reach the others through the focus rather than directly. On the focus
+     * this is computed from who can mesh; on a member it is read from the roster's
+     * `coralx-relayed` markers. Empty on both until there is one, which is every
+     * conference of CoralX clients.
+     */
+    val relayed: Set<SipUri> = emptySet(),
 
     /** True on the device that built it, which is the only one that announces the roster. */
     val hosted: Boolean,

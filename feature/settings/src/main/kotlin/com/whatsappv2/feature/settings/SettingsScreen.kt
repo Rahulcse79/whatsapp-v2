@@ -52,6 +52,7 @@ import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.ThemeMode
+import com.whatsappv2.domain.video.VideoFrameRate
 
 /**
  * App preferences, wired to the ViewModel — and the way into the account list (Task 69).
@@ -92,11 +93,13 @@ fun SettingsScreen(
             onSipTraceChange = viewModel::setSipTraceEnabled,
             onVerifyTlsChange = viewModel::setVerifyTlsCertificates,
             onRetentionChange = viewModel::setCallHistoryRetention,
+            onVideoFrameRateChange = viewModel::setVideoFrameRate,
             onChatSignOut = { viewModel.signOutOfChat() },
         )
     }
 
     SettingsScreen(
+        voiceProfile = { VoiceProfileSection() },
         state = state,
         actions = actions,
         links = SettingsLinks(onOpenAccounts = onOpenAccounts, backgroundAccess = backgroundAccess),
@@ -114,12 +117,13 @@ data class SettingsActions(
     val onSipTraceChange: (Boolean) -> Unit,
     val onVerifyTlsChange: (Boolean) -> Unit,
     val onRetentionChange: (CallHistoryRetention) -> Unit,
+    val onVideoFrameRateChange: (VideoFrameRate) -> Unit,
     /** Confirmed first by the screen — see [ChatAccountRow]. */
     val onChatSignOut: () -> Unit = {},
 ) {
     companion object {
         /** For previews and tests that are not about what a change does. */
-        val NONE = SettingsActions({}, {}, {}, {}, {}, {}, {})
+        val NONE = SettingsActions({}, {}, {}, {}, {}, {}, {}, {})
     }
 }
 
@@ -160,6 +164,13 @@ fun SettingsScreen(
     /** Where the accounts and recordings rows lead. Null in a preview, where there is nowhere to go. */
     links: SettingsLinks? = null,
     onBack: (() -> Unit)? = null,
+    /**
+     * The voice-profile card. Empty by default, which is what keeps this overload
+     * stateless: the card owns a ViewModel, and a `hiltViewModel()` reached from here
+     * would make every preview and every Compose test of this screen need a Hilt graph.
+     * The stateful overload above supplies the real one.
+     */
+    voiceProfile: @Composable ColumnScope.() -> Unit = {},
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -184,17 +195,27 @@ fun SettingsScreen(
             actions = actions,
             links = links,
             modifier = Modifier.padding(innerPadding),
+            voiceProfile = voiceProfile,
         )
     }
 }
 
-/** The scrolling body, split out so the screen above it stays a layout. */
+/**
+ * The scrolling body, split out so the screen above it stays a layout.
+ *
+ * [voiceProfile] is a slot and not a call, because the voice card owns a ViewModel of its
+ * own (enrolment holds the microphone for two minutes, which is a lifecycle this screen's
+ * state has no business carrying). A `hiltViewModel()` inside this tree would also make
+ * every Compose test of this screen need a Hilt graph it does not otherwise want — which
+ * is exactly what it did, and `SettingsScreenTest` said so.
+ */
 @Composable
 private fun SettingsContent(
     state: SettingsUiState,
     actions: SettingsActions,
     links: SettingsLinks?,
     modifier: Modifier = Modifier,
+    voiceProfile: @Composable ColumnScope.() -> Unit = {},
 ) {
     Column(
         modifier = modifier
@@ -222,6 +243,11 @@ private fun SettingsContent(
         }
 
         CallCards(state = state, actions = actions)
+
+        // Beside the call settings, because that is what it changes. Its own ViewModel:
+        // enrolment holds the microphone for up to two minutes and that is a lifecycle
+        // `SettingsViewModel` has no business owning - see VoiceProfileViewModel.
+        SettingsCard { voiceProfile() }
 
         SettingsCard {
             TlsVerificationToggle(
@@ -285,6 +311,13 @@ private fun CallCards(state: SettingsUiState, actions: SettingsActions) {
             selected = state.settings.preferredAudioRoute,
             labelOf = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
             onSelect = actions.onAudioRouteChange,
+        )
+    }
+
+    SettingsCard {
+        VideoFrameRateGroup(
+            selected = state.settings.videoFrameRate,
+            onSelect = actions.onVideoFrameRateChange,
         )
     }
 }
@@ -524,6 +557,67 @@ private fun RetentionGroup(selected: CallHistoryRetention, onSelect: (CallHistor
         )
     }
 }
+
+/**
+ * The frame rate outgoing video is encoded at, chosen from a list.
+ *
+ * ## Why the uneven rates are offered rather than hidden
+ *
+ * The camera delivers 30 fps whatever is asked of it and the encoder keeps a subset, so a
+ * rate that does not divide 30 can only be reached on an uneven pattern — 20 fps is 33 ms,
+ * 67 ms, 33 ms, 67 ms, and that is visible as judder even when no frame is lost. Hiding
+ * them would be deciding for the user; 25 fps on a link that carries it still looks better
+ * than 15 to most people. So they are listed with the trade named in the field, which is
+ * what [VideoFrameRate.dividesCameraRate] is for.
+ *
+ * A dropdown rather than a chip row because six options do not fit on a row — the same
+ * reason [RetentionGroup] uses one.
+ */
+@Composable
+private fun VideoFrameRateGroup(selected: VideoFrameRate, onSelect: (VideoFrameRate) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.small)) {
+        Text("Video quality", style = MaterialTheme.typography.titleMedium)
+        Text(
+            text = "The frame rate outgoing video aims for. A poor connection may still " +
+                "reduce it. Takes effect on the next call, or the next time video is " +
+                "switched on during one.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        AppDropdownField(
+            label = "Frame rate",
+            options = VideoFrameRate.entries,
+            selected = selected,
+            labelOf = ::frameRateLabel,
+            onSelect = onSelect,
+            optionTag = ::frameRateOptionTag,
+            modifier = Modifier.testTag(TAG_FRAME_RATE),
+        )
+        if (!selected.dividesCameraRate) {
+            // Stated where the consequence is, in the same voice the encryption warning
+            // uses: this is not an error, it is the cost of the choice just made.
+            Text(
+                text = "${selected.fps} fps does not divide the camera's 30 fps evenly, so " +
+                    "frames arrive unevenly spaced. It may look less smooth than 15 or 30.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * The words for one frame rate.
+ *
+ * The default is named as such because a user who has changed it and wants to undo that
+ * should not have to remember which one it was.
+ */
+internal fun frameRateLabel(rate: VideoFrameRate): String =
+    if (rate == VideoFrameRate.DEFAULT) "${rate.fps} fps (default)" else "${rate.fps} fps"
+
+internal const val TAG_FRAME_RATE = "settings-frame-rate"
+
+internal fun frameRateOptionTag(rate: VideoFrameRate) = "settings-frame-rate-${rate.fps}"
 
 /**
  * The words for one retention, in the dropdown and in the field.
