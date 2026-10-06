@@ -243,6 +243,13 @@ internal class FakeSipCoreGateway :
         videoFrameRates += rate
     }
 
+    /** Every value the engine pushed, in order, so a test can assert it is not churned. */
+    val liveCallFiltering = mutableListOf<Boolean>()
+
+    override fun setLiveCallFiltering(enabled: Boolean) {
+        liveCallFiltering += enabled
+    }
+
     override fun setNetworkReachable(reachable: Boolean) {
         reachabilitySignals += reachable
     }

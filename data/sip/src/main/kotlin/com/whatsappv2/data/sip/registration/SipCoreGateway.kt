@@ -119,6 +119,19 @@ internal interface SipCoreGateway : TransportRebinder {
      */
     fun setVideoFrameRate(rate: VideoFrameRate)
 
+    /**
+     * Turns the trained-voice gate on or off (`AppSettings.liveCallFilteringEnabled`).
+     *
+     * Takes effect on a call already running, in both directions: switching it on starts
+     * the gate against whatever profile is enrolled, and switching it off stops the gate
+     * **and puts the microphone back** — a user who turns filtering off mid-sentence must
+     * not stay silent because the gate happened to be closed at that moment.
+     *
+     * Does nothing observable with no enrolled profile: the gate needs a voice to compare
+     * against and never starts without one.
+     */
+    fun setLiveCallFiltering(enabled: Boolean)
+
     fun stop()
 }
 

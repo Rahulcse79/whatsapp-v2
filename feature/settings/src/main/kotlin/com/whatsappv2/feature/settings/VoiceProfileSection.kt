@@ -43,6 +43,9 @@ import java.util.Date
  */
 @Composable
 internal fun ColumnScope.VoiceProfileSection(
+    /** Whether the trained voice is used on calls. The switch is rendered below. */
+    filteringEnabled: Boolean,
+    onFilteringChange: (Boolean) -> Unit,
     viewModel: VoiceProfileViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -80,6 +83,15 @@ internal fun ColumnScope.VoiceProfileSection(
     if (!state.isEnrolling && state.profile != null) {
         TextButton(onClick = viewModel::delete) { Text("Delete my voice profile") }
     }
+
+    // The switch for the promise the paragraph above makes, in the same card as the thing
+    // it switches. It knows whether a profile exists so it can say "on, but nothing to
+    // filter against yet" rather than claiming to be doing something it cannot.
+    LiveCallFilteringToggle(
+        enabled = filteringEnabled,
+        hasProfile = state.profile != null,
+        onChange = onFilteringChange,
+    )
 }
 
 @Composable

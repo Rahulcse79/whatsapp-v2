@@ -78,6 +78,9 @@ class DataStoreAppSettingsRepository @Inject constructor(
     override suspend fun setSipTraceEnabled(enabled: Boolean) =
         edit { it[SIP_TRACE] = enabled }
 
+    override suspend fun setLiveCallFilteringEnabled(enabled: Boolean) =
+        edit { it[LIVE_CALL_FILTERING] = enabled }
+
     override suspend fun setVerifyTlsCertificates(verify: Boolean) =
         edit { it[VERIFY_TLS] = verify }
 
@@ -104,6 +107,10 @@ class DataStoreAppSettingsRepository @Inject constructor(
         videoFrameRate = this[VIDEO_FRAME_RATE]?.let(VideoFrameRate::ofFps)
             ?: AppSettings.DEFAULT.videoFrameRate,
         sipTraceEnabled = this[SIP_TRACE] ?: AppSettings.DEFAULT.sipTraceEnabled,
+        // Absent means a fresh install, or an upgrade from a build that predates the
+        // setting - and the default is on, so both get filtering once they train a voice.
+        liveCallFilteringEnabled = this[LIVE_CALL_FILTERING]
+            ?: AppSettings.DEFAULT.liveCallFilteringEnabled,
         verifyTlsCertificates = this[VERIFY_TLS] ?: AppSettings.DEFAULT.verifyTlsCertificates,
         // Through `ofDays`, so a value written by a build with a longer maximum — or
         // corrupted to something absurd — is clamped rather than used to compute a cutoff
@@ -124,6 +131,7 @@ class DataStoreAppSettingsRepository @Inject constructor(
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val VIDEO_FRAME_RATE = intPreferencesKey("video_frame_rate_fps")
         val SIP_TRACE = booleanPreferencesKey("sip_trace_enabled")
+        val LIVE_CALL_FILTERING = booleanPreferencesKey("live_call_filtering_enabled")
         val VERIFY_TLS = booleanPreferencesKey("verify_tls_certificates")
         val HISTORY_RETENTION_DAYS = intPreferencesKey("call_history_retention_days")
     }

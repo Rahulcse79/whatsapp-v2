@@ -118,6 +118,9 @@ class SettingsViewModel @Inject constructor(
     fun setVideoFrameRate(rate: VideoFrameRate) =
         viewModelScope.launch { repository.setVideoFrameRate(rate) }
 
+    fun setLiveCallFilteringEnabled(enabled: Boolean) =
+        viewModelScope.launch { repository.setLiveCallFilteringEnabled(enabled) }
+
     /**
      * Signs out of chat. The repository call and nothing else.
      *
