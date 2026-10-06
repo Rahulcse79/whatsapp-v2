@@ -57,6 +57,7 @@ class SettingsScreenTest {
                         onAudioRouteChange = {},
                         onThemeModeChange = onTheme,
                         onSipTraceChange = onTrace,
+                        onLiveCallFilteringChange = {},
                         onVerifyTlsChange = onVerifyTls,
                         onRetentionChange = onRetention,
                         onVideoFrameRateChange = onFrameRate,

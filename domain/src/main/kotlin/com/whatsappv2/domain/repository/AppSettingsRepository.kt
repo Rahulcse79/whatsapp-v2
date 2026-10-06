@@ -59,6 +59,14 @@ interface AppSettingsRepository {
     suspend fun setSipTraceEnabled(enabled: Boolean)
 
     /**
+     * Turns live call filtering — the trained-voice gate — on or off.
+     *
+     * Takes effect on calls already running: the gate is started and stopped from the
+     * setting, so nobody has to hang up to change it.
+     */
+    suspend fun setLiveCallFilteringEnabled(enabled: Boolean)
+
+    /**
      * Turns SIP TLS server-certificate verification on or off.
      *
      * Off by default; see [com.whatsappv2.domain.model.AppSettings.verifyTlsCertificates]

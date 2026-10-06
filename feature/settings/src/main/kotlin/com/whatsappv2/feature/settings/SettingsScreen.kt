@@ -91,6 +91,7 @@ fun SettingsScreen(
             onAudioRouteChange = viewModel::setPreferredAudioRoute,
             onThemeModeChange = viewModel::setThemeMode,
             onSipTraceChange = viewModel::setSipTraceEnabled,
+            onLiveCallFilteringChange = viewModel::setLiveCallFilteringEnabled,
             onVerifyTlsChange = viewModel::setVerifyTlsCertificates,
             onRetentionChange = viewModel::setCallHistoryRetention,
             onVideoFrameRateChange = viewModel::setVideoFrameRate,
@@ -99,7 +100,12 @@ fun SettingsScreen(
     }
 
     SettingsScreen(
-        voiceProfile = { VoiceProfileSection() },
+        voiceProfile = {
+            VoiceProfileSection(
+                filteringEnabled = state.settings.liveCallFilteringEnabled,
+                onFilteringChange = actions.onLiveCallFilteringChange,
+            )
+        },
         state = state,
         actions = actions,
         links = SettingsLinks(onOpenAccounts = onOpenAccounts, backgroundAccess = backgroundAccess),
@@ -115,6 +121,7 @@ data class SettingsActions(
     val onAudioRouteChange: (PreferredAudioRoute) -> Unit,
     val onThemeModeChange: (ThemeMode) -> Unit,
     val onSipTraceChange: (Boolean) -> Unit,
+    val onLiveCallFilteringChange: (Boolean) -> Unit,
     val onVerifyTlsChange: (Boolean) -> Unit,
     val onRetentionChange: (CallHistoryRetention) -> Unit,
     val onVideoFrameRateChange: (VideoFrameRate) -> Unit,
@@ -123,7 +130,7 @@ data class SettingsActions(
 ) {
     companion object {
         /** For previews and tests that are not about what a change does. */
-        val NONE = SettingsActions({}, {}, {}, {}, {}, {}, {}, {})
+        val NONE = SettingsActions({}, {}, {}, {}, {}, {}, {}, {}, {})
     }
 }
 
@@ -717,6 +724,59 @@ private fun <T> ChoiceGroup(
         }
     }
 }
+
+/**
+ * Whether a trained voice is used to keep other speakers off the call.
+ *
+ * Sits with the voice profile rather than with the call preferences, because it is the
+ * switch for the thing that section trains — and because a user who has just read
+ * "it will keep only you on the call" needs the control for that promise in the same place,
+ * not three cards away.
+ *
+ * [hasProfile] does not disable it. A switch that cannot be moved invites somebody to work
+ * out why; one that moves and says what it is waiting for answers the question.
+ */
+@Composable
+internal fun LiveCallFilteringToggle(
+    enabled: Boolean,
+    hasProfile: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.small)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Live call filtering", style = MaterialTheme.typography.titleMedium)
+            Switch(
+                checked = enabled,
+                onCheckedChange = onChange,
+                modifier = Modifier.testTag(TAG_LIVE_FILTERING),
+            )
+        }
+        Text(
+            text = when {
+                !enabled ->
+                    "Off. Everything the microphone picks up is sent, including other " +
+                        "people in the room."
+                hasProfile ->
+                    "On. While somebody else is speaking and you are not, your microphone " +
+                        "is held. It opens again as soon as you speak."
+                // The honest line for the state that would otherwise look broken: the
+                // switch is on, and nothing is filtered, because there is nothing to
+                // filter against.
+                else ->
+                    "On, but there is no voice to filter against yet. Train your voice " +
+                        "above and filtering starts on your next call."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+internal const val TAG_LIVE_FILTERING = "settings-live-filtering"
 
 @Composable
 private fun SipTraceToggle(enabled: Boolean, onChange: (Boolean) -> Unit) {

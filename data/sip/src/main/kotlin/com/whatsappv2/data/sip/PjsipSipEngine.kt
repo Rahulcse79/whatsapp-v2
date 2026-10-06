@@ -561,6 +561,13 @@ internal class PjsipSipEngine @Inject constructor(
                 .collect { gateway.setVideoFrameRate(it) }
         }
         collectors += scope.launch {
+            // Collected like the others so the gate follows the switch mid-call, both ways.
+            settings.observeSettings()
+                .map { it.liveCallFilteringEnabled }
+                .distinctUntilChanged()
+                .collect { gateway.setLiveCallFiltering(it) }
+        }
+        collectors += scope.launch {
             gateway.registrationEvents.collect { event ->
                 val id = AccountId(event.accountKey)
                 val expiry = requestedExpiry[event.accountKey] ?: DEFAULT_EXPIRY_SECONDS

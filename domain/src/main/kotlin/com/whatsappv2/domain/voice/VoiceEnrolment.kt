@@ -61,4 +61,28 @@ interface VoiceEnrolment {
      * Needs `RECORD_AUDIO`, which this app already holds for calls.
      */
     fun enrol(): Flow<EnrolmentProgress>
+
+    /**
+     * Stops recording early and builds a profile from what has been captured so far.
+     *
+     * This is **not** cancellation, and the difference is the whole reason it exists. The
+     * UI asks the user for [EnrolmentRules.TARGET_SECONDS] and shows them a count against
+     * it, but [enrol] only ends on its own at [EnrolmentRules.MAXIMUM_SECONDS] — so a user
+     * who does exactly what they were asked, speaks their ninety seconds and then presses
+     * the one button in front of them, used to cancel the coroutine and silently throw the
+     * whole recording away. Measured on a handset: 91 seconds of speech, profile unchanged,
+     * no error shown.
+     *
+     * So the button finishes instead. If what was captured clears
+     * [EnrolmentRules.MINIMUM_SECONDS] the flow proceeds to [EnrolmentProgress.Building]
+     * and then [EnrolmentProgress.Ready]; if it does not, it ends at
+     * [EnrolmentProgress.Failed] with [EnrolmentProgress.Failed.Reason.TOO_LITTLE_SPEECH],
+     * which is the same answer the user would get by stopping early any other way. Nothing
+     * is stored either way — that is still [VoiceProfileRepository.replace]'s job.
+     *
+     * Cancelling the collecting coroutine is still how you abandon a recording, and it
+     * still stores nothing. Safe to call when no enrolment is running, where it does
+     * nothing.
+     */
+    fun requestFinish()
 }

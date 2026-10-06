@@ -124,6 +124,7 @@ import javax.inject.Singleton
 import kotlin.math.roundToLong
 import com.whatsappv2.domain.video.DisplayCeiling
 import com.whatsappv2.domain.video.VideoBudget
+import com.whatsappv2.domain.voice.CaptureRouting
 import com.whatsappv2.domain.voice.SpeakerEmbedder
 import com.whatsappv2.domain.voice.VoiceProfileRepository
 
@@ -217,6 +218,9 @@ internal class RealPjsipCoreGateway @Inject constructor(
         embedder = speakerEmbedder,
         logger = logger,
         onPjsip = { name, block -> onPjsip(name) { block() } },
+        // Hops to the PJSIP thread: the decision is taken on the gate's own worker and
+        // every connection it moves belongs to the stack.
+        onDecision = { open -> onPjsip("voiceGateDecision") { onVoiceGateDecision(open) } },
     )
 
     private val events = MutableSharedFlow<StackRegistrationEvent>(
@@ -1743,9 +1747,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // [PjCall.onCallMediaState] applies it to whatever stream arrives.
             call.microphoneMuted = muted
 
-            val media = call.audioMedia ?: return@onPjsip
-            val capture = running.audDevManager().captureDevMedia
-            if (muted) capture.stopTransmit(media) else capture.startTransmit(media)
+            // Through the one owner, not straight at the connection: the voice gate wants
+            // the same edge, and whichever wrote it last would otherwise win. See
+            // [applyCaptureRouting].
+            applyCaptureRouting(call)
         }
     }
 
@@ -2019,6 +2024,21 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * `FileVoiceProfileStore.load` for why the read is eager.
      */
     private fun startVoiceGate(running: Endpoint) {
+        if (!liveCallFilteringEnabled) {
+            if (voiceGate.isRunning) voiceGate.stop()
+            return
+        }
+        // No call means there is no microphone to gate, and asking the device manager for
+        // `captureDevMedia` is not a read: it brings the sound device up. This guard used
+        // not to be here, and [setLiveCallFiltering] calls this directly, so merely turning
+        // the setting on opened the microphone and left it open — measured at 16m50s of
+        // `RECORD_AUDIO: allow; (running)` with zero calls on the server, the indicator lit
+        // the whole time, and the embedder running four times a second for all of it.
+        // Nothing but force-stopping the app closed it again.
+        if (calls.isEmpty()) {
+            if (voiceGate.isRunning) voiceGate.stop()
+            return
+        }
         val profile = kotlinx.coroutines.runBlocking { voiceProfiles.current() }
         if (profile == null) {
             if (voiceGate.isRunning) voiceGate.stop()
@@ -2026,6 +2046,109 @@ internal class RealPjsipCoreGateway @Inject constructor(
         }
         runCatching { voiceGate.start(running.audDevManager().captureDevMedia, profile) }
             .onFailure { logger.warn(TAG, "The voice gate could not start: ${it.message}") }
+    }
+
+    /**
+     * Whether the trained-voice gate may run, from Settings. See [setLiveCallFiltering].
+     *
+     * Read on the PJSIP thread and written from the engine's collector, so volatile. The
+     * gate is started and stopped from it rather than consulted inside the audio path: a
+     * check per frame would be a check in the wrong place.
+     */
+    @Volatile
+    private var liveCallFilteringEnabled: Boolean = true
+
+    /**
+     * The gate's standing decision, device-wide. True means the microphone may transmit.
+     *
+     * One value for the device because there is one microphone and one gate; it is the
+     * *connection* to each call that is made and broken, and [applyCaptureRouting] owns
+     * that. Starts open, and is forced open whenever the gate stops, because a gate that
+     * is removed while closed would leave the microphone silenced with nothing left to
+     * reopen it.
+     */
+    @Volatile
+    private var voiceGateOpen: Boolean = true
+
+    override fun setLiveCallFiltering(enabled: Boolean) {
+        onPjsip("setLiveCallFiltering") {
+            if (liveCallFilteringEnabled == enabled) return@onPjsip
+            liveCallFilteringEnabled = enabled
+            logger.info(TAG, "Live call filtering ${if (enabled) "on" else "off"}")
+            if (enabled) {
+                endpoint?.let(::startVoiceGate)
+            } else {
+                // Stopping forces the gate open, and the routing below is what puts the
+                // microphone back: a user who switches filtering off mid-sentence must not
+                // stay muted because the gate happened to be closed at that moment.
+                voiceGate.stop()
+                voiceGateOpen = true
+                calls.values.forEach { applyCaptureRouting(it) }
+            }
+        }
+    }
+
+    /**
+     * The gate's decision, applied to every live call.
+     *
+     * Called from the gate's worker through [VoiceGateController]'s callback, which hops to
+     * the PJSIP thread first — nothing here may touch pjsua2 from another thread.
+     */
+    private fun onVoiceGateDecision(open: Boolean) {
+        if (voiceGateOpen == open) return
+        voiceGateOpen = open
+        calls.values.forEach { applyCaptureRouting(it) }
+    }
+
+    /**
+     * Connects or disconnects the microphone for one call, from **both** reasons it could
+     * be silenced.
+     *
+     * ## Why one function owns this
+     *
+     * `captureDevMedia -> call.audioMedia` is a single conference connection, and two
+     * features want to break it: the user's mute and the trained-voice gate. Before this
+     * they were separate code paths and the second one did not exist on this edge at all —
+     * the gate attenuated the capture *slot* instead, with `adjustRxLevel`, which is
+     * applied in place on the source port's own buffer before the frame reaches any
+     * listener. The gate's own analysis tap is such a listener, so closing the gate fed the
+     * embedder digital silence, the score could never climb back over the threshold, and
+     * the gate could not reopen (measured 2026-10-05, M23/1001; see
+     * `VoiceGateController.ENABLED`).
+     *
+     * Gating this edge instead leaves `capture -> tap` untouched, so the tap goes on
+     * hearing the microphone whatever the gate decides, which is what makes reopening
+     * possible at all.
+     *
+     * Having one owner is what keeps the two from fighting. Either reason silences the
+     * microphone and neither can undo the other, because the answer is recomputed from both
+     * every time rather than each writing the connection on its own.
+     *
+     * ## Idempotent on purpose
+     *
+     * `pjmedia_conf_connect_port` returns `PJ_EEXISTS` for a pair already connected and
+     * disconnect likewise fails for one that is not, so the current state is tracked and a
+     * no-op change does nothing rather than logging an error four times a second.
+     */
+    private fun applyCaptureRouting(call: PjCall) {
+        val running = endpoint ?: return
+        val stream = call.audioMedia ?: return
+        val wanted = CaptureRouting.shouldTransmit(call.microphoneMuted, voiceGateOpen)
+        if (call.captureConnected == wanted) return
+
+        val capture = running.audDevManager().captureDevMedia
+        val outcome = runCatching {
+            if (wanted) capture.startTransmit(stream) else capture.stopTransmit(stream)
+        }
+        outcome
+            .onSuccess { call.captureConnected = wanted }
+            .onFailure {
+                logger.warn(
+                    TAG,
+                    "Could not ${if (wanted) "connect" else "disconnect"} the microphone " +
+                        "for ${call.callKey}: ${it.message}",
+                )
+            }
     }
 
     override fun peerIsCoralxClient(callKey: String): Boolean =
@@ -2266,6 +2389,18 @@ internal class RealPjsipCoreGateway @Inject constructor(
         @Volatile
         var microphoneMuted: Boolean = false
 
+        /**
+         * Whether `captureDevMedia -> audioMedia` is currently connected.
+         *
+         * Tracked because the conference refuses a duplicate: `connect_port` returns
+         * `PJ_EEXISTS` for a pair already joined and disconnect fails for one that is not,
+         * so without this every unchanged decision would log an error. Reset to false when
+         * a stream is rebuilt, because the new stream carries none of the old one's
+         * connections. See [applyCaptureRouting].
+         */
+        @Volatile
+        var captureConnected: Boolean = false
+
         /** The capture device this call is using, for [switchCamera] to cycle from. */
         @Volatile
         var captureDevice: Int = CAPTURE_DEVICE_DEFAULT
@@ -2365,6 +2500,17 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 // Only now. The native peer is finished with this director, and holding it
                 // any longer is the leak; releasing it any earlier is a crash.
                 calls -= callKey
+                // The gate outlives one call on purpose — there is one microphone and one
+                // gate, and a second call still up is still worth gating. The last call is
+                // different: nothing is left to gate, and leaving it running holds the
+                // capture device open with the indicator lit for as long as the app lives.
+                // Forced open as it stops, for the same reason [setLiveCallFiltering] does:
+                // a gate removed while closed would leave the next call's microphone
+                // silenced with nothing left running to reopen it.
+                if (calls.isEmpty() && voiceGate.isRunning) {
+                    runCatching { voiceGate.stop() }
+                    voiceGateOpen = true
+                }
                 recorders -= callKey
                 // The counters outlive the streams they measured, but not the call: kept
                 // until here so a rebuild late in the call is still counted, dropped here
@@ -2431,9 +2577,12 @@ internal class RealPjsipCoreGateway @Inject constructor(
                             // capture leg unconditionally, so every re-INVITE reconnected
                             // a microphone the user had switched off. Playback is
                             // unconditional: muting is about what leaves this device.
-                            if (!microphoneMuted) {
-                                running.audDevManager().captureDevMedia.startTransmit(stream)
-                            }
+                            // Not `if (!microphoneMuted)` any more: a stream that arrives
+                            // while the gate is closed must not be wired to a live
+                            // microphone, and the gate's decision is device-wide while this
+                            // is per call. Both reasons are weighed in one place.
+                            captureConnected = false
+                            applyCaptureRouting(this@PjCall)
                             // The gate watches the same microphone, so it starts where
                             // the microphone is wired. Idempotent across calls and
                             // re-INVITEs: one device, one gate, one tap.

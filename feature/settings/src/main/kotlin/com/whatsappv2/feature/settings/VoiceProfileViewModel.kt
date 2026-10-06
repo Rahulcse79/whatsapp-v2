@@ -81,6 +81,17 @@ class VoiceProfileViewModel @Inject constructor(
         state.value = state.value.copy(progress = null)
     }
 
+    /**
+     * Ends a recording early and builds a profile from what was captured.
+     *
+     * The job is deliberately left running: the flow still has to reach `Building` and
+     * then `Ready` or `Failed`, and cancelling it — which is what the button used to do —
+     * is exactly the bug this replaces. See [VoiceEnrolment.requestFinish].
+     */
+    fun finish() {
+        enrolment.requestFinish()
+    }
+
     /** Clears the finished/failed banner once the user has seen it. */
     fun acknowledge() {
         state.value = state.value.copy(progress = null)

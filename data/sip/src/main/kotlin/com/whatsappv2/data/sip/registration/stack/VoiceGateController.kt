@@ -21,22 +21,27 @@ import java.util.concurrent.TimeUnit
  *
  * ## Where it sits, and why not inside rec_cb()
  *
- * The gate is applied with `pjmedia_conf_adjust_rx_level` on the capture slot: the level
- * the **bridge receives from the microphone**. That is after RNNoise (which runs in
+ * The gate breaks the `capture -> leg` connection, one per call, through
+ * `RealPjsipCoreGateway.applyCaptureRouting`. That is after RNNoise (which runs in
  * `rec_cb`, before the frame reaches the bridge at all) and before every encoder, so a
  * closed gate means Lyra encodes digital silence on every leg — which is what "before
  * Lyra" has to mean.
  *
- * It is not a patch inside `rec_cb` itself, and the trade is deliberate. A level
- * adjustment is one existing call on one slot for the whole device; a gate in `rec_cb`
- * would be a new vendored patch, a JNI bridge, and a native rebuild, to put the same
- * zeroes in the same samples a few microseconds earlier. `adjustRxLevel(0)` is exact
- * silence rather than attenuation: pjsua passes `(level-1)*128`, so 0 becomes
- * `rx_adj_level = 0` and `conference.c` computes `sample * 0 / 128`.
+ * **It deliberately does not attenuate the capture slot**, which is what it used to do and
+ * what made it unusable. `conference.c` applies `rx_adj_level` in place on the source
+ * port's own buffer *before* distributing the frame to any listener, and this gate's own
+ * analysis tap is one of those listeners — so closing the gate fed the embedder digital
+ * silence and it could never reopen. Breaking the per-call connections instead leaves
+ * `capture -> tap` untouched, which is what makes a closed gate recoverable at all.
  *
- * It is also independent of the user's own mute, which works by `stopTransmit` on each
- * call. The two compose instead of fighting: either can silence the microphone and
- * neither can undo the other.
+ * It is not a patch inside `rec_cb` either, and that trade is still deliberate: a gate
+ * there would be a new vendored patch, a JNI bridge and a native rebuild, to put the same
+ * zeroes in the same samples a few microseconds earlier.
+ *
+ * The user's own mute wants the same edge, so neither writes it directly: both are weighed
+ * by one owner on every change. Either can silence the microphone and neither can undo the
+ * other — switching filtering off does not un-mute, and un-muting does not defeat the
+ * gate.
  *
  * ## Everything slow is off the audio thread
  *
@@ -56,16 +61,26 @@ import java.util.concurrent.TimeUnit
  * open and reopens on a single matching window. Muting the user is the failure this
  * feature cannot have, and it is the one they could not diagnose.
  *
- * It is also the failure this feature shipped with, which is why [ENABLED] is false: the
- * reopen promised above cannot happen, because closing the gate silences the very tap the
- * reopen decision reads. A handset found it; [ENABLED] carries the measurement and the
- * fix. Everything below this line is correct only once that edge moves.
+ * That was the failure this feature first shipped with, and it is the reason the gated edge
+ * moved: the reopen promised above could not happen while closing the gate silenced the
+ * very tap the reopen decision reads. See [Tap] for the measurement. Whether the gate runs
+ * at all is now the user's, through `AppSettings.liveCallFilteringEnabled`.
  */
 internal class VoiceGateController(
     private val embedder: SpeakerEmbedder,
     private val logger: Logger,
     /** Runs a block on the PJSIP thread, which is the only one that may touch pjsua2. */
     private val onPjsip: (String, () -> Unit) -> Unit,
+    /**
+     * Where a decision goes: true to let the microphone through, false to hold it.
+     *
+     * A callback rather than a level written here, and that is the whole fix. This gate
+     * used to close by attenuating the capture slot it was itself listening to; the owner
+     * on the other side of this breaks `capture -> leg` instead and leaves `capture -> tap`
+     * alone, so the tap goes on hearing the microphone and a closed gate can still reopen.
+     * Invoked on [worker]; the implementation hops to the PJSIP thread.
+     */
+    private val onDecision: (Boolean) -> Unit,
 ) {
     private val lock = Any()
     private val ring = ShortArray(WINDOW_SAMPLES)
@@ -86,10 +101,6 @@ internal class VoiceGateController(
      * Idempotent for the same profile. Called on the PJSIP thread.
      */
     fun start(captureMedia: AudioMedia, against: VoiceProfile) {
-        if (!ENABLED) {
-            logger.info(TAG, "Voice gate held off: $DISABLED_BECAUSE")
-            return
-        }
         if (tap != null && profile == against) return
         stop()
 
@@ -157,7 +168,7 @@ internal class VoiceGateController(
 
         // Open first, then tear down: a gate that is removed while closed would leave the
         // microphone silenced with nothing left to reopen it.
-        runCatching { media?.adjustRxLevel(OPEN_LEVEL) }
+        runCatching { onDecision(true) }
         runCatching { media?.stopTransmit(port) }
         runCatching { port.delete() }
         logger.info(TAG, "Voice gate off")
@@ -207,11 +218,11 @@ internal class VoiceGateController(
     }
 
     private fun apply(open: Boolean) {
-        val media = capture ?: return
-        onPjsip("voiceGate") {
-            runCatching { media.adjustRxLevel(if (open) OPEN_LEVEL else CLOSED_LEVEL) }
-                .onFailure { logger.warn(TAG, "Could not ${if (open) "open" else "close"} the gate: ${it.message}") }
-        }
+        // No level is written here any more. Attenuating the capture slot silenced this
+        // gate's own analysis tap - see the note on [Tap] - so the decision goes to the
+        // owner of the `capture -> leg` connections instead.
+        runCatching { onDecision(open) }
+            .onFailure { logger.warn(TAG, "Could not ${if (open) "open" else "close"} the gate: ${it.message}") }
         logger.info(TAG, if (open) "Voice gate opened" else "Voice gate closed: this is not the enrolled speaker")
     }
 
@@ -246,43 +257,36 @@ internal class VoiceGateController(
 
     private companion object {
         /**
-         * Off until the tap stops reading its own output (measured 2026-10-05, M23/1001).
+         * Why the gate does not attenuate the slot its own tap listens to.
          *
-         * The gate closes with `pjmedia_conf_adjust_rx_level` on the capture slot, and the
-         * tap is a listener of that same slot. `conference.c:2838-2857` applies
+         * `pjmedia_conf_adjust_rx_level` on the capture slot looks like the obvious way to
+         * gate a microphone, and it was how this shipped. `conference.c:2838-2857` applies
          * `rx_adj_level` **in place on the source port's own buffer**, before the frame is
-         * distributed to any listener - so the instant the gate closes, the tap reads the
-         * zeroes the gate just wrote. The embedder then scores digital silence for ever,
-         * the score can never climb back over the threshold, and the gate cannot reopen.
+         * distributed to any listener — and [Tap] is a listener of that same slot. So the
+         * instant the gate closed, the tap read the zeroes the gate had just written, the
+         * embedder scored digital silence for ever, and the score could never climb back
+         * over the threshold.
          *
-         * On a handset this is not subtle. A call to 9196 with a profile enrolled:
+         * On a handset it was not subtle. A call to 9196 with a profile enrolled
+         * (2026-10-05, M23/1001):
          *
          *     13:29:02.363  window score=-0.139 took=254ms open=true
          *     13:29:02.997  window score=-0.139 took=137ms open=false
          *     13:29:02.997  Voice gate closed: this is not the enrolled speaker
          *     ... every window to the end of the call: open=false
          *
-         * The score is identical to three decimals in all 19 windows, including the three
-         * taken while the gate was still open and the microphone unattenuated: the room was
-         * quiet, RNNoise took it to exact zero, and four such windows are all it takes.
-         * [stop] reopens the level, so each new call gets its first few seconds and then
-         * goes silent - which is what "voice not clear" turned out to be.
+         * Identical to three decimals in all 19 windows. [stop] reopened the level, so each
+         * new call got its first few seconds and then went silent — which is what "voice not
+         * clear" turned out to be.
          *
-         * The KDoc above promises the gate "reopens on a single matching window". It cannot:
-         * closing destroys the evidence reopening depends on. Fails-open covers a gate that
-         * never closes, not one that cannot un-close.
-         *
-         * The fix is to gate a different edge from the one the tap listens to - attenuate
-         * capture->leg per connection and leave capture->tap alone. `pjmedia` has exactly
-         * that in `pjmedia_conf_adjust_conn_level` (`conference.h:901`), unexposed in the
-         * Java bindings; without a native rebuild the same thing is `stopTransmit` /
-         * `startTransmit` per call leg, which needs the live legs plumbed in here and needs
-         * to reconcile with the user's own mute, since both would own that connection.
-         * Enrolment, the profile store and the UI are unaffected and stay as they are.
+         * Fails-open covers a gate that never closes, not one that cannot un-close. The fix
+         * was to gate a different edge from the one the tap listens to: the per-call
+         * `capture -> leg` connections, owned by `RealPjsipCoreGateway.applyCaptureRouting`.
+         * `pjmedia_conf_adjust_conn_level` (`conference.h:901`) would express the same thing
+         * as a level rather than a disconnect, and is unexposed in the Java bindings —
+         * reaching it needs a vendored patch and a native rebuild, which buys nothing here
+         * because the connection is already the app's to make and break.
          */
-        const val ENABLED = false
-        const val DISABLED_BECAUSE =
-            "closing it mutes its own analysis tap, so it cannot reopen (see ENABLED)"
 
         const val TAG = "VoiceGate"
         const val PORT_NAME = "coralx-voice-gate"
@@ -290,8 +294,5 @@ internal class VoiceGateController(
         const val FRAME_MILLIS = 20L
         val WINDOW_SAMPLES = SAMPLE_RATE * SpeakerGate.WINDOW_MILLIS / 1_000
 
-        /** `pjsua_conf_adjust_rx_level` maps 0 to an exact zero and 1 to no change. */
-        const val OPEN_LEVEL = 1.0f
-        const val CLOSED_LEVEL = 0.0f
     }
 }

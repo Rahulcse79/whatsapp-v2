@@ -35,8 +35,9 @@ import kotlin.math.sqrt
  * mostly of room tone. It also keeps the embedding honest: the vector is a mean, and
  * silence pulls it toward the room rather than the speaker.
  *
- * The threshold is relative to the loudest frame seen so far rather than absolute,
- * because a fixed one is wrong on every microphone gain.
+ * The threshold is relative to how loud this person has recently been rather than
+ * absolute, because a fixed one is wrong on every microphone gain. [SpeechLevel] owns that
+ * rule and explains why "recently" has to decay.
  *
  * ## The audio does not outlive the function
  *
@@ -51,7 +52,18 @@ class VoiceEnroller @Inject constructor(
     private val logger: Logger,
 ) : VoiceEnrolment {
     /**
-     * Records until [EnrolmentRules.MAXIMUM_SECONDS] of speech, then builds the profile.
+     * Set by [requestFinish] and cleared at the start of every [enrol].
+     *
+     * Volatile because it is written from the main thread, by the button, and read by the
+     * recording loop on [Dispatchers.IO]. A single boolean needs nothing stronger: the
+     * loop re-reads it once per 100 ms chunk and a late read costs one chunk.
+     */
+    @Volatile
+    private var finishRequested = false
+
+    /**
+     * Records until [EnrolmentRules.MAXIMUM_SECONDS] of speech, or until [requestFinish],
+     * then builds the profile.
      *
      * Cancel the collecting coroutine to abandon it; the recorder is released either way
      * and nothing is stored. The caller hands [EnrolmentProgress.Ready]'s profile to the
@@ -60,6 +72,10 @@ class VoiceEnroller @Inject constructor(
      */
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     override fun enrol(): Flow<EnrolmentProgress> = flow {
+        // Cleared here rather than in requestFinish, so a finish asked for after the last
+        // recording ended cannot cut the next one short before it has captured anything.
+        finishRequested = false
+
         if (!embedder.isAvailable) {
             emit(EnrolmentProgress.Failed(EnrolmentProgress.Failed.Reason.NO_MODEL))
             return@flow
@@ -113,14 +129,23 @@ class VoiceEnroller @Inject constructor(
         var lastReported = -1
 
         emit(EnrolmentProgress.Recording(0, 0f))
-        while (speech.size < target && System.nanoTime() <= deadline) {
+        while (speech.size < target && System.nanoTime() <= deadline && !finishRequested) {
             coroutineContext.ensureActive()
             val read = recorder.read(chunk, 0, chunk.size)
             if (read <= 0) continue
 
             val level = levelOf(chunk, read)
-            if (level > loudest) loudest = level
-            if (isSpeech(level, loudest)) {
+            // Decays, rather than only ever rising. The bar for "this is speech" is a
+            // fraction of this, so when it was an all-time maximum a single loud transient
+            // at the start - the handset being picked up, a door, a headset's pairing tone -
+            // put the bar above the user's ordinary speaking level and left it there for
+            // the rest of the recording. Measured on a handset: the same person on the same
+            // phone counted 26 seconds of speech in 48 after a quiet start, and 5 seconds in
+            // 180 after a loud one, with the microphone open and working throughout. The
+            // user is given no way to tell why, because from the outside it looks like the
+            // counter has simply stopped.
+            loudest = SpeechLevel.nextReference(loudest, level)
+            if (SpeechLevel.isSpeech(level, loudest)) {
                 for (i in 0 until read) speech.add(chunk[i])
             }
 
@@ -133,21 +158,23 @@ class VoiceEnroller @Inject constructor(
         return ShortArray(speech.size) { speech[it] }
     }
 
+    /**
+     * Ends the recording loop at its next chunk, so [enrol] builds from what it has.
+     *
+     * Only a flag: the loop owns the recorder and does its own release, so reaching in to
+     * stop the hardware from here would be a second owner for the one thing that must have
+     * exactly one.
+     */
+    override fun requestFinish() {
+        finishRequested = true
+    }
+
     private fun levelOf(chunk: ShortArray, read: Int): Double {
         var sumOfSquares = 0.0
         for (i in 0 until read) sumOfSquares += chunk[i].toDouble() * chunk[i]
         return sqrt(sumOfSquares / read)
     }
 
-    /**
-     * Whether a frame carries speech rather than room tone.
-     *
-     * Relative to the loudest frame so far, so it works at any microphone gain, with an
-     * absolute floor so a completely silent room cannot enrol a profile out of its own
-     * hiss.
-     */
-    private fun isSpeech(level: Double, loudest: Double): Boolean =
-        level > loudest * SPEECH_FRACTION && level > ABSOLUTE_FLOOR
 
     @SuppressLint("MissingPermission")
     private fun open(): AudioRecord? = runCatching {
@@ -180,11 +207,9 @@ class VoiceEnroller @Inject constructor(
 
         const val BUFFERS = 4
 
-        /** A frame counts as speech above this fraction of the loudest frame so far. */
-        const val SPEECH_FRACTION = 0.12
-
-        /** And never below this, so a silent room's own noise cannot enrol a profile. */
-        const val ABSOLUTE_FLOOR = 150.0
+        // What counts as speech lives in [SpeechLevel], which is testable without a
+        // microphone. It used to be two constants and a one-line predicate here, which is
+        // how it stayed wrong long enough to be measured wrong twice.
 
         /**
          * How long recording may run in total, however little speech arrives.

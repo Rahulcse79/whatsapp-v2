@@ -167,6 +167,22 @@ data class AppSettings(
      * `AdaptiveVideoPolicy` still steps down under measured pressure.
      */
     val videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
+
+    /**
+     * Whether a trained voice profile is used to keep other speakers off the call.
+     *
+     * **On by default, and it does nothing without a profile.** The gate needs an enrolled
+     * voice to compare against; with none it never starts, which is why defaulting to on
+     * costs a user who has not trained anything precisely nothing. Turning it off is for
+     * somebody who *has* trained and wants the microphone passed through untouched — a
+     * shared handset, a speakerphone in a room, or a call where a colleague is meant to be
+     * heard.
+     *
+     * Independent of the user's own mute. Both can silence the microphone and neither can
+     * undo the other: see `RealPjsipCoreGateway.applyCaptureRouting`, which owns that one
+     * connection on behalf of both.
+     */
+    val liveCallFilteringEnabled: Boolean = true,
 ) {
     companion object {
         /** What a fresh install starts with. */
