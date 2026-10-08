@@ -2418,7 +2418,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // not by this — and a leg that turns out *not* to be one this device should
             // answer must still have progressed, or the caller sits on silence until its
             // own timeout.
-            call.sendRinging(callKey, logger)
+            call.sendRinging(callKey, logger, callerIdUpdatesEnabled)
             call.publish(StackCallState.INCOMING_RECEIVED, conferenceEntity = conference)
         }
     }
@@ -4431,8 +4431,19 @@ private fun Call.applyVideoEnabled(enabled: Boolean, info: CallInfo?) {
  * A failure is logged and swallowed: this runs inside a pjsua2 callback, and an exception
  * across the JNI boundary is not a stack trace but undefined behaviour.
  */
-private fun Call.sendRinging(callKey: String, logger: Logger) {
-    runCatching { answer(CallOpParam().apply { statusCode = pjsip_status_code.PJSIP_SC_RINGING }) }
+private fun Call.sendRinging(callKey: String, logger: Logger, callerIdUpdates: Boolean) {
+    // The advertisement rides on the 180 as well as on the 200, and the cost of the extra
+    // copy is one header on one message. The 200 is the response an endpoint is normally
+    // read from, but the 180 is the FIRST thing of ours the server sees on an inbound
+    // call, and which of the two it reads is the server's business rather than something
+    // worth discovering on a handset.
+    runCatching {
+        answer(
+            CallOpParam()
+                .withCoralxHeaders(callerIdUpdates = callerIdUpdates)
+                .apply { statusCode = pjsip_status_code.PJSIP_SC_RINGING },
+        )
+    }
         .onFailure { logger.warn(RealPjsipCoreGateway.TAG, "180 Ringing for $callKey failed: ${it.message}") }
 }
 
