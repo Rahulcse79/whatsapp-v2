@@ -1365,6 +1365,42 @@ class PjsipSipEngineTest : PjsipSipEngineFixture() {
     }
 
     @Test
+    fun `an update leaves every other call alone`() = runTest {
+        // The rule that stops this feature being a global rename. Two independent calls
+        // are up; one is transferred away. The other must read exactly as it did — it is a
+        // different dialog and the server said nothing about it.
+        val engine = connectedCall()
+        val first = engine.activeCalls.value.single().callId
+
+        gateway.emitCall("second-call", StackCallState.INCOMING_RECEIVED, remoteUri = "sip:carol@sip.example.com")
+        runCurrent()
+        gateway.emitCall("second-call", StackCallState.CONNECTED, remoteUri = "sip:carol@sip.example.com")
+        runCurrent()
+        val second = CallId("second-call")
+        val untouched = engine.activeCalls.value.first { it.callId == second }
+
+        gateway.emitConnectedParty(
+            StackConnectedPartyEvent(
+                callKey = first.value,
+                remoteUri = "sip:4021@sip.example.com",
+                displayName = "4021",
+            ),
+        )
+        runCurrent()
+
+        val after = engine.activeCalls.value.associateBy { it.callId }
+        assertEquals("4021", after.getValue(first).remoteDisplayName, "the transferred call moves")
+        assertEquals(untouched.remote, after.getValue(second).remote, "the unrelated call keeps its address")
+        assertEquals(
+            untouched.remoteDisplayName,
+            after.getValue(second).remoteDisplayName,
+            "the unrelated call keeps its name",
+        )
+
+        engine.stop()
+    }
+
+    @Test
     fun `an update naming a call this engine does not have is dropped`() = runTest {
         // A server talking about a dialog we no longer hold. It must not create a call.
         val engine = connectedCall()

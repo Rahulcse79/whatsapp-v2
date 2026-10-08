@@ -2891,14 +2891,41 @@ internal class RealPjsipCoreGateway @Inject constructor(
             if (!callerIdUpdatesEnabled) return false
             val update = ConnectedPartyUpdate.parse(message) ?: return false
 
+            // The identity goes in at DEBUG and nowhere else. An extension is a phone
+            // number (§7) and `redactPartial` masks a four-digit one completely, so there
+            // is no useful middle ground: the values a person needs to diagnose this are
+            // the whole of what must not reach a release log. DEBUG is where the SIP trace
+            // already writes the entire message, gated on the same build.
+            logger.debug(
+                ConnectedPartyUpdate.LOG_TAG,
+                "INFO received dialog=$callKey displayName=${update.displayName} " +
+                    "displayNumber=${update.number} lazyAttendedTransfer=${update.lazyAttendedTransfer}",
+            )
+
+            // A well-formed update that names nobody. Routine on this deployment — the SBC
+            // strips the headers FreeSWITCH wrote (see [ConnectedPartyUpdate]) — and the
+            // only safe answer is to leave the display exactly as it is. `true` because the
+            // message WAS ours and was handled: it is answered 200 OK by the stack either
+            // way, and returning false would send it on to the roster parser for nothing.
+            if (!update.hasIdentity) {
+                logger.info(
+                    ConnectedPartyUpdate.LOG_TAG,
+                    "Display update on $callKey carried no identity; keeping the name already on screen",
+                )
+                return true
+            }
+
             // Built from the address this call already has, so the host, port and any
             // transport parameter stay the ones the call is actually on: the server sends
             // a bare extension, and an extension on its own cannot be dialled back, logged
-            // or matched to a contact. Null when the update named nobody new.
+            // or matched to a contact. Null when the update named a name and no number.
             val uri = update.number?.let { withUser(NameAddr.of(infoOrNull()?.remoteUri).uri, it) }
 
-            // The call, never the number (§7).
-            logger.info(TAG, "Connected party on $callKey changed; the far end is now somebody else")
+            // The call id, never the number (§7) - the identities are on the DEBUG line above.
+            logger.info(
+                ConnectedPartyUpdate.LOG_TAG,
+                "Connected party on $callKey changed; the far end is now somebody else",
+            )
             connectedPartyEventFlow.tryEmit(
                 StackConnectedPartyEvent(
                     callKey = callKey,

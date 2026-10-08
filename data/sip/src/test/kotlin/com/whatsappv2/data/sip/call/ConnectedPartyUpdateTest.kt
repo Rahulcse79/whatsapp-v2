@@ -3,6 +3,7 @@ package com.whatsappv2.data.sip.call
 import com.whatsappv2.data.sip.registration.stack.withUser
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
@@ -19,7 +20,10 @@ class ConnectedPartyUpdateTest {
     fun `the display update names the new party`() {
         val update = ConnectedPartyUpdate.parse(UPDATE_DISPLAY_INFO)
 
-        assertEquals(ConnectedPartyUpdate(displayName = "4021", number = "4021"), update)
+        assertEquals(
+            ConnectedPartyUpdate(displayName = "4021", number = "4021", lazyAttendedTransfer = true),
+            update,
+        )
     }
 
     @Test
@@ -78,8 +82,40 @@ class ConnectedPartyUpdateTest {
     }
 
     @Test
-    fun `the right content type with neither header is not an update`() {
-        assertNull(ConnectedPartyUpdate.parse(info("Content-Type: ${ConnectedPartyUpdate.CONTENT_TYPE}")))
+    fun `the lazy-attended-transfer marker is carried`() {
+        // Read and reported, never branched on: the display is correct whether the transfer
+        // was lazy, attended or blind. It is the field that says WHY an update arrived.
+        assertEquals(true, ConnectedPartyUpdate.parse(UPDATE_DISPLAY_INFO)?.lazyAttendedTransfer)
+    }
+
+    @Test
+    fun `an update without the lazy marker is not lazy`() {
+        val update = ConnectedPartyUpdate.parse(
+            info("Content-Type: ${ConnectedPartyUpdate.CONTENT_TYPE}", "X-FS-Display-Number: 4021"),
+        )
+
+        assertEquals(false, update?.lazyAttendedTransfer)
+    }
+
+    @Test
+    fun `an update display with no headers at all is recognised but names nobody`() {
+        // The message this deployment's SBC actually delivers: the content type survives
+        // and both X-FS-Display headers are stripped. It must be recognised — so it is
+        // answered and not passed on to the roster parser — and it must name nobody, so
+        // the caller keeps the display it already has instead of inventing one.
+        val update = ConnectedPartyUpdate.parse(
+            info("Content-Type: ${ConnectedPartyUpdate.CONTENT_TYPE}", "Content-Length: 0"),
+        )
+
+        assertNotNull(update)
+        assertEquals(false, update.hasIdentity)
+        assertNull(update.displayName)
+        assertNull(update.number)
+    }
+
+    @Test
+    fun `an update that names somebody has an identity`() {
+        assertEquals(true, ConnectedPartyUpdate.parse(UPDATE_DISPLAY_INFO)?.hasIdentity)
     }
 
     @Test
@@ -91,20 +127,20 @@ class ConnectedPartyUpdateTest {
             "\r\n" +
             "X-FS-Display-Number: 9999\r\n"
 
-        assertNull(ConnectedPartyUpdate.parse(message))
+        assertEquals(false, ConnectedPartyUpdate.parse(message)?.hasIdentity)
     }
 
     @Test
     fun `an empty header value is as good as absent`() {
-        assertNull(
-            ConnectedPartyUpdate.parse(
-                info(
-                    "Content-Type: ${ConnectedPartyUpdate.CONTENT_TYPE}",
-                    "X-FS-Display-Name:",
-                    "X-FS-Display-Number:   ",
-                ),
+        val update = ConnectedPartyUpdate.parse(
+            info(
+                "Content-Type: ${ConnectedPartyUpdate.CONTENT_TYPE}",
+                "X-FS-Display-Name:",
+                "X-FS-Display-Number:   ",
             ),
         )
+
+        assertEquals(false, update?.hasIdentity)
     }
 
     // ------------------------------------------------- the address it is turned into

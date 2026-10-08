@@ -13,6 +13,7 @@ import com.whatsappv2.core.common.time.SystemClock
 import com.whatsappv2.data.sip.call.CallStateMapper
 import com.whatsappv2.data.sip.call.ConferenceInfoWriter
 import com.whatsappv2.data.sip.call.ConferenceMapper
+import com.whatsappv2.data.sip.call.ConnectedPartyUpdate
 import com.whatsappv2.data.sip.call.SipCallGateway
 import com.whatsappv2.data.sip.call.SipConferenceGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
@@ -861,7 +862,19 @@ internal class PjsipSipEngine @Inject constructor(
 
             if (remote == current.remote && name == current.remoteDisplayName) return@collect
 
-            logger.info(TAG, "$id was transferred elsewhere; its far end is now a different party")
+            // Identities at DEBUG, the fact at INFO - the same split the gateway makes, and
+            // for the same reason: an extension is a phone number (§7). The two lines
+            // together are what says whether the update reached the snapshot and what it
+            // moved, which is the question a transfer that looks wrong on screen asks.
+            logger.debug(
+                ConnectedPartyUpdate.LOG_TAG,
+                "Updating connected party old=${current.remoteDisplayName ?: current.remote.user} " +
+                    "new=${name ?: remote.user} dialog=$id",
+            )
+            logger.info(
+                ConnectedPartyUpdate.LOG_TAG,
+                "$id was transferred elsewhere; its far end is now a different party",
+            )
             updateCalls { it + (id to current.copy(remote = remote, remoteDisplayName = name)) }
         }
     }
