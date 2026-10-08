@@ -1,0 +1,108 @@
+pjsua: answer the connected-party display INFO instead of 500-ing it
+
+A transferred call keeps its dialog. 4023 calls 4022, 4022 transfers the call to 4021, and
+nothing in the SIP that reaches the remaining party says the person on the other end has
+changed -- same Call-ID, same From, same To, same tags. FreeSWITCH closes that gap with an
+in-dialog INFO carrying the new party in two private headers:
+
+    INFO sip:6001@192.168.30.202:5088;ob SIP/2.0
+    From: "tccs4" <sip:4022@192.168.20.56>;tag=H296pKUZ8mtjS
+    Content-Type: message/update_display
+    Content-Length: 0
+    X-FS-Display-Name: 4021
+    X-FS-Display-Number: 4021
+    X-FS-Lazy-Attended-Transfer: true
+
+It is only ever sent to an endpoint that first advertised `X-FS-Support: update_display`,
+so an endpoint that receives one asked for it.
+
+pjsua answers an incoming INFO in exactly three cases, all of them keyed off the message
+BODY: application/media_control+xml, application/dtmf-relay and
+application/trickle-ice-sdpfrag. This INFO has no body at all. It therefore matched none
+of them, no dialog usage claimed it either -- mod_inv_on_rx_request() reports only INVITE,
+CANCEL, BYE and ACK -- and pjsip_dlg_on_rx_request() fell through to its last resort:
+
+    500 Internal Server Error / "Unhandled by dialog usages"
+
+on a request the endpoint had asked to be sent.
+
+Reading the update was never the problem: the whole message reaches the application
+through on_call_tsx_state(). RESPONDING is, and from pjsua2 it is impossible. `Call`
+exposes sendRequest(), which puts a new request into the dialog, and has no API of any
+kind for responding to a request that arrived -- SipRxData carries the bytes and a void*
+and nothing that can answer them. The transaction only exists down here, so this is where
+the response has to be built.
+
+So one more branch on the same chain, matched on the Content-Type header rather than on a
+body that does not exist. rdata->msg_info.ctype is filled by the parser whenever the
+header is present (sip_parser.c, parse_hdr_content_type) and is NULL on an INFO that
+carried none, so `body == NULL && ctype is message/update_display` names this message and
+no other. Every other INFO keeps the behaviour it had, 500 included: this claims one
+content type, answers it, and interprets nothing -- what the headers mean stays the
+application's business.
+
+Upstream would need a general "unhandled INFO" callback to fix this properly, which is a
+larger change to the pjsua callback surface than this repository should carry.
+
+diff --git a/third_party/pjproject/pjsip/src/pjsua-lib/pjsua_call.c b/third_party/pjproject/pjsip/src/pjsua-lib/pjsua_call.c
+index 9b8e16db..b3736d1a 100644
+--- a/third_party/pjproject/pjsip/src/pjsua-lib/pjsua_call.c
++++ b/third_party/pjproject/pjsip/src/pjsua-lib/pjsua_call.c
+@@ -6439,6 +6439,8 @@ static void pjsua_call_on_tsx_state_changed(pjsip_inv_session *inv,
+     const pj_str_t STR_MEDIA_CONTROL_XML = { "media_control+xml", 17 };
+     const pj_str_t STR_DTMF_RELAY        = { "dtmf-relay", 10 };
+     const pj_str_t STR_TRICKLE_ICE_SDP   = { "trickle-ice-sdpfrag", 19 };
++    const pj_str_t STR_MESSAGE           = { "message", 7 };
++    const pj_str_t STR_UPDATE_DISPLAY    = { "update_display", 14 };
+ 
+     pjsua_call *call;
+ 
+@@ -6817,6 +6819,48 @@ static void pjsua_call_on_tsx_state_changed(pjsip_inv_session *inv,
+                 status = pjsip_tsx_send_msg(tsx, tdata);
+         }
+ 
++        /* Check connected-party display update in the INFO message.
++         *
++         * FreeSWITCH announces a transfer that happened elsewhere with an in-dialog
++         * INFO of type message/update_display, carrying the new party in
++         * X-FS-Display-Name and X-FS-Display-Number. It has NO BODY -- Content-Length
++         * is 0 -- so the three tests above cannot match it, and nothing else in pjsip
++         * or pjsua claims a bodyless INFO either. The request therefore reached the end
++         * of pjsip_dlg_on_rx_request() unprocessed and was answered "500 Unhandled by
++         * dialog usages" (sip_dialog.c), which is a protocol error on a request this
++         * endpoint asked to be sent: FreeSWITCH only sends it to an endpoint that
++         * advertised X-FS-Support: update_display.
++         *
++         * The content is read by the application, which sees the whole message through
++         * on_call_tsx_state(). What the application cannot do is RESPOND: pjsua2 exposes
++         * Call::sendRequest for putting a request into the dialog and nothing at all for
++         * responding to one that arrived. So the 200 is sent from here, which is the
++         * only place that still holds the transaction, and the body of the update stays
++         * the application's to interpret.
++         *
++         * Matched on the Content-Type header rather than on the message body, because
++         * there is no body: rdata->msg_info.ctype is filled by the parser whenever the
++         * header is present (sip_parser.c, parse_hdr_content_type) and is NULL on an
++         * INFO that carried none. An INFO of any other type is left exactly as it was,
++         * 500 included -- this claims one content type and nothing else.
++         */
++        else if (body == NULL && rdata->msg_info.ctype &&
++                 pj_stricmp(&rdata->msg_info.ctype->media.type, &STR_MESSAGE)==0 &&
++                 pj_stricmp(&rdata->msg_info.ctype->media.subtype,
++                            &STR_UPDATE_DISPLAY)==0)
++        {
++            pjsip_tx_data *tdata;
++            pj_status_t status;
++
++            PJ_LOG(4,(THIS_FILE, "Call %d: connected party updated by INFO",
++                      call->index));
++
++            status = pjsip_endpt_create_response(tsx->endpt, rdata, 200, NULL,
++                                                 &tdata);
++            if (status == PJ_SUCCESS)
++                status = pjsip_tsx_send_msg(tsx, tdata);
++        }
++
+     } else if (tsx->role == PJSIP_ROLE_UAC && 
+                pjsip_method_cmp(&tsx->method, &pjsip_info_method)==0 &&
+                (tsx->state == PJSIP_TSX_STATE_COMPLETED ||

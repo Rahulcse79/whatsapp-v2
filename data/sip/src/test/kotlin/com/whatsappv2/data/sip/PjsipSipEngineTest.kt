@@ -10,6 +10,7 @@ import com.whatsappv2.core.common.result.getOrNull
 import com.whatsappv2.core.common.secret.Secret
 import com.whatsappv2.core.common.time.MutableClock
 import com.whatsappv2.data.sip.call.StackCallState
+import com.whatsappv2.data.sip.call.StackConnectedPartyEvent
 import com.whatsappv2.data.sip.network.FakeNetworkMonitor
 import com.whatsappv2.data.sip.registration.FakeSipCoreGateway
 import com.whatsappv2.data.sip.registration.RegistrationStateMapper
@@ -1282,6 +1283,103 @@ class PjsipSipEngineTest : PjsipSipEngineFixture() {
         settings.setVerifyTlsCertificates(false)
         runCurrent()
         assertEquals(false, gateway.tlsVerificationChanges.last())
+
+        engine.stop()
+    }
+
+    @Test
+    fun `the caller ID switch reaches the stack, and only when it changes`() = runTest {
+        // It governs what goes on the wire — `X-FS-Support` on an INVITE, an answer and a
+        // REFER — so a control that wrote to DataStore and was read by nothing would be a
+        // switch the user can move while the signalling never changes.
+        val engine = engine(this)
+        engine.start()
+        runCurrent()
+        // Off reaches the stack once. Asserted rather than skipped: the gateway's own flag
+        // also starts false, so "nothing was pushed" and "off was pushed" look identical
+        // from outside and only one of them is the contract.
+        assertEquals(listOf(false), gateway.callerIdUpdates)
+
+        settings.setUpdateCallerIdOnTransfer(true)
+        runCurrent()
+        assertEquals(true, gateway.callerIdUpdates.last())
+
+        val afterOn = gateway.callerIdUpdates.size
+        settings.setUpdateCallerIdOnTransfer(true)
+        runCurrent()
+        assertEquals(afterOn, gateway.callerIdUpdates.size, "an unchanged setting must not be re-pushed")
+
+        settings.setUpdateCallerIdOnTransfer(false)
+        runCurrent()
+        assertEquals(false, gateway.callerIdUpdates.last())
+
+        engine.stop()
+    }
+
+    // ------------------------------------------------- a transfer somewhere else
+
+    @Test
+    fun `a connected party update renames the call and re-addresses it`() = runTest {
+        // 4023 is on a call with 4022; 4022 transfers it to 4021. Nothing about this call
+        // changes — same dialog, same media — so the only thing that can say the far end
+        // is now somebody else is the update, and before it existed the screen went on
+        // naming the party that had gone.
+        val engine = connectedCall()
+        val callId = engine.activeCalls.value.single().callId
+
+        gateway.emitConnectedParty(
+            StackConnectedPartyEvent(
+                callKey = callId.value,
+                remoteUri = "sip:4021@sip.example.com",
+                displayName = "4021",
+            ),
+        )
+        runCurrent()
+
+        val call = engine.activeCalls.value.single()
+        assertEquals("4021", call.remoteDisplayName)
+        assertEquals("sip:4021@sip.example.com", call.remote.render())
+        // The call itself has not moved. A rename is not a state change, and a test that
+        // did not say so would not notice one being introduced.
+        assertTrue(call.state.isEstablished)
+
+        engine.stop()
+    }
+
+    @Test
+    fun `an update with no number renames the call and leaves its address alone`() = runTest {
+        val engine = connectedCall()
+        val callId = engine.activeCalls.value.single().callId
+        val before = engine.activeCalls.value.single().remote
+
+        gateway.emitConnectedParty(
+            StackConnectedPartyEvent(callKey = callId.value, remoteUri = null, displayName = "Sales desk"),
+        )
+        runCurrent()
+
+        val call = engine.activeCalls.value.single()
+        assertEquals("Sales desk", call.remoteDisplayName)
+        assertEquals(before, call.remote, "a name on its own must not disturb an address that still works")
+
+        engine.stop()
+    }
+
+    @Test
+    fun `an update naming a call this engine does not have is dropped`() = runTest {
+        // A server talking about a dialog we no longer hold. It must not create a call.
+        val engine = connectedCall()
+
+        gateway.emitConnectedParty(
+            StackConnectedPartyEvent(
+                callKey = "not-a-call",
+                remoteUri = "sip:4021@sip.example.com",
+                displayName = "4021",
+            ),
+        )
+        runCurrent()
+
+        assertEquals(1, engine.activeCalls.value.size)
+        assertEquals(TARGET, engine.activeCalls.value.single().remote)
 
         engine.stop()
     }

@@ -44,6 +44,7 @@ class SettingsScreenTest {
         onRetention: (CallHistoryRetention) -> Unit = {},
         onVerifyTls: (Boolean) -> Unit = {},
         onFrameRate: (VideoFrameRate) -> Unit = {},
+        onCallerId: (Boolean) -> Unit = {},
         backgroundAccess: BackgroundAccessLink? = null,
         onChatSignOut: () -> Unit = {},
     ) {
@@ -58,6 +59,7 @@ class SettingsScreenTest {
                         onThemeModeChange = onTheme,
                         onSipTraceChange = onTrace,
                         onLiveCallFilteringChange = {},
+                        onCallerIdOnTransferChange = onCallerId,
                         onVerifyTlsChange = onVerifyTls,
                         onRetentionChange = onRetention,
                         onVideoFrameRateChange = onFrameRate,
@@ -196,6 +198,34 @@ class SettingsScreenTest {
         compose.onNodeWithText("Default media encryption").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Audio route").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Call history").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `the caller ID switch says what a call looks like with it off`() {
+        // The wording is the feature's only documentation on the handset, and the two
+        // positions have to describe different behaviour or the switch reads as decorative.
+        setContent()
+
+        compose.onNodeWithText("Update caller ID on transfer").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText(OFF_TEXT, substring = true).performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `the caller ID switch says what changes with it on`() {
+        setContent(state = SettingsUiState(ON_CALLER_ID, traceToggleAvailable = true))
+
+        compose.onNodeWithText(ON_TEXT, substring = true).performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `moving the caller ID switch reports it`() {
+        var chosen: Boolean? = null
+        setContent(onCallerId = { chosen = it })
+
+        compose.onNodeWithTag(TAG_CALLER_ID_ON_TRANSFER).performScrollTo().performClick()
+        compose.waitForIdle()
+
+        assertEquals(true, chosen)
     }
 
     @Test
@@ -370,5 +400,11 @@ class SettingsScreenTest {
 
     private companion object {
         const val NINETY = 90
+
+        val ON_CALLER_ID: AppSettings = AppSettings.DEFAULT.copy(updateCallerIdOnTransfer = true)
+
+        /** Enough of each description to tell the two apart, and not the whole sentence. */
+        const val OFF_TEXT = "keeps showing the party it started with"
+        const val ON_TEXT = "change to the new party"
     }
 }

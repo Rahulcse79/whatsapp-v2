@@ -203,6 +203,32 @@ data class AppSettings(
      * connection on behalf of both.
      */
     val liveCallFilteringEnabled: Boolean = false,
+
+    /**
+     * Whether the name on screen follows a transfer that happened somewhere else.
+     *
+     * **Off on a fresh install**, because turning it on changes what this endpoint puts on
+     * the wire and that is not a change to make on anybody's behalf.
+     *
+     * A transferred call keeps its dialog. 4023 calls 4022, 4022 transfers it to 4021, and
+     * nothing in the SIP that reaches the remaining party says the person on the other end
+     * changed — so the screen keeps naming whoever was there when the call started.
+     * FreeSWITCH will say so, in an in-dialog `INFO`, but only to an endpoint that first
+     * advertised `X-FS-Support: update_display,send_info` on its INVITE, its answer or its
+     * REFER.
+     *
+     * So this is one switch over both halves:
+     *
+     *  - **Off** — nothing is advertised, no update is ever sent, and one that arrived
+     *    anyway is ignored. Exactly the behaviour of every build before this existed.
+     *  - **On** — the advertisement goes out, the update comes back, it is answered `200
+     *    OK`, and the call's name and address both move to the new party.
+     *
+     * Server-specific by nature, which is the other reason it is a choice rather than a
+     * default: the headers are FreeSWITCH's own, and a PBX that does not send them leaves
+     * the switch doing nothing at all. See `ConnectedPartyUpdate` for the exchange.
+     */
+    val updateCallerIdOnTransfer: Boolean = false,
 ) {
     companion object {
         /** What a fresh install starts with. */

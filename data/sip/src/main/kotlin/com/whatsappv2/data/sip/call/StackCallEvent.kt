@@ -208,6 +208,30 @@ internal data class StackTransferEvent(
 )
 
 /**
+ * The far end of an established call became somebody else, without the dialog changing.
+ *
+ * What a transfer does to the party that is *not* transferred: their call carries on, and
+ * the person on the other end of it is replaced. See [ConnectedPartyUpdate] for the
+ * signalling and why nothing else on the call says so.
+ *
+ * A stream of its own, beside [StackTransferEvent], and for the same reason that one is:
+ * this is *about* a call without being a state of it. The call does not move — it stays
+ * connected, held, or whatever it already was — so there is no [StackCallState] that
+ * carries it, and inventing one would mean every reader of the call FSM having to
+ * recognise a state that changes nothing.
+ *
+ * [remoteUri] is a whole address rather than the bare number the server sent, because the
+ * number alone cannot be dialled, logged, or matched against a contact. It is built from
+ * the address this call already had, so the host, port and transport are the ones the call
+ * is actually on. Null when the update carried a name and no number.
+ */
+internal data class StackConnectedPartyEvent(
+    val callKey: String,
+    val remoteUri: String?,
+    val displayName: String?,
+)
+
+/**
  * One participant of a conference, as the bridge describes them (Task 60).
  *
  * Flat and primitive on purpose: this is what crossed the SDK boundary, not the domain

@@ -81,6 +81,9 @@ class DataStoreAppSettingsRepository @Inject constructor(
     override suspend fun setLiveCallFilteringEnabled(enabled: Boolean) =
         edit { it[LIVE_CALL_FILTERING] = enabled }
 
+    override suspend fun setUpdateCallerIdOnTransfer(enabled: Boolean) =
+        edit { it[CALLER_ID_ON_TRANSFER] = enabled }
+
     override suspend fun setVerifyTlsCertificates(verify: Boolean) =
         edit { it[VERIFY_TLS] = verify }
 
@@ -112,6 +115,10 @@ class DataStoreAppSettingsRepository @Inject constructor(
         // Somebody who has already chosen has a value stored here, and keeps it.
         liveCallFilteringEnabled = this[LIVE_CALL_FILTERING]
             ?: AppSettings.DEFAULT.liveCallFilteringEnabled,
+        // Off when absent, so an upgrade does not start advertising a capability on the
+        // wire that nobody asked for - see `AppSettings.updateCallerIdOnTransfer`.
+        updateCallerIdOnTransfer = this[CALLER_ID_ON_TRANSFER]
+            ?: AppSettings.DEFAULT.updateCallerIdOnTransfer,
         verifyTlsCertificates = this[VERIFY_TLS] ?: AppSettings.DEFAULT.verifyTlsCertificates,
         // Through `ofDays`, so a value written by a build with a longer maximum — or
         // corrupted to something absurd — is clamped rather than used to compute a cutoff
@@ -133,6 +140,7 @@ class DataStoreAppSettingsRepository @Inject constructor(
         val VIDEO_FRAME_RATE = intPreferencesKey("video_frame_rate_fps")
         val SIP_TRACE = booleanPreferencesKey("sip_trace_enabled")
         val LIVE_CALL_FILTERING = booleanPreferencesKey("live_call_filtering_enabled")
+        val CALLER_ID_ON_TRANSFER = booleanPreferencesKey("update_caller_id_on_transfer")
         val VERIFY_TLS = booleanPreferencesKey("verify_tls_certificates")
         val HISTORY_RETENTION_DAYS = intPreferencesKey("call_history_retention_days")
     }

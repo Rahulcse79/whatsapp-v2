@@ -92,6 +92,7 @@ fun SettingsScreen(
             onThemeModeChange = viewModel::setThemeMode,
             onSipTraceChange = viewModel::setSipTraceEnabled,
             onLiveCallFilteringChange = viewModel::setLiveCallFilteringEnabled,
+            onCallerIdOnTransferChange = viewModel::setUpdateCallerIdOnTransfer,
             onVerifyTlsChange = viewModel::setVerifyTlsCertificates,
             onRetentionChange = viewModel::setCallHistoryRetention,
             onVideoFrameRateChange = viewModel::setVideoFrameRate,
@@ -122,6 +123,7 @@ data class SettingsActions(
     val onThemeModeChange: (ThemeMode) -> Unit,
     val onSipTraceChange: (Boolean) -> Unit,
     val onLiveCallFilteringChange: (Boolean) -> Unit,
+    val onCallerIdOnTransferChange: (Boolean) -> Unit,
     val onVerifyTlsChange: (Boolean) -> Unit,
     val onRetentionChange: (CallHistoryRetention) -> Unit,
     val onVideoFrameRateChange: (VideoFrameRate) -> Unit,
@@ -130,7 +132,7 @@ data class SettingsActions(
 ) {
     companion object {
         /** For previews and tests that are not about what a change does. */
-        val NONE = SettingsActions({}, {}, {}, {}, {}, {}, {}, {}, {})
+        val NONE = SettingsActions({}, {}, {}, {}, {}, {}, {}, {}, {}, {})
     }
 }
 
@@ -287,7 +289,8 @@ private fun SettingsContent(
 }
 
 /**
- * The three cards that govern what a call does: digits, encryption, and where it comes out.
+ * The cards that govern what a call does: digits, encryption, where it comes out, how much
+ * video it sends, and whose name it shows after a transfer.
  *
  * Grouped because they are one subject, and because the body above them is a list of cards
  * whose length is the only thing that makes it hard to read.
@@ -325,6 +328,13 @@ private fun CallCards(state: SettingsUiState, actions: SettingsActions) {
         VideoFrameRateGroup(
             selected = state.settings.videoFrameRate,
             onSelect = actions.onVideoFrameRateChange,
+        )
+    }
+
+    SettingsCard {
+        CallerIdOnTransferToggle(
+            enabled = state.settings.updateCallerIdOnTransfer,
+            onChange = actions.onCallerIdOnTransferChange,
         )
     }
 }
@@ -777,6 +787,50 @@ internal fun LiveCallFilteringToggle(
 }
 
 internal const val TAG_LIVE_FILTERING = "settings-live-filtering"
+
+/**
+ * Whether the name on screen follows a transfer that happened somewhere else.
+ *
+ * The supporting text names the scenario rather than the mechanism. "Update caller ID on
+ * transfer" is accurate and tells a user nothing about when they would want it; what they
+ * recognise is the call that goes on showing the person who handed them over, and that is
+ * what the two lines describe.
+ *
+ * It also says who has to cooperate. The headers are FreeSWITCH's own, so on a PBX that
+ * does not send them this switch changes nothing at all — and somebody who turns it on and
+ * sees no difference should be able to read why here rather than open a bug.
+ */
+@Composable
+private fun CallerIdOnTransferToggle(enabled: Boolean, onChange: (Boolean) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.small)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Update caller ID on transfer", style = MaterialTheme.typography.titleMedium)
+            Switch(
+                checked = enabled,
+                onCheckedChange = onChange,
+                modifier = Modifier.testTag(TAG_CALLER_ID_ON_TRANSFER),
+            )
+        }
+        Text(
+            text = if (enabled) {
+                "On. When the person you are speaking to transfers you to somebody else, " +
+                    "the name and number on screen change to the new party. Needs a server " +
+                    "that announces the change — FreeSWITCH does."
+            } else {
+                "Off. A call that is transferred keeps showing the party it started with, " +
+                    "even after somebody else has picked it up."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+internal const val TAG_CALLER_ID_ON_TRANSFER = "settings-caller-id-on-transfer"
 
 @Composable
 private fun SipTraceToggle(enabled: Boolean, onChange: (Boolean) -> Unit) {
