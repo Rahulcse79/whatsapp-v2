@@ -55,7 +55,7 @@ okhttp = "5.5.0"
 # Queried from Maven Central on 2026-10-05, not written from memory (see the header).
 # Runs the vendored WeSpeaker ECAPA model for the voice profile — ADR-013.
 onnxruntime = "1.30.0"
-retrofit = "2.11.0"
+retrofit = "3.0.0"
 gson = "2.11.0"
 ulidCreator = "5.2.3"
 androidxAnnotation = "1.8.2"
