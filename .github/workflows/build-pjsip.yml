@@ -147,7 +147,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Publish the generated API
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pjsua2-java-api-${{ inputs.pjsip-version }}
           if-no-files-found: error
@@ -559,7 +559,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Publish the build for inspection
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pjsip-${{ inputs.pjsip-version }}-${{ matrix.abi }}
           if-no-files-found: error
@@ -686,7 +686,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Publish the AAR
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pjsua2-aar-${{ inputs.pjsip-version }}
           if-no-files-found: error
@@ -786,7 +786,7 @@ jobs:
           echo "all three ABIs carry libpjsua2.so and libc++_shared.so"
 
       - name: Publish the APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: app-debug-apk-pjsip-${{ inputs.pjsip-version }}
           if-no-files-found: error
