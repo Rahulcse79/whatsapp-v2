@@ -139,7 +139,7 @@ jobs:
 
       - name: Keep the full log, because the summary is a summary
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: lyra-gate-${{ inputs.ndk-version }}
           path: ${{ runner.temp }}/bazel.log

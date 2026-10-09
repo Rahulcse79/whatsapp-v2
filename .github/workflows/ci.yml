@@ -698,7 +698,7 @@ jobs:
       # Coverage is a deliverable, not just a gate: Task 68 has to report real measured
       # numbers, and a report that only exists inside a log line cannot be reviewed.
       - name: Publish coverage reports
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-${{ github.sha }}
           path: |
@@ -737,7 +737,7 @@ jobs:
 
       - name: Publish the exported Room schema
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: room-schemas-${{ github.sha }}
           path: "**/schemas/**/*.json"
@@ -747,7 +747,7 @@ jobs:
 
       - name: Upload build reports
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: build-reports
           path: |
