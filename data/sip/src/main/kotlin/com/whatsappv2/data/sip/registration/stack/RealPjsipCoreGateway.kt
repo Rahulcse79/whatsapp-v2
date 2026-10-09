@@ -812,8 +812,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * [setCallerIdUpdatesEnabled] before starting the gateway rather than relying on the
      * settings collector, which only runs after.
      */
-    private fun userAgent(): String =
-        if (callerIdUpdatesEnabled) "$USER_AGENT $UPDATE_DISPLAY_UA_TOKEN" else USER_AGENT
+    private fun userAgent(): String = announcedAgent(callerIdUpdatesEnabled)
 
     private fun endpointConfig(): EpConfig = EpConfig().apply {
         uaConfig.userAgent = userAgent()
@@ -1660,9 +1659,15 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // because on an inbound call the 200 OK is the only message of ours the server
             // reads before the call is up — and a transferee is exactly the party that was
             // called rather than the one that called.
+            //
+            // `onResponse` is what makes that true in practice rather than only in
+            // intention: the answer also has to NAME this endpoint, because FreeSWITCH
+            // reads the agent of a leg it dialled off this very message. See
+            // [SERVER_HEADER] — without it every one of these advertisements was heard and
+            // then ignored.
             call.answer(
                 callParams(videoEnabled)
-                    .withCoralxHeaders(callerIdUpdates = callerIdUpdatesEnabled)
+                    .withCoralxHeaders(callerIdUpdates = callerIdUpdatesEnabled, onResponse = true)
                     .apply { statusCode = pjsip_status_code.PJSIP_SC_OK },
             )
         }
@@ -3974,6 +3979,18 @@ internal class RealPjsipCoreGateway @Inject constructor(
         const val UPDATE_DISPLAY_UA_TOKEN = "Yealink-compatible"
 
         /**
+         * The product token this endpoint announces, in requests and in responses alike.
+         *
+         * One function rather than the string built at each site, for the reason
+         * `ConnectedPartyUpdate.LOG_TAG` is one constant: the User-Agent on a request and
+         * the [SERVER_HEADER] on a response have to carry the *same* token or the server
+         * will classify the two legs of the same handset differently, which is exactly the
+         * defect this closes.
+         */
+        fun announcedAgent(callerIdUpdates: Boolean): String =
+            if (callerIdUpdates) "$USER_AGENT $UPDATE_DISPLAY_UA_TOKEN" else USER_AGENT
+
+        /**
          * Simultaneous calls the stack will hold (ADR-009).
          *
          * Taken from the domain's conference ceiling, not written again here, because
@@ -4386,15 +4403,21 @@ internal fun conferenceHeaderOf(rawMessage: String): String? = rawMessage
  * @param callerIdUpdates whether to tell the server this endpoint understands a
  *   connected-party update — see [ConnectedPartyUpdate]. On the INVITE, on the answer, and
  *   on the REFER, because any of the three may be the first thing the server reads.
+ * @param onResponse whether this message is a response, which is what decides whether
+ *   the agent is announced in [SERVER_HEADER] — see there for why one has to carry it.
  */
 private fun CallOpParam.withCoralxHeaders(
     conferenceEntity: String? = null,
     callerIdUpdates: Boolean = false,
+    onResponse: Boolean = false,
 ): CallOpParam = apply {
     val extra = buildList {
         conferenceEntity?.let { add(header(CONFERENCE_HEADER, it)) }
         if (callerIdUpdates) {
             add(header(ConnectedPartyUpdate.SUPPORT_HEADER, ConnectedPartyUpdate.SUPPORT_VALUE))
+            if (onResponse) {
+                add(header(SERVER_HEADER, RealPjsipCoreGateway.announcedAgent(callerIdUpdates = true)))
+            }
         }
     }
     if (extra.isEmpty()) return@apply
@@ -4411,6 +4434,40 @@ private fun CallOpParam.withCoralxHeaders(
  * like any other rather than being answered by a device that cannot mesh.
  */
 internal const val CONFERENCE_HEADER = "X-Coralx-Conference"
+
+/**
+ * `Server`, which is how a **response** names the software that sent it (RFC 3261 §20.35).
+ *
+ * ## Why a response has to carry this at all
+ *
+ * `mod_sofia` chooses how to announce a change of connected party by matching the
+ * endpoint's agent against a vendor list — see
+ * [RealPjsipCoreGateway.UPDATE_DISPLAY_UA_TOKEN]. That match reads one channel variable,
+ * `sip_user_agent`, and **where the variable comes from depends on who placed the call**:
+ *
+ *  - the handset placed it — FreeSWITCH received an INVITE and reads its `User-Agent`
+ *    (`sofia.c:11148`). pjsip puts the configured agent on every request, so this works.
+ *  - the handset answered it — FreeSWITCH *sent* that INVITE, and reads the agent off the
+ *    `180`/`183`/`200` coming back, from `User-Agent` **or `Server`** (`sofia.c:6793-6799`).
+ *    pjsip puts neither on a response.
+ *
+ * So on every inbound call the variable stayed empty, `ua` was null, and all three arms of
+ * the display-update condition fell through: the two that test `ua` directly, and the
+ * `update_display` arm this client deliberately deselects. FreeSWITCH queues the update
+ * for *both* legs of a transfer (`switch_ivr_bridge.c:334` sends it each way) and then
+ * dropped it on the floor for ours.
+ *
+ * Measured on three handsets, 2026-10-09: 4023 called 4024 and transferred it to 4025, and
+ * **neither survivor received a single in-dialog message about the transfer** — no UPDATE,
+ * no INFO, no re-INVITE — so both went on naming 4023, the party that had left. The same
+ * build takes the UPDATE correctly on a leg it dialled out on, and that is the whole of
+ * the asymmetry in the report: it is call direction, never the transfer's direction.
+ *
+ * Carrying the same token here costs one header on two responses and makes an answered
+ * call look to FreeSWITCH exactly like a dialled one. Gated on the setting with everything
+ * else, so a build with the feature off is still byte-identical on the wire.
+ */
+internal const val SERVER_HEADER = "Server"
 
 private fun header(name: String, value: String): SipHeader = SipHeader().apply {
     hName = name
@@ -4549,7 +4606,7 @@ private fun Call.sendRinging(callKey: String, logger: Logger, callerIdUpdates: B
     runCatching {
         answer(
             CallOpParam()
-                .withCoralxHeaders(callerIdUpdates = callerIdUpdates)
+                .withCoralxHeaders(callerIdUpdates = callerIdUpdates, onResponse = true)
                 .apply { statusCode = pjsip_status_code.PJSIP_SC_RINGING },
         )
     }

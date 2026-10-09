@@ -122,6 +122,15 @@ internal data class ConnectedPartyUpdate(
          * ```
          *
          * So the token is withheld to *deselect* a mechanism that is broken in transit.
+         *
+         * **Deselecting it is only half the job**, and the missing half is why a transfer
+         * still showed the wrong party after that change. The third branch tests `ua`,
+         * FreeSWITCH reads `ua` for a leg it dialled out of the *response* to its INVITE,
+         * and pjsip names itself on requests only — so on an inbound call every branch
+         * fell through and nothing was sent at all. Both surviving parties of a transfer
+         * are parties that answered, which is why both kept the departed name. The answer
+         * now carries `Server` as well; see `RealPjsipCoreGateway.SERVER_HEADER`.
+         *
          * The header itself is still sent, and [parse] still reads the `X-FS-Display-*`
          * form, so a deployment that delivers it intact keeps working.
          */
