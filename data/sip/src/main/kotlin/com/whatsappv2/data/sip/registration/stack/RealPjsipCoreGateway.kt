@@ -803,8 +803,20 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * These are principled starting points, not measured ones. P-7 is where they get
      * checked against a real handset and a real link; nothing here has been heard yet.
      */
+    /**
+     * The User-Agent this endpoint presents, which decides how FreeSWITCH announces a
+     * transfer — see [UPDATE_DISPLAY_UA_TOKEN].
+     *
+     * Read once, at [start], because pjsua2 fixes the User-Agent at `libInit` and offers no
+     * way to change it afterwards. That is why the engine seeds
+     * [setCallerIdUpdatesEnabled] before starting the gateway rather than relying on the
+     * settings collector, which only runs after.
+     */
+    private fun userAgent(): String =
+        if (callerIdUpdatesEnabled) "$USER_AGENT $UPDATE_DISPLAY_UA_TOKEN" else USER_AGENT
+
     private fun endpointConfig(): EpConfig = EpConfig().apply {
-        uaConfig.userAgent = USER_AGENT
+        uaConfig.userAgent = userAgent()
         uaConfig.maxCalls = MAX_CALLS
         // No worker thread, and every callback on the thread that polls. See the class
         // documentation for the crash this closes; `mainThreadOnly` is pjsua2's own name
@@ -2863,6 +2875,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 logger.debug(TAG, "Conference: $callKey reaches a CoralX client; it can mesh")
             }
             if (publishConnectedPartyFrom(message)) return true
+            if (publishAssertedIdentityFrom(tsxState, message)) return true
             return publishRosterFrom(tsxState, message)
         }
 
@@ -2932,6 +2945,53 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     remoteUri = uri,
                     displayName = update.displayName,
                 ),
+            )
+            return true
+        }
+
+        /**
+         * Publishes the connected party asserted on an in-dialog `UPDATE` (RFC 3325).
+         *
+         * The mechanism that works on this deployment. FreeSWITCH is steered onto it by
+         * withholding the `update_display` token and presenting a User-Agent it recognises
+         * — see `ConnectedPartyUpdate.SUPPORT_VALUE` and [UPDATE_DISPLAY_UA_TOKEN] — and it
+         * then sends the new party as `P-Asserted-Identity` on an `UPDATE` rather than on
+         * private headers that the hop in front of it drops.
+         *
+         * **Only on UPDATE.** `P-Asserted-Identity` is also legal on an initial INVITE,
+         * where it names the caller rather than a change of party, and acting on that would
+         * rewrite a call's identity at the moment it starts from a header the normal path
+         * already handles. Restricting it to UPDATE keeps this to the one event it is for.
+         *
+         * No 200 OK is sent from here and none is needed: pjsip answers an in-dialog UPDATE
+         * natively in `inv_respond_incoming_update` (`sip_inv.c`), unlike the bodyless INFO
+         * that needed patch 0007.
+         */
+        private fun publishAssertedIdentityFrom(tsxState: TsxStateEvent, message: String): Boolean {
+            if (!callerIdUpdatesEnabled) return false
+            val tsx = runCatching { tsxState.tsx }.getOrNull() ?: return false
+            if (!tsx.method.equals("UPDATE", ignoreCase = true)) return false
+
+            val update = ConnectedPartyUpdate.parseAssertedIdentity(message) ?: return false
+            val number = update.number ?: return false
+
+            logger.debug(
+                ConnectedPartyUpdate.LOG_TAG,
+                "UPDATE received dialog=$callKey assertedNumber=$number",
+            )
+
+            // The server asserts the identity on its own address (the profile's sipip), not
+            // on the one this call runs over. Rebuilt onto the call's own host for the
+            // reason `withUser` gives: an extension on a host we are not talking to cannot
+            // be dialled back or matched to a contact.
+            val uri = withUser(NameAddr.of(infoOrNull()?.remoteUri).uri, number) ?: return false
+
+            logger.info(
+                ConnectedPartyUpdate.LOG_TAG,
+                "Connected party on $callKey changed; the far end is now somebody else",
+            )
+            connectedPartyEventFlow.tryEmit(
+                StackConnectedPartyEvent(callKey = callKey, remoteUri = uri, displayName = null),
             )
             return true
         }
@@ -3890,6 +3950,28 @@ internal class RealPjsipCoreGateway @Inject constructor(
          * measurements - P-7 is where they meet a handset.
          */
         const val USER_AGENT = "whatsapp-v2 (PJSIP)"
+
+        /**
+         * Appended to [USER_AGENT] when connected-party updates are wanted.
+         *
+         * `mod_sofia` decides HOW to announce a display change by matching the
+         * endpoint's User-Agent against a fixed vendor list (`mod_sofia.c:2068`):
+         * polycom, aastra, cisco/spa5xx, Fanvil, Grandstream, Yealink, Mitel,
+         * Panasonic. There is no vendor-neutral token. The one neutral alternative,
+         * the `update_ignore_ua` channel variable in the same condition, is set from
+         * the dialplan and so is not the client's to set.
+         *
+         * It is written as a compatibility claim rather than an identity claim - the
+         * convention browsers settled on with "like Gecko" - because that is what it
+         * is. The branch it unlocks tests `update_allowed`, which comes from our own
+         * `Allow` header, and this client genuinely does support UPDATE. What the
+         * list is really asking is "can you take a display change over UPDATE", and
+         * the honest answer is yes.
+         *
+         * Only appended when the setting is on, so a build with the feature off is
+         * byte-identical on the wire to one that never had it.
+         */
+        const val UPDATE_DISPLAY_UA_TOKEN = "Yealink-compatible"
 
         /**
          * Simultaneous calls the stack will hold (ADR-009).

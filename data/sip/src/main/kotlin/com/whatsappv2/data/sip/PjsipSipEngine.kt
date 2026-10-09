@@ -61,6 +61,7 @@ import com.whatsappv2.domain.engine.TransferEvent
 import com.whatsappv2.domain.engine.UnmanagedCallRegistry
 import com.whatsappv2.domain.engine.VideoRequest
 import com.whatsappv2.domain.model.AccountId
+import com.whatsappv2.domain.model.AppSettings
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.DtmfDigit
 import com.whatsappv2.domain.model.DtmfMode
@@ -91,6 +92,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -517,6 +519,19 @@ internal class PjsipSipEngine @Inject constructor(
         if (started) return
         started = true
 
+        // Before the gateway, not after, and this ordering is load-bearing. The
+        // connected-party feature changes the User-Agent this endpoint presents, pjsua2
+        // fixes that at `libInit`, and [collectSettings] below only runs once the stack is
+        // already up - so the collector alone would leave the first session of every launch
+        // on the wrong mechanism. One preferences read at cold start buys the right one.
+        //
+        // `runBlocking` because `start` is called from `Application.onCreate` and cannot
+        // suspend; it is the same trade this class's `stop` already makes, over a single
+        // DataStore read rather than anything that waits on a network.
+        callGateway.setCallerIdUpdatesEnabled(
+            runCatching { runBlocking { settings.currentSettings().updateCallerIdOnTransfer } }
+                .getOrDefault(AppSettings.DEFAULT.updateCallerIdOnTransfer),
+        )
         gateway.start()
         recovery.start()
         collectors += scope.collectCallEvents()

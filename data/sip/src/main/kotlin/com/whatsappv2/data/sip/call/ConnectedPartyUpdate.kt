@@ -93,18 +93,39 @@ internal data class ConnectedPartyUpdate(
         const val SUPPORT_HEADER = "X-FS-Support"
 
         /**
-         * What [SUPPORT_HEADER] carries.
+         * What [SUPPORT_HEADER] carries — and, pointedly, what it does **not**.
          *
-         * Both tokens, because they are what a FreeSWITCH-aware endpoint on this
-         * deployment advertises and what the server's own INVITEs offer back. They are a
-         * pair in every capture taken of a working transfer, so they are sent as one.
+         * `send_info` only. The obvious value is `update_display,send_info`, and it is
+         * wrong here, because `mod_sofia` treats that token as a *mechanism selector* and
+         * not a capability:
          *
-         * `mod_sofia` stores this verbatim as `x_freeswitch_support_remote` and gates the
-         * whole display-update feature on `update_display` appearing in it
-         * (`sofia.c:6791`, `mod_sofia.c:2017`), so the token matters and the spelling does
-         * not — it is matched case-insensitively, as a substring.
+         * ```c
+         * if (switch_stristr("update_display", x_freeswitch_support_remote)) {
+         *     …INFO, Content-Type: message/update_display, X-FS-Display-* headers…
+         * } else if (ua && switch_stristr("snom", ua)) {
+         *     …INFO, message/sipfrag…
+         * } else if (update_allowed && ua && (…vendor list…)) {
+         *     …UPDATE, P-Asserted-Identity…            ← mod_sofia.c:2068
+         * }
+         * ```
+         *
+         * Offering `update_display` therefore *selects the first branch*, whose identity
+         * rides on private `X-` headers. Measured on this deployment 2026-10-08: those
+         * headers do not survive the hop in front of FreeSWITCH, and the INFO arrives with
+         * `Content-Length: 0` and nothing in it. The third branch carries the same identity
+         * in `P-Asserted-Identity` on a standard in-dialog `UPDATE`, and that **does**
+         * survive — proven in one transfer with two handsets on different builds:
+         *
+         * ```
+         * 4021 (no update_display token)  UPDATE … P-Asserted-Identity: "…" <sip:4023@…>
+         * 4023 (update_display token)     INFO … Content-Length: 0, no X-FS-* at all
+         * ```
+         *
+         * So the token is withheld to *deselect* a mechanism that is broken in transit.
+         * The header itself is still sent, and [parse] still reads the `X-FS-Display-*`
+         * form, so a deployment that delivers it intact keeps working.
          */
-        const val SUPPORT_VALUE = "update_display,send_info"
+        const val SUPPORT_VALUE = "send_info"
 
         private const val CONTENT_TYPE_HEADER = "content-type"
 
@@ -114,6 +135,7 @@ internal data class ConnectedPartyUpdate(
         private const val DISPLAY_NAME_HEADER = "x-fs-display-name"
         private const val DISPLAY_NUMBER_HEADER = "x-fs-display-number"
         private const val LAZY_TRANSFER_HEADER = "x-fs-lazy-attended-transfer"
+        private const val ASSERTED_IDENTITY_HEADER = "p-asserted-identity"
 
         /**
          * Reads [rawMessage] as a display update, or answers null for anything else.
@@ -145,6 +167,51 @@ internal data class ConnectedPartyUpdate(
                 number = headers.valueOf(DISPLAY_NUMBER_HEADER),
                 lazyAttendedTransfer = headers.valueOf(LAZY_TRANSFER_HEADER).toBoolean(),
             )
+        }
+
+        /**
+         * Reads the connected party out of an `UPDATE`'s `P-Asserted-Identity` (RFC 3325).
+         *
+         * The second delivery mechanism, and on this deployment the only one that arrives
+         * intact — see [SUPPORT_VALUE] for why, and why we steer FreeSWITCH onto it.
+         *
+         * ```
+         * UPDATE sip:4021@192.168.103.117:53135;ob SIP/2.0
+         * From: <sip:4022@192.168.20.56>;tag=99r6rpN4FZvHg      ← still the party LEAVING
+         * P-Asserted-Identity: "Outbound Call" <sip:4023@192.168.20.57>
+         * ```
+         *
+         * **The URI is taken and the display name is dropped**, deliberately. FreeSWITCH
+         * fills that name from the channel's callee-id, which on this deployment is the
+         * profile's own label for the leg — `"Outbound Call"` — and not a party at all.
+         * Rendering it would replace one wrong name with another. The URI's user part is
+         * the asserted identity, it is what the transfer actually changed, and once it
+         * reaches the snapshot the address book is re-queried against it, so a deployment
+         * that has real names still shows them — from the phone's own contacts, which are
+         * a better source than a trunk label.
+         *
+         * Null for every message without the header, which is almost all of them.
+         */
+        fun parseAssertedIdentity(rawMessage: String): ConnectedPartyUpdate? {
+            val asserted = rawMessage.lineSequence()
+                .takeWhile { it.isNotBlank() }
+                .firstOrNull { it.names(ASSERTED_IDENTITY_HEADER) }
+                ?.value()
+                ?.takeIf { it.isNotEmpty() }
+                ?: return null
+
+            // `user@host` out of `"Name" <sip:user@host>`; the brackets and any display
+            // name come off in NameAddr, which is the one place that syntax is understood.
+            val user = asserted.substringAfter('<', missingDelimiterValue = asserted)
+                .substringBefore('>')
+                .substringAfter(':')
+                .substringBefore('@')
+                .substringBefore(';')
+                .trim()
+                .takeIf { it.isNotEmpty() }
+                ?: return null
+
+            return ConnectedPartyUpdate(displayName = null, number = user)
         }
 
         /** Whether this header line is one of [names], compared case-insensitively. */

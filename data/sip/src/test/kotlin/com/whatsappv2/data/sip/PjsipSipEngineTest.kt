@@ -1289,16 +1289,18 @@ class PjsipSipEngineTest : PjsipSipEngineFixture() {
 
     @Test
     fun `the caller ID switch reaches the stack, and only when it changes`() = runTest {
-        // It governs what goes on the wire — `X-FS-Support` on an INVITE, an answer and a
-        // REFER — so a control that wrote to DataStore and was read by nothing would be a
-        // switch the user can move while the signalling never changes.
+        // It governs what goes on the wire - the User-Agent the endpoint presents, which
+        // decides whether FreeSWITCH announces a transfer at all - so a control that wrote
+        // to DataStore and was read by nothing would be a switch the user can move while
+        // the signalling never changes.
         val engine = engine(this)
         engine.start()
         runCurrent()
-        // Off reaches the stack once. Asserted rather than skipped: the gateway's own flag
-        // also starts false, so "nothing was pushed" and "off was pushed" look identical
-        // from outside and only one of them is the contract.
-        assertEquals(listOf(false), gateway.callerIdUpdates)
+        // The FIRST push happens before the stack starts, and that ordering is the
+        // contract: pjsua2 fixes the User-Agent at `libInit`, so a value that only arrived
+        // with the settings collector would come too late for the session being started.
+        assertEquals(false, gateway.callerIdUpdates.first(), "the stored value must reach the stack before it starts")
+        assertTrue(gateway.callerIdUpdates.isNotEmpty(), "off must be pushed, not merely left at the field default")
 
         settings.setUpdateCallerIdOnTransfer(true)
         runCurrent()
