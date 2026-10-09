@@ -280,11 +280,20 @@ else
   # way, and CI runners are not promised Ninja.
   lyra_gen="Unix Makefiles"
   command -v ninja >/dev/null 2>&1 && lyra_gen="Ninja"
+  # -DCMAKE_POLICY_VERSION_MINIMUM: CMake 4 removed compatibility with
+  # cmake_minimum_required(<3.5), and TFLite's FetchContent pulls in a flatbuffers whose
+  # CMakeLists.txt declares exactly that. Configure then dies with "Compatibility with
+  # CMake < 3.5 has been removed from CMake" before a single object is compiled. This is
+  # CMake's own documented escape for a vendored project upstream has not modernised, and
+  # it belongs here rather than in a patch because flatbuffers arrives through TFLite's
+  # FetchContent at configure time and is not one of the trees in third_party/ to patch.
+  # Any cmake older than 3.31 ignores it with an unused-variable warning.
   "${CMAKE:-cmake}" -S "$lyra_cmake_dir" -B "$lyra_build" -G "$lyra_gen" \
     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
     -DANDROID_ABI="$ABI" -DANDROID_PLATFORM="android-$ANDROID_API" -DANDROID_STL=c++_shared \
     -DCMAKE_BUILD_TYPE=Release \
     -DLYRA_VENDOR="$work" \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_INSTALL_PREFIX="$prefix"
   "${CMAKE:-cmake}" --build "$lyra_build" --parallel "$jobs"
   "${CMAKE:-cmake}" --install "$lyra_build"

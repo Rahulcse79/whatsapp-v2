@@ -121,6 +121,9 @@ class SettingsViewModel @Inject constructor(
     fun setLiveCallFilteringEnabled(enabled: Boolean) =
         viewModelScope.launch { repository.setLiveCallFilteringEnabled(enabled) }
 
+    fun setUpdateCallerIdOnTransfer(enabled: Boolean) =
+        viewModelScope.launch { repository.setUpdateCallerIdOnTransfer(enabled) }
+
     /**
      * Signs out of chat. The repository call and nothing else.
      *

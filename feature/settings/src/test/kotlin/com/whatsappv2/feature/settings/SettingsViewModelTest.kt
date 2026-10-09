@@ -153,6 +153,7 @@ class SettingsViewModelTest {
         model.setPreferredAudioRoute(PreferredAudioRoute.SPEAKER)
         model.setThemeMode(ThemeMode.LIGHT)
         model.setSipTraceEnabled(true)
+        model.setUpdateCallerIdOnTransfer(true)
         model.setCallHistoryRetention(CallHistoryRetention.ofDays(NINETY))
         advanceUntilIdle()
 
@@ -164,6 +165,7 @@ class SettingsViewModelTest {
             assertEquals(PreferredAudioRoute.SPEAKER, state.preferredAudioRoute)
             assertEquals(ThemeMode.LIGHT, state.themeMode)
             assertTrue(state.sipTraceEnabled)
+            assertTrue(state.updateCallerIdOnTransfer)
             assertEquals(NINETY, state.callHistoryRetention.days)
             cancelAndIgnoreRemainingEvents()
         }

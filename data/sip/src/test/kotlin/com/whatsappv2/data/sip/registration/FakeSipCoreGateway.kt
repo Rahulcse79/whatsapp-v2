@@ -10,6 +10,7 @@ import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.StackConferenceEvent
+import com.whatsappv2.data.sip.call.StackConnectedPartyEvent
 import com.whatsappv2.data.sip.call.StackParticipant
 import com.whatsappv2.data.sip.call.StackTransferEvent
 import com.whatsappv2.domain.codec.CodecAudit
@@ -81,6 +82,25 @@ internal class FakeSipCoreGateway :
         extraBufferCapacity = BUFFER,
     )
     override val conferenceEvents: Flow<StackConferenceEvent> = conferenceEventFlow.asSharedFlow()
+
+    private val connectedPartyEventFlow = MutableSharedFlow<StackConnectedPartyEvent>(
+        replay = 0,
+        extraBufferCapacity = BUFFER,
+    )
+    override val connectedPartyEvents: Flow<StackConnectedPartyEvent> =
+        connectedPartyEventFlow.asSharedFlow()
+
+    /** Hands the engine a connected party, as a transferred-away far end would. */
+    suspend fun emitConnectedParty(event: StackConnectedPartyEvent) {
+        connectedPartyEventFlow.emit(event)
+    }
+
+    /** Every value the engine pushed, in order, so a test can assert it is not churned. */
+    val callerIdUpdates = mutableListOf<Boolean>()
+
+    override fun setCallerIdUpdatesEnabled(enabled: Boolean) {
+        callerIdUpdates += enabled
+    }
 
     /** Every video re-INVITE the engine asked for, in order (Tasks 53, 54). */
     val videoRequests: MutableList<Pair<String, Boolean>> = mutableListOf()

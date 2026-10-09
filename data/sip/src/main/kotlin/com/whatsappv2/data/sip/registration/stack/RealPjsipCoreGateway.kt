@@ -9,6 +9,7 @@ import com.whatsappv2.core.common.result.failure
 import com.whatsappv2.core.common.result.map
 import com.whatsappv2.core.common.result.success
 import com.whatsappv2.data.sip.call.ConferenceInfoParser
+import com.whatsappv2.data.sip.call.ConnectedPartyUpdate
 import com.whatsappv2.data.sip.call.SipCallGateway
 import com.whatsappv2.data.sip.call.SipConferenceGateway
 import com.whatsappv2.data.sip.call.SipRecordingGateway
@@ -16,6 +17,7 @@ import com.whatsappv2.data.sip.call.SipVideoGateway
 import com.whatsappv2.data.sip.call.StackCallEvent
 import com.whatsappv2.data.sip.call.StackCallState
 import com.whatsappv2.data.sip.call.StackConferenceEvent
+import com.whatsappv2.data.sip.call.StackConnectedPartyEvent
 import com.whatsappv2.data.sip.call.StackTransferEvent
 import com.whatsappv2.data.sip.call.TransferEventMapper
 import com.whatsappv2.data.sip.call.VideoMix
@@ -260,6 +262,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
     )
     override val conferenceEvents: Flow<StackConferenceEvent> = conferenceEventFlow.asSharedFlow()
 
+    private val connectedPartyEventFlow = MutableSharedFlow<StackConnectedPartyEvent>(
+        replay = 0,
+        extraBufferCapacity = EVENT_BUFFER,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    override val connectedPartyEvents: Flow<StackConnectedPartyEvent> =
+        connectedPartyEventFlow.asSharedFlow()
+
     /**
      * The one thread PJSIP is ever called from. See the class documentation.
      *
@@ -419,6 +429,22 @@ internal class RealPjsipCoreGateway @Inject constructor(
      */
     @Volatile
     private var traceEnabled: Boolean = false
+
+    /**
+     * Whether this endpoint asks to be told when a transfer changes who it is talking to.
+     *
+     * Off until Settings says otherwise, matching
+     * `AppSettings.DEFAULT.updateCallerIdOnTransfer`. Read on the PJSIP thread — when an
+     * INVITE's headers are built, and again when a message arrives on a dialog — and
+     * written from the engine's, hence `@Volatile`.
+     *
+     * One flag for both halves. Advertising the capability and acting on what it brings
+     * back are the same decision, and splitting them would allow the state nobody wants:
+     * a server sending updates to a client that throws them away. See
+     * [ConnectedPartyUpdate].
+     */
+    @Volatile
+    private var callerIdUpdatesEnabled: Boolean = false
 
     /**
      * Whether the TLS listener checks the server's certificate.
@@ -777,8 +803,19 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * These are principled starting points, not measured ones. P-7 is where they get
      * checked against a real handset and a real link; nothing here has been heard yet.
      */
+    /**
+     * The User-Agent this endpoint presents, which decides how FreeSWITCH announces a
+     * transfer — see [UPDATE_DISPLAY_UA_TOKEN].
+     *
+     * Read once, at [start], because pjsua2 fixes the User-Agent at `libInit` and offers no
+     * way to change it afterwards. That is why the engine seeds
+     * [setCallerIdUpdatesEnabled] before starting the gateway rather than relying on the
+     * settings collector, which only runs after.
+     */
+    private fun userAgent(): String = announcedAgent(callerIdUpdatesEnabled)
+
     private fun endpointConfig(): EpConfig = EpConfig().apply {
-        uaConfig.userAgent = USER_AGENT
+        uaConfig.userAgent = userAgent()
         uaConfig.maxCalls = MAX_CALLS
         // No worker thread, and every callback on the thread that polls. See the class
         // documentation for the crash this closes; `mainThreadOnly` is pjsua2's own name
@@ -1192,6 +1229,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
         logger.info(TAG, "SIP trace ${if (enabled) "enabled" else "disabled"}")
     }
 
+    override fun setCallerIdUpdatesEnabled(enabled: Boolean) {
+        // Not posted to the PJSIP thread, for [setTraceEnabled]'s reason: it is one
+        // volatile write, read later on whichever thread is building a request or reading
+        // a response, and nothing in the stack has to be reconfigured for it to take hold.
+        callerIdUpdatesEnabled = enabled
+        logger.info(TAG, "Caller ID updates on transfer ${if (enabled) "enabled" else "disabled"}")
+    }
+
     /**
      * Turns TLS certificate verification on or off, without an app restart.
      *
@@ -1599,7 +1644,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
             calls[callKey] = call
             call.makeCall(
                 destination.withTransportOf(accountConfigs[accountKey]?.transport).asNameAddr(),
-                callParams(videoEnabled).withConference(conferenceEntity),
+                callParams(videoEnabled).withCoralxHeaders(
+                    conferenceEntity = conferenceEntity,
+                    callerIdUpdates = callerIdUpdatesEnabled,
+                ),
             )
         }
     }
@@ -1607,7 +1655,21 @@ internal class RealPjsipCoreGateway @Inject constructor(
     override fun answerCall(callKey: String, videoEnabled: Boolean) {
         onPjsip("answerCall") {
             val call = calls[callKey] ?: return@onPjsip
-            call.answer(callParams(videoEnabled).apply { statusCode = pjsip_status_code.PJSIP_SC_OK })
+            // The advertisement goes on the answer as well as on an INVITE we send,
+            // because on an inbound call the 200 OK is the only message of ours the server
+            // reads before the call is up — and a transferee is exactly the party that was
+            // called rather than the one that called.
+            //
+            // `onResponse` is what makes that true in practice rather than only in
+            // intention: the answer also has to NAME this endpoint, because FreeSWITCH
+            // reads the agent of a leg it dialled off this very message. See
+            // [SERVER_HEADER] — without it every one of these advertisements was heard and
+            // then ignored.
+            call.answer(
+                callParams(videoEnabled)
+                    .withCoralxHeaders(callerIdUpdates = callerIdUpdatesEnabled, onResponse = true)
+                    .apply { statusCode = pjsip_status_code.PJSIP_SC_OK },
+            )
         }
     }
 
@@ -1756,7 +1818,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
 
     override fun transferCall(callKey: String, destination: String) {
         onPjsip("transferCall") {
-            calls[callKey]?.xfer(destination, CallOpParam(true))
+            // On the REFER too. The transferor leaves this dialog as soon as the REFER is
+            // accepted, so the header buys this device nothing — it is for the server,
+            // which reads the transfer that creates the new pairing and is the party that
+            // decides whom to tell about it.
+            calls[callKey]?.xfer(
+                destination,
+                CallOpParam(true).withCoralxHeaders(callerIdUpdates = callerIdUpdatesEnabled),
+            )
         }
     }
 
@@ -1770,7 +1839,10 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // `xferReplaces` rather than an address: the `Replaces` header names a dialog,
             // and an address cannot name one. That is the whole difference between an
             // attended transfer and a blind one to the same extension.
-            call.xferReplaces(consultation, CallOpParam(true))
+            call.xferReplaces(
+                consultation,
+                CallOpParam(true).withCoralxHeaders(callerIdUpdates = callerIdUpdatesEnabled),
+            )
         }
     }
 
@@ -2363,7 +2435,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
             // not by this — and a leg that turns out *not* to be one this device should
             // answer must still have progressed, or the caller sits on silence until its
             // own timeout.
-            call.sendRinging(callKey, logger)
+            call.sendRinging(callKey, logger, callerIdUpdatesEnabled)
             call.publish(StackCallState.INCOMING_RECEIVED, conferenceEntity = conference)
         }
     }
@@ -2807,7 +2879,126 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 peerIsCoralx = true
                 logger.debug(TAG, "Conference: $callKey reaches a CoralX client; it can mesh")
             }
+            if (publishConnectedPartyFrom(message)) return true
+            if (publishAssertedIdentityFrom(tsxState, message)) return true
             return publishRosterFrom(tsxState, message)
+        }
+
+        /**
+         * Publishes the connected party in [message], if that is what it is.
+         *
+         * ## Why the arriving INFO is read here rather than answered here
+         *
+         * pjsua2 has no callback for an `INFO` it does not itself understand and no way to
+         * respond to one: `Call` can send a request into the dialog and cannot respond to
+         * one that arrived. What it does expose is every transaction on the dialog and the
+         * bytes that drove it, which is enough to *read* the update — the same route the
+         * conference roster takes, for the same reason.
+         *
+         * The **200 OK** is therefore not sent from here. It is sent by pjsua itself, from
+         * the one place that still holds the transaction: see
+         * `pjsip/patches/0007-info-update-display-respond-200.patch`. Without that patch
+         * the dialog layer answers `500 Unhandled by dialog usages`, because nothing in
+         * pjsip or pjsua claims a bodyless INFO.
+         *
+         * Gated on the setting as well as on the content type. A server that sends one
+         * unasked — or a build whose user turned the setting off between the INVITE and the
+         * transfer — must not change a name on screen.
+         */
+        private fun publishConnectedPartyFrom(message: String): Boolean {
+            if (!callerIdUpdatesEnabled) return false
+            val update = ConnectedPartyUpdate.parse(message) ?: return false
+
+            // The identity goes in at DEBUG and nowhere else. An extension is a phone
+            // number (§7) and `redactPartial` masks a four-digit one completely, so there
+            // is no useful middle ground: the values a person needs to diagnose this are
+            // the whole of what must not reach a release log. DEBUG is where the SIP trace
+            // already writes the entire message, gated on the same build.
+            logger.debug(
+                ConnectedPartyUpdate.LOG_TAG,
+                "INFO received dialog=$callKey displayName=${update.displayName} " +
+                    "displayNumber=${update.number} lazyAttendedTransfer=${update.lazyAttendedTransfer}",
+            )
+
+            // A well-formed update that names nobody. Routine on this deployment — the SBC
+            // strips the headers FreeSWITCH wrote (see [ConnectedPartyUpdate]) — and the
+            // only safe answer is to leave the display exactly as it is. `true` because the
+            // message WAS ours and was handled: it is answered 200 OK by the stack either
+            // way, and returning false would send it on to the roster parser for nothing.
+            if (!update.hasIdentity) {
+                logger.info(
+                    ConnectedPartyUpdate.LOG_TAG,
+                    "Display update on $callKey carried no identity; keeping the name already on screen",
+                )
+                return true
+            }
+
+            // Built from the address this call already has, so the host, port and any
+            // transport parameter stay the ones the call is actually on: the server sends
+            // a bare extension, and an extension on its own cannot be dialled back, logged
+            // or matched to a contact. Null when the update named a name and no number.
+            val uri = update.number?.let { withUser(NameAddr.of(infoOrNull()?.remoteUri).uri, it) }
+
+            // The call id, never the number (§7) - the identities are on the DEBUG line above.
+            logger.info(
+                ConnectedPartyUpdate.LOG_TAG,
+                "Connected party on $callKey changed; the far end is now somebody else",
+            )
+            connectedPartyEventFlow.tryEmit(
+                StackConnectedPartyEvent(
+                    callKey = callKey,
+                    remoteUri = uri,
+                    displayName = update.displayName,
+                ),
+            )
+            return true
+        }
+
+        /**
+         * Publishes the connected party asserted on an in-dialog `UPDATE` (RFC 3325).
+         *
+         * The mechanism that works on this deployment. FreeSWITCH is steered onto it by
+         * withholding the `update_display` token and presenting a User-Agent it recognises
+         * — see `ConnectedPartyUpdate.SUPPORT_VALUE` and [UPDATE_DISPLAY_UA_TOKEN] — and it
+         * then sends the new party as `P-Asserted-Identity` on an `UPDATE` rather than on
+         * private headers that the hop in front of it drops.
+         *
+         * **Only on UPDATE.** `P-Asserted-Identity` is also legal on an initial INVITE,
+         * where it names the caller rather than a change of party, and acting on that would
+         * rewrite a call's identity at the moment it starts from a header the normal path
+         * already handles. Restricting it to UPDATE keeps this to the one event it is for.
+         *
+         * No 200 OK is sent from here and none is needed: pjsip answers an in-dialog UPDATE
+         * natively in `inv_respond_incoming_update` (`sip_inv.c`), unlike the bodyless INFO
+         * that needed patch 0007.
+         */
+        private fun publishAssertedIdentityFrom(tsxState: TsxStateEvent, message: String): Boolean {
+            if (!callerIdUpdatesEnabled) return false
+            val tsx = runCatching { tsxState.tsx }.getOrNull() ?: return false
+            if (!tsx.method.equals("UPDATE", ignoreCase = true)) return false
+
+            val update = ConnectedPartyUpdate.parseAssertedIdentity(message) ?: return false
+            val number = update.number ?: return false
+
+            logger.debug(
+                ConnectedPartyUpdate.LOG_TAG,
+                "UPDATE received dialog=$callKey assertedNumber=$number",
+            )
+
+            // The server asserts the identity on its own address (the profile's sipip), not
+            // on the one this call runs over. Rebuilt onto the call's own host for the
+            // reason `withUser` gives: an extension on a host we are not talking to cannot
+            // be dialled back or matched to a contact.
+            val uri = withUser(NameAddr.of(infoOrNull()?.remoteUri).uri, number) ?: return false
+
+            logger.info(
+                ConnectedPartyUpdate.LOG_TAG,
+                "Connected party on $callKey changed; the far end is now somebody else",
+            )
+            connectedPartyEventFlow.tryEmit(
+                StackConnectedPartyEvent(callKey = callKey, remoteUri = uri, displayName = null),
+            )
+            return true
         }
 
         /**
@@ -3766,6 +3957,40 @@ internal class RealPjsipCoreGateway @Inject constructor(
         const val USER_AGENT = "whatsapp-v2 (PJSIP)"
 
         /**
+         * Appended to [USER_AGENT] when connected-party updates are wanted.
+         *
+         * `mod_sofia` decides HOW to announce a display change by matching the
+         * endpoint's User-Agent against a fixed vendor list (`mod_sofia.c:2068`):
+         * polycom, aastra, cisco/spa5xx, Fanvil, Grandstream, Yealink, Mitel,
+         * Panasonic. There is no vendor-neutral token. The one neutral alternative,
+         * the `update_ignore_ua` channel variable in the same condition, is set from
+         * the dialplan and so is not the client's to set.
+         *
+         * It is written as a compatibility claim rather than an identity claim - the
+         * convention browsers settled on with "like Gecko" - because that is what it
+         * is. The branch it unlocks tests `update_allowed`, which comes from our own
+         * `Allow` header, and this client genuinely does support UPDATE. What the
+         * list is really asking is "can you take a display change over UPDATE", and
+         * the honest answer is yes.
+         *
+         * Only appended when the setting is on, so a build with the feature off is
+         * byte-identical on the wire to one that never had it.
+         */
+        const val UPDATE_DISPLAY_UA_TOKEN = "Yealink-compatible"
+
+        /**
+         * The product token this endpoint announces, in requests and in responses alike.
+         *
+         * One function rather than the string built at each site, for the reason
+         * `ConnectedPartyUpdate.LOG_TAG` is one constant: the User-Agent on a request and
+         * the [SERVER_HEADER] on a response have to carry the *same* token or the server
+         * will classify the two legs of the same handset differently, which is exactly the
+         * defect this closes.
+         */
+        fun announcedAgent(callerIdUpdates: Boolean): String =
+            if (callerIdUpdates) "$USER_AGENT $UPDATE_DISPLAY_UA_TOKEN" else USER_AGENT
+
+        /**
          * Simultaneous calls the stack will hold (ADR-009).
          *
          * Taken from the domain's conference ceiling, not written again here, because
@@ -4052,6 +4277,30 @@ internal fun sameSipAddress(one: String?, other: String?): Boolean {
 // Lowercased FIRST, not last. RFC 3261 §19.1.1 makes the scheme case-insensitive, and
 // stripping it before folding the case left `SIP:1002@host` reading as a user part of
 // `sip:1002` — a peer that would never match itself written the other way.
+/**
+ * [uri] with its user part replaced by [user] — the same server, a different extension.
+ *
+ * What a connected-party update needs and cannot say for itself: FreeSWITCH sends the new
+ * party as a bare `4021`, and the only address that is both correct and dialable is that
+ * extension on the host this call is already on. Scheme, host, port and every parameter
+ * are carried over untouched for exactly that reason.
+ *
+ * Null for an address with no scheme and for a blank user, which are the two inputs that
+ * cannot produce a URI. Nothing beyond that is validated here: `SipUri.parse` is the one
+ * gate, and second-guessing it would mean two answers to the same question.
+ */
+internal fun withUser(uri: String, user: String): String? {
+    val trimmed = uri.trim().removePrefix("<").substringBefore('>')
+    val scheme = trimmed.substringBefore(':', missingDelimiterValue = "")
+    if (scheme.isEmpty() || user.isBlank()) return null
+
+    val rest = trimmed.substringAfter(':')
+    // Everything from the host onwards, whether or not there was a user part to drop:
+    // `sip:conference.example.com` is a legal address and gains one here.
+    val host = if ('@' in rest) rest.substringAfter('@') else rest
+    return if (host.isEmpty()) null else "$scheme:${user.trim()}@$host"
+}
+
 private fun sipCore(value: String): String = value.trim()
     .lowercase(Locale.ROOT)
     .removePrefix("<").substringBefore(">")
@@ -4142,11 +4391,38 @@ internal fun conferenceHeaderOf(rawMessage: String): String? = rawMessage
     ?.trim()
     ?.takeIf { it.isNotEmpty() }
 
-/** Adds the mesh marker to an outgoing INVITE, or leaves it exactly as it was. */
-private fun CallOpParam.withConference(entity: String?): CallOpParam = apply {
-    if (entity == null) return@apply
+/**
+ * Adds this application's own headers to an outgoing message, or leaves it exactly as it was.
+ *
+ * One function for both because `txOption` is one object: two helpers each assigning their
+ * own `SipTxOption` would mean whichever ran second silently discarded the other's header,
+ * and a mesh leg placed with caller-ID updates on would have lost one of the two with no
+ * sign that it had.
+ *
+ * @param conferenceEntity the mesh marker, on a mesh leg's INVITE and nothing else.
+ * @param callerIdUpdates whether to tell the server this endpoint understands a
+ *   connected-party update — see [ConnectedPartyUpdate]. On the INVITE, on the answer, and
+ *   on the REFER, because any of the three may be the first thing the server reads.
+ * @param onResponse whether this message is a response, which is what decides whether
+ *   the agent is announced in [SERVER_HEADER] — see there for why one has to carry it.
+ */
+private fun CallOpParam.withCoralxHeaders(
+    conferenceEntity: String? = null,
+    callerIdUpdates: Boolean = false,
+    onResponse: Boolean = false,
+): CallOpParam = apply {
+    val extra = buildList {
+        conferenceEntity?.let { add(header(CONFERENCE_HEADER, it)) }
+        if (callerIdUpdates) {
+            add(header(ConnectedPartyUpdate.SUPPORT_HEADER, ConnectedPartyUpdate.SUPPORT_VALUE))
+            if (onResponse) {
+                add(header(SERVER_HEADER, RealPjsipCoreGateway.announcedAgent(callerIdUpdates = true)))
+            }
+        }
+    }
+    if (extra.isEmpty()) return@apply
     txOption = SipTxOption().apply {
-        headers = SipHeaderVector().apply { add(header(CONFERENCE_HEADER, entity)) }
+        headers = SipHeaderVector().apply { extra.forEach(::add) }
     }
 }
 
@@ -4158,6 +4434,40 @@ private fun CallOpParam.withConference(entity: String?): CallOpParam = apply {
  * like any other rather than being answered by a device that cannot mesh.
  */
 internal const val CONFERENCE_HEADER = "X-Coralx-Conference"
+
+/**
+ * `Server`, which is how a **response** names the software that sent it (RFC 3261 §20.35).
+ *
+ * ## Why a response has to carry this at all
+ *
+ * `mod_sofia` chooses how to announce a change of connected party by matching the
+ * endpoint's agent against a vendor list — see
+ * [RealPjsipCoreGateway.UPDATE_DISPLAY_UA_TOKEN]. That match reads one channel variable,
+ * `sip_user_agent`, and **where the variable comes from depends on who placed the call**:
+ *
+ *  - the handset placed it — FreeSWITCH received an INVITE and reads its `User-Agent`
+ *    (`sofia.c:11148`). pjsip puts the configured agent on every request, so this works.
+ *  - the handset answered it — FreeSWITCH *sent* that INVITE, and reads the agent off the
+ *    `180`/`183`/`200` coming back, from `User-Agent` **or `Server`** (`sofia.c:6793-6799`).
+ *    pjsip puts neither on a response.
+ *
+ * So on every inbound call the variable stayed empty, `ua` was null, and all three arms of
+ * the display-update condition fell through: the two that test `ua` directly, and the
+ * `update_display` arm this client deliberately deselects. FreeSWITCH queues the update
+ * for *both* legs of a transfer (`switch_ivr_bridge.c:334` sends it each way) and then
+ * dropped it on the floor for ours.
+ *
+ * Measured on three handsets, 2026-10-09: 4023 called 4024 and transferred it to 4025, and
+ * **neither survivor received a single in-dialog message about the transfer** — no UPDATE,
+ * no INFO, no re-INVITE — so both went on naming 4023, the party that had left. The same
+ * build takes the UPDATE correctly on a leg it dialled out on, and that is the whole of
+ * the asymmetry in the report: it is call direction, never the transfer's direction.
+ *
+ * Carrying the same token here costs one header on two responses and makes an answered
+ * call look to FreeSWITCH exactly like a dialled one. Gated on the setting with everything
+ * else, so a build with the feature off is still byte-identical on the wire.
+ */
+internal const val SERVER_HEADER = "Server"
 
 private fun header(name: String, value: String): SipHeader = SipHeader().apply {
     hName = name
@@ -4287,8 +4597,19 @@ private fun Call.applyVideoEnabled(enabled: Boolean, info: CallInfo?) {
  * A failure is logged and swallowed: this runs inside a pjsua2 callback, and an exception
  * across the JNI boundary is not a stack trace but undefined behaviour.
  */
-private fun Call.sendRinging(callKey: String, logger: Logger) {
-    runCatching { answer(CallOpParam().apply { statusCode = pjsip_status_code.PJSIP_SC_RINGING }) }
+private fun Call.sendRinging(callKey: String, logger: Logger, callerIdUpdates: Boolean) {
+    // The advertisement rides on the 180 as well as on the 200, and the cost of the extra
+    // copy is one header on one message. The 200 is the response an endpoint is normally
+    // read from, but the 180 is the FIRST thing of ours the server sees on an inbound
+    // call, and which of the two it reads is the server's business rather than something
+    // worth discovering on a handset.
+    runCatching {
+        answer(
+            CallOpParam()
+                .withCoralxHeaders(callerIdUpdates = callerIdUpdates, onResponse = true)
+                .apply { statusCode = pjsip_status_code.PJSIP_SC_RINGING },
+        )
+    }
         .onFailure { logger.warn(RealPjsipCoreGateway.TAG, "180 Ringing for $callKey failed: ${it.message}") }
 }
 

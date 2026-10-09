@@ -98,6 +98,14 @@ class DataStoreAppSettingsRepositoryTest {
     }
 
     @Test
+    fun `caller ID updates on transfer are off until someone turns them on`() = runTest {
+        // Turning it on changes what this endpoint advertises on the wire — see
+        // `AppSettings.updateCallerIdOnTransfer` — and that is not a change to make on
+        // somebody's behalf at install time or at upgrade time.
+        assertFalse(repository().currentSettings().updateCallerIdOnTransfer)
+    }
+
+    @Test
     fun `settings survive a new repository instance`() = runTest {
         // Standing in for process death: the second instance shares no state with the
         // first except what actually reached disk.
@@ -108,6 +116,7 @@ class DataStoreAppSettingsRepositoryTest {
             setThemeMode(ThemeMode.DARK)
             setSipTraceEnabled(true)
             setVerifyTlsCertificates(true)
+            setUpdateCallerIdOnTransfer(true)
             setCallHistoryRetention(CallHistoryRetention.ofDays(NINETY))
         }
 
@@ -123,6 +132,7 @@ class DataStoreAppSettingsRepositoryTest {
         // A security setting that silently reverted on restart would be worse than one
         // that was never offered: the user believes it is on.
         assertTrue(reloaded.verifyTlsCertificates)
+        assertTrue(reloaded.updateCallerIdOnTransfer)
         assertEquals(NINETY, reloaded.callHistoryRetention.days)
     }
 

@@ -42,6 +42,27 @@ internal interface SipCallGateway {
     val conferenceEvents: Flow<StackConferenceEvent>
 
     /**
+     * The far end of a call becoming somebody else, after a transfer elsewhere.
+     *
+     * Silent unless [setCallerIdUpdatesEnabled] has been told to ask for them; see
+     * [StackConnectedPartyEvent] for why this is not a call state.
+     */
+    val connectedPartyEvents: Flow<StackConnectedPartyEvent>
+
+    /**
+     * Whether this endpoint tells the server it can be sent connected-party updates.
+     *
+     * Off until Settings says otherwise, matching `AppSettings.updateCallerIdOnTransfer`.
+     * It gates both halves of the exchange and deliberately so: with it off nothing
+     * advertises `X-FS-Support`, so no update is ever sent, and any that arrived anyway
+     * would be ignored rather than silently changing a name on screen.
+     *
+     * Applies to calls placed or answered after it is set. A call already up has already
+     * sent the only messages that could carry the advertisement.
+     */
+    fun setCallerIdUpdatesEnabled(enabled: Boolean)
+
+    /**
      * Sends an INVITE.
      *
      * @param callKey the app's id for this call, echoed back on every event so the engine

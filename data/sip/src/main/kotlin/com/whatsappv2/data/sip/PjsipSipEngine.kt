@@ -13,6 +13,7 @@ import com.whatsappv2.core.common.time.SystemClock
 import com.whatsappv2.data.sip.call.CallStateMapper
 import com.whatsappv2.data.sip.call.ConferenceInfoWriter
 import com.whatsappv2.data.sip.call.ConferenceMapper
+import com.whatsappv2.data.sip.call.ConnectedPartyUpdate
 import com.whatsappv2.data.sip.call.SipCallGateway
 import com.whatsappv2.data.sip.call.SipConferenceGateway
 import com.whatsappv2.data.sip.call.SipVideoGateway
@@ -60,6 +61,7 @@ import com.whatsappv2.domain.engine.TransferEvent
 import com.whatsappv2.domain.engine.UnmanagedCallRegistry
 import com.whatsappv2.domain.engine.VideoRequest
 import com.whatsappv2.domain.model.AccountId
+import com.whatsappv2.domain.model.AppSettings
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.DtmfDigit
 import com.whatsappv2.domain.model.DtmfMode
@@ -90,6 +92,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -516,11 +519,25 @@ internal class PjsipSipEngine @Inject constructor(
         if (started) return
         started = true
 
+        // Before the gateway, not after, and this ordering is load-bearing. The
+        // connected-party feature changes the User-Agent this endpoint presents, pjsua2
+        // fixes that at `libInit`, and [collectSettings] below only runs once the stack is
+        // already up - so the collector alone would leave the first session of every launch
+        // on the wrong mechanism. One preferences read at cold start buys the right one.
+        //
+        // `runBlocking` because `start` is called from `Application.onCreate` and cannot
+        // suspend; it is the same trade this class's `stop` already makes, over a single
+        // DataStore read rather than anything that waits on a network.
+        callGateway.setCallerIdUpdatesEnabled(
+            runCatching { runBlocking { settings.currentSettings().updateCallerIdOnTransfer } }
+                .getOrDefault(AppSettings.DEFAULT.updateCallerIdOnTransfer),
+        )
         gateway.start()
         recovery.start()
         collectors += scope.collectCallEvents()
         collectors += scope.collectTransferEvents()
         collectors += scope.collectConferenceEvents()
+        collectors += scope.collectConnectedPartyEvents()
         // The roster goes out on every membership change, which is what makes join and
         // leave propagate to the members without a second mechanism: `mixed` is the
         // membership, and restating it in full is the whole protocol.
@@ -530,43 +547,7 @@ internal class PjsipSipEngine @Inject constructor(
                 mesh?.hosted ?: (live.size >= SipConferenceController.MINIMUM_MIXED)
             }.collect { hosting.value = it }
         }
-        collectors += scope.launch {
-            // The switch in Settings, finally connected to something. It was written to
-            // DataStore and read by nothing, so the control did nothing while its own
-            // description promised it wrote signalling to the device log.
-            settings.observeSettings()
-                .map { it.sipTraceEnabled }
-                .distinctUntilChanged()
-                .collect { gateway.setTraceEnabled(it) }
-        }
-        collectors += scope.launch {
-            // Same shape as the trace switch, different cost to get wrong: this one stands
-            // the TLS listener back up, so `distinctUntilChanged` is load-bearing rather
-            // than tidy - every duplicate emission would replace a working listener and
-            // re-register every TLS account behind it.
-            settings.observeSettings()
-                .map { it.verifyTlsCertificates }
-                .distinctUntilChanged()
-                .collect { gateway.setTlsCertificateVerification(it) }
-        }
-        collectors += scope.launch {
-            // The third of these, and the same story again: `videoFrameRate` was modelled,
-            // persisted and read by `AdaptiveVideoPolicy`'s constructor, and nothing ever
-            // carried the stored value to it — so every call ran the ladder at the default
-            // whatever Settings said. Collected before the first call so a rate chosen while
-            // idle is already in force when one starts.
-            settings.observeSettings()
-                .map { it.videoFrameRate }
-                .distinctUntilChanged()
-                .collect { gateway.setVideoFrameRate(it) }
-        }
-        collectors += scope.launch {
-            // Collected like the others so the gate follows the switch mid-call, both ways.
-            settings.observeSettings()
-                .map { it.liveCallFilteringEnabled }
-                .distinctUntilChanged()
-                .collect { gateway.setLiveCallFiltering(it) }
-        }
+        collectors += scope.collectSettings()
         collectors += scope.launch {
             gateway.registrationEvents.collect { event ->
                 val id = AccountId(event.accountKey)
@@ -592,6 +573,70 @@ internal class PjsipSipEngine @Inject constructor(
             }
         }
     }
+
+    /**
+     * Carries every Settings switch the stack obeys down to it, for as long as it runs.
+     *
+     * One collector per setting rather than one over `AppSettings`, because each of these
+     * costs something different to apply and `distinctUntilChanged` is what keeps that
+     * cost tied to an actual change — the TLS one stands a listener back up and
+     * re-registers every account behind it. A single collector over the whole object would
+     * fire all five whenever any one of them moved.
+     *
+     * Gathered here, out of [start], because they are one subject and because [start] had
+     * grown into a list of them. Each is still its own job: one that fails must not take
+     * the others with it.
+     */
+    private fun CoroutineScope.collectSettings(): List<Job> = listOf(
+        launch {
+            // The switch in Settings, finally connected to something. It was written to
+            // DataStore and read by nothing, so the control did nothing while its own
+            // description promised it wrote signalling to the device log.
+            settings.observeSettings()
+                .map { it.sipTraceEnabled }
+                .distinctUntilChanged()
+                .collect { gateway.setTraceEnabled(it) }
+        },
+        launch {
+            // Same shape as the trace switch, different cost to get wrong: this one stands
+            // the TLS listener back up, so `distinctUntilChanged` is load-bearing rather
+            // than tidy - every duplicate emission would replace a working listener and
+            // re-register every TLS account behind it.
+            settings.observeSettings()
+                .map { it.verifyTlsCertificates }
+                .distinctUntilChanged()
+                .collect { gateway.setTlsCertificateVerification(it) }
+        },
+        launch {
+            // The third of these, and the same story again: `videoFrameRate` was modelled,
+            // persisted and read by `AdaptiveVideoPolicy`'s constructor, and nothing ever
+            // carried the stored value to it — so every call ran the ladder at the default
+            // whatever Settings said. Collected before the first call so a rate chosen while
+            // idle is already in force when one starts.
+            settings.observeSettings()
+                .map { it.videoFrameRate }
+                .distinctUntilChanged()
+                .collect { gateway.setVideoFrameRate(it) }
+        },
+        launch {
+            // Collected like the others so the gate follows the switch mid-call, both ways.
+            settings.observeSettings()
+                .map { it.liveCallFilteringEnabled }
+                .distinctUntilChanged()
+                .collect { gateway.setLiveCallFiltering(it) }
+        },
+        launch {
+            // Unlike the gate above, this one does not reach a call that is already up:
+            // the advertisement it governs rides on an INVITE, an answer or a REFER, all of
+            // which are long gone by the time a call is connected. Collected here anyway,
+            // and not read once at startup, so a switch thrown while idle is in force for
+            // the next call rather than the next launch.
+            settings.observeSettings()
+                .map { it.updateCallerIdOnTransfer }
+                .distinctUntilChanged()
+                .collect { callGateway.setCallerIdUpdatesEnabled(it) }
+        },
+    )
 
     /**
      * Consumes call events and moves each call through the FSM.
@@ -797,6 +842,55 @@ internal class PjsipSipEngine @Inject constructor(
             }
 
             adoptMeshRoster(call, event)
+        }
+    }
+
+    /**
+     * Renames a call whose far end became somebody else, after a transfer elsewhere.
+     *
+     * ## Why this is not part of the call-event stream
+     *
+     * Nothing about the call has changed. It is connected, it stays connected, the dialog
+     * is the same dialog and the media is the same media — the only thing that moved is who
+     * is on the other end of it, and there is no call state that means that. So this is its
+     * own collector, beside the transfer one, and it touches exactly two fields.
+     *
+     * Both fields, and not just the name. The screen falls back from the display name to
+     * the address, the call log records the address, and redial dials it; leaving the
+     * address at the party who has gone would make all three disagree with the name beside
+     * them. The address is rebuilt from the one the call already had — see `withUser` — so
+     * it is the new extension on the server this call is actually on.
+     *
+     * An update for a call this engine does not know is dropped, like every other event
+     * that names one: that is a server talking about a dialog we no longer hold.
+     */
+    private fun CoroutineScope.collectConnectedPartyEvents() = launch {
+        callGateway.connectedPartyEvents.collect { event ->
+            val id = CallId(event.callKey)
+            val current = calls.value[id] ?: return@collect
+
+            // A name with no number leaves the address alone; a number that will not parse
+            // leaves it alone too, rather than replacing a working address with a broken
+            // one. `SipUri.parse` is the single gate on what may become a `remote`.
+            val remote = event.remoteUri?.let { SipUri.parse(it).getOrNull() } ?: current.remote
+            val name = event.displayName?.takeIf { it.isNotBlank() } ?: remote.user
+
+            if (remote == current.remote && name == current.remoteDisplayName) return@collect
+
+            // Identities at DEBUG, the fact at INFO - the same split the gateway makes, and
+            // for the same reason: an extension is a phone number (§7). The two lines
+            // together are what says whether the update reached the snapshot and what it
+            // moved, which is the question a transfer that looks wrong on screen asks.
+            logger.debug(
+                ConnectedPartyUpdate.LOG_TAG,
+                "Updating connected party old=${current.remoteDisplayName ?: current.remote.user} " +
+                    "new=${name ?: remote.user} dialog=$id",
+            )
+            logger.info(
+                ConnectedPartyUpdate.LOG_TAG,
+                "$id was transferred elsewhere; its far end is now a different party",
+            )
+            updateCalls { it + (id to current.copy(remote = remote, remoteDisplayName = name)) }
         }
     }
 

@@ -6439,6 +6439,8 @@ static void pjsua_call_on_tsx_state_changed(pjsip_inv_session *inv,
     const pj_str_t STR_MEDIA_CONTROL_XML = { "media_control+xml", 17 };
     const pj_str_t STR_DTMF_RELAY        = { "dtmf-relay", 10 };
     const pj_str_t STR_TRICKLE_ICE_SDP   = { "trickle-ice-sdpfrag", 19 };
+    const pj_str_t STR_MESSAGE           = { "message", 7 };
+    const pj_str_t STR_UPDATE_DISPLAY    = { "update_display", 14 };
 
     pjsua_call *call;
 
@@ -6813,6 +6815,48 @@ static void pjsua_call_on_tsx_state_changed(pjsip_inv_session *inv,
                 status = pjsip_endpt_create_response(tsx->endpt, rdata,
                                                      400, NULL, &tdata);
             }
+            if (status == PJ_SUCCESS)
+                status = pjsip_tsx_send_msg(tsx, tdata);
+        }
+
+        /* Check connected-party display update in the INFO message.
+         *
+         * FreeSWITCH announces a transfer that happened elsewhere with an in-dialog
+         * INFO of type message/update_display, carrying the new party in
+         * X-FS-Display-Name and X-FS-Display-Number. It has NO BODY -- Content-Length
+         * is 0 -- so the three tests above cannot match it, and nothing else in pjsip
+         * or pjsua claims a bodyless INFO either. The request therefore reached the end
+         * of pjsip_dlg_on_rx_request() unprocessed and was answered "500 Unhandled by
+         * dialog usages" (sip_dialog.c), which is a protocol error on a request this
+         * endpoint asked to be sent: FreeSWITCH only sends it to an endpoint that
+         * advertised X-FS-Support: update_display.
+         *
+         * The content is read by the application, which sees the whole message through
+         * on_call_tsx_state(). What the application cannot do is RESPOND: pjsua2 exposes
+         * Call::sendRequest for putting a request into the dialog and nothing at all for
+         * responding to one that arrived. So the 200 is sent from here, which is the
+         * only place that still holds the transaction, and the body of the update stays
+         * the application's to interpret.
+         *
+         * Matched on the Content-Type header rather than on the message body, because
+         * there is no body: rdata->msg_info.ctype is filled by the parser whenever the
+         * header is present (sip_parser.c, parse_hdr_content_type) and is NULL on an
+         * INFO that carried none. An INFO of any other type is left exactly as it was,
+         * 500 included -- this claims one content type and nothing else.
+         */
+        else if (body == NULL && rdata->msg_info.ctype &&
+                 pj_stricmp(&rdata->msg_info.ctype->media.type, &STR_MESSAGE)==0 &&
+                 pj_stricmp(&rdata->msg_info.ctype->media.subtype,
+                            &STR_UPDATE_DISPLAY)==0)
+        {
+            pjsip_tx_data *tdata;
+            pj_status_t status;
+
+            PJ_LOG(4,(THIS_FILE, "Call %d: connected party updated by INFO",
+                      call->index));
+
+            status = pjsip_endpt_create_response(tsx->endpt, rdata, 200, NULL,
+                                                 &tdata);
             if (status == PJ_SUCCESS)
                 status = pjsip_tsx_send_msg(tsx, tdata);
         }

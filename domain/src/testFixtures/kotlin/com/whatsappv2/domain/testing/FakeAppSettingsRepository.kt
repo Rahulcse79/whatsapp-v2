@@ -51,6 +51,10 @@ class FakeAppSettingsRepository(
         settings.value = settings.value.copy(liveCallFilteringEnabled = enabled)
     }
 
+    override suspend fun setUpdateCallerIdOnTransfer(enabled: Boolean) {
+        settings.value = settings.value.copy(updateCallerIdOnTransfer = enabled)
+    }
+
     override suspend fun setVerifyTlsCertificates(verify: Boolean) {
         settings.value = settings.value.copy(verifyTlsCertificates = verify)
     }

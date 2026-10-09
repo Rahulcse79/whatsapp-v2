@@ -67,6 +67,15 @@ interface AppSettingsRepository {
     suspend fun setLiveCallFilteringEnabled(enabled: Boolean)
 
     /**
+     * Turns connected-party updates on transfer on or off.
+     *
+     * Takes effect on the next call rather than on calls already up: what it governs rides
+     * on an INVITE, an answer or a REFER, and those are sent before a call is connected.
+     * See [com.whatsappv2.domain.model.AppSettings.updateCallerIdOnTransfer].
+     */
+    suspend fun setUpdateCallerIdOnTransfer(enabled: Boolean)
+
+    /**
      * Turns SIP TLS server-certificate verification on or off.
      *
      * Off by default; see [com.whatsappv2.domain.model.AppSettings.verifyTlsCertificates]
