@@ -50,7 +50,7 @@ javaxInject = "1"
 # Central, which settings.gradle.kts already allows, so no new repository is needed.
 # Run "Report dependency versions" against these coordinates before merge and bump here
 # if it reports newer — the header rule above applies to them like everything else.
-okhttp = "4.12.0"
+okhttp = "5.5.0"
 
 # Queried from Maven Central on 2026-10-05, not written from memory (see the header).
 # Runs the vendored WeSpeaker ECAPA model for the voice profile — ADR-013.
