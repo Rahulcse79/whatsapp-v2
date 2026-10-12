@@ -15,6 +15,7 @@ import com.whatsappv2.domain.model.DtmfMode
 import com.whatsappv2.domain.model.PreferredAudioRoute
 import com.whatsappv2.domain.model.SrtpPolicy
 import com.whatsappv2.domain.model.ThemeMode
+import com.whatsappv2.domain.video.VideoFrameRate
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Test
@@ -244,6 +245,33 @@ class DataStoreAppSettingsRepositoryTest {
             repository.setThemeMode(mode)
             assertEquals(mode, repository.currentSettings().themeMode)
         }
+    }
+
+    @Test
+    fun `every offered frame rate round-trips, and survives process death`() = runTest {
+        val repository = repository()
+
+        for (rate in VideoFrameRate.entries) {
+            repository.setVideoFrameRate(rate)
+            assertEquals(rate, repository.currentSettings().videoFrameRate)
+        }
+
+        // And the last one written is still there in a repository that shares nothing with
+        // this one but the file: a video setting that silently went back to 15 fps on every
+        // launch would be indistinguishable from the stack ignoring it.
+        repository.setVideoFrameRate(VideoFrameRate.FPS_30)
+        assertEquals(VideoFrameRate.FPS_30, reopenedFromDisk().currentSettings().videoFrameRate)
+    }
+
+    @Test
+    fun `a stored frame rate this build does not offer falls back to the default`() = runTest {
+        // Stored as its own number rather than an enum name precisely so this case is
+        // readable: a build that offered 24 fps, downgraded to one that does not.
+        store.edit { it[intPreferencesKey("video_frame_rate_fps")] = 24 }
+        assertEquals(AppSettings.DEFAULT.videoFrameRate, repository().currentSettings().videoFrameRate)
+
+        store.edit { it[intPreferencesKey("video_frame_rate_fps")] = 0 }
+        assertEquals(AppSettings.DEFAULT.videoFrameRate, repository().currentSettings().videoFrameRate)
     }
 
     private companion object {

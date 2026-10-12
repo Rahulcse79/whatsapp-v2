@@ -684,4 +684,83 @@ class AdaptiveVideoPolicyTest {
         c[0] += tick
         assertNull(policy.sample(healthy(), c[0]))
     }
+
+    // ------------------------------------------------------- the user's frame rate
+
+    @Test
+    fun `a policy built at a chosen rate runs its whole ladder at that rate`() {
+        for (rate in VideoFrameRate.entries) {
+            val policy = AdaptiveVideoPolicy(
+                shape = CallShape.ONE_TO_ONE,
+                thresholds = thresholds,
+                frameRate = rate,
+            )
+            assertEquals(rate.fps, policy.current.fps, "a call opened at ${rate.fps} fps")
+            assertEquals(rate, policy.frameRate)
+        }
+    }
+
+    @Test
+    fun `a rate change keeps the rung, and the rung is what the evidence earned`() {
+        val c = clock()
+        val policy = policy()
+        val collapse = healthy().copy(
+            encoder = EncoderConditions(actualFpsRatio = 0.05, latencyMillis = 300.0),
+            network = NetworkConditions(lossFraction = 0.40, rttMillis = 900.0),
+        )
+        val fell = policy.driveUntilChange(collapse, c)
+        assertNotNull(fell)
+        val tierUnderLoad = policy.current.tier
+        assertTrue(tierUnderLoad != VideoQualityTier.HIGH, "the collapse should have cost a rung")
+        val sizeUnderLoad = policy.current.width to policy.current.height
+
+        policy.applyFrameRate(VideoFrameRate.FPS_30)
+
+        // Same rung, same picture, new rate. Handing quality back for a settings tap is the
+        // one move this policy is careful never to make -- recovery is earned by evidence
+        // through the upgrade window, never granted.
+        assertEquals(tierUnderLoad, policy.current.tier)
+        assertEquals(sizeUnderLoad, policy.current.width to policy.current.height)
+        assertEquals(30, policy.current.fps)
+        assertEquals(VideoFrameRate.FPS_30, policy.frameRate)
+    }
+
+    @Test
+    fun `the same rate twice changes nothing at all`() {
+        val policy = policy()
+        val before = policy.current
+        policy.applyFrameRate(VideoFrameRate.DEFAULT)
+        assertSame(before, policy.current)
+    }
+
+    @Test
+    fun `a rate change is not a transition, so it never enters the quality log`() {
+        val c = clock()
+        val policy = policy()
+        policy.drive(healthy(), 20_000, c)
+
+        policy.applyFrameRate(VideoFrameRate.FPS_25)
+
+        // The next sample must still be a measurement about a stream, not a report of the
+        // tap: the cooldown and the hysteresis windows belong to evidence.
+        c[0] += tick
+        assertNull(policy.sample(healthy(), c[0]), "a healthy call does not move for a settings change")
+        assertEquals(25, policy.current.fps)
+    }
+
+    @Test
+    fun `a shape change after a rate change keeps the chosen rate`() {
+        val policy = policy()
+        policy.applyFrameRate(VideoFrameRate.FPS_10)
+
+        val c = clock()
+        // A third participant joins: a different ladder entirely, rebuilt from the shape.
+        // The rate is the user's and must survive the rebuild -- it was dropped here once,
+        // which made the setting last exactly until somebody was added to the call.
+        policy.driveUntilChange(healthy(shape = CallShape.THREE_PARTY, legs = 2), c)
+
+        assertEquals(CallShape.THREE_PARTY, policy.shape)
+        assertEquals(10, policy.current.fps)
+        assertEquals(VideoFrameRate.FPS_10, policy.frameRate)
+    }
 }

@@ -6,9 +6,11 @@ import com.whatsappv2.domain.video.DevicePressureSource
 import com.whatsappv2.domain.video.DisplayCeiling
 import com.whatsappv2.domain.video.ThermalPressure
 import com.whatsappv2.domain.video.VideoBudget
+import com.whatsappv2.domain.video.VideoFrameRate
 import com.whatsappv2.domain.video.VideoQualityTier
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -394,5 +396,87 @@ class VideoQualityCoordinatorTest {
         }
         // And the tier never moved either, so the policy and the media still agree.
         assertEquals(VideoQualityTier.HIGH, coordinator.current?.tier)
+    }
+
+    @Test
+    fun `the coordinator reports whether a frame rate actually moved`() {
+        // The gateway writes the endpoint codec parameter on a true and skips it on a false,
+        // so both answers are load-bearing: a missed true is a setting that never reaches
+        // the encoder, and a spurious true is a codec parameter rewritten mid-call for
+        // nothing. This returned Unit for three builds and nothing wrote the parameter.
+        val coordinator = coordinator()
+        assertFalse(coordinator.onFrameRate(VideoFrameRate.DEFAULT), "the default is already in force")
+        assertTrue(coordinator.onFrameRate(VideoFrameRate.FPS_30))
+        assertFalse(coordinator.onFrameRate(VideoFrameRate.FPS_30), "the same rate twice is one change")
+        assertTrue(coordinator.onFrameRate(VideoFrameRate.FPS_5))
+    }
+
+    @Test
+    fun `every offered rate reaches the settings the next stream is built with`() {
+        // All six, because the one that matters is whichever one a user picks, and the
+        // arithmetic differs for each: 5 and 30 are the ends, 20 and 25 do not divide the
+        // camera's rate, and 15 is the rate the rungs are written at and so the one where
+        // a scale-by-one bug would hide.
+        for (rate in VideoFrameRate.entries) {
+            val coordinator = coordinator()
+            coordinator.onFrameRate(rate)
+            val settings = coordinator.startingSettings(VideoBudget(outgoingVideoLegs = 1))
+            assertEquals(rate.fps, settings.fps, "a fresh call at ${rate.fps} fps")
+            assertTrue(settings.avgBps > 0 && settings.maxBps >= settings.avgBps)
+        }
+    }
+
+    @Test
+    fun `a rate chosen while idle is already in force when the next call starts`() {
+        val coordinator = coordinator()
+        coordinator.onFrameRate(VideoFrameRate.FPS_30)
+
+        coordinator.onSample(listOf(leg("a", 0, 120)), 0)
+        coordinator.onSample(listOf(leg("a", tick, 240)), tick)
+
+        assertEquals(30, coordinator.current?.fps, "the policy must be built at the stored rate")
+    }
+
+    @Test
+    fun `a rate chosen mid-call keeps the rung the evidence earned`() {
+        val coordinator = coordinator()
+        var packets = 0L
+        var frames = 0L
+        repeat(30) { i ->
+            packets += 120
+            frames += 6          // a starved encoder, so the tier falls
+            coordinator.onSample(
+                listOf(leg("a", i * tick, packets, frames = frames, encodeBegin = frames * 10)),
+                i * tick,
+            )
+        }
+        val learned = coordinator.current
+        assertNotNull(learned)
+        assertTrue(learned.tier != VideoQualityTier.HIGH, "the starved encoder should have cost a tier")
+
+        assertTrue(coordinator.onFrameRate(VideoFrameRate.FPS_30))
+
+        // The rate changes what a rung MEANS, never which rung the evidence supports:
+        // handing quality back for a settings tap is the one thing the policy must not do.
+        assertEquals(learned.tier, coordinator.current?.tier)
+        assertEquals(30, coordinator.current?.fps)
+        assertEquals(30, coordinator.startingSettings(VideoBudget(outgoingVideoLegs = 1)).fps)
+    }
+
+    @Test
+    fun `the rate outlives the calls, because the preference does`() {
+        val coordinator = coordinator()
+        coordinator.onFrameRate(VideoFrameRate.FPS_10)
+        coordinator.onSample(listOf(leg("a", 0, 120)), 0)
+        coordinator.onSample(listOf(leg("a", tick, 240)), tick)
+
+        coordinator.onNoCalls()
+
+        assertNull(coordinator.current, "the tier goes")
+        assertEquals(
+            10,
+            coordinator.startingSettings(VideoBudget(outgoingVideoLegs = 1)).fps,
+            "the user's rate stays - it is a preference, not a measurement",
+        )
     }
 }

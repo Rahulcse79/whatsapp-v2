@@ -68,9 +68,9 @@ class VideoTileStateReducerTest {
     }
 
     @Test
-    fun `well under the configured rate is low quality`() {
+    fun `a picture arriving below the slowest rate anyone could have chosen is low quality`() {
         val before = reading(decoded = 0, atMillis = 0)
-        val now = reading(decoded = 10, atMillis = 5_000) // 2 fps against a configured 15
+        val now = reading(decoded = 10, atMillis = 5_000) // 2 fps, under the 5 fps floor
 
         assertEquals(VideoTileState.LOW_QUALITY, VideoTileStateReducer.reduce(before, now))
     }
@@ -103,13 +103,55 @@ class VideoTileStateReducerTest {
     }
 
     @Test
-    fun `an unreadable configured rate still distinguishes moving from frozen`() {
+    fun `an unreadable configured rate changes nothing, because the verdict does not use it`() {
         val before = reading(decoded = 0, atMillis = 0, configuredFps = null)
-        val moving = reading(decoded = 10, atMillis = 5_000, configuredFps = null)
+        val healthy = reading(decoded = 75, atMillis = 5_000, configuredFps = null) // 15 fps
+        val crawling = reading(decoded = 10, atMillis = 5_000, configuredFps = null) // 2 fps
         val stopped = reading(decoded = 0, atMillis = 5_000, configuredFps = null)
 
-        assertEquals(VideoTileState.LIVE, VideoTileStateReducer.reduce(before, moving))
+        assertEquals(VideoTileState.LIVE, VideoTileStateReducer.reduce(before, healthy))
+        assertEquals(VideoTileState.LOW_QUALITY, VideoTileStateReducer.reduce(before, crawling))
         assertEquals(VideoTileState.UNAVAILABLE, VideoTileStateReducer.reduce(before, stopped))
+    }
+
+    @Test
+    fun `a healthy peer is not badged for running a slower rate than this device`() {
+        // The defect this rule exists to prevent, and the one the frame-rate setting made
+        // ordinary: the remote picked 5 fps, this handset picked 30, and dividing one by the
+        // other put "Low video quality" over a tile with nothing wrong with it. The sender's
+        // intended rate is not on the wire (VP8 advertises a fixed max-fr=30), so it cannot
+        // be the denominator of anything.
+        val before = reading(decoded = 0, atMillis = 0, configuredFps = 30)
+        val peerAtFive = reading(decoded = 25, atMillis = 5_000, configuredFps = 30) // 5 fps
+        val peerAtTen = reading(decoded = 50, atMillis = 5_000, configuredFps = 30) // 10 fps
+
+        assertEquals(VideoTileState.LIVE, VideoTileStateReducer.reduce(before, peerAtFive))
+        assertEquals(VideoTileState.LIVE, VideoTileStateReducer.reduce(before, peerAtTen))
+    }
+
+    @Test
+    fun `the verdict is the same whatever this device happens to be encoding at`() {
+        // Every offered local rate against one peer rate, because the local rate is exactly
+        // what used to leak into this answer.
+        for (local in listOf(5, 10, 15, 20, 25, 30)) {
+            val before = reading(decoded = 0, atMillis = 0, configuredFps = local)
+            val now = reading(decoded = 30, atMillis = 5_000, configuredFps = local) // 6 fps
+            assertEquals(
+                VideoTileState.LIVE,
+                VideoTileStateReducer.reduce(before, now),
+                "a peer at 6 fps seen from a handset encoding at $local fps",
+            )
+        }
+    }
+
+    @Test
+    fun `a leg at the slowest offered rate is never badged for arriving on time`() {
+        // 5 fps measured a little under, because a tick does not land on the millisecond.
+        // The threshold sits below the floor precisely so this is not a badge.
+        val before = reading(decoded = 0, atMillis = 0, configuredFps = 5)
+        val now = reading(decoded = 24, atMillis = 5_000, configuredFps = 5) // 4.8 fps
+
+        assertEquals(VideoTileState.LIVE, VideoTileStateReducer.reduce(before, now))
     }
 
     @Test

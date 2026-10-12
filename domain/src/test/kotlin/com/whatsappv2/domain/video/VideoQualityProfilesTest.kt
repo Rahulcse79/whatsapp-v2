@@ -419,4 +419,107 @@ class VideoQualityProfilesTest {
         assertEquals(3, after.budget.outgoingVideoLegs)
         assertEquals(DisplayCeiling(360), after.displayCeiling)
     }
+
+    @Test
+    fun `every offered rate rebuilds every rung of every ladder`() {
+        for (rate in VideoFrameRate.entries) {
+            for (shape in CallShape.entries) {
+                val ladder = VideoQualityProfiles.forShape(shape, rate)
+                assertTrue(
+                    ladder.profiles.all { it.fps == rate.fps },
+                    "$shape at ${rate.fps} fps left a rung behind: ${ladder.profiles}",
+                )
+                // Rung identity and order are what let a rate change keep the tier the
+                // evidence arrived at, so a rebuild that reordered or dropped a rung would
+                // silently restart the climb.
+                assertEquals(
+                    VideoQualityProfiles.forShape(shape).profiles.map { it.tier },
+                    ladder.profiles.map { it.tier },
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a rate change moves the bitrate band with it, proportionally`() {
+        val base = VideoQualityProfiles.oneToOne.top
+        assertEquals(15, base.fps, "the rungs are written at the default rate")
+
+        val doubled = base.atFrameRate(VideoFrameRate.FPS_30)
+        assertEquals(30, doubled.fps)
+        assertEquals(base.targetBps * 2, doubled.targetBps)
+        assertEquals(base.width, doubled.width, "a rate change is not a resolution change")
+
+        val third = base.atFrameRate(VideoFrameRate.FPS_5)
+        assertEquals(5, third.fps)
+        assertEquals(base.targetBps / 3, third.targetBps)
+    }
+
+    @Test
+    fun `the band stays valid at the lowest rung and the lowest rate`() {
+        // `VideoQualityProfile.init` requires 1 <= minBps <= targetBps <= maxBps, so a rate
+        // that scaled a band into zero or crossed its own bounds would throw at the moment a
+        // user picked it -- mid-call, on the executor, inside the stack.
+        for (rate in VideoFrameRate.entries) {
+            for (shape in CallShape.entries) {
+                for (rung in VideoQualityProfiles.forShape(shape, rate).profiles) {
+                    assertTrue(rung.minBps >= 1, "$shape ${rung.tier} at ${rate.fps}: ${rung.minBps}")
+                    assertTrue(rung.minBps <= rung.targetBps && rung.targetBps <= rung.maxBps)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `the rates that divide the camera's own rate are named correctly`() {
+        // The screen tells the user which choices judder, and this is where that claim is
+        // either true or a lie printed under a dropdown.
+        assertEquals(
+            listOf(5, 10, 15, 30),
+            VideoFrameRate.entries.filter { it.dividesCameraRate }.map { it.fps },
+        )
+        assertEquals(
+            listOf(20, 25),
+            VideoFrameRate.entries.filterNot { it.dividesCameraRate }.map { it.fps },
+        )
+    }
+
+    @Test
+    fun `a stored rate reads back, and an unknown one does not invent a rate`() {
+        for (rate in VideoFrameRate.entries) {
+            assertEquals(rate, VideoFrameRate.ofFps(rate.fps))
+        }
+        // A number written by a build that offered a rate this one does not.
+        assertNull(VideoFrameRate.ofFps(24))
+        assertNull(VideoFrameRate.ofFps(0))
+        assertNull(VideoFrameRate.ofFps(-1))
+    }
+
+    @Test
+    fun `asking for the rate a ladder already runs at is the same ladder`() {
+        val ladder = VideoQualityProfiles.oneToOne
+        assertTrue(ladder === ladder.atFrameRate(VideoFrameRate.DEFAULT))
+        assertTrue(ladder.top === ladder.top.atFrameRate(VideoFrameRate.DEFAULT))
+    }
+
+    @Test
+    fun `a high rate does not price a one-to-one call off its own top rung`() {
+        // The rate scales the band, and the band is what `bestAffordable` checks, so a rate
+        // the budget cannot carry would silently hand the user a SMALLER picture than they
+        // had before asking for smoother motion. 30 fps must not do that on one leg.
+        val ladder = VideoQualityProfiles.forShape(CallShape.ONE_TO_ONE, VideoFrameRate.FPS_30)
+        val budget = VideoBudget(outgoingVideoLegs = 1)
+        assertEquals(
+            ladder.top,
+            ladder.bestAffordable(budget.allowanceBpsPerLeg, DisplayCeiling.UNCONSTRAINED),
+        )
+
+        // And the busiest shape, where three legs share the aggregate, still affords its own.
+        val mesh = VideoQualityProfiles.forShape(CallShape.FOUR_PARTY, VideoFrameRate.FPS_30)
+        val meshBudget = VideoBudget(outgoingVideoLegs = 3)
+        assertEquals(
+            mesh.top,
+            mesh.bestAffordable(meshBudget.allowanceBpsPerLeg, DisplayCeiling.UNCONSTRAINED),
+        )
+    }
 }

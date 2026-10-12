@@ -161,19 +161,28 @@ internal class VideoQualityCoordinator(
     }
 
     /**
-     * The user's frame-rate preference, from Settings.
+     * The user's frame-rate preference, from Settings. True when it moved.
      *
      * Applied to a live policy as well as remembered for the next one, so a rate changed
      * during a call takes effect on that call. `AdaptiveVideoPolicy.applyFrameRate` rebuilds
      * the ladder at the new rate and is a no-op when the rate has not moved; what it cannot
      * do is reconfigure a *running* stream, so the new rungs reach the encoder at the next
      * stream boundary like every other quality change.
+     *
+     * **Returns whether anything changed, and the caller must act on it.** Rebuilding the
+     * ladder moves no media on its own: what a stream reads when it is built is the endpoint
+     * codec parameter, and only the gateway can write that. This returned `Unit` for three
+     * builds and nothing wrote it, so every call ran at whichever rate happened to be in the
+     * codec parameter — the startup default, or whatever an adaptive transition last left
+     * there — and the setting was inert on a link good enough never to trigger one. See
+     * `RealPjsipCoreGateway.writeStandingVideoQuality`, which is the other half.
      */
-    fun onFrameRate(rate: VideoFrameRate) {
-        if (rate == frameRate) return
+    fun onFrameRate(rate: VideoFrameRate): Boolean {
+        if (rate == frameRate) return false
         frameRate = rate
         policy?.applyFrameRate(rate)
         logger.info(TAG, "Video frame rate is now ${rate.fps} fps - applied at the next stream build")
+        return true
     }
 
     /**
@@ -231,6 +240,13 @@ internal class VideoQualityCoordinator(
         lastDecoder.clear()
         warnedBudgetExhausted = false
         lastHeldReportAtMillis = 0L
+        // The tile size goes with them. Only the conference grid ever reports one, and
+        // nothing reports it back when the grid is gone, so a four-party call left its
+        // tile height standing for the life of the process: the next one-to-one call —
+        // drawn full screen, where the top of the ladder is exactly right — started
+        // capped to a quarter-screen tile that had not existed for minutes, and
+        // `DisplayCeiling.admits` is consulted on every climb, so it stayed capped.
+        displayCeiling = DisplayCeiling.UNCONSTRAINED
     }
 
     /**

@@ -20,10 +20,12 @@ data class VideoTileReading(
     val atMillis: Long,
 
     /**
-     * The frame rate this leg's encoder was configured for, or null when unreadable.
+     * The frame rate this leg's **encoder** was configured for, or null when unreadable.
      *
-     * The denominator for "low", so a call deliberately running at 5 fps is not reported as
-     * degraded for hitting 5 fps. See `VideoFrameRate`.
+     * Kept for the trace and for callers that want it; **not** the denominator for "low".
+     * It is this device's own outgoing rate, and this reading is about the *remote's*
+     * picture — see [VideoTileStateReducer.LOW_QUALITY_FPS] for why the two cannot be
+     * divided by one another.
      */
     val configuredFps: Int? = null,
 )
@@ -42,14 +44,34 @@ data class VideoTileReading(
 object VideoTileStateReducer {
 
     /**
-     * Below this fraction of the configured rate, the picture is [VideoTileState.LOW_QUALITY].
+     * Decoded frames per second below which the remote picture is [VideoTileState.LOW_QUALITY].
      *
-     * A third rather than a half: the adaptive ladder legitimately runs a leg at the rung
-     * below the one requested, and calling that "low quality" in the UI would contradict the
-     * app's own policy on most conference calls. A third is the point where motion stops
-     * reading as motion — 5 fps against a configured 15.
+     * ## Why this is an absolute rate and not a fraction of our own
+     *
+     * It was `1/3 of the local encoder's configured rate`, and that denominator is unsound:
+     * the reading is about the picture the *far end* is sending, and the far end's intended
+     * rate is not knowable here. VP8 does not carry it — `vpx.c` writes a fixed
+     * `max-fr=30` into `dec_fmtp` whatever the sender has chosen, so neither the SDP nor
+     * `decFmt` says anything about it — and nothing else on the wire does either.
+     *
+     * Dividing by our own rate therefore badged a *healthy* peer as soon as the two devices
+     * disagreed: with this handset on 30 fps and the peer deliberately on 5 or 10, every
+     * tile read "Low video quality" for ever, with nothing wrong anywhere. The frame-rate
+     * setting is per device, so two devices disagreeing is the normal case, not the corner.
+     *
+     * 4 fps, which is just under the lowest rate the app offers (see `VideoFrameRate`, whose
+     * floor is 5 fps). Below the floor nobody *chose* this rate, so it is the one claim that
+     * holds without knowing the sender's intent — and 4 rather than 5 so that a leg
+     * deliberately at the floor, measured at 4.8 fps by a tick that did not land cleanly,
+     * is not badged for arriving on time.
+     *
+     * What is given up is the case where both ends are on 30 and one delivers 9: that now
+     * reads [VideoTileState.LIVE]. It is a real loss and the right trade — 9 fps reads as
+     * motion, the *sender's* adaptive policy is what answers a collapse on its own uplink,
+     * and a badge that cries wolf on every healthy mixed-rate call costs every other tile
+     * status its credibility.
      */
-    const val LOW_QUALITY_FRACTION: Double = 1.0 / 3.0
+    const val LOW_QUALITY_FPS: Double = 4.0
 
     /** Decoded frames per second below which a moving picture is not moving at all. */
     private const val FROZEN_FPS = 0.5
@@ -88,12 +110,10 @@ object VideoTileStateReducer {
         return (current.decoded - previous.decoded) / seconds
     }
 
-    private fun VideoTileReading.verdict(fps: Double): VideoTileState {
-        val configured = configuredFps?.takeIf { it > 0 }
-        return when {
-            fps < FROZEN_FPS -> VideoTileState.UNAVAILABLE
-            configured != null && fps < configured * LOW_QUALITY_FRACTION -> VideoTileState.LOW_QUALITY
-            else -> VideoTileState.LIVE
-        }
+    @Suppress("UnusedReceiverParameter")
+    private fun VideoTileReading.verdict(fps: Double): VideoTileState = when {
+        fps < FROZEN_FPS -> VideoTileState.UNAVAILABLE
+        fps < LOW_QUALITY_FPS -> VideoTileState.LOW_QUALITY
+        else -> VideoTileState.LIVE
     }
 }

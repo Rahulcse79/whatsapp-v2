@@ -1265,7 +1265,14 @@ internal class RealPjsipCoreGateway @Inject constructor(
      * rebuilt by it and the coordinator's state belongs to that thread.
      */
     override fun setVideoFrameRate(rate: VideoFrameRate) {
-        onPjsip("setVideoFrameRate") { videoQuality.onFrameRate(rate) }
+        onPjsip("setVideoFrameRate") {
+            if (!videoQuality.onFrameRate(rate)) return@onPjsip
+            // The ladder rebuild above is a decision, not an effect. A stream takes its
+            // format from the endpoint codec parameter, so the decision has to be written
+            // there or the next stream build reads the previous rate back — which is
+            // exactly what happened: the preference reached the coordinator and stopped.
+            writeStandingVideoQuality("frame rate ${rate.fps} fps")
+        }
     }
 
     override fun setTlsCertificateVerification(verify: Boolean) {
@@ -3517,7 +3524,13 @@ internal class RealPjsipCoreGateway @Inject constructor(
                 val rates = videoFrameRateFragment(previousFrames[media.index], frames)
                 if (frames != null) previousFrames[media.index] = frames
 
-                logger.info(TAG, "Media trace $callKey $line$fragment$rates")
+                // The *encoder's* configured format, which is the only place the user's
+                // frame-rate setting is observable from outside the app. The resolution
+                // inside `$line` is `decFmt` -- the picture arriving -- and the two are
+                // different questions: a leg sending 640x360@30 while decoding 320x180@15
+                // is two devices with two settings, not a fault.
+                val encoding = videoEncoderFormatFragment(stream)
+                logger.info(TAG, "Media trace $callKey $line$encoding$fragment$rates")
             }
         }
 
@@ -3590,7 +3603,18 @@ internal class RealPjsipCoreGateway @Inject constructor(
                     // back on is the stream build that applies it. Only when every call has
                     // gone is the tier discarded, so the next call measures the device afresh.
                     videoQualityTicking = false
-                    if (calls.isEmpty()) videoQuality.onNoCalls() else videoQuality.onVideoPaused()
+                    if (calls.isEmpty()) {
+                        videoQuality.onNoCalls()
+                        // The tier is discarded here, so the codec parameter has to be put
+                        // back to match it. It still held the rung the *previous* call ended
+                        // on, while the fresh policy the next call builds starts at the top
+                        // of the ladder: the next call came up at the old call's resolution
+                        // and the policy's baseline was wrong from its first tick, which
+                        // makes every ratio measured against it wrong too.
+                        writeStandingVideoQuality("the last call ending")
+                    } else {
+                        videoQuality.onVideoPaused()
+                    }
                     // ...but keep the tick alive while a tile is still being drawn. The
                     // policy has nothing left to decide; the health of a receive-only leg
                     // still changes, and stopping here would freeze its status at whatever
@@ -3762,18 +3786,7 @@ internal class RealPjsipCoreGateway @Inject constructor(
     private fun applyVideoQuality(action: VideoQualityAction) {
         val running = endpoint ?: return
 
-        val negotiated = action.appliesTo.mapNotNullTo(mutableSetOf()) { callKey ->
-            val call = calls[callKey] ?: return@mapNotNullTo null
-            val info = call.infoOrNull() ?: return@mapNotNullTo null
-            val video = info.media.firstOrNull { it.type == pjmedia_type.PJMEDIA_TYPE_VIDEO }
-                ?: return@mapNotNullTo null
-            // `codecId` is `name/payload-type` ("VP8/103") while `StreamInfo.codecName` is the
-            // bare name, so the id is reassembled from the name and the transmit payload type.
-            runCatching {
-                val stream = call.getStreamInfo(video.index)
-                stream.codecName.takeIf { it.isNotBlank() }?.let { "$it/${stream.txPt}" }
-            }.getOrNull()
-        }
+        val negotiated = negotiatedVideoCodecs(action.appliesTo)
         if (negotiated.isEmpty()) {
             logger.debug(TAG, "Video quality not recorded: no negotiated video codec to write")
             return
@@ -3788,6 +3801,64 @@ internal class RealPjsipCoreGateway @Inject constructor(
             }
             .onFailure { logger.warn(TAG, "Video quality not recorded: ${it.message}") }
     }
+
+    /**
+     * Writes the tier *currently in force* to the endpoint codec parameter.
+     *
+     * For the changes the policy did not make: the user's frame rate, and the reset that
+     * follows the last call ending. [applyVideoQuality] is the same write for a measured
+     * transition, and the two are deliberately the only writers after startup.
+     *
+     * ## Which codecs get written, and why it is not always the same answer
+     *
+     * Only the codecs live calls have negotiated, when there are any — writing every
+     * registered codec mid-call was measured moving a negotiated payload type and freezing
+     * the tile (see [VideoQualityAction.appliesTo]). With no video call up there is nothing
+     * to disturb and nothing yet negotiated, so every registered codec is written, exactly
+     * as startup does it: the codec the *next* call ends up on is the far end's choice, and
+     * a rate written only to today's codec would not survive it.
+     *
+     * Takes effect at the next stream build, like every other quality change. Nothing here
+     * touches a running stream — `pjmedia_vid_stream` has no reconfigure API, and the
+     * re-INVITE that would force one is the race that froze media on 2026-09-27.
+     */
+    private fun writeStandingVideoQuality(reason: String) {
+        val running = endpoint ?: return
+        val legs = runCatching { videoLegSamples() }.getOrElse { emptyList() }
+        val settings = videoQuality.startingSettings(VideoBudget(outgoingVideoLegs = legs.size))
+        // Empty means no video call is up: then, and only then, write them all.
+        val negotiated = negotiatedVideoCodecs(calls.keys).ifEmpty { null }
+        runCatching { running.tuneVideoCodecs(settings, logger, only = negotiated) }
+            .onSuccess {
+                logger.info(
+                    TAG,
+                    "Video quality standing decision written for $reason: " +
+                        "${settings.width}x${settings.height}@${settings.fps} " +
+                        "(${negotiated?.joinToString() ?: "every registered video codec"}) " +
+                        "- takes effect on the next stream build",
+                )
+            }
+            .onFailure { logger.warn(TAG, "Video quality not written for $reason: ${it.message}") }
+    }
+
+    /**
+     * The `name/payload-type` codec ids [callKeys] have actually negotiated for video.
+     *
+     * `codecId` is `name/payload-type` ("VP8/103") while `StreamInfo.codecName` is the bare
+     * name, so the id is reassembled from the name and the **transmit** payload type: the
+     * two directions can differ, and the parameter being written is the encoder's.
+     */
+    private fun negotiatedVideoCodecs(callKeys: Collection<String>): Set<String> =
+        callKeys.mapNotNullTo(mutableSetOf()) { callKey ->
+            val call = calls[callKey] ?: return@mapNotNullTo null
+            val info = call.infoOrNull() ?: return@mapNotNullTo null
+            val video = info.media.firstOrNull { it.type == pjmedia_type.PJMEDIA_TYPE_VIDEO }
+                ?: return@mapNotNullTo null
+            runCatching {
+                val stream = call.getStreamInfo(video.index)
+                stream.codecName.takeIf { it.isNotBlank() }?.let { "$it/${stream.txPt}" }
+            }.getOrNull()
+        }
 
     private fun callParams(videoEnabled: Boolean) = CallOpParam(true).apply {
         opt = CallSetting().apply {
@@ -4761,6 +4832,25 @@ private fun StreamStat.counters(atMillis: Long) = RtpCounters(
  * a black tile is a question about. A stream that carries no video, or whose codec
  * parameters the stack will not hand over, contributes nothing rather than a zero.
  */
+/**
+ * ` - encoding 640x360@30` from the stream's own encoder format, or nothing.
+ *
+ * Stated beside the decode format rather than instead of it. `encFmt` is what this device
+ * was told to send and is therefore where a quality decision -- the ladder's rung, the
+ * user's frame rate -- can be seen to have arrived; `decFmt` is what the far end chose to
+ * send us and carries none of that. The two were conflated while the frame-rate setting
+ * was inert, and one number could not have shown it.
+ */
+private fun videoEncoderFormatFragment(stream: StreamInfo?): String = runCatching {
+    val fmt = stream?.vidCodecParam?.encFmt ?: return@runCatching ""
+    if (fmt.width <= 0 || fmt.height <= 0) return@runCatching ""
+    buildString {
+        append(" - encoding ").append(fmt.width).append('x').append(fmt.height)
+        val denum = fmt.fpsDenum
+        if (denum > 0 && fmt.fpsNum > 0) append('@').append(fmt.fpsNum / denum)
+    }
+}.getOrDefault("")
+
 private fun videoResolutionOrNull(stream: StreamInfo?): String? = runCatching {
     val fmt = stream?.vidCodecParam?.decFmt ?: return@runCatching null
     if (fmt.width <= 0 || fmt.height <= 0) return@runCatching null
