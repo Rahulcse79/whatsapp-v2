@@ -6,19 +6,25 @@ package com.whatsappv2.domain.video
  * ## Why this is a choice at all, when the ladders had settled on one number
  *
  * Every rung of every ladder was pinned to 15 fps, and that was not arbitrary tuning — see
- * [VideoQualityProfiles]. The camera produces 30 fps whatever is asked of it, the encoder is
- * fed all 30 and drops what it does not want, and 15 is the only rate below 30 that divides
- * it evenly: every second frame, a constant 66.7 ms apart.
+ * [VideoQualityProfiles]. 15 is the only rate below 30 that divides a 30 fps camera evenly:
+ * every second frame, a constant 66.7 ms apart.
  *
- * A rate that does not divide 30 arrives as judder even when not a single frame is lost.
- * 20 fps is a 3:2 pattern — 33 ms, 67 ms, 33 ms, 67 ms — and 25 fps is 6:5. No amount of
- * bandwidth fixes that, because nothing is missing; the frames are simply unevenly spaced.
+ * **Whether the camera honours the request is the device's answer, not ours**, and the two
+ * handset families measured here disagree. On the Samsungs (M14, M23) `capture` held at
+ * 29.8 while the policy asked for 15, 20 and 24 on different legs: the camera ran at 30,
+ * the encoder was fed all 30, and it kept what it wanted. On the TC15, 2026-10-12, `cap`
+ * — which `vid_port.c` increments in the camera's own frame callback, before the pipeline
+ * touches the frame — read 5.00, 9.98, 14.86, 19.88, 24.91 and 29.90 against requests of
+ * 5, 10, 15, 20, 25 and 30. That camera runs at whatever it is asked for.
  *
- * So the setting exists because people ask for it and because a higher rate genuinely is
- * smoother on a good link, and [dividesCameraRate] exists so the screen offering it can say
- * which of the six are even and which are not. It says so rather than hiding the uneven
- * ones: 25 fps on a link that can carry it still looks better than 15 to most people, and
- * that is the user's call to make with the facts in front of them.
+ * The distinction is what [dividesCameraRate] is really about. On a camera fixed at 30, a
+ * rate that does not divide 30 can only be reached by dropping frames on an uneven pattern
+ * — 20 fps is 3:2, 33 ms, 67 ms, 33 ms, 67 ms, and 25 fps is 6:5 — which arrives as judder
+ * even when not a single frame is lost, and no amount of bandwidth fixes it because nothing
+ * is missing. On a camera that runs at 20 the frames are evenly spaced and there is nothing
+ * to see. So the screen offering these rates names the *risk* rather than asserting the
+ * fault, and offers the uneven ones rather than hiding them: 25 fps on a link that can
+ * carry it looks better than 15 to most people, and that is the user's call to make.
  *
  * ## What the number reaches
  *
@@ -49,18 +55,22 @@ enum class VideoFrameRate(val fps: Int) {
     /**
      * Whether [CAMERA_FPS] divides evenly into this rate.
      *
-     * True for 5, 10, 15 and 30 — every sixth, third, second and every frame. False for
-     * 20 and 25, which the encoder can only reach by dropping frames on an uneven pattern.
+     * True for 5, 10, 15 and 30 — every sixth, third, second and every frame. False for 20
+     * and 25, which a camera fixed at 30 can only reach by dropping frames on an uneven
+     * pattern. A camera that runs at the requested rate itself is unaffected, which is why
+     * the screen reading this states a risk and not a defect.
      */
     val dividesCameraRate: Boolean get() = CAMERA_FPS % fps == 0
 
     companion object {
         /**
-         * What the camera delivers, measured rather than requested.
+         * The rate a camera that cannot be steered delivers.
          *
-         * `capture 29.8` was true on all four handsets while the policy was asking for 15, 20
-         * and 24 on different legs. The camera does not honour a frame-rate request from this
-         * layer; the encoder decides which of the 30 it keeps.
+         * `capture 29.8` was true on all four Samsung handsets while the policy was asking
+         * for 15, 20 and 24 on different legs — there the encoder decides which of the 30 it
+         * keeps. It is the worst case rather than the only case: the TC15's camera tracked
+         * every requested rate to within 0.1 fps. Used only to say which rates divide it,
+         * never to predict what a given device will do.
          */
         const val CAMERA_FPS: Int = 30
 

@@ -328,6 +328,14 @@ internal object VideoFrameCounterLine {
  * separately, beside the resolution, so a leg running `@30` while decoding 0.4 frames a
  * second reads as the fault it is rather than as agreement.
  *
+ * **`capture` is per stream and the camera is not.** In a mesh, one capture port owns the
+ * device and `pjsua_vid_conf` feeds every encoder from it, so the legs that do not own it
+ * report `capture 0.0` for ever while encoding perfectly well. Measured on 4024 in a
+ * three-party conference, 2026-10-12: one stream's `cap` frozen at 1226 across three
+ * intervals while its `encf` advanced 150 every five seconds — 30 fps out of a counter that
+ * said nothing was coming in. `capture 0.0` beside a healthy `encode` is that, and not a
+ * stalled camera; a real stall takes `encode` down with it.
+ *
  * Null when there is nothing honest to say — one reading, no elapsed time, or counters
  * that went backwards because the stream was rebuilt and started again at zero.
  */

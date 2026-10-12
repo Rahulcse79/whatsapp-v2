@@ -464,6 +464,27 @@ class VideoQualityCoordinatorTest {
     }
 
     @Test
+    fun `the last call ending gives the tile size back`() {
+        // Only the conference grid ever reports a tile height and nothing reports it back,
+        // so a four-party call used to cap every later call in the process -- including a
+        // one-to-one call drawn full screen, where the top of the ladder is exactly right.
+        val coordinator = coordinator()
+        coordinator.onDisplayCeiling(DisplayCeiling(height = 180))
+        assertTrue(
+            coordinator.startingSettings(VideoBudget(outgoingVideoLegs = 1)).height <= 270,
+            "a small tile must cap the rung while that tile exists",
+        )
+
+        coordinator.onNoCalls()
+
+        assertEquals(
+            360,
+            coordinator.startingSettings(VideoBudget(outgoingVideoLegs = 1)).height.toInt(),
+            "the tile is gone, so the next call gets the whole ladder again",
+        )
+    }
+
+    @Test
     fun `the rate outlives the calls, because the preference does`() {
         val coordinator = coordinator()
         coordinator.onFrameRate(VideoFrameRate.FPS_10)

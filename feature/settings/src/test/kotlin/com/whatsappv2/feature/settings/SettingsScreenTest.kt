@@ -372,8 +372,9 @@ class SettingsScreenTest {
 
     @Test
     fun `a rate that does not divide the camera rate says so`() {
-        // The judder is a property of the choice, not a fault, so it is stated next to it
-        // rather than hidden or refused.
+        // The judder is a risk of the choice, not a fault and not a certainty -- whether a
+        // camera can run at 25 is the device's answer and the two handset families measured
+        // here disagree -- so it is stated next to the choice rather than hidden or refused.
         setContent(
             state = SettingsUiState(
                 settings = AppSettings.DEFAULT.copy(videoFrameRate = VideoFrameRate.FPS_25),
@@ -381,8 +382,9 @@ class SettingsScreenTest {
         )
 
         compose.onNodeWithText(
-            "25 fps does not divide the camera's 30 fps evenly, so frames arrive " +
-                "unevenly spaced. It may look less smooth than 15 or 30.",
+            "25 fps does not divide 30 evenly. A camera that can only run at 30 reaches it " +
+                "by dropping frames unevenly, which looks less smooth than 15 or 30; a " +
+                "camera that can run at 25 itself is unaffected.",
         ).performScrollTo().assertIsDisplayed()
     }
 

@@ -580,12 +580,13 @@ private fun RetentionGroup(selected: CallHistoryRetention, onSelect: (CallHistor
  *
  * ## Why the uneven rates are offered rather than hidden
  *
- * The camera delivers 30 fps whatever is asked of it and the encoder keeps a subset, so a
- * rate that does not divide 30 can only be reached on an uneven pattern — 20 fps is 33 ms,
- * 67 ms, 33 ms, 67 ms, and that is visible as judder even when no frame is lost. Hiding
- * them would be deciding for the user; 25 fps on a link that carries it still looks better
- * than 15 to most people. So they are listed with the trade named in the field, which is
- * what [VideoFrameRate.dividesCameraRate] is for.
+ * On a camera that can only run at 30 the encoder keeps a subset, so a rate that does not
+ * divide 30 is reached on an uneven pattern — 20 fps is 33 ms, 67 ms, 33 ms, 67 ms, visible
+ * as judder even when no frame is lost. Not every camera is like that: the TC15's tracked
+ * every rate it was asked for, the Samsungs' stayed at 30 (see [VideoFrameRate]). So the
+ * note states the risk rather than asserting the fault, and the rates are listed rather
+ * than hidden — hiding them would be deciding for the user, and 25 fps on a link that
+ * carries it looks better than 15 to most people.
  *
  * A dropdown rather than a chip row because six options do not fit on a row — the same
  * reason [RetentionGroup] uses one.
@@ -614,8 +615,10 @@ private fun VideoFrameRateGroup(selected: VideoFrameRate, onSelect: (VideoFrameR
             // Stated where the consequence is, in the same voice the encryption warning
             // uses: this is not an error, it is the cost of the choice just made.
             Text(
-                text = "${selected.fps} fps does not divide the camera's 30 fps evenly, so " +
-                    "frames arrive unevenly spaced. It may look less smooth than 15 or 30.",
+                text = "${selected.fps} fps does not divide 30 evenly. A camera that can only " +
+                    "run at 30 reaches it by dropping frames unevenly, which looks less " +
+                    "smooth than 15 or 30; a camera that can run at ${selected.fps} itself " +
+                    "is unaffected.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
