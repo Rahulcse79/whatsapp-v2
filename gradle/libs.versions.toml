@@ -20,7 +20,7 @@ coroutines = "1.11.0"
 # From the version report against Belledonne's repository. Note their maven-metadata
 # <release> tag says 5.4.125 while 5.5.18 is the newest non-prerelease listed; 5.5.18 is
 # pinned and CI resolution is what confirms it.
-kover = "0.9.9"
+kover = "0.9.11"
 # ADR-004's client half (Task 38). Resolved against Google Maven rather than remembered:
 # 25.1.2 is what <release> reports there. The google-services plugin is deliberately NOT
 # applied - see app/build.gradle.kts - so no google-services.json is needed to build.
