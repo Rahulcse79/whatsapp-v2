@@ -3,11 +3,19 @@
 # One command from a clean checkout to an installable APK, with the native stack compiled
 # from vendored source (ADR-007, N-1: there is no prebuilt PJSIP binary in this repository).
 #
-#   ./build.sh                  arm64-v8a debug APK, PJSIP compiled from source
+#   ./build.sh                  the Android APK (the default target, unchanged)
+#   ./build.sh android          the same, named
+#   ./build.sh ios              the iOS app
+#   ./build.sh all              both, with a per-platform result at the end
+#
 #   ./build.sh --abi x86_64     a different ABI
 #   ./build.sh --all-abis       arm64-v8a, armeabi-v7a and x86_64
 #   ./build.sh --reuse-native   skip the two SWIG stages, reuse the libraries already built
 #   ./build.sh --install        adb install -r the result when it succeeds
+#
+# `all` runs both targets even when the first one fails, and exits non-zero if either did.
+# A target that cannot run on this machine says which tool is missing and how to get it; it
+# never reports success it did not earn. See docs/ios-port.md for what iOS can do today.
 #
 # Lyra is part of the build, not a flag (ADR-008 closed at Exit A, 2026-09-10): the
 # declared feature set in pjsip/config/pj/config_site.h says PJMEDIA_HAS_LYRA_CODEC 1, and
@@ -26,6 +34,11 @@ cd "$root"
 
 reuse_native=0
 install_after=0
+
+# The platform to build. A positional rather than a flag because it selects *what is
+# built* rather than how, and because `./build.sh` with no argument has to go on meaning
+# exactly what it meant before -- it is in docs/, in CI notes and in muscle memory.
+target="android"
 
 die() { printf '\n\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
 note() { printf '\033[36m%s\033[0m\n' "$1"; }
@@ -69,6 +82,7 @@ usage() { awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; ex
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    android|ios|all) target="$1"; shift ;;
     --abi) [ $# -ge 2 ] || die "--abi needs a value"; check_abis "$2"; abis="$2"; shift 2 ;;
     --all-abis) abis="$supported_abis"; shift ;;
     --reuse-native) reuse_native=1; shift ;;
@@ -79,9 +93,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# ----------------------------------------------------------------------- NDK
-#
 # ----------------------------------------------------------------------- JDK
+#
+# Chosen before the target is dispatched, because every target needs it: Gradle builds the
+# Android APK and it also builds the shared Kotlin framework the iOS app links against.
 #
 # Gradle needs JVM 17+ (CI runs 21), but a shell whose JAVA_HOME points at an older JDK
 # fails deep in Gradle with "requires JVM 17 or later ... currently configured to use JVM
@@ -141,6 +156,16 @@ jdk="$(find_jdk)"
 # is replaced rather than reused.
 export JAVA_HOME="$jdk"
 
+# ------------------------------------------------------------------- Android
+#
+# Everything from here to the end of the function is what this script has always done,
+# moved inside a function so that `ios` and `all` can exist without it running first. The
+# body is unchanged: same NDK and SWIG preflight, same Gradle invocation, same APK report.
+# The JDK is chosen above instead, because both targets need one.
+build_android() {
+
+# ----------------------------------------------------------------------- NDK
+#
 # The native task reads ANDROID_NDK_ROOT, then ANDROID_NDK_HOME, then -Pandroid.ndkPath.
 # Nothing reads local.properties' ndk.dir, which is the trap: the SDK is configured there
 # and the NDK is not, so the failure looks like a broken checkout.
@@ -288,3 +313,111 @@ $(printf '      %s\n' $ready)
   note "installing with $adb_bin${ANDROID_SERIAL:+ (ANDROID_SERIAL=$ANDROID_SERIAL)}"
   "$adb_bin" install -r "$apk"
 fi
+}
+
+# ----------------------------------------------------------------------- iOS
+#
+# The iOS app is a real Xcode project driven by xcodebuild, with the shared Kotlin logic
+# arriving as an XCFramework the Gradle build produces. None of that can run without a
+# full Xcode: the Command Line Tools carry no iPhoneOS SDK and no simulator runtimes, so
+# both Kotlin/Native and xcodebuild fail on the same missing piece.
+#
+# Each check below names the single thing that is missing and how to get it, because the
+# native failures do not. Kotlin/Native without the SDK reports a linker it cannot run,
+# and xcode-select reports "tool 'xcodebuild' requires Xcode" while Xcode is, as far as
+# the user is concerned, installed -- the Command Line Tools are not Xcode.
+build_ios() {
+  local xcode_app sdk
+
+  [ "$(uname -s)" = "Darwin" ] || die "the iOS target needs macOS; this is $(uname -s).
+  Apple's SDKs and the simulator do not exist on other platforms, and there is no
+  cross-compiler. Build the Android target here and the iOS one on a Mac."
+
+  # `xcode-select -p` pointing at the Command Line Tools is the usual state of a machine
+  # that has never built for a device, and it is indistinguishable from "Xcode installed"
+  # until something asks for an SDK. Ask now.
+  if ! xcodebuild -version >/dev/null 2>&1; then
+    xcode_app="$(ls -d /Applications/Xcode*.app 2>/dev/null | head -1 || true)"
+    if [ -n "$xcode_app" ]; then
+      die "Xcode is installed at $xcode_app but the developer directory points elsewhere:
+      $(xcode-select -p 2>/dev/null)
+  Point it at Xcode (this needs your password):
+      sudo xcode-select -s $xcode_app/Contents/Developer"
+    fi
+    die "the iOS target needs a full Xcode, and this machine has only the Command Line Tools.
+      xcode-select -p  ->  $(xcode-select -p 2>/dev/null || echo 'nothing')
+  There is no iPhoneOS SDK and no simulator runtime under the Command Line Tools, so
+  neither Kotlin/Native nor xcodebuild can produce anything for iOS.
+
+  Install Xcode from the App Store, or from https://developer.apple.com/download/all/
+  if this machine needs a specific version, then:
+      sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+      xcodebuild -runFirstLaunch
+
+  macOS $(sw_vers -productVersion 2>/dev/null) caps the Xcode it can run -- 12.x tops out
+  at Xcode 14.2 (iOS 16 SDK), which builds and runs locally but is below the SDK Apple
+  currently requires for App Store submission. See docs/ios-port.md."
+  fi
+
+  sdk="$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null || true)"
+  [ -n "$sdk" ] || die "Xcode is active but no iOS simulator SDK is installed.
+      xcodebuild -runFirstLaunch
+      xcodebuild -downloadPlatform iOS"
+
+  [ -d "$root/iosApp/iosApp.xcodeproj" ] || die "no iOS app project at iosApp/iosApp.xcodeproj.
+  The iOS port is still being built out; docs/ios-port.md tracks what exists and what does
+  not. Nothing here will pretend to have produced an app."
+
+  note "Xcode:   $(xcodebuild -version | head -1)"
+  note "SDK:     $(basename "$sdk")"
+  note "building the shared Kotlin framework ..."
+  ./gradlew :shared:assembleSharedXCFramework "-Dorg.gradle.java.home=$JAVA_HOME" --console=plain
+
+  note "building the iOS app ..."
+  xcodebuild -project "$root/iosApp/iosApp.xcodeproj" -scheme iosApp \
+    -configuration Debug -sdk iphonesimulator -derivedDataPath "$root/iosApp/build" \
+    build | tail -30
+
+  local app
+  app="$(ls -d "$root/iosApp/build/Build/Products/Debug-iphonesimulator"/*.app 2>/dev/null | head -1 || true)"
+  [ -n "$app" ] || die "xcodebuild reported success but no .app was produced under
+  iosApp/build/Build/Products/Debug-iphonesimulator."
+
+  printf '\n\033[32mAPP\033[0m  %s\n' "$app"
+  printf '     built %s\n\n' "$(date -r "$app" '+%Y-%m-%d %H:%M:%S')"
+  printf 'run it with:\n  xcrun simctl install booted %s\n\n' "$app"
+}
+
+# ------------------------------------------------------------------ dispatch
+#
+# `all` runs both targets and reports both. It deliberately does NOT stop at the first
+# failure: when two platforms are being kept in step, "Android is fine and iOS is broken"
+# and "both are broken" are different situations and the summary has to tell them apart.
+# `set -e` would have made the first failure the whole answer.
+case "$target" in
+  android) build_android ;;
+  ios)     build_ios ;;
+  all)
+    android_status=0
+    ios_status=0
+    # Subshells, because `die` ends the script it is called from and in `all` that would
+    # take the summary with it -- the one thing this target exists to print. A subshell's
+    # exit ends only the subshell, so a failing platform becomes a status rather than the
+    # end of the run. Each target writes its artefact to disk, so nothing is lost with the
+    # subshell's environment.
+    note "==> target: android"
+    ( build_android ) || android_status=$?
+    echo
+    note "==> target: ios"
+    ( build_ios ) || ios_status=$?
+    echo
+    printf '\033[36m==> summary\033[0m\n'
+    [ "$android_status" = 0 ] && printf '  android  \033[32mok\033[0m\n' \
+                             || printf '  android  \033[31mfailed\033[0m (exit %s)\n' "$android_status"
+    [ "$ios_status" = 0 ]     && printf '  ios      \033[32mok\033[0m\n' \
+                             || printf '  ios      \033[31mfailed\033[0m (exit %s)\n' "$ios_status"
+    echo
+    [ "$android_status" = 0 ] && [ "$ios_status" = 0 ] || exit 1
+    ;;
+  *) die "unknown target: $target (android, ios or all)" ;;
+esac
