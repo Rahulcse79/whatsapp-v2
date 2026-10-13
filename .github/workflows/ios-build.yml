@@ -169,6 +169,12 @@ jobs:
     if: needs.inspect.outputs.has-xcode-project == 'true'
     runs-on: macos-latest
     timeout-minutes: 60
+    # Computed here and not in the step below, because the two contexts are asymmetric:
+    # a job's `env` may read `secrets`, and a step's `if` may read `env` -- but a step's
+    # `if` may NOT read `secrets`, and a step's own `env` is not visible to its own `if`.
+    # Getting that backwards is what made the first run of this workflow invalid.
+    env:
+      HAS_SIGNING: ${{ secrets.IOS_CERTIFICATE_P12 != '' && secrets.IOS_PROVISIONING_PROFILE != '' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -228,10 +234,8 @@ jobs:
       # committed -- correctly, since a signing identity in a git history is a credential
       # leak. The step runs only when the secrets exist, so a fork or an unconfigured
       # repository gets the simulator build and no confusing signing failure.
-      # A step-level `if` can read `secrets` directly; a step's own `env:` cannot be read
-      # by its own `if`, which is the trap this avoids.
       - name: Build for a device (only with signing material)
-        if: ${{ secrets.IOS_CERTIFICATE_P12 != '' && secrets.IOS_PROVISIONING_PROFILE != '' }}
+        if: env.HAS_SIGNING == 'true'
         run: |
           # Deliberately a warning and not a build. Importing a p12 into a temporary
           # keychain and installing a profile is well-trodden, but it cannot be written
