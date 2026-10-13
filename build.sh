@@ -371,7 +371,7 @@ build_ios() {
   note "Xcode:   $(xcodebuild -version | head -1)"
   note "SDK:     $(basename "$sdk")"
   note "building the shared Kotlin framework ..."
-  ./gradlew :shared:assembleSharedXCFramework "-Dorg.gradle.java.home=$JAVA_HOME" --console=plain
+  ./gradlew :shared:assembleSharedDebugXCFramework "-Dorg.gradle.java.home=$JAVA_HOME" --console=plain
 
   note "building the iOS app ..."
   xcodebuild -project "$root/iosApp/iosApp.xcodeproj" -scheme iosApp \

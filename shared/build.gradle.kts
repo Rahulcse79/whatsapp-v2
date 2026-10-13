@@ -1,5 +1,5 @@
-import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFramework
 
 plugins {
     id("org.jetbrains.kotlin.multiplatform")
@@ -42,12 +42,16 @@ kotlin {
     // silicon — all three, because which simulator is needed is a property of the machine
     // the app is being run from rather than of this build.
     if (providers.of(XcodePresent::class.java) {}.get()) {
-        @OptIn(ExperimentalKotlinGradlePluginApi::class)
+        // One XCFramework over all three slices, because that is the shape Xcode wants to
+        // link: a single artefact carrying device and simulator rather than a framework
+        // per architecture for the app to choose between.
+        val xcframework = XCFramework("Shared")
         listOf(iosArm64(), iosX64(), iosSimulatorArm64()).forEach { target ->
             target.binaries.framework {
                 baseName = "Shared"
                 // Static: one less thing to embed and sign, and nothing else links it.
                 isStatic = true
+                xcframework.add(this)
             }
         }
     }
