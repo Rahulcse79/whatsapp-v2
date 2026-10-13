@@ -117,18 +117,30 @@ Each phase ends in something that can be run and checked. Phases 2 onward need X
   status rather than the end of the run, prints a per-platform summary, and exits non-zero
   if either failed.
 
-### Phase 1 — `:shared` Kotlin Multiplatform module *(in progress)*
+### Phase 1 — `:shared` Kotlin Multiplatform module *(first slice done, verified)*
 
-A new module with `jvm()`, `androidTarget()` and the three iOS targets (`iosArm64`,
-`iosX64`, `iosSimulatorArm64`), exporting an XCFramework.
+A new module with a `jvm()` target, and the three iOS targets (`iosArm64`, `iosX64`,
+`iosSimulatorArm64`) declared only on a machine that has an Xcode to compile them.
 
-The first slice is the video quality ladder — `VideoFrameRate`, `VideoQualityProfile`,
-`VideoBudget`, `AdaptiveVideoPolicy` and their tests. It is chosen because it is pure
-arithmetic over enums with no dependencies at all, so it proves the pipeline without
-touching anything that could break the Android build.
+The whole `com.whatsappv2.domain.video` package has moved across: `VideoFrameRate`,
+`VideoQualityProfile`, `VideoBudget`, `VideoConditions`, `DevicePressureSource` and
+`AdaptiveVideoPolicy`, with their tests. It was chosen as the first slice because it is a
+closed set — arithmetic over enums, no imports at all in any of the six files — so it
+proves the pipeline without touching anything that could break Android.
 
-**Verifiable without Xcode:** the common and JVM/Android compilations, every existing
-Android test, and the APK. **Not verifiable without Xcode:** the iOS link step.
+**The package name did not change on the way across.** What was
+`com.whatsappv2.domain.video` still is, so not one import anywhere else in the build was
+edited. That is the property that makes the remaining slices cheap.
+
+The tests moved to `commonTest` and swapped `org.junit.Test` for `kotlin.test.Test`, so
+they are no longer JVM-only: the same 73 assertions will run on the iOS targets the first
+time there is an Xcode to run them with.
+
+Verified: 73 tests pass on the JVM target; `:domain`, `:data:sip`, `:feature:calls` and
+`:feature:settings` suites all pass; the APK builds and its dex contains the moved
+classes, so the module is genuinely linked in rather than silently dropped.
+
+**Still not verifiable without Xcode:** the iOS compilation and link.
 
 ### Phase 2 — PJSIP, Lyra and libvpx for iOS
 
@@ -165,13 +177,25 @@ device and written down with the evidence, the way the Android features are.
 
 | Area | State |
 |---|---|
-| Android APK | **works**, unchanged — verified on this branch |
+| Android APK | **works** — 109.1 MB, built after the KMP move |
 | `./build.sh android` | **works**, verified |
-| `./build.sh ios` | correctly refuses: no Xcode on this machine |
-| `./build.sh all` | **works**: builds Android, reports iOS as failed, exits non-zero |
-| `:shared` KMP module | in progress |
+| `./build.sh ios` | correctly refuses: no Xcode on this machine, exits 1 |
+| `./build.sh all` | **works**: builds Android, reports iOS failed, exits 1 |
+| `:shared` KMP module, JVM target | **works** — 73 tests pass |
+| `:shared` linked into the APK | **verified** — the moved classes are in the dex |
+| Android test suites after the move | **pass** — `:domain`, `:data:sip`, `:feature:calls`, `:feature:settings` |
+| `:shared` iOS targets | **never compiled** — no Xcode on this machine |
 | PJSIP for iOS | not started |
 | Swift SIP layer | not started |
 | CallKit / PushKit | not started |
 | SwiftUI app | not started |
 | Any iOS feature verified on a device | **none** — nothing has been built for iOS yet |
+
+### Known-failing, and not caused by this branch
+
+`:test:arch` rule 5 ("no LiveData, RxJava, AsyncTask or raw Thread") fails on four files:
+`VoiceGateController` in the main tree, whose raw thread arrived with the voice gate in
+`83bdb9b8`, and three inside `.claude/worktrees/`, another session's git worktree that the
+rule walks because it scans the filesystem rather than git. CI has been red on `main`
+since 22 September for unrelated reasons — a committed lab `.pem` and ~150 detekt issues
+— so this branch inherits a red baseline rather than creating one.
