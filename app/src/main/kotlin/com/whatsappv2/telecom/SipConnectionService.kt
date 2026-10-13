@@ -173,6 +173,12 @@ internal class SipConnectionService : ConnectionService() {
         super.onDestroy()
     }
 
+    // Twelve against a threshold of eleven, and the count is the registry rather than
+    // complexity creeping in: Telecom constructs and destroys this service on its own
+    // schedule, so the call book has to live somewhere that outlives an instance, and every
+    // function here is one verb of that book. Splitting it to satisfy a counter would put
+    // half the call book in a second object and leave the invariant spanning both.
+    @Suppress("TooManyFunctions")
     companion object {
         private const val TAG = "SipConnectionService"
 
