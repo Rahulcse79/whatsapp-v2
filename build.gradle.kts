@@ -12,6 +12,11 @@ plugins {
     // puts the Kotlin Gradle plugin jar on the classpath, which the convention plugins
     // need for the KotlinCompile task type.
     alias(libs.plugins.kotlin.jvm) apply false
+    // The multiplatform plugin, for `:shared`. Declared here with its version for the
+    // same reason as the others: a module applying it with a version of its own is
+    // refused, because the Kotlin plugin is already on this classpath from the line
+    // above and Gradle cannot check two versions against each other.
+    alias(libs.plugins.kotlin.multiplatform) apply false
     alias(libs.plugins.kotlin.compose) apply false
     alias(libs.plugins.ksp) apply false
     alias(libs.plugins.hilt) apply false
