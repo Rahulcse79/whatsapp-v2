@@ -142,6 +142,47 @@ classes, so the module is genuinely linked in rather than silently dropped.
 
 **Still not verifiable without Xcode:** the iOS compilation and link.
 
+### Phase 1.5 — CI as the iOS toolchain *(done, verified)*
+
+`.github/workflows/ios-build.yml`, on pushes and pull requests to this branch and on
+demand. A GitHub macOS runner has the Xcode this development machine cannot install, so CI
+is not a formality on top of local verification here — it is the only place the iOS half
+can be verified at all.
+
+Measured on run 38491167735 (Xcode 26.6, iPhoneSimulator 26.5 SDK, arm64 runner):
+
+| Job | Result |
+|---|---|
+| Shared KMP module compiled for `iosArm64` and the simulator | **passed** |
+| Its tests run **on an iOS simulator** | **73 tests, 0 failures** |
+| `Shared.xcframework` assembled | **passed**, 22.9 MB artifact |
+| Android APK via `./build.sh android`, full native build | **passed**, 8m 53s, 109.1 MB |
+| `iOS app` | **skipped** — no `.xcodeproj` of ours exists |
+
+The iOS app job is skipped rather than passed on purpose: a job that printed "nothing to
+build" and went green would read as "iOS builds fine". Its condition is a filesystem check,
+so it begins running by itself on the commit that adds a project.
+
+### What CI found that no local run could
+
+Four defects, none of them visible on a machine without Xcode or without a clean checkout:
+
+1. **Eighteen test names contained a comma.** Legal on the JVM, rejected by Kotlin/Native —
+   these become Objective-C selectors. Renamed with a dash.
+2. **`String.format` is JVM-only.** One use in a test message; replaced with rounding.
+3. **`third_party/libvpx/build/` was missing** — 17 files, from both disk and git, so
+   `./configure` could not find its own `build/make/configure.sh`. Restored from the pinned
+   v1.17.0 tarball.
+4. **`third_party/pjproject/build/` was missing** — 60 files including `os-auto.mak.in`,
+   which every other pjproject makefile includes. Six of pjproject's seven `build/`
+   directories were present; the top-level one was not. Restored from the pinned 2.17.
+
+3 and 4 are the same defect the `.gitignore` comment on line 16 already describes, left
+behind after the negation rule was added. **A clean checkout has not been able to build the
+native stack**, and nobody saw it because every local build uses `--reuse-native` and skips
+the native stage. The CI Android job is the first thing in this repository to compile PJSIP
+from vendored source end to end.
+
 ### Phase 2 — PJSIP, Lyra and libvpx for iOS
 
 A sibling to `pjsip/build-native.sh` producing device and simulator slices and an
@@ -184,7 +225,8 @@ device and written down with the evidence, the way the Android features are.
 | `:shared` KMP module, JVM target | **works** — 73 tests pass |
 | `:shared` linked into the APK | **verified** — the moved classes are in the dex |
 | Android test suites after the move | **pass** — `:domain`, `:data:sip`, `:feature:calls`, `:feature:settings` |
-| `:shared` iOS targets | **never compiled** — no Xcode on this machine |
+| `:shared` iOS targets | **compiled and tested on CI** — 73 tests pass on a simulator |
+| Android APK on CI, full native build | **works** — 8m 53s, uploaded as an artifact |
 | PJSIP for iOS | not started |
 | Swift SIP layer | not started |
 | CallKit / PushKit | not started |
