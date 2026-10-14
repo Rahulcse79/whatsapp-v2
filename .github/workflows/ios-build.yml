@@ -270,7 +270,10 @@ jobs:
         id: ndk
         with:
           ndk-version: r27c
-          local-cache: true
+          # No local-cache. A restored cache is what produced the dangling `clang`
+          # symlink below: the entry restores, the link does not resolve, and every
+          # check short of running the compiler believes it is there.
+          local-cache: false
 
       # Debian packages the Java typemaps with swig itself, which build.sh's own error
       # message says; on MacPorts they are a separate port, which is why it checks.
@@ -297,8 +300,20 @@ jobs:
             # No -type f: clang is a symlink in some layouts, and a symlink to a working
             # compiler is a working compiler.
             found="$(find "$root" -path '*/toolchains/llvm/prebuilt/*/bin/clang' 2>/dev/null | head -1)"
-            if [ -n "$found" ]; then echo "using NDK at $root"; clang="$found"; break; fi
-            echo "skipping $root - no clang under toolchains/llvm/prebuilt"
+            # Ask the compiler to identify itself rather than trusting that the path
+            # exists. `find` without -type f matches a DANGLING symlink too, and that is
+            # exactly what the first attempt accepted: the step reported
+            # "using NDK at /home/runner/.setup-ndk/r27c" and CMake then said that very
+            # path "is not a full path to an existing compiler tool". A compiler that
+            # cannot print its version is not a compiler.
+            if [ -n "$found" ] && "$found" --version >/dev/null 2>&1; then
+              echo "using NDK at $root"; clang="$found"; break
+            fi
+            if [ -n "$found" ]; then
+              echo "skipping $root - clang at $found does not run (dangling symlink?)"
+            else
+              echo "skipping $root - no clang under toolchains/llvm/prebuilt"
+            fi
           done
           if [ -z "$clang" ]; then
             echo "::error::no NDK with a usable clang on this runner"
