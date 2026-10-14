@@ -4022,10 +4022,28 @@ internal class RealPjsipCoreGateway @Inject constructor(
         const val HEX = 16
 
         /**
-         * Media tuning (§5.2). Starting points chosen from PJSIP's own guidance, not
-         * measurements - P-7 is where they meet a handset.
+         * The `User-Agent` on every SIP request this endpoint sends.
+         *
+         * Set on `uaConfig` before `libInit`, which is what makes it every request rather
+         * than some: pjsua stamps the header on the messages it generates, so REGISTER,
+         * INVITE, ACK, BYE, REFER, INFO, OPTIONS, SUBSCRIBE, NOTIFY and MESSAGE all carry
+         * it without a per-request opt-in to forget. pjsua2 fixes it at `libInit` and
+         * offers no setter afterwards, which is why [userAgent] is read once at start.
+         *
+         * **It is not only a label, and that is the thing to know before editing it.** Two
+         * behaviours key off this string:
+         *
+         *  - [CORALX_AGENT_TOKEN] is matched against a *peer's* `User-Agent` to decide
+         *    whether that peer is one of us and can therefore mesh rather than be relayed.
+         *    Both ends must carry the same token, so a build with this value talking to a
+         *    build with the old one will relay where it used to mesh - correct, just more
+         *    expensive. Keep the two constants in step.
+         *  - [UPDATE_DISPLAY_UA_TOKEN] is appended when caller-ID-on-transfer is on,
+         *    because FreeSWITCH decides whether to send `message/update_display` by
+         *    matching this header against a vendor list. That suffix is separate and is
+         *    still appended to whatever this says.
          */
-        const val USER_AGENT = "whatsapp-v2 (PJSIP)"
+        const val USER_AGENT = "coraluc"
 
         /**
          * Appended to [USER_AGENT] when connected-party updates are wanted.
@@ -4449,8 +4467,15 @@ internal fun peerAgentOf(rawMessage: String): String? = rawMessage
 internal fun isCoralxAgent(agent: String?): Boolean =
     agent?.contains(CORALX_AGENT_TOKEN, ignoreCase = true) == true
 
-/** The product token in [USER_AGENT], which is what survives a version bump. */
-internal const val CORALX_AGENT_TOKEN = "whatsapp-v2"
+/**
+ * The product token in [USER_AGENT], which is what survives a version bump.
+ *
+ * Equal to the whole of [USER_AGENT] now that the agent is a bare product token with no
+ * version or comment, and kept as its own constant because the two mean different things:
+ * one is what this endpoint announces, the other is what it recognises in a peer. A
+ * version suffix added to the first must not silently narrow the second.
+ */
+internal const val CORALX_AGENT_TOKEN = "coraluc"
 
 internal fun conferenceHeaderOf(rawMessage: String): String? = rawMessage
     .lineSequence()
