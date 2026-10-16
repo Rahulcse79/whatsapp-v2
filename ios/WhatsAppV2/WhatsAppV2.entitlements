@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- APNs. `development` for a debug build and a development provisioning profile;
+	     Xcode rewrites it to `production` for an App Store or Ad Hoc distribution
+	     build. A device build signed with a distribution profile but carrying
+	     `development` here registers for a token APNs will not accept, and the failure
+	     is silent - the token arrives and no push is ever delivered. -->
+	<key>aps-environment</key>
+	<string>development</string>
+
+	<!-- Not requested, and each omission is a decision:
+
+	     com.apple.developer.pushkit.unrestricted-voip — an entitlement Apple grants only
+	       to apps that cannot use CallKit. This app uses CallKit, so it does not qualify
+	       and does not need it.
+
+	     com.apple.developer.networking.multipath / networking.vpn — nothing here needs
+	       either, and both widen the signing requirements for every build. -->
+</dict>
+</plist>

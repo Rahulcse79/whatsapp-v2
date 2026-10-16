@@ -87,6 +87,22 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  # ------------------------------------------------------------ static checks
+  #
+  # Everything that can be checked without an iOS SDK, on the cheapest runner that has
+  # a Swift compiler. It runs BEFORE the expensive jobs and they do not depend on it,
+  # deliberately: a syntax error should turn the run red in two minutes rather than
+  # after an hour of cross-compiling, and an unrelated failure here should not hide
+  # whether the real build works.
+  static:
+    name: Static checks (no iOS SDK needed)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run every check that does not need Xcode
+        run: ios/scripts/check-all.sh
+
   # ------------------------------------------------------------- shared on iOS
   shared-ios:
     name: Shared KMP module, compiled and tested on iOS
@@ -161,14 +177,18 @@ jobs:
 
   # -------------------------------------------------------------------- iOS app
   #
-  # Runs only once an Xcode project of ours exists. Until then GitHub shows this as
-  # skipped, which is the honest state: not built, not broken, not yet written.
+  # Runs only once an Xcode project of ours exists. The `inspect` job computes that from
+  # the filesystem, so this begins running by itself on the commit that adds one.
+  #
+  # Three things happen here that cannot happen on the development machine: PJSIP is
+  # cross-compiled for iOS, the app is built, and an .ipa is packed. The IPA is
+  # **unsigned** unless signing secrets are configured — see the two build steps below.
   ios-app:
-    name: iOS app
+    name: iOS app and IPA
     needs: [inspect, shared-ios]
     if: needs.inspect.outputs.has-xcode-project == 'true'
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     # Computed here and not in the step below, because the two contexts are asymmetric:
     # a job's `env` may read `secrets`, and a step's `if` may read `env` -- but a step's
     # `if` may NOT read `secrets`, and a step's own `env` is not visible to its own `if`.
@@ -177,6 +197,13 @@ jobs:
       HAS_SIGNING: ${{ secrets.IOS_CERTIFICATE_P12 != '' && secrets.IOS_PROVISIONING_PROFILE != '' }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Report the Apple toolchain this runner has
+        run: |
+          sw_vers
+          xcodebuild -version
+          echo "iphoneos SDK: $(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "architecture: $(uname -m)"
 
       - uses: actions/setup-java@v6
         with:
@@ -192,29 +219,47 @@ jobs:
           key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-${{ runner.os }}-
 
-      # Named from the project rather than guessed: a scheme that does not exist fails
-      # inside xcodebuild with a list of the ones that do, which is a worse way to find out.
-      - name: Find the scheme to build
-        id: scheme
-        run: |
-          project="${{ needs.inspect.outputs.xcode-project }}"
-          echo "Project: $project"
-          xcodebuild -list -project "$project"
-          scheme="$(xcodebuild -list -project "$project" \
-                      | awk '/Schemes:/{flag=1; next} flag && NF {print $1; exit}')"
-          [ -n "$scheme" ] || { echo "::error::no scheme in $project"; exit 1; }
-          echo "scheme=$scheme" >> "$GITHUB_OUTPUT"
-          echo "Building scheme: $scheme"
+      # PJSIP, OpenSSL, Opus and libvpx are an hour from cold. The script keeps
+      # content-hash stamps per vendored tree, so a cache hit makes the whole stage a
+      # few seconds -- and a bumped dependency correctly invalidates only its own stamp.
+      - name: Cache the iOS native build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/ios-native
+            ios/Vendor
+          key: ios-native-${{ runner.os }}-${{ hashFiles('ios/config/pj/config_site.h', 'ios/scripts/build-pjsip-ios.sh') }}-${{ hashFiles('third_party/pjproject/version.mak') }}
+          restore-keys: ios-native-${{ runner.os }}-
 
-      # Simulator, and unsigned. A simulator build needs no certificate, so this is the
-      # build that can run on every pull request from anyone; the device build below is
-      # the one that needs secrets and is skipped without them.
+      # autoconf and automake are not on the macOS runner image by default, and opus
+      # generates its configure with them.
+      - name: Install the autotools
+        run: brew install autoconf automake libtool
+
+      - name: Build PJSIP for iOS (device + simulator)
+        run: ios/scripts/build-pjsip-ios.sh
+
+      - name: Build the shared Kotlin framework
+        run: ios/scripts/build-shared-framework.sh Release
+
+      # Regenerated rather than trusted. The generator is deterministic, so a commit that
+      # added a Swift file without re-running it shows up here as a diff -- which is the
+      # only way to catch a source file that is in the tree and not in the build.
+      - name: Regenerate the Xcode project and check it is up to date
+        run: |
+          python3 ios/scripts/generate-xcodeproj.py
+          if ! git diff --quiet -- ios/WhatsAppV2.xcodeproj; then
+            echo "::error::ios/WhatsAppV2.xcodeproj is stale. Run python3 ios/scripts/generate-xcodeproj.py and commit."
+            git diff --stat -- ios/WhatsAppV2.xcodeproj
+            exit 1
+          fi
+
       - name: Build for the simulator
         run: |
           set -o pipefail
           xcodebuild \
-            -project "${{ needs.inspect.outputs.xcode-project }}" \
-            -scheme "${{ steps.scheme.outputs.scheme }}" \
+            -project ios/WhatsAppV2.xcodeproj \
+            -scheme WhatsAppV2 \
             -configuration Debug \
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
@@ -222,29 +267,90 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build | tail -60
 
+      # The unsigned device IPA. This is the artefact that can be uploaded to
+      # BrowserStack, which re-signs with its own certificate before installing. It is
+      # NOT directly installable on a handset -- `verify-ipa.sh` says so in as many
+      # words rather than leaving the filename to imply otherwise.
+      - name: Build the unsigned device IPA
+        run: ios/scripts/build-ipa.sh --unsigned
+
+      - name: Say what the IPA actually is
+        run: |
+          ios/scripts/verify-ipa.sh build/ios-ipa/WhatsAppV2-unsigned.ipa | tee /tmp/ipa-report.txt
+          {
+            echo "### iOS IPA"
+            echo
+            echo '```'
+            cat /tmp/ipa-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the unsigned IPA
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-ipa-unsigned
+          path: build/ios-ipa/*.ipa
+          if-no-files-found: error
+
       - name: Upload the simulator .app
         if: success()
         uses: actions/upload-artifact@v7
         with:
           name: ios-app-simulator
           path: build/ios/Build/Products/Debug-iphonesimulator/*.app
-          if-no-files-found: error
+          if-no-files-found: warn
 
-      # Device builds need a certificate and a profile, and this repository has neither
-      # committed -- correctly, since a signing identity in a git history is a credential
-      # leak. The step runs only when the secrets exist, so a fork or an unconfigured
-      # repository gets the simulator build and no confusing signing failure.
-      - name: Build for a device (only with signing material)
+      # A signed IPA, when and only when the repository has been given a certificate and
+      # a profile. A fork, or a repository nobody has configured, gets the unsigned build
+      # above and no confusing signing failure.
+      - name: Import the signing material
         if: env.HAS_SIGNING == 'true'
+        env:
+          CERTIFICATE_P12: ${{ secrets.IOS_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
         run: |
-          # Deliberately a warning and not a build. Importing a p12 into a temporary
-          # keychain and installing a profile is well-trodden, but it cannot be written
-          # honestly against secrets nobody has yet supplied and nobody can test here.
-          # The hook exists so that adding the secrets is the only remaining step.
-          echo "::warning::IOS_CERTIFICATE_P12 and IOS_PROVISIONING_PROFILE are set, but the \
-          device build is not implemented. The simulator build above is unsigned and ran. \
-          See docs/ios-port.md."
+          set -euo pipefail
+          # A keychain of this run's own, with a password that exists only here. The
+          # login keychain is not touched, and the whole thing goes away with the runner.
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(uuidgen)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
 
+          echo "$CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain"
+          # Without this, codesign prompts for permission to use the key -- and a prompt
+          # on a headless runner is a step that hangs until the job times out.
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" >/dev/null
+          security list-keychain -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$PROVISIONING_PROFILE" | base64 --decode \
+            > ~/Library/MobileDevice/Provisioning\ Profiles/ci.mobileprovision
+
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$keychain"
+
+      - name: Build the signed IPA
+        if: env.HAS_SIGNING == 'true'
+        env:
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+          IOS_EXPORT_METHOD: ${{ secrets.IOS_EXPORT_METHOD || 'ad-hoc' }}
+        run: |
+          ios/scripts/build-ipa.sh --signed
+          ios/scripts/verify-ipa.sh build/ios-ipa/WhatsAppV2-signed.ipa
+
+      - name: Upload the signed IPA
+        if: env.HAS_SIGNING == 'true' && success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-ipa-signed
+          path: build/ios-ipa/WhatsAppV2-signed.ipa
+          if-no-files-found: error
 
   # -------------------------------------------------------------------- Android
   #

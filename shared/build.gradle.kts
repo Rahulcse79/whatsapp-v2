@@ -9,6 +9,20 @@ plugins {
  * Business logic that both platforms run, and the only module in this build that is not
  * Android-only.
  *
+ * ## What is in here
+ *
+ * Moved across with their package names preserved, so not one import anywhere else in
+ * the build had to change:
+ *
+ *   `com.whatsappv2.domain.model`         SIP URIs, accounts, codecs, transports
+ *   `com.whatsappv2.domain.call`          the call state machine, hold, controls
+ *   `com.whatsappv2.domain.engine`        the `SipEngine` port and its value types
+ *   `com.whatsappv2.domain.registration`  retry backoff, expiry refresh, recovery
+ *   `com.whatsappv2.domain.validation`    `AccountValidator` and its violations
+ *   `com.whatsappv2.domain.video`         the adaptive quality ladder
+ *   `com.whatsappv2.core.common.*`        `Outcome`, `Secret`, logging, redaction, `Clock`
+ *   `com.whatsappv2.shared.ios`           `SharedFacade`, the Swift-shaped surface
+ *
  * ## Why a new module rather than making `:domain` multiplatform
  *
  * `:domain` is already pure Kotlin with no Android plugin, so it looks like the obvious
@@ -17,12 +31,13 @@ plugins {
  * through `testFixtures(project(":domain"))`. Kotlin Multiplatform does not support the
  * `java-test-fixtures` plugin, so converting in place would take the test setup of ten
  * modules down with it, and not breaking the Android build is the hard constraint of this
- * port.
+ * port. The same applies to `:core:common`, which publishes `MutableClock`.
  *
- * So code moves *here*, a slice at a time, and `:domain` depends on this module.
- * **Package names are preserved across the move** — what was
- * `com.whatsappv2.domain.video` still is — so not one import anywhere else in the build
- * had to change.
+ * So code moves *here* and those modules depend on this one. The tests did NOT move:
+ * `:domain` still has 740 of them and `:core:common` 51, they still compile against the
+ * moved classes through the `api` dependency, and they are therefore the regression
+ * proof that the move changed nothing. Only the facade's tests were written here, where
+ * they also run on iOS.
  *
  * ## Why only the JVM target is built on a machine without Xcode
  *
@@ -58,7 +73,10 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            implementation(libs.kotlinx.coroutines.core)
+            // `api`, not `implementation`: `SipEngine` and `ConferenceSession` expose
+            // `Flow` and `StateFlow` in their public signatures, so every consumer of
+            // this module needs coroutines on its own compile classpath.
+            api(libs.kotlinx.coroutines.core)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

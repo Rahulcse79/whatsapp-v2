@@ -39,6 +39,8 @@ install_after=0
 # built* rather than how, and because `./build.sh` with no argument has to go on meaning
 # exactly what it meant before -- it is in docs/, in CI notes and in muscle memory.
 target="android"
+# iOS-only flags, gathered in the loop below and read by build_ios.
+IOS_EXTRA_ARGS=()
 
 die() { printf '\n\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
 note() { printf '\033[36m%s\033[0m\n' "$1"; }
@@ -88,6 +90,10 @@ while [ $# -gt 0 ]; do
     --reuse-native) reuse_native=1; shift ;;
     --install) install_after=1; shift ;;
     --with-lyra) echo "note: --with-lyra is not a flag any more; Lyra is in every build (ADR-008 Exit A)" >&2; shift ;;
+    # iOS-only options, collected rather than acted on here so that an Android build
+    # that is handed one fails with a message naming the target instead of silently
+    # ignoring it.
+    --ipa|--ipa-signed) IOS_EXTRA_ARGS+=("$1"); shift ;;
     -h|--help) usage ;;
     *) die "unknown option: $1 (try --help)" ;;
   esac
@@ -327,7 +333,18 @@ fi
 # and xcode-select reports "tool 'xcodebuild' requires Xcode" while Xcode is, as far as
 # the user is concerned, installed -- the Command Line Tools are not Xcode.
 build_ios() {
-  local xcode_app sdk
+  local xcode_app sdk ipa_mode="" want_ipa=0
+
+  # `--ipa` and `--ipa-signed` are read from the remaining arguments rather than from a
+  # flag parsed up top, so that `./build.sh ios` keeps meaning exactly what it did.
+  for extra in "${IOS_EXTRA_ARGS[@]:-}"; do
+    case "$extra" in
+      --ipa)        want_ipa=1; ipa_mode="--unsigned" ;;
+      --ipa-signed) want_ipa=1; ipa_mode="--signed" ;;
+      "")           ;;
+      *) die "unknown iOS option: $extra (try --ipa or --ipa-signed)" ;;
+    esac
+  done
 
   [ "$(uname -s)" = "Darwin" ] || die "the iOS target needs macOS; this is $(uname -s).
   Apple's SDKs and the simulator do not exist on other platforms, and there is no
@@ -364,28 +381,57 @@ build_ios() {
       xcodebuild -runFirstLaunch
       xcodebuild -downloadPlatform iOS"
 
-  [ -d "$root/iosApp/iosApp.xcodeproj" ] || die "no iOS app project at iosApp/iosApp.xcodeproj.
-  The iOS port is still being built out; docs/ios-port.md tracks what exists and what does
-  not. Nothing here will pretend to have produced an app."
-
   note "Xcode:   $(xcodebuild -version | head -1)"
   note "SDK:     $(basename "$sdk")"
-  note "building the shared Kotlin framework ..."
-  ./gradlew :shared:assembleSharedDebugXCFramework "-Dorg.gradle.java.home=$JAVA_HOME" --console=plain
 
-  note "building the iOS app ..."
-  xcodebuild -project "$root/iosApp/iosApp.xcodeproj" -scheme iosApp \
-    -configuration Debug -sdk iphonesimulator -derivedDataPath "$root/iosApp/build" \
+  # ---------------------------------------------------------------- 1. the native stack
+  #
+  # PJSIP, OpenSSL, Opus and libvpx from third_party/, the same vendored sources the
+  # Android build compiles. Skipped when the archives are already there and no vendored
+  # tree has changed -- the script keeps its own content-hash stamps, so this is a few
+  # seconds on a warm tree and the better part of an hour on a cold one.
+  local slices="--device"
+  [ "$want_ipa" -eq 0 ] && slices=""        # a simulator run needs both; an IPA needs the device
+  note "building PJSIP for iOS ..."
+  "$root/ios/scripts/build-pjsip-ios.sh" $slices
+
+  # ---------------------------------------------------------------- 2. the shared module
+  note "building the shared Kotlin framework ..."
+  "$root/ios/scripts/build-shared-framework.sh" Release
+
+  # ---------------------------------------------------------------- 3. the project
+  #
+  # Regenerated every time. It is committed so the repository opens in Xcode on a clean
+  # checkout, and regenerated here so a source file added without re-running the
+  # generator does not silently fail to be compiled -- the generator is deterministic,
+  # so this is a no-op whenever nothing has changed.
+  note "generating the Xcode project ..."
+  python3 "$root/ios/scripts/generate-xcodeproj.py"
+
+  # ---------------------------------------------------------------- 4. build
+  if [ "$want_ipa" -eq 1 ]; then
+    note "building the IPA ($ipa_mode) ..."
+    "$root/ios/scripts/build-ipa.sh" "$ipa_mode"
+    return
+  fi
+
+  note "building the iOS app for the simulator ..."
+  xcodebuild -project "$root/ios/WhatsAppV2.xcodeproj" -scheme WhatsAppV2 \
+    -configuration Debug -sdk iphonesimulator \
+    -destination 'generic/platform=iOS Simulator' \
+    -derivedDataPath "$root/build/ios" \
+    CODE_SIGNING_ALLOWED=NO \
     build | tail -30
 
   local app
-  app="$(ls -d "$root/iosApp/build/Build/Products/Debug-iphonesimulator"/*.app 2>/dev/null | head -1 || true)"
+  app="$(ls -d "$root/build/ios/Build/Products/Debug-iphonesimulator"/*.app 2>/dev/null | head -1 || true)"
   [ -n "$app" ] || die "xcodebuild reported success but no .app was produced under
-  iosApp/build/Build/Products/Debug-iphonesimulator."
+  build/ios/Build/Products/Debug-iphonesimulator."
 
   printf '\n\033[32mAPP\033[0m  %s\n' "$app"
   printf '     built %s\n\n' "$(date -r "$app" '+%Y-%m-%d %H:%M:%S')"
-  printf 'run it with:\n  xcrun simctl install booted %s\n\n' "$app"
+  printf 'run it with:\n  xcrun simctl install booted %s\n' "$app"
+  printf 'or produce an installable archive with:\n  ./build.sh ios --ipa\n\n'
 }
 
 # ------------------------------------------------------------------ dispatch
@@ -394,6 +440,11 @@ build_ios() {
 # failure: when two platforms are being kept in step, "Android is fine and iOS is broken"
 # and "both are broken" are different situations and the summary has to tell them apart.
 # `set -e` would have made the first failure the whole answer.
+if [ "${#IOS_EXTRA_ARGS[@]}" -gt 0 ] && [ "$target" = "android" ]; then
+  die "${IOS_EXTRA_ARGS[*]} is an iOS option, and the target is android.
+  Did you mean:  ./build.sh ios ${IOS_EXTRA_ARGS[*]}"
+fi
+
 case "$target" in
   android) build_android ;;
   ios)     build_ios ;;

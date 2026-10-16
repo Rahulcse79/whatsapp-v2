@@ -1,0 +1,317 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+		A70F7A3C71FE1DE9DE00A70B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppContainer.swift; path = AppContainer.swift; sourceTree = "<group>"; };
+		02BD73ED95526F160CCDC8DF = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		BB12A4135A31319885A51730 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RootView.swift; path = RootView.swift; sourceTree = "<group>"; };
+		C993411D04E01B939CF59CE1 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = WhatsAppV2App.swift; path = WhatsAppV2App.swift; sourceTree = "<group>"; };
+		630CDE3D8254CE49F197487C = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AudioSessionController.swift; path = AudioSessionController.swift; sourceTree = "<group>"; };
+		E8ED3B79A084F971BF7000BB = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "SipEngine+Bridge.swift"; path = "SipEngine+Bridge.swift"; sourceTree = "<group>"; };
+		FD93FCBB89E7E214CC619E45 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SipEngine.swift; path = SipEngine.swift; sourceTree = "<group>"; };
+		9B3C3FB04641968F97116D2D = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CallKitController.swift; path = CallKitController.swift; sourceTree = "<group>"; };
+		D8CEA323EF63529D9FAB1D81 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PushKitController.swift; path = PushKitController.swift; sourceTree = "<group>"; };
+		F5877139381F2123525A28D8 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AccountStore.swift; path = AccountStore.swift; sourceTree = "<group>"; };
+		F6C6EC70FAF54542D8EF6D66 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CallLogStore.swift; path = CallLogStore.swift; sourceTree = "<group>"; };
+		4C381F8856A7066FE6E82405 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsStore.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
+		AEC653735FDBAB5979CB3DDD = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AccountsView.swift; path = AccountsView.swift; sourceTree = "<group>"; };
+		E1C8E28537AC9A23E7CF4C5F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CallView.swift; path = CallView.swift; sourceTree = "<group>"; };
+		B0BAA36B9937AC2301226D92 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DialerView.swift; path = DialerView.swift; sourceTree = "<group>"; };
+		886628DB5C4E52B13B4E4472 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = HistoryView.swift; path = HistoryView.swift; sourceTree = "<group>"; };
+		3CE495A8981F0003A63455DC = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsView.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		754B07ADBDA9693BDCC46002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Formatting.swift; path = Formatting.swift; sourceTree = "<group>"; };
+		576B08C69D43E228378F5491 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Models.swift; path = Models.swift; sourceTree = "<group>"; };
+		B435DC4AD63A331AD0CDA72B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VideoView.swift; path = VideoView.swift; sourceTree = "<group>"; };
+		DD04A4DEDF9C0E2CC67AF0E1 = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = PjsipBridge.mm; path = PjsipBridge.mm; sourceTree = "<group>"; };
+		BC33D5CA6A2739902CA8F161 = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = Assets.xcassets; sourceTree = "<group>"; };
+		A81AAA744F56186B30E667E5 = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		439EBB91A251FC4B350B742E = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WhatsAppV2.entitlements; sourceTree = "<group>"; };
+		05A6D749514850F06F663AD5 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PjsipBridge.h; sourceTree = "<group>"; };
+		D741DA918CBA8A8716F74520 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PjsipTypes.h; sourceTree = "<group>"; };
+		0FE8F939EA003C417FC9797F = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WhatsAppV2-Bridging-Header.h; sourceTree = "<group>"; };
+		2029A639DD8022543C17416B = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WhatsAppV2.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BED0F219E3D89EE7F3F3EED7 = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Shared.xcframework; path = Frameworks/Shared.xcframework; sourceTree = "<group>"; };
+		A0DF5893FED78BAF1C9791B2 = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CallKit.framework; path = System/Library/Frameworks/CallKit.framework; sourceTree = SDKROOT; };
+		DE0ED80323E2D9221DCD41E6 = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = PushKit.framework; path = System/Library/Frameworks/PushKit.framework; sourceTree = SDKROOT; };
+		56B2E9CFFC818B4E46295211 = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
+		72D4E88B0275997661B8BF65 = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AudioToolbox.framework; path = System/Library/Frameworks/AudioToolbox.framework; sourceTree = SDKROOT; };
+		F13D1E70AE03EC9F501280A5 = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreAudio.framework; path = System/Library/Frameworks/CoreAudio.framework; sourceTree = SDKROOT; };
+		F30FE527E80E7552E7385CEA = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMedia.framework; path = System/Library/Frameworks/CoreMedia.framework; sourceTree = SDKROOT; };
+		662FC57666CBC21D62DC5734 = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreVideo.framework; path = System/Library/Frameworks/CoreVideo.framework; sourceTree = SDKROOT; };
+		ED39F835BFD5A2E7F893A1CB = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = VideoToolbox.framework; path = System/Library/Frameworks/VideoToolbox.framework; sourceTree = SDKROOT; };
+		C66A7B111C9F01F38C201370 = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		38EEB62A983EB3283D46A33F = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		775F18E9704AF2B271BFE758 = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = OpenGLES.framework; path = System/Library/Frameworks/OpenGLES.framework; sourceTree = SDKROOT; };
+		5D7622E85C59A45C39050227 = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		F428664A0A57C9392BC5952C = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		67D88D6B1372407178C64F10 = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };
+		7FD69B97E0A295F98217283A = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		9FF25369837A66B650E0831E = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
+		C0EC8DF7981BBA1FA31A77C8 = {isa = PBXBuildFile; fileRef = A70F7A3C71FE1DE9DE00A70B; };
+		705D90F988D19170D698BFCC = {isa = PBXBuildFile; fileRef = 02BD73ED95526F160CCDC8DF; };
+		98328546FEA53301E324F6C2 = {isa = PBXBuildFile; fileRef = BB12A4135A31319885A51730; };
+		8C12E9662065EACEA4B98F76 = {isa = PBXBuildFile; fileRef = C993411D04E01B939CF59CE1; };
+		1B1CEED6B147326F71081256 = {isa = PBXBuildFile; fileRef = 630CDE3D8254CE49F197487C; };
+		C39672B45BB9B35DF8812D7E = {isa = PBXBuildFile; fileRef = E8ED3B79A084F971BF7000BB; };
+		B3772C188164D25C3098E697 = {isa = PBXBuildFile; fileRef = FD93FCBB89E7E214CC619E45; };
+		4C7BAABD5250C624C9828EE9 = {isa = PBXBuildFile; fileRef = 9B3C3FB04641968F97116D2D; };
+		EFB1C338C7568F6F93DAA40B = {isa = PBXBuildFile; fileRef = D8CEA323EF63529D9FAB1D81; };
+		D6C9FF5E284840046CDB4E92 = {isa = PBXBuildFile; fileRef = F5877139381F2123525A28D8; };
+		2E3433D7E8D0C47975005360 = {isa = PBXBuildFile; fileRef = F6C6EC70FAF54542D8EF6D66; };
+		62E7496F994CDA07B40E5B56 = {isa = PBXBuildFile; fileRef = 4C381F8856A7066FE6E82405; };
+		9B311F0B5DC9838A3402673F = {isa = PBXBuildFile; fileRef = AEC653735FDBAB5979CB3DDD; };
+		583AC48C4A5F6E074F292AA7 = {isa = PBXBuildFile; fileRef = E1C8E28537AC9A23E7CF4C5F; };
+		E0324691449BC9D0BC985A15 = {isa = PBXBuildFile; fileRef = B0BAA36B9937AC2301226D92; };
+		4F734EBE48AD89AC68685C3E = {isa = PBXBuildFile; fileRef = 886628DB5C4E52B13B4E4472; };
+		04C474F9E2A2F92106564E49 = {isa = PBXBuildFile; fileRef = 3CE495A8981F0003A63455DC; };
+		9545DEF683FEE23D2355E393 = {isa = PBXBuildFile; fileRef = 754B07ADBDA9693BDCC46002; };
+		0878D29E1E2AD1171C4EEABD = {isa = PBXBuildFile; fileRef = 576B08C69D43E228378F5491; };
+		BC37F52463280427A05B78C6 = {isa = PBXBuildFile; fileRef = B435DC4AD63A331AD0CDA72B; };
+		B6DC4AEA3A0C5B41D9E4CA8D = {isa = PBXBuildFile; fileRef = DD04A4DEDF9C0E2CC67AF0E1; };
+		13421F6816F81E5334302510 = {isa = PBXBuildFile; fileRef = BC33D5CA6A2739902CA8F161; };
+		8EF45559BDEEB37A30745C60 = {isa = PBXBuildFile; fileRef = BED0F219E3D89EE7F3F3EED7; };
+		AFF5296C0E0CAFF859250F8C = {isa = PBXBuildFile; fileRef = A0DF5893FED78BAF1C9791B2; };
+		110073BFE7E68CB5FC02A8F4 = {isa = PBXBuildFile; fileRef = DE0ED80323E2D9221DCD41E6; };
+		119FBDE23ECDC7A8E5FB8C99 = {isa = PBXBuildFile; fileRef = 56B2E9CFFC818B4E46295211; };
+		73DD5A48091E6870979F90D3 = {isa = PBXBuildFile; fileRef = 72D4E88B0275997661B8BF65; };
+		2BC8B55A7E757FCA6747EE44 = {isa = PBXBuildFile; fileRef = F13D1E70AE03EC9F501280A5; };
+		FA3711910A2CEE723EBD84EF = {isa = PBXBuildFile; fileRef = F30FE527E80E7552E7385CEA; };
+		03B77F1CACAB02F08CD5C01C = {isa = PBXBuildFile; fileRef = 662FC57666CBC21D62DC5734; };
+		0213CF380558B7172A3B6B9D = {isa = PBXBuildFile; fileRef = ED39F835BFD5A2E7F893A1CB; };
+		916186F7E2A81AE28D0D2473 = {isa = PBXBuildFile; fileRef = C66A7B111C9F01F38C201370; };
+		EC7177DBFDD74A5E3838C40C = {isa = PBXBuildFile; fileRef = 38EEB62A983EB3283D46A33F; };
+		A596AD43518224DEC1562B71 = {isa = PBXBuildFile; fileRef = 775F18E9704AF2B271BFE758; };
+		D6C47C58D4E6CBDB3FA361D6 = {isa = PBXBuildFile; fileRef = 5D7622E85C59A45C39050227; };
+		3C0C8B4A9B721B942FF9543C = {isa = PBXBuildFile; fileRef = F428664A0A57C9392BC5952C; };
+		3AD8FF9106327088BB94E4C7 = {isa = PBXBuildFile; fileRef = 67D88D6B1372407178C64F10; };
+		6251FF0B4D27E76AF1CE1350 = {isa = PBXBuildFile; fileRef = 7FD69B97E0A295F98217283A; };
+		FB95FEFD2825F142B1470B2B = {isa = PBXBuildFile; fileRef = 9FF25369837A66B650E0831E; };
+		D1D0524B025E57AFFF263442 = {isa = PBXGroup; children = (
+				A70F7A3C71FE1DE9DE00A70B,
+				02BD73ED95526F160CCDC8DF,
+				BB12A4135A31319885A51730,
+				C993411D04E01B939CF59CE1,
+			); name = App; path = App; sourceTree = "<group>"; };
+		4FFE82DB01E789B14D76996A = {isa = PBXGroup; children = (
+				630CDE3D8254CE49F197487C,
+				E8ED3B79A084F971BF7000BB,
+				FD93FCBB89E7E214CC619E45,
+			); name = SIP; path = SIP; sourceTree = "<group>"; };
+		FE94918BF06C8F46EFB2D0A8 = {isa = PBXGroup; children = (
+				9B3C3FB04641968F97116D2D,
+				D8CEA323EF63529D9FAB1D81,
+			); name = Telephony; path = Telephony; sourceTree = "<group>"; };
+		28A008544C936628384F2DAC = {isa = PBXGroup; children = (
+				F5877139381F2123525A28D8,
+				F6C6EC70FAF54542D8EF6D66,
+				4C381F8856A7066FE6E82405,
+			); name = Storage; path = Storage; sourceTree = "<group>"; };
+		984D844B917CCD4C29DE2A97 = {isa = PBXGroup; children = (
+				AEC653735FDBAB5979CB3DDD,
+				E1C8E28537AC9A23E7CF4C5F,
+				B0BAA36B9937AC2301226D92,
+				886628DB5C4E52B13B4E4472,
+				3CE495A8981F0003A63455DC,
+			); name = Features; path = Features; sourceTree = "<group>"; };
+		F7ED0AE08FBB92027261B793 = {isa = PBXGroup; children = (
+				754B07ADBDA9693BDCC46002,
+				576B08C69D43E228378F5491,
+				B435DC4AD63A331AD0CDA72B,
+			); name = Support; path = Support; sourceTree = "<group>"; };
+		218CD79BBD39F7E39F5F9FAF = {isa = PBXGroup; children = (
+				DD04A4DEDF9C0E2CC67AF0E1,
+				05A6D749514850F06F663AD5,
+				D741DA918CBA8A8716F74520,
+				0FE8F939EA003C417FC9797F,
+			); name = Bridge; path = Bridge; sourceTree = "<group>"; };
+		887A6F90336FF23D95C3914B = {isa = PBXGroup; children = (
+				BC33D5CA6A2739902CA8F161,
+			); name = Resources; path = Resources; sourceTree = "<group>"; };
+		82CF2A43A7100F086D7FCFDD = {isa = PBXGroup; children = (
+				D1D0524B025E57AFFF263442,
+				4FFE82DB01E789B14D76996A,
+				FE94918BF06C8F46EFB2D0A8,
+				28A008544C936628384F2DAC,
+				984D844B917CCD4C29DE2A97,
+				F7ED0AE08FBB92027261B793,
+				218CD79BBD39F7E39F5F9FAF,
+				887A6F90336FF23D95C3914B,
+				A81AAA744F56186B30E667E5,
+				439EBB91A251FC4B350B742E,
+			); path = WhatsAppV2; sourceTree = "<group>"; };
+		649F037DD903349A9F8F2971 = {isa = PBXGroup; children = (
+				BED0F219E3D89EE7F3F3EED7,
+				A0DF5893FED78BAF1C9791B2,
+				DE0ED80323E2D9221DCD41E6,
+				56B2E9CFFC818B4E46295211,
+				72D4E88B0275997661B8BF65,
+				F13D1E70AE03EC9F501280A5,
+				F30FE527E80E7552E7385CEA,
+				662FC57666CBC21D62DC5734,
+				ED39F835BFD5A2E7F893A1CB,
+				C66A7B111C9F01F38C201370,
+				38EEB62A983EB3283D46A33F,
+				775F18E9704AF2B271BFE758,
+				5D7622E85C59A45C39050227,
+				F428664A0A57C9392BC5952C,
+				67D88D6B1372407178C64F10,
+				7FD69B97E0A295F98217283A,
+				9FF25369837A66B650E0831E,
+			); name = Frameworks; sourceTree = "<group>"; };
+		547D009064F7C3F13BEF3460 = {isa = PBXGroup; children = (
+				2029A639DD8022543C17416B,
+			); name = Products; sourceTree = "<group>"; };
+		B9340614599AB78F485950C7 = {isa = PBXGroup; children = (
+				82CF2A43A7100F086D7FCFDD,
+				649F037DD903349A9F8F2971,
+				547D009064F7C3F13BEF3460,
+			); sourceTree = "<group>"; };
+		7A70D71C385290AF96BF1031 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+				C0EC8DF7981BBA1FA31A77C8,
+				705D90F988D19170D698BFCC,
+				98328546FEA53301E324F6C2,
+				8C12E9662065EACEA4B98F76,
+				1B1CEED6B147326F71081256,
+				C39672B45BB9B35DF8812D7E,
+				B3772C188164D25C3098E697,
+				4C7BAABD5250C624C9828EE9,
+				EFB1C338C7568F6F93DAA40B,
+				D6C9FF5E284840046CDB4E92,
+				2E3433D7E8D0C47975005360,
+				62E7496F994CDA07B40E5B56,
+				9B311F0B5DC9838A3402673F,
+				583AC48C4A5F6E074F292AA7,
+				E0324691449BC9D0BC985A15,
+				4F734EBE48AD89AC68685C3E,
+				04C474F9E2A2F92106564E49,
+				9545DEF683FEE23D2355E393,
+				0878D29E1E2AD1171C4EEABD,
+				BC37F52463280427A05B78C6,
+				B6DC4AEA3A0C5B41D9E4CA8D,
+			); runOnlyForDeploymentPostprocessing = 0; };
+		424153ED3CD079DB4DB459AF = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (
+				8EF45559BDEEB37A30745C60,
+				AFF5296C0E0CAFF859250F8C,
+				110073BFE7E68CB5FC02A8F4,
+				119FBDE23ECDC7A8E5FB8C99,
+				73DD5A48091E6870979F90D3,
+				2BC8B55A7E757FCA6747EE44,
+				FA3711910A2CEE723EBD84EF,
+				03B77F1CACAB02F08CD5C01C,
+				0213CF380558B7172A3B6B9D,
+				916186F7E2A81AE28D0D2473,
+				EC7177DBFDD74A5E3838C40C,
+				A596AD43518224DEC1562B71,
+				D6C47C58D4E6CBDB3FA361D6,
+				3C0C8B4A9B721B942FF9543C,
+				3AD8FF9106327088BB94E4C7,
+				6251FF0B4D27E76AF1CE1350,
+				FB95FEFD2825F142B1470B2B,
+			); runOnlyForDeploymentPostprocessing = 0; };
+		285BB1C1430063331E9F5DD0 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (
+				13421F6816F81E5334302510,
+			); runOnlyForDeploymentPostprocessing = 0; };
+		991C36A5DFFC31F36D9A1473 = {isa = PBXShellScriptBuildPhase; buildActionMask = 2147483647; files = (); inputPaths = (); name = "Check the native prerequisites"; outputPaths = (); runOnlyForDeploymentPostprocessing = 0; shellPath = /bin/sh; shellScript = "set -e\nLIB=\"$SRCROOT/Vendor/pjsip/lib/$PLATFORM_NAME/libpjproject.a\"\nif [ ! -f \"$LIB\" ]; then\n  echo \"error: $LIB is missing. Run ios/scripts/build-pjsip-ios.sh\" >&2\n  exit 1\nfi\nif [ ! -d \"$SRCROOT/Frameworks/Shared.xcframework\" ]; then\n  echo \"error: Frameworks/Shared.xcframework is missing. Run ios/scripts/build-shared-framework.sh\" >&2\n  exit 1\nfi\necho \"note: linking libpjproject.a for $PLATFORM_NAME\"\n"; };
+		969595A508627F35A110362C = {isa = XCBuildConfiguration; buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_BITCODE = NO;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = ("DEBUG=1","$(inherited)");
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			}; name = Debug; };
+		A3FD2624D90AA76C1E18FB70 = {isa = XCBuildConfiguration; buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = WhatsAppV2/WhatsAppV2.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				FRAMEWORK_SEARCH_PATHS = ("$(SRCROOT)/Frameworks");
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = ("$(SRCROOT)/Vendor/pjsip/include","$(SRCROOT)/WhatsAppV2/Bridge");
+				INFOPLIST_FILE = WhatsAppV2/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)","@executable_path/Frameworks");
+				LIBRARY_SEARCH_PATHS = ("$(SRCROOT)/Vendor/pjsip/lib/$(PLATFORM_NAME)");
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = ("-lpjproject","-lc++","-lresolv","-ObjC");
+				PRODUCT_BUNDLE_IDENTIFIER = com.coraltelecom.whatsappv2;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OBJC_BRIDGING_HEADER = WhatsAppV2/Bridge/WhatsAppV2-Bridging-Header.h;
+			}; name = Debug; };
+		4C95F91A6D5CD87BB5DB8FDD = {isa = XCBuildConfiguration; buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_BITCODE = NO;
+				ENABLE_NS_ASSERTIONS = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			}; name = Release; };
+		CB4CAEBFF1A865FD02635BC0 = {isa = XCBuildConfiguration; buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = WhatsAppV2/WhatsAppV2.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				FRAMEWORK_SEARCH_PATHS = ("$(SRCROOT)/Frameworks");
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = ("$(SRCROOT)/Vendor/pjsip/include","$(SRCROOT)/WhatsAppV2/Bridge");
+				INFOPLIST_FILE = WhatsAppV2/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)","@executable_path/Frameworks");
+				LIBRARY_SEARCH_PATHS = ("$(SRCROOT)/Vendor/pjsip/lib/$(PLATFORM_NAME)");
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = ("-lpjproject","-lc++","-lresolv","-ObjC");
+				PRODUCT_BUNDLE_IDENTIFIER = com.coraltelecom.whatsappv2;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OBJC_BRIDGING_HEADER = WhatsAppV2/Bridge/WhatsAppV2-Bridging-Header.h;
+			}; name = Release; };
+		7EF2517A8FE63F4681EC5EEA = {isa = XCConfigurationList; buildConfigurations = (
+				969595A508627F35A110362C,
+				4C95F91A6D5CD87BB5DB8FDD,
+			); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		F2F62AAE534BA46EC59716F3 = {isa = XCConfigurationList; buildConfigurations = (
+				A3FD2624D90AA76C1E18FB70,
+				CB4CAEBFF1A865FD02635BC0,
+			); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		E3435DDA2687639586BF0B70 = {isa = PBXNativeTarget; buildConfigurationList = F2F62AAE534BA46EC59716F3; buildPhases = (
+				991C36A5DFFC31F36D9A1473,
+				7A70D71C385290AF96BF1031,
+				424153ED3CD079DB4DB459AF,
+				285BB1C1430063331E9F5DD0,
+			); buildRules = (); dependencies = (); name = WhatsAppV2; productName = WhatsAppV2; productReference = 2029A639DD8022543C17416B; productType = "com.apple.product-type.application"; };
+		AFC74C69B8FAF538E614821C = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 1540; LastUpgradeCheck = 1540; TargetAttributes = {E3435DDA2687639586BF0B70 = {CreatedOnToolsVersion = 15.4; }; }; }; buildConfigurationList = 7EF2517A8FE63F4681EC5EEA; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en,Base,); mainGroup = B9340614599AB78F485950C7; productRefGroup = 547D009064F7C3F13BEF3460; projectDirPath = ""; projectRoot = ""; targets = (
+				E3435DDA2687639586BF0B70,
+			); };
+	};
+	rootObject = AFC74C69B8FAF538E614821C;
+}

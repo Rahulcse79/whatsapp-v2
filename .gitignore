@@ -72,3 +72,26 @@ bin/
 # negation above.
 !third_party/**/bin/
 !third_party/**/bin/**
+
+# ---------------------------------------------------------------- iOS
+#
+# The native build products, not the sources. `ios/Vendor/pjsip/` is produced by
+# ios/scripts/build-pjsip-ios.sh from third_party/, and `ios/Frameworks/` by
+# ios/scripts/build-shared-framework.sh from :shared — both are build outputs of
+# vendored or committed source, so committing them would be committing a binary that
+# the repository can already produce. Architecture rule 11 says the same thing about
+# a committed .aar.
+#
+# ios/WhatsAppV2.xcodeproj IS committed, deliberately: it is generated, but a generated
+# file that is also the thing you double-click has to exist on a clean checkout.
+ios/Vendor/
+ios/Frameworks/
+build/ios-native/
+build/ios-ipa/
+build/ios/
+
+# Xcode's own per-user state.
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/

@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Coral</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+
+	<!-- Background modes.
+
+	     `voip` is what lets the process keep a socket open and be woken; without it a
+	     PushKit registration is accepted and no push is ever delivered.
+	     `audio` keeps the process running while a call has media - without it iOS
+	     suspends the app when it leaves the foreground and the call goes silent.
+	     `remote-notification` is for the data push that precedes an INVITE.
+
+	     `fetch` is deliberately ABSENT. Background fetch wakes the app on the system's
+	     schedule, which is the wrong mechanism for a call and would burn battery for
+	     nothing. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>voip</string>
+		<string>remote-notification</string>
+	</array>
+
+	<!-- Usage descriptions. iOS terminates the app the first time it touches one of
+	     these without a string here, so each is a hard requirement rather than
+	     documentation. They are written for the person reading the alert. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Coral needs the microphone so the other person can hear you on a call.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Coral needs the camera for video calls.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Coral can show a caller's name from your contacts instead of their number.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Coral connects to a SIP server on your local network to make and receive calls.</string>
+
+	<!-- Bonjour services, required alongside NSLocalNetworkUsageDescription on iOS 14+.
+	     Without them the local-network prompt is shown and the connection is still
+	     refused, which looks exactly like a server that is down. -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_sip._udp</string>
+		<string>_sip._tcp</string>
+		<string>_sips._tcp</string>
+	</array>
+
+	<!-- Cleartext SIP and RTP to a local server.
+
+	     ATS governs URL-loading traffic and not raw sockets, so PJSIP's own transports
+	     are not subject to it. This key is here for the one thing that IS: a plain-HTTP
+	     provisioning or presence endpoint on the same local server. It is scoped to
+	     local networking rather than opened globally - `NSAllowsArbitraryLoads` would
+	     turn ATS off for every host the app ever talks to. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
+
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>
