@@ -343,6 +343,49 @@ final class SipEngine: NSObject, ObservableObject {
     var uuidByCallId: [Int: UUID] = [:]
     var callIdByUUID: [UUID: Int] = [:]
 
+    // MARK: Mutations
+    //
+    // `calls`, `registrations` and `mixedCalls` are `@Published private(set)`, and
+    // Swift's `private` is FILE-scoped — so `SipEngine+Bridge.swift`, which is the same
+    // type in a different file, cannot assign to them:
+    //
+    //     error: cannot assign through subscript: 'calls' setter is inaccessible
+    //
+    // Relaxing them to `var` would fix the build and lose the guarantee that a view
+    // cannot write to the call list. These methods keep the guarantee and are a better
+    // shape anyway: there is now one place that knows how a call is added, replaced and
+    // removed, instead of five index-juggling sites in the event handlers.
+
+    func updateRegistration(_ status: RegistrationStatus, for accountId: String) {
+        registrations[accountId] = status
+    }
+
+    /// Inserts the call, or replaces the existing one with the same id.
+    func upsertCall(_ call: ActiveCall) {
+        if let index = calls.firstIndex(where: { $0.id == call.id }) {
+            calls[index] = call
+        } else {
+            calls.append(call)
+        }
+    }
+
+    /// Applies `change` to the call with this id, if it is still there. A no-op when it
+    /// is not, which is the common case for an event that arrives after a hang-up.
+    func mutateCall(id: Int, _ change: (inout ActiveCall) -> Void) {
+        guard let index = calls.firstIndex(where: { $0.id == id }) else { return }
+        change(&calls[index])
+    }
+
+    func removeCall(id: Int) {
+        calls.removeAll { $0.id == id }
+        mixedCalls.remove(id)
+    }
+
+    func removeAllCalls() {
+        calls.removeAll()
+        mixedCalls.removeAll()
+    }
+
     func registerMapping(callId: Int, uuid: UUID) {
         uuidByCallId[callId] = uuid
         callIdByUUID[uuid] = callId
@@ -452,8 +495,7 @@ final class SipEngine: NSObject, ObservableObject {
     /// nor end.
     func hangupEverything() {
         bridge.hangupAllCalls()
-        calls.removeAll()
-        mixedCalls.removeAll()
+        removeAllCalls()
         uuidByCallId.removeAll()
         callIdByUUID.removeAll()
     }
@@ -471,6 +513,11 @@ final class SipEngine: NSObject, ObservableObject {
                             provider: provider,
                             bundleId: Bundle.main.bundleIdentifier ?? "")
     }
+
+    /// What PJSIP this binary actually contains, read from the library rather than
+    /// from a constant — a build that silently lost a codec or shipped a different
+    /// pjproject says so on the Settings screen instead of being believed.
+    var stackVersion: String { bridge.stackVersion }
 
     /// The local camera preview view, started on demand.
     ///

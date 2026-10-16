@@ -69,7 +69,7 @@ extension SipEngine: PjsipBridgeDelegate {
         @unknown default:
             status = .unregistered
         }
-        registrations[accountId] = status
+        updateRegistration(status, for: accountId)
     }
 
     // MARK: - Calls
@@ -79,7 +79,7 @@ extension SipEngine: PjsipBridgeDelegate {
         registerMapping(callId: call.callId, uuid: uuid)
 
         let active = makeActiveCall(from: call, uuid: uuid)
-        upsert(active)
+        upsertCall(active)
 
         // CallKit, immediately. iOS terminates an app that takes a PushKit VoIP wake
         // and does not report a call almost at once, and even without a wake this is
@@ -97,7 +97,7 @@ extension SipEngine: PjsipBridgeDelegate {
             return fresh
         }()
         let active = makeActiveCall(from: call, uuid: uuid)
-        upsert(active)
+        upsertCall(active)
 
         if case .connected = active.phase {
             callKit?.reportOutgoingCallConnected(uuid: uuid)
@@ -128,8 +128,7 @@ extension SipEngine: PjsipBridgeDelegate {
         )
         onCallEnded?(entry)
 
-        calls.removeAll { $0.id == call.callId }
-        mixedCalls.remove(call.callId)
+        removeCall(id: call.callId)
         clearMapping(callId: call.callId)
 
         if let uuid {
@@ -140,12 +139,13 @@ extension SipEngine: PjsipBridgeDelegate {
     func pjsipCallMediaDidChange(_ call: WAVCallInfo,
                                              audioLive: Bool,
                                              videoLive: Bool) {
-        guard let index = calls.firstIndex(where: { $0.id == call.callId }) else { return }
-        calls[index].audioLive = audioLive
-        calls[index].videoLive = videoLive
-        calls[index].hasVideo = call.hasVideo
-        calls[index].isMuted = call.isMuted
-        calls[index].phase = phase(from: call)
+        mutateCall(id: call.callId) { active in
+            active.audioLive = audioLive
+            active.videoLive = videoLive
+            active.hasVideo = call.hasVideo
+            active.isMuted = call.isMuted
+            active.phase = phase(from: call)
+        }
     }
 
     func pjsipCallDidReceiveVideoRequest(_ callId: Int, wantsVideo: Bool) {
@@ -177,8 +177,8 @@ extension SipEngine: PjsipBridgeDelegate {
         // A transfer that failed must return the call rather than strand it. PJSIP
         // keeps the dialog up on a failure, so there is nothing to re-establish —
         // but the UI has to stop saying "Transferring".
-        if isFinal, statusCode >= 300, let index = calls.firstIndex(where: { $0.id == callId }) {
-            calls[index].phase = .connected
+        if isFinal, statusCode >= 300 {
+            mutateCall(id: callId) { $0.phase = .connected }
         }
     }
 
@@ -240,13 +240,6 @@ extension SipEngine: PjsipBridgeDelegate {
         }
     }
 
-    private func upsert(_ call: ActiveCall) {
-        if let index = calls.firstIndex(where: { $0.id == call.id }) {
-            calls[index] = call
-        } else {
-            calls.append(call)
-        }
-    }
 }
 
 // MARK: - Enum translation

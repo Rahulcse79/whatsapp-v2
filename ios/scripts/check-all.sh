@@ -151,6 +151,9 @@ check python3 "$here/check-common-portability.py"
 step "PJSIP symbols the bridge uses exist in the vendored headers"
 check python3 "$here/check-pjsip-symbols.py"
 
+step "SwiftUI members exist on their view models"
+check python3 "$here/check-swift-members.py"
+
 step "Bridge contract (header / .mm / Swift)"
 check python3 "$here/check-bridge-contract.py"
 

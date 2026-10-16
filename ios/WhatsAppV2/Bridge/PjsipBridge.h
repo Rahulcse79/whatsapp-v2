@@ -191,7 +191,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)updateAccount:(WAVAccountConfig *)config error:(NSError **)error
     NS_SWIFT_NAME(updateAccount(_:));
 - (void)removeAccount:(NSString *)accountId;
-- (void)setRegistration:(BOOL)wanted forAccount:(NSString *)accountId;
+- (void)setRegistration:(BOOL)wanted forAccount:(NSString *)accountId
+    NS_SWIFT_NAME(setRegistration(_:forAccount:));
 
 /// Re-sends REGISTER for every account that wants one. Called when the network comes
 /// back and after a PushKit wake, because the binding the registrar still believes in
@@ -209,17 +210,24 @@ NS_ASSUME_NONNULL_BEGIN
                    error:(NSError **)error
     NS_SWIFT_NAME(placeCall(to:fromAccount:profile:error:));
 
-- (void)answerCall:(NSInteger)callId profile:(WAVMediaProfile)profile;
-- (void)rejectCall:(NSInteger)callId statusCode:(NSInteger)statusCode;
+- (void)answerCall:(NSInteger)callId profile:(WAVMediaProfile)profile
+    NS_SWIFT_NAME(answerCall(_:profile:));
+- (void)rejectCall:(NSInteger)callId statusCode:(NSInteger)statusCode
+    NS_SWIFT_NAME(rejectCall(_:statusCode:));
 - (void)hangupCall:(NSInteger)callId;
 - (void)hangupAllCalls;
 
-- (void)setHold:(BOOL)held forCall:(NSInteger)callId;
-- (void)setMuted:(BOOL)muted forCall:(NSInteger)callId;
-- (void)sendDtmf:(NSString *)digits forCall:(NSInteger)callId;
+- (void)setHold:(BOOL)held forCall:(NSInteger)callId
+    NS_SWIFT_NAME(setHold(_:forCall:));
+- (void)setMuted:(BOOL)muted forCall:(NSInteger)callId
+    NS_SWIFT_NAME(setMuted(_:forCall:));
+- (void)sendDtmf:(NSString *)digits forCall:(NSInteger)callId
+    NS_SWIFT_NAME(sendDtmf(_:forCall:));
 
-- (void)transferCall:(NSInteger)callId toDestination:(NSString *)destination;
-- (void)attendedTransferCall:(NSInteger)callId toCall:(NSInteger)otherCallId;
+- (void)transferCall:(NSInteger)callId toDestination:(NSString *)destination
+    NS_SWIFT_NAME(transferCall(_:toDestination:));
+- (void)attendedTransferCall:(NSInteger)callId toCall:(NSInteger)otherCallId
+    NS_SWIFT_NAME(attendedTransferCall(_:toCall:));
 
 - (nullable WAVCallInfo *)infoForCall:(NSInteger)callId NS_SWIFT_NAME(info(forCall:));
 - (NSArray<WAVCallInfo *> *)activeCalls;
@@ -241,9 +249,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// on a null port — which is what `PJSUA_DONT_RELEASE_SND_DEV` in config_site.h buys.
 - (void)deactivateAudioSession;
 
-- (void)setVideoEnabled:(BOOL)enabled forCall:(NSInteger)callId;
+- (void)setVideoEnabled:(BOOL)enabled forCall:(NSInteger)callId
+    NS_SWIFT_NAME(setVideoEnabled(_:forCall:));
 - (void)switchCameraForCall:(NSInteger)callId NS_SWIFT_NAME(switchCamera(forCall:));
-- (void)respondToVideoRequest:(NSInteger)callId accept:(BOOL)accept;
+- (void)respondToVideoRequest:(NSInteger)callId accept:(BOOL)accept
+    NS_SWIFT_NAME(respondToVideoRequest(_:accept:));
 
 /// The local camera preview, as a view to put on screen. Nil when the camera is not open.
 - (nullable UIView *)localPreviewView NS_SWIFT_NAME(localPreviewView());
@@ -257,7 +267,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSArray<WAVCodecInfo *> *)enumerateAudioCodecs;
 - (NSArray<WAVCodecInfo *> *)enumerateVideoCodecs;
 /// `priority` 0 removes the codec from the offer entirely; 255 puts it first.
-- (void)setCodecPriority:(NSInteger)priority forCodec:(NSString *)identifier;
+- (void)setCodecPriority:(NSInteger)priority forCodec:(NSString *)identifier
+    NS_SWIFT_NAME(setCodecPriority(_:forCodec:));
 /// Applies an ordered preference list: first entry gets the highest priority, anything
 /// not named is disabled. One call, so the SDP offer cannot be observed half-applied.
 - (void)applyAudioCodecOrder:(NSArray<NSString *> *)codecNames;
