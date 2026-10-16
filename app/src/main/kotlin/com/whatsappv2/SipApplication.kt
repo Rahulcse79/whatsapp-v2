@@ -5,9 +5,9 @@ import com.whatsappv2.audio.CallAudioCoordinator
 import com.whatsappv2.call.IncomingCallPresenter
 import com.whatsappv2.calllog.CallHistoryPruner
 import com.whatsappv2.calllog.CallLogWriter
+import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.data.chat.ChatDataSync
 import com.whatsappv2.data.chat.ChatEngineLifecycle
-import com.whatsappv2.core.common.logging.Logger
 import com.whatsappv2.data.sip.SipEngineLifecycle
 import com.whatsappv2.di.ApplicationScope
 import com.whatsappv2.domain.usecase.ConferenceJoinCoordinator
