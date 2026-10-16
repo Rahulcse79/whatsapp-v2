@@ -103,6 +103,55 @@ else
   echo "  none. Expected for an unsigned build; a signed one is missing something."
 fi
 
+# ---------------------------------------------------------------- 3b. contents
+#
+# "An IPA was produced" and "an IPA with the SIP stack in it was produced" are
+# different claims, and only the second one is worth making. A link line that quietly
+# dropped libpjproject.a, or a Shared.xcframework that was searched for and not found,
+# both yield a perfectly valid IPA of an app that cannot place a call.
+#
+# `nm -U` lists defined symbols. Matching without anchoring on T/t deliberately: static
+# linking and LTO move symbols between external and local, and this is asking whether
+# the code is in the binary, not what its linkage is.
+echo
+echo "--- what is linked in ---"
+contents_fail=0
+check_symbol() {
+    local label="$1" pattern="$2" requirement="$3"
+    local n; n="$(nm -U "$binary" 2>/dev/null | grep -cE "$pattern" || true)"
+    if [ "${n:-0}" -gt 0 ]; then
+        printf "  %-34s %s symbol(s)\n" "$label" "$n"
+    elif [ "$requirement" = "required" ]; then
+        printf "  %-34s MISSING - the app cannot work without it\n" "$label"
+        contents_fail=$((contents_fail + 1))
+    else
+        printf "  %-34s absent\n" "$label"
+    fi
+}
+
+check_symbol "PJSIP (pjsua)"        "_pjsua_(create|call_make_call|acc_add)$"   required
+check_symbol "PJSIP video"          "_pjsua_call_set_vid_strm$"                 required
+check_symbol "shared Kotlin module" "_SharedSharedFacade"                       required
+check_symbol "OpenSSL"              "_SSL_CTX_new$"                             optional
+check_symbol "SRTP"                 "_srtp_protect$"                            optional
+
+echo "  codecs registered:"
+nm -U "$binary" 2>/dev/null \
+  | grep -oE "_pjmedia_codec_[a-z0-9_]+_init$" \
+  | sed -E 's/_pjmedia_codec_(.*)_init/\1/' | sort -u | tr '\n' ' ' | sed 's/^/     /'
+echo
+
+echo "  frameworks:"
+otool -L "$binary" 2>/dev/null \
+  | grep -oE "/System/Library/Frameworks/[A-Za-z]+\.framework" \
+  | sed 's|.*/||;s|\.framework||' | sort -u | tr '\n' ' ' | sed 's/^/     /'
+echo
+for required_framework in CallKit PushKit AVFoundation; do
+  otool -L "$binary" 2>/dev/null | grep -q "/$required_framework.framework" || {
+    echo "  $required_framework is NOT linked - a VoIP app needs it"
+    contents_fail=$((contents_fail + 1)); }
+done
+
 # ---------------------------------------------------------------- 4. Info.plist
 echo
 echo "--- Info.plist ---"
@@ -126,7 +175,7 @@ for key in NSMicrophoneUsageDescription NSCameraUsageDescription NSLocalNetworkU
 done
 
 echo
-if [ "$platform" = "2" ] && [ "$missing" -eq 0 ]; then
+if [ "$platform" = "2" ] && [ "$missing" -eq 0 ] && [ "${contents_fail:-0}" -eq 0 ]; then
   echo "VERDICT: a genuine iOS device build."
   if [ -f "$profile" ] && [ "$signed" = "yes" ]; then
     echo "         Signed and provisioned - installable through Xcode or Configurator."

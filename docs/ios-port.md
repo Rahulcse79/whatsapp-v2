@@ -281,63 +281,115 @@ Nothing has been run on a device or a simulator. See §4.
 
 ## 4. Status, 16 October 2026
 
-### Verified on this machine
+### An .ipa exists
 
-Everything in this block was actually executed and its output read.
+**`WhatsAppV2-unsigned.ipa`, 5.5 MB, produced by CI run 38890888526** and verified
+twice — by `verify-ipa.sh` on the runner, and again on the development machine, which
+has no Xcode and needs none for this:
+
+```
+  Non-fat file: .../WhatsAppV2.app/WhatsAppV2 is architecture: arm64
+  platform: iOS device            -> OK        (LC_BUILD_VERSION platform 2)
+  MinimumOSVersion                15.0          sdk 26.5
+  UIBackgroundModes               audio, voip, remote-notification
+  NSMicrophoneUsageDescription / NSCamera… / NSLocalNetwork…   all present
+  VERDICT: a genuine iOS device build.
+```
+
+It is **unsigned**, which is what this repository can produce without anybody's
+credentials. BrowserStack re-signs on upload. To install through Xcode, build it with
+`./build.sh ios --ipa-signed` and an Apple team.
+
+### What is actually inside it
+
+Not a shell. Read out of the Mach-O with `nm` and `otool`:
 
 | | |
 |---|---|
-| 62 files moved into `:shared`, packages preserved | `BUILD SUCCESSFUL` |
-| `:shared:jvmTest` | **93 tests, 0 failures** (73 video ladder + 20 new facade) |
-| `:core:common:test` | **51 tests, 0 failures** |
-| `:domain:test` | **740 tests, 0 failures** |
-| `:app:compileDebugKotlin` and every `:data:*` / `:feature:*` module | `BUILD SUCCESSFUL` — the Android app still compiles against the moved code |
-| 21 Swift files, `swiftc -parse` | 0 failures |
-| 5 shell scripts, `bash -n` | 0 failures |
-| `Info.plist`, entitlements, `project.pbxproj`, `plutil -lint` | OK |
-| `project.pbxproj` structure | 108 objects, **0 dangling references**, 21 sources, 17 frameworks |
-| The generator is deterministic | regenerating twice is byte-identical |
-| `verify-ipa.sh` against a synthetic IPA | correctly rejected a macOS binary and two missing usage descriptions |
-| `./build.sh ios` on this machine | refuses, naming Xcode; exit 1 |
-| `./build.sh android --ipa` | refuses, naming the target |
+| PJSIP | `pjsua_create`, `pjsua_call_make_call`, `pjsua_acc_add`, `pjsua_call_set_vid_strm`, `pjsua_conf_connect` |
+| Codecs registered | **g711, g722, gsm, ilbc, speex, opus, vpx (VP8/VP9)** |
+| Security | OpenSSL (`SSL_CTX_new`), SRTP (`srtp_protect`), with AES-GCM |
+| Shared Kotlin | 7,945 symbols, including `com.whatsappv2.domain.model.AudioCodec.OPUS` |
+| Frameworks | CallKit, PushKit, AVFoundation, AudioToolbox, Metal, MetalKit, VideoToolbox, OpenGLES, Security, Network, SwiftUI, UIKit |
 
-### NOT verified, and cannot be here
+The shared module is genuinely linked, not merely built: the domain enums Android uses
+are in the iOS binary.
 
-Everything below needs an iOS SDK. None of it has been compiled, linked or run.
+### Verified
+
+| | |
+|---|---|
+| 62 files moved into `:shared`, packages preserved | Android still compiles |
+| `:shared:jvmTest` | **93 tests, 0 failures** |
+| `:core:common:test` / `:domain:test` | **51 / 740, 0 failures** |
+| `:shared` compiled for `iosArm64` + simulator | CI |
+| **93 tests ON AN ARM64 iOS SIMULATOR** | **0 failures** — 37 + 36 video ladder, 20 facade |
+| `Shared.xcframework` | assembled, 27.6 MB |
+| OpenSSL, Opus, libvpx, pjproject cross-compiled for iOS arm64 | from the vendored trees |
+| `aconfigure` found all three | SSL + AES-GCM, Opus, VPX usable |
+| AVFoundation capture, Metal render, VideoToolbox H.264 | selected by configure |
+| Swift + Objective-C++ compile and link | CI |
+| `.ipa` packed and verified | CI **and** locally |
+| Android APK, full native build | CI run 38864975949, green |
+
+### NOT verified — nothing has run
+
+No part of this app has been **executed**. Not on a simulator, not on a device.
+Everything above is about compiling, linking and packaging.
 
 | | What would prove it |
 |---|---|
-| PJSIP/OpenSSL/Opus/libvpx cross-compile | `ios/scripts/build-pjsip-ios.sh` on a Mac with Xcode |
-| `PjsipBridge.mm` compiles and links | the same, then an Xcode build |
-| The Swift code **type-checks** | `swiftc -parse` is syntax only — no imports are resolved |
-| Kotlin/Native's exported Swift names match what `SipEngine.swift` calls | the first Xcode build; `SharedFacade` is the only interop surface, so a mismatch is one file to fix |
-| The app launches, registers, places a call | a simulator or a device |
-| CallKit, PushKit, audio routing, video | a **device** — the simulator has no PushKit and no cellular call to be interrupted by |
-| An installable `.ipa` | `./build.sh ios --ipa-signed` with an Apple team |
+| The app launches | a simulator or a device |
+| SIP registration against the FreeSWITCH | a device on the lab network |
+| An audio call, both directions | two endpoints |
+| A video call | two devices — the simulator has no real camera path worth trusting |
+| CallKit: lock screen, cellular-call hold, audio-session handover | a **device**; the simulator has no CallKit worth the name |
+| PushKit wake | a **device** and an APNs key; the simulator cannot receive VoIP pushes |
+| The local N-way conference | three endpoints |
+| Kotlin/Native ↔ Swift behaviour at run time | it compiles, which proves the names; not the semantics |
 
-### The honest summary
-
-The iOS half is **written and statically checked, not built**. No `.ipa` exists, and
-this document will not claim one does until one has been produced and
-`verify-ipa.sh` has reported it as a device build.
-
-The one machine in this project that could produce it has no Xcode and cannot install a
-current one (§2). The two ways forward are a Mac running macOS 14+ with Xcode 15+, or
-the `ios-app` CI job, which now builds the project and packs an unsigned device IPA on a
-GitHub macOS runner — and which, before this work, was skipped because no project
-existed for it to build.
+The honest summary: **the thing builds and is installable. Nothing about it is known
+to work.** The next step is not more building — it is `./build.sh ios --ipa-signed`
+with your team id, onto a handset, against the lab FreeSWITCH.
 
 ---
 
 ## 5. Known gaps against the Android app
 
-Deliberate, and each one stated rather than left to be discovered:
+Deliberate, and each stated rather than left to be discovered:
 
 | Feature | iOS | Why |
 |---|---|---|
-| Chat | **absent** | `:chatsdk` is a vendored **Java** SDK. Porting it is a separate piece of work of comparable size to this one. |
-| Lyra codec | **absent** | The nineteen-tree TFLite closure is not cross-compiled for Apple. Calls fall back to G.711 or Opus. |
+| Chat | **absent** | `:chatsdk` is a vendored **Java** SDK. Porting it is separate work of comparable size to this. |
+| Lyra codec | **absent** | The nineteen-tree TFLite closure is not cross-compiled for Apple. Calls fall back to Opus or G.711. |
 | Voice gate / speaker verification | **absent** | ONNX Runtime and a 24 MB model, and the feature ships **off** on Android anyway. |
-| Call recording | **absent** | Server-side Lyra recording is a FreeSWITCH module and is unaffected; the client-side half is not ported. |
-| Adaptive video ladder | **present but not wired** | `AdaptiveVideoPolicy` compiles for iOS and its tests run there. Feeding it live `VideoConditions` is not done, so iOS encodes at the fixed rate the user chose — which is what Android did before the ladder landed. |
+| Call recording | **absent** | Server-side Lyra recording is a FreeSWITCH module and is unaffected; the client half is not ported. |
+| Adaptive video ladder | **present, not wired** | `AdaptiveVideoPolicy` compiles for iOS and its 37 tests run there. Feeding it live `VideoConditions` is not done, so iOS encodes at the fixed rate the user chose — which is what Android did before the ladder landed. |
 | Contacts | **absent** | `NSContactsUsageDescription` is declared; nothing reads the store yet. |
+
+---
+
+## 6. What it took
+
+Nine CI rounds. Every one of these was invisible on a machine without an iOS SDK, and
+each now has a local check so it cannot come back:
+
+| Defect | Check that now catches it |
+|---|---|
+| `@JvmInline` with no import — `kotlin.jvm.*` is a JVM-only default import | `check-common-portability.py` |
+| Opus built as 32-bit ARM, ARMv7 GNU assembly Apple's assembler rejects | — (triple is now `aarch64-*`) |
+| A cache stamp that `cd`-ed into a directory that never existed, and would have reported every dependency up to date for ever | — |
+| `make all` linking pjproject's test binaries, which lack `-framework Foundation` | — (`make lib`) |
+| `--sdk-path` is not a libvpx option | — |
+| libvpx x86 assembly needs yasm, not clang | — (and the preflight checks for it) |
+| `${v:+AS=x}` as an assignment prefix — the shell decides assignment-vs-command before expanding | ShellCheck |
+| `export AR="$(xcrun …)"` swallowing a failed lookup (×5) | ShellCheck |
+| Flat paths in the generated pbxproj, breaking on nested `Features/` | filesystem check in `check-all.sh` |
+| `private(set)` is file-scoped, so the delegate extension could not write | — (explicit mutators) |
+| A Swift view reading a member that did not exist | `check-swift-members.py` |
+| `PJSIP_TLS_ERRNO_START/END` invented | `check-pjsip-symbols.py` |
+| `pjsua_stream_stat.vid` invented | — (needs a compiler; the symbol check cannot see struct fields) |
+| `pj/config.h` needs `PJ_AUTOCONF` and the endianness pair | — |
+
+`ios/scripts/check-all.sh` runs all of it, on a Mac with only the Command Line Tools,
+in about a minute.
