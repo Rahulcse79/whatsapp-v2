@@ -1402,25 +1402,50 @@ static void cb_on_log(int level, const char *data, int len) {
 
         WAVMediaStats *out = [[WAVMediaStats alloc] init];
         for (unsigned i = 0; i < ci.media_cnt; ++i) {
+            // `pjsua_stream_stat` carries exactly two things — an RTCP statistic and a
+            // jitter-buffer state. It has no video section: an earlier version of this
+            // method read `stat.vid[0].rx.frame_cnt` and there is no such member.
+            // Video's counters come from its own RTCP stream, which pjsua reports
+            // through the same call keyed on the video media index, and its SIZE comes
+            // from the render window.
             pjsua_stream_stat stat;
-            if (pjsua_call_get_stream_stat((pjsua_call_id)callId, i, &stat) != PJ_SUCCESS) continue;
+            if (pjsua_call_get_stream_stat((pjsua_call_id)callId, i, &stat) != PJ_SUCCESS) {
+                continue;
+            }
 
             if (ci.media[i].type == PJMEDIA_TYPE_AUDIO) {
-                out.rxPackets     = stat.rtcp.rx.pkt;
-                out.txPackets     = stat.rtcp.tx.pkt;
-                out.rxLostPackets = stat.rtcp.rx.loss;
-                out.txLostPackets = stat.rtcp.tx.loss;
-                out.rxJitterMs    = stat.rtcp.rx.jitter.mean / 1000.0;
-                out.roundTripMs   = stat.rtcp.rtt.mean / 1000.0;
-                out.rxBytesPerSecond = stat.rtcp.rx.bytes;
-                out.txBytesPerSecond = stat.rtcp.tx.bytes;
+                out.rxPackets        = (NSInteger)stat.rtcp.rx.pkt;
+                out.txPackets        = (NSInteger)stat.rtcp.tx.pkt;
+                out.rxLostPackets    = (NSInteger)stat.rtcp.rx.loss;
+                out.txLostPackets    = (NSInteger)stat.rtcp.tx.loss;
+                out.rxBytesPerSecond = (NSInteger)stat.rtcp.rx.bytes;
+                out.txBytesPerSecond = (NSInteger)stat.rtcp.tx.bytes;
+                // pjmedia reports jitter and RTT in MICROseconds; the UI shows ms, and
+                // a factor of a thousand in a latency number is the kind of wrong that
+                // gets believed.
+                out.rxJitterMs  = stat.rtcp.rx.jitter.mean / 1000.0;
+                out.roundTripMs = stat.rtcp.rtt.mean / 1000.0;
             } else if (ci.media[i].type == PJMEDIA_TYPE_VIDEO) {
-                // The DECODER's own format, not the window's. The window lags
-                // FMT_CHANGED by a frame or two, so a UI that reads the window reports
-                // the previous resolution for the first moments of every size change.
-                out.videoRxWidth  = stat.vid[0].rx.frame_cnt > 0 ? ci.media[i].stream.vid.dec_slot : 0;
-                out.videoDecodeFps = stat.vid[0].rx.frame_cnt;
-                out.videoEncodeFps = stat.vid[0].tx.frame_cnt;
+                // The decoded frame SIZE, from the window rather than from a counter.
+                //
+                // It is the only place the real negotiated resolution appears: the
+                // window is what the renderer sized itself to after FMT_CHANGED, and
+                // the SDP's answer is a ceiling rather than what is arriving.
+                pjsua_vid_win_id wid = ci.media[i].stream.vid.win_in;
+                if (wid != PJSUA_INVALID_ID) {
+                    pjsua_vid_win_info wi;
+                    if (pjsua_vid_win_get_info(wid, &wi) == PJ_SUCCESS) {
+                        out.videoRxWidth  = (NSInteger)wi.size.w;
+                        out.videoRxHeight = (NSInteger)wi.size.h;
+                    }
+                }
+                // Frame RATE is deliberately left at zero rather than guessed.
+                //
+                // pjsua exposes no per-stream frame counter, and deriving one from the
+                // RTCP packet count is wrong by whatever the packets-per-frame ratio
+                // happens to be — which for VP8 varies with the frame. Reporting 0 is
+                // honest; reporting a number computed from the wrong quantity is the
+                // sort of metric that gets optimised against for a week.
             }
         }
         stats = out;

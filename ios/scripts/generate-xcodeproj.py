@@ -381,6 +381,24 @@ echo "note: linking libpjproject.a for $PLATFORM_NAME"
         "PRODUCT_NAME": '"$(TARGET_NAME)"',
         "SWIFT_OBJC_BRIDGING_HEADER": q(f"{APP_NAME}/Bridge/{APP_NAME}-Bridging-Header.h"),
         "HEADER_SEARCH_PATHS": "(%s)" % ",".join(header_search),
+        # The three defines pjproject compiles ITSELF with. Without them
+        # `pj/config.h` refuses to compile at all:
+        #
+        #     config.h:265:9: error: Endianness must be declared for this processor
+        #     config.h:1649:4: error: "PJ_IS_LITTLE_ENDIAN is not defined!"
+        #
+        # pjproject's generated build.mak puts them on every compile line
+        # (`-DPJ_AUTOCONF=1 -DPJ_IS_BIG_ENDIAN=0 -DPJ_IS_LITTLE_ENDIAN=1`), and the app
+        # includes the same headers, so it needs the same flags. PJ_AUTOCONF is what
+        # makes config.h read the `pj/compat/*_auto.h` that aconfigure generated; the
+        # endianness pair is not derivable from the preprocessor on Apple silicon,
+        # which is why pjproject makes the build state it.
+        #
+        # Little-endian is correct for every architecture this project targets — arm64
+        # and x86_64 on iOS — and pjproject's configure decided the same thing; the
+        # value is read off its compile line rather than assumed.
+        "GCC_PREPROCESSOR_DEFINITIONS": '("$(inherited)","PJ_AUTOCONF=1",'
+                                        '"PJ_IS_BIG_ENDIAN=0","PJ_IS_LITTLE_ENDIAN=1")',
         # Keyed on $(PLATFORM_NAME) so the device and simulator slices are never mixed.
         # They cannot be lipo-ed together — same architecture, different platform — so
         # two directories and this variable is the only arrangement that works.
