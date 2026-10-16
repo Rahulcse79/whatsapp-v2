@@ -233,8 +233,16 @@ jobs:
 
       # autoconf and automake are not on the macOS runner image by default, and opus
       # generates its configure with them.
+      # `brew install` on a formula the image already carries can exit non-zero, and a
+      # runner image's contents change without notice — so ask before installing rather
+      # than letting a warning fail the job.
       - name: Install the autotools
-        run: brew install autoconf automake libtool
+        run: |
+          for f in autoconf automake libtool; do
+            brew list --formula "$f" >/dev/null 2>&1 || brew install "$f"
+          done
+          autoconf --version | head -1
+          automake --version | head -1
 
       - name: Build PJSIP for iOS (device + simulator)
         run: ios/scripts/build-pjsip-ios.sh
