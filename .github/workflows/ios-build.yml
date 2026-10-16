@@ -34,6 +34,11 @@ on:
   pull_request:
     branches: [feature/ios-port]
   workflow_dispatch:
+    inputs:
+      run-android:
+        description: "Also build the Android APK (slow: a full native build)"
+        type: boolean
+        default: false
 
 # A second push supersedes the first: these jobs are long and there is no value in two
 # native builds of the same branch racing each other.
@@ -185,7 +190,7 @@ jobs:
   # **unsigned** unless signing secrets are configured — see the two build steps below.
   ios-app:
     name: iOS app and IPA
-    needs: [inspect, shared-ios]
+    needs: [inspect]
     if: needs.inspect.outputs.has-xcode-project == 'true'
     runs-on: macos-latest
     timeout-minutes: 120
@@ -366,6 +371,19 @@ jobs:
   # the platform that already works.
   android:
     name: Android APK
+    # OFF by default on this branch, deliberately.
+    #
+    # It is a full native build — PJSIP, OpenSSL, libvpx and the Lyra/TFLite closure
+    # from vendored source — so it runs for the better part of an hour, and on a branch
+    # being iterated for the iOS build it answers a question that has already been
+    # answered: run 38864975949 built it green after the shared-module move. Re-proving
+    # that on every iOS fix is an hour of runner time per attempt for no new
+    # information.
+    #
+    # Ask for it with `gh workflow run ios-build.yml -f run-android=true`, and it runs
+    # by itself on a pull request, which is the point at which "has the port cost the
+    # platform that already works" has to be answered again.
+    if: github.event_name == 'pull_request' || inputs.run-android == true
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
