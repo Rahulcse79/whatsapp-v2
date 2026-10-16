@@ -5,33 +5,33 @@
 	};
 	objectVersion = 56;
 	objects = {
-		A70F7A3C71FE1DE9DE00A70B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppContainer.swift; path = AppContainer.swift; sourceTree = "<group>"; };
-		02BD73ED95526F160CCDC8DF = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
-		BB12A4135A31319885A51730 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RootView.swift; path = RootView.swift; sourceTree = "<group>"; };
-		C993411D04E01B939CF59CE1 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = WhatsAppV2App.swift; path = WhatsAppV2App.swift; sourceTree = "<group>"; };
-		630CDE3D8254CE49F197487C = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AudioSessionController.swift; path = AudioSessionController.swift; sourceTree = "<group>"; };
-		E8ED3B79A084F971BF7000BB = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "SipEngine+Bridge.swift"; path = "SipEngine+Bridge.swift"; sourceTree = "<group>"; };
-		FD93FCBB89E7E214CC619E45 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SipEngine.swift; path = SipEngine.swift; sourceTree = "<group>"; };
-		9B3C3FB04641968F97116D2D = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CallKitController.swift; path = CallKitController.swift; sourceTree = "<group>"; };
-		D8CEA323EF63529D9FAB1D81 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PushKitController.swift; path = PushKitController.swift; sourceTree = "<group>"; };
-		F5877139381F2123525A28D8 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AccountStore.swift; path = AccountStore.swift; sourceTree = "<group>"; };
-		F6C6EC70FAF54542D8EF6D66 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CallLogStore.swift; path = CallLogStore.swift; sourceTree = "<group>"; };
-		4C381F8856A7066FE6E82405 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsStore.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
-		AEC653735FDBAB5979CB3DDD = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AccountsView.swift; path = AccountsView.swift; sourceTree = "<group>"; };
-		E1C8E28537AC9A23E7CF4C5F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CallView.swift; path = CallView.swift; sourceTree = "<group>"; };
-		B0BAA36B9937AC2301226D92 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DialerView.swift; path = DialerView.swift; sourceTree = "<group>"; };
-		886628DB5C4E52B13B4E4472 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = HistoryView.swift; path = HistoryView.swift; sourceTree = "<group>"; };
-		3CE495A8981F0003A63455DC = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsView.swift; path = SettingsView.swift; sourceTree = "<group>"; };
-		754B07ADBDA9693BDCC46002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Formatting.swift; path = Formatting.swift; sourceTree = "<group>"; };
-		576B08C69D43E228378F5491 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Models.swift; path = Models.swift; sourceTree = "<group>"; };
-		B435DC4AD63A331AD0CDA72B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VideoView.swift; path = VideoView.swift; sourceTree = "<group>"; };
-		DD04A4DEDF9C0E2CC67AF0E1 = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = PjsipBridge.mm; path = PjsipBridge.mm; sourceTree = "<group>"; };
-		BC33D5CA6A2739902CA8F161 = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = Assets.xcassets; sourceTree = "<group>"; };
-		A81AAA744F56186B30E667E5 = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		439EBB91A251FC4B350B742E = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WhatsAppV2.entitlements; sourceTree = "<group>"; };
-		05A6D749514850F06F663AD5 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PjsipBridge.h; sourceTree = "<group>"; };
-		D741DA918CBA8A8716F74520 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PjsipTypes.h; sourceTree = "<group>"; };
-		0FE8F939EA003C417FC9797F = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WhatsAppV2-Bridging-Header.h; sourceTree = "<group>"; };
+		A70F7A3C71FE1DE9DE00A70B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppContainer.swift; path = WhatsAppV2/App/AppContainer.swift; sourceTree = SOURCE_ROOT; };
+		02BD73ED95526F160CCDC8DF = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = WhatsAppV2/App/AppDelegate.swift; sourceTree = SOURCE_ROOT; };
+		BB12A4135A31319885A51730 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RootView.swift; path = WhatsAppV2/App/RootView.swift; sourceTree = SOURCE_ROOT; };
+		C993411D04E01B939CF59CE1 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = WhatsAppV2App.swift; path = WhatsAppV2/App/WhatsAppV2App.swift; sourceTree = SOURCE_ROOT; };
+		630CDE3D8254CE49F197487C = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AudioSessionController.swift; path = WhatsAppV2/SIP/AudioSessionController.swift; sourceTree = SOURCE_ROOT; };
+		E8ED3B79A084F971BF7000BB = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "SipEngine+Bridge.swift"; path = "WhatsAppV2/SIP/SipEngine+Bridge.swift"; sourceTree = SOURCE_ROOT; };
+		FD93FCBB89E7E214CC619E45 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SipEngine.swift; path = WhatsAppV2/SIP/SipEngine.swift; sourceTree = SOURCE_ROOT; };
+		9B3C3FB04641968F97116D2D = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CallKitController.swift; path = WhatsAppV2/Telephony/CallKitController.swift; sourceTree = SOURCE_ROOT; };
+		D8CEA323EF63529D9FAB1D81 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PushKitController.swift; path = WhatsAppV2/Telephony/PushKitController.swift; sourceTree = SOURCE_ROOT; };
+		F5877139381F2123525A28D8 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AccountStore.swift; path = WhatsAppV2/Storage/AccountStore.swift; sourceTree = SOURCE_ROOT; };
+		F6C6EC70FAF54542D8EF6D66 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CallLogStore.swift; path = WhatsAppV2/Storage/CallLogStore.swift; sourceTree = SOURCE_ROOT; };
+		4C381F8856A7066FE6E82405 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsStore.swift; path = WhatsAppV2/Storage/SettingsStore.swift; sourceTree = SOURCE_ROOT; };
+		AEC653735FDBAB5979CB3DDD = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AccountsView.swift; path = WhatsAppV2/Features/Accounts/AccountsView.swift; sourceTree = SOURCE_ROOT; };
+		E1C8E28537AC9A23E7CF4C5F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CallView.swift; path = WhatsAppV2/Features/Call/CallView.swift; sourceTree = SOURCE_ROOT; };
+		B0BAA36B9937AC2301226D92 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DialerView.swift; path = WhatsAppV2/Features/Dialer/DialerView.swift; sourceTree = SOURCE_ROOT; };
+		886628DB5C4E52B13B4E4472 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = HistoryView.swift; path = WhatsAppV2/Features/History/HistoryView.swift; sourceTree = SOURCE_ROOT; };
+		3CE495A8981F0003A63455DC = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsView.swift; path = WhatsAppV2/Features/Settings/SettingsView.swift; sourceTree = SOURCE_ROOT; };
+		754B07ADBDA9693BDCC46002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Formatting.swift; path = WhatsAppV2/Support/Formatting.swift; sourceTree = SOURCE_ROOT; };
+		576B08C69D43E228378F5491 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Models.swift; path = WhatsAppV2/Support/Models.swift; sourceTree = SOURCE_ROOT; };
+		B435DC4AD63A331AD0CDA72B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VideoView.swift; path = WhatsAppV2/Support/VideoView.swift; sourceTree = SOURCE_ROOT; };
+		DD04A4DEDF9C0E2CC67AF0E1 = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = PjsipBridge.mm; path = WhatsAppV2/Bridge/PjsipBridge.mm; sourceTree = SOURCE_ROOT; };
+		BC33D5CA6A2739902CA8F161 = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = WhatsAppV2/Resources/Assets.xcassets; sourceTree = SOURCE_ROOT; };
+		A81AAA744F56186B30E667E5 = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = WhatsAppV2/Info.plist; sourceTree = SOURCE_ROOT; };
+		439EBB91A251FC4B350B742E = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = WhatsAppV2.entitlements; path = WhatsAppV2/WhatsAppV2.entitlements; sourceTree = SOURCE_ROOT; };
+		05A6D749514850F06F663AD5 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = PjsipBridge.h; path = WhatsAppV2/Bridge/PjsipBridge.h; sourceTree = SOURCE_ROOT; };
+		D741DA918CBA8A8716F74520 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = PjsipTypes.h; path = WhatsAppV2/Bridge/PjsipTypes.h; sourceTree = SOURCE_ROOT; };
+		0FE8F939EA003C417FC9797F = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = WhatsAppV2-Bridging-Header.h; path = WhatsAppV2/Bridge/WhatsAppV2-Bridging-Header.h; sourceTree = SOURCE_ROOT; };
 		2029A639DD8022543C17416B = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WhatsAppV2.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BED0F219E3D89EE7F3F3EED7 = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Shared.xcframework; path = Frameworks/Shared.xcframework; sourceTree = "<group>"; };
 		A0DF5893FED78BAF1C9791B2 = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CallKit.framework; path = System/Library/Frameworks/CallKit.framework; sourceTree = SDKROOT; };
@@ -94,42 +94,42 @@
 				02BD73ED95526F160CCDC8DF,
 				BB12A4135A31319885A51730,
 				C993411D04E01B939CF59CE1,
-			); name = App; path = App; sourceTree = "<group>"; };
+			); name = App; sourceTree = "<group>"; };
 		4FFE82DB01E789B14D76996A = {isa = PBXGroup; children = (
 				630CDE3D8254CE49F197487C,
 				E8ED3B79A084F971BF7000BB,
 				FD93FCBB89E7E214CC619E45,
-			); name = SIP; path = SIP; sourceTree = "<group>"; };
+			); name = SIP; sourceTree = "<group>"; };
 		FE94918BF06C8F46EFB2D0A8 = {isa = PBXGroup; children = (
 				9B3C3FB04641968F97116D2D,
 				D8CEA323EF63529D9FAB1D81,
-			); name = Telephony; path = Telephony; sourceTree = "<group>"; };
+			); name = Telephony; sourceTree = "<group>"; };
 		28A008544C936628384F2DAC = {isa = PBXGroup; children = (
 				F5877139381F2123525A28D8,
 				F6C6EC70FAF54542D8EF6D66,
 				4C381F8856A7066FE6E82405,
-			); name = Storage; path = Storage; sourceTree = "<group>"; };
+			); name = Storage; sourceTree = "<group>"; };
 		984D844B917CCD4C29DE2A97 = {isa = PBXGroup; children = (
 				AEC653735FDBAB5979CB3DDD,
 				E1C8E28537AC9A23E7CF4C5F,
 				B0BAA36B9937AC2301226D92,
 				886628DB5C4E52B13B4E4472,
 				3CE495A8981F0003A63455DC,
-			); name = Features; path = Features; sourceTree = "<group>"; };
+			); name = Features; sourceTree = "<group>"; };
 		F7ED0AE08FBB92027261B793 = {isa = PBXGroup; children = (
 				754B07ADBDA9693BDCC46002,
 				576B08C69D43E228378F5491,
 				B435DC4AD63A331AD0CDA72B,
-			); name = Support; path = Support; sourceTree = "<group>"; };
+			); name = Support; sourceTree = "<group>"; };
 		218CD79BBD39F7E39F5F9FAF = {isa = PBXGroup; children = (
 				DD04A4DEDF9C0E2CC67AF0E1,
 				05A6D749514850F06F663AD5,
 				D741DA918CBA8A8716F74520,
 				0FE8F939EA003C417FC9797F,
-			); name = Bridge; path = Bridge; sourceTree = "<group>"; };
+			); name = Bridge; sourceTree = "<group>"; };
 		887A6F90336FF23D95C3914B = {isa = PBXGroup; children = (
 				BC33D5CA6A2739902CA8F161,
-			); name = Resources; path = Resources; sourceTree = "<group>"; };
+			); name = Resources; sourceTree = "<group>"; };
 		82CF2A43A7100F086D7FCFDD = {isa = PBXGroup; children = (
 				D1D0524B025E57AFFF263442,
 				4FFE82DB01E789B14D76996A,
@@ -141,7 +141,7 @@
 				887A6F90336FF23D95C3914B,
 				A81AAA744F56186B30E667E5,
 				439EBB91A251FC4B350B742E,
-			); path = WhatsAppV2; sourceTree = "<group>"; };
+			); name = WhatsAppV2; sourceTree = "<group>"; };
 		649F037DD903349A9F8F2971 = {isa = PBXGroup; children = (
 				BED0F219E3D89EE7F3F3EED7,
 				A0DF5893FED78BAF1C9791B2,

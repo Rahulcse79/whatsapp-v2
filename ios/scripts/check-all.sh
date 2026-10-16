@@ -78,7 +78,7 @@ python3 -c "import sys,xml.etree.ElementTree as ET; ET.parse(sys.argv[1])" \
 
 step "The Xcode project is structurally sound"
 check python3 - "$ios_root/WhatsAppV2.xcodeproj/project.pbxproj" <<'PY'
-import plistlib, subprocess, sys
+import pathlib, plistlib, subprocess, sys
 raw = subprocess.run(["plutil", "-convert", "xml1", "-o", "-", sys.argv[1]],
                      capture_output=True, check=True).stdout
 d = plistlib.loads(raw)
@@ -104,6 +104,29 @@ target = next(v for v in objs.values() if v.get("isa") == "PBXNativeTarget")
 sources = next(v for v in objs.values() if v.get("isa") == "PBXSourcesBuildPhase")
 print(f"  {len(objs)} objects, {len(sources['files'])} sources, "
       f"{len(target['buildPhases'])} phases, {len(missing)} dangling")
+
+# Every referenced file must actually be on disk where the project says it is.
+#
+# This is the check that was not here when the generator emitted bare basenames for
+# files in nested directories. The project parsed, had no dangling object ids, and
+# xcodebuild then reported five files it could not find — which is a question about
+# the filesystem, not about the plist, so only a filesystem check can answer it.
+import os
+project_dir = pathlib.Path(sys.argv[1]).parent.parent
+absent = []
+for obj in objs.values():
+    if obj.get("isa") != "PBXFileReference":
+        continue
+    if obj.get("sourceTree") != "SOURCE_ROOT":
+        continue
+    if not (project_dir / obj["path"]).exists():
+        absent.append(obj["path"])
+print(f"  file references pointing at real files: "
+      f"{sum(1 for o in objs.values() if o.get('isa') == 'PBXFileReference' and o.get('sourceTree') == 'SOURCE_ROOT') - len(absent)}")
+if absent:
+    for a in absent:
+        print(f"  FAIL: the project references {a}, which is not there")
+    sys.exit(1)
 if d["rootObject"] not in objs:
     print("  FAIL: rootObject does not resolve"); sys.exit(1)
 if missing:

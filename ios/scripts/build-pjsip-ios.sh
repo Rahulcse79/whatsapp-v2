@@ -326,10 +326,16 @@ all_platforms="${all_platforms} arm64-iphonesimulator-gcc"|' configure
       # libvpx's configure defaults are CC=${CROSS}gcc and AR=${CROSS}ar, neither of
       # which exists in an Apple toolchain, so every tool is named.
       export CC="$cc" CXX="$cxx" LD="$cc"
-      export AR="$(xcrun --sdk "$platform" --find ar)"
-      export STRIP="$(xcrun --sdk "$platform" --find strip)"
-      export NM="$(xcrun --sdk "$platform" --find nm)"
-      export RANLIB="$(xcrun --sdk "$platform" --find ranlib)"
+      # Assigned before export, deliberately. `export AR="$(xcrun ...)"` reports
+      # export's exit status and swallows xcrun's, so a toolchain lookup that failed
+      # would leave AR empty and the build would carry on without an archiver
+      # (ShellCheck SC2155).
+      local vpx_ar vpx_strip vpx_nm vpx_ranlib
+      vpx_ar="$(xcrun --sdk "$platform" --find ar)"
+      vpx_strip="$(xcrun --sdk "$platform" --find strip)"
+      vpx_nm="$(xcrun --sdk "$platform" --find nm)"
+      vpx_ranlib="$(xcrun --sdk "$platform" --find ranlib)"
+      export AR="$vpx_ar" STRIP="$vpx_strip" NM="$vpx_nm" RANLIB="$vpx_ranlib"
       export CFLAGS="$common_cflags" CXXFLAGS="$common_cflags"
       export LDFLAGS="-arch $arch -isysroot $sdk_path $min_flag"
 
@@ -382,7 +388,8 @@ all_platforms="${all_platforms} arm64-iphonesimulator-gcc"|' configure
     export LDFLAGS="-arch $arch -isysroot $sdk_path $min_flag -L$prefix/lib"
     # Apple's libtool, as configure-iphone itself sets. `ar` would work for most of the
     # tree and then fail on the one archive with duplicate member names.
-    export AR="$(xcrun --sdk "$platform" --find libtool) -static -o"
+    pj_libtool="$(xcrun --sdk "$platform" --find libtool)"
+    export AR="$pj_libtool -static -o"
     export AR_FLAGS=" "
     export RANLIB="echo ranlib"
     # cpp searches /usr/include regardless of -isysroot, so the preprocessor is the
@@ -477,7 +484,8 @@ all_platforms="${all_platforms} arm64-iphonesimulator-gcc"|' configure
   # Collect this slice's archives. pjproject names them with the host triple
   # (libpjsua-arm-apple-darwin_ios.a), which is why nothing downstream can hardcode a
   # list - they are found, not named.
-  local slice_libs="$STAGE/libs/$slice"
+  local slice_libs
+  slice_libs="$STAGE/libs/$slice"
   rm -rf "$slice_libs"; mkdir -p "$slice_libs"
   find "$work/pjproject" -name '*.a' -path '*/lib/*' -exec cp {} "$slice_libs/" \;
   cp "$prefix"/lib/*.a "$slice_libs/" 2>/dev/null || true
@@ -501,7 +509,8 @@ merge_platform() {
   local fat_inputs=()
   for arch in "${archs[@]}"; do
     local slice="$platform-$arch"
-    local slice_libs="$STAGE/libs/$slice"
+    local slice_libs
+  slice_libs="$STAGE/libs/$slice"
     local merged="$STAGE/libs/libpjproject-$slice.a"
     rm -f "$merged"
     local archives=()

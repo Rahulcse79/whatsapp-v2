@@ -143,8 +143,21 @@ def main():
             kind = "folder.assetcatalog"
         else:
             kind = "sourcecode.c.c"
+        # `path` is relative to the PROJECT, with sourceTree = SOURCE_ROOT, and `name`
+        # is the basename so the navigator still reads nicely.
+        #
+        # The first version used `path = <basename>` with `sourceTree = "<group>"`,
+        # which resolves against the enclosing group's own path. That is correct only
+        # when the group is flat, and Features/ is not — it has Dialer/, Call/,
+        # History/, Accounts/ and Settings/ beneath it. Xcode therefore looked for
+        # Features/AccountsView.swift and reported
+        #     error: Build input files cannot be found:
+        #       '.../ios/WhatsAppV2/Features/AccountsView.swift', ...
+        # (CI run 38886188145, the first run in which xcodebuild got far enough to
+        # compile anything.) A project-relative path has no such dependence on where
+        # the reference is filed in the navigator.
         emit(ref, "{isa = PBXFileReference; lastKnownFileType = %s; name = %s; path = %s; "
-                  "sourceTree = \"<group>\"; }" % (kind, q(path.name), q(path.name)))
+                  "sourceTree = SOURCE_ROOT; }" % (kind, q(path.name), q(str(rel))))
 
     # Headers, Info.plist and entitlements appear in the navigator but are not built.
     extra_refs = {}
@@ -156,15 +169,17 @@ def main():
         if path.exists():
             ref = oid(f"ref:extra:{name}")
             extra_refs[name] = ref
-            emit(ref, "{isa = PBXFileReference; lastKnownFileType = %s; path = %s; "
-                      "sourceTree = \"<group>\"; }" % (kind, q(name)))
+            emit(ref, "{isa = PBXFileReference; lastKnownFileType = %s; name = %s; "
+                      "path = %s; sourceTree = SOURCE_ROOT; }"
+                 % (kind, q(name), q(str(path.relative_to(IOS_ROOT)))))
 
     header_refs = {}
     for header in sorted((IOS_ROOT / APP_NAME / "Bridge").glob("*.h")):
         ref = oid(f"ref:{header.relative_to(IOS_ROOT)}")
         header_refs[header] = ref
-        emit(ref, "{isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = %s; "
-                  "sourceTree = \"<group>\"; }" % q(header.name))
+        emit(ref, "{isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = %s; "
+                  "path = %s; sourceTree = SOURCE_ROOT; }"
+             % (q(header.name), q(str(header.relative_to(IOS_ROOT)))))
 
     product_ref = oid("ref:product")
     emit(product_ref,
@@ -236,20 +251,23 @@ def main():
         children = [file_refs[p] for p in files]
         if group == "Bridge":
             children += [header_refs[h] for h in sorted(header_refs)]
-        emit(gid, "{isa = PBXGroup; children = (\n%s\n\t\t\t); name = %s; path = %s; "
+        # Name only, no path: the children carry project-relative paths, so a group
+        # path would contribute nothing and would suggest a resolution rule that is
+        # not in force.
+        emit(gid, "{isa = PBXGroup; children = (\n%s\n\t\t\t); name = %s; "
                   "sourceTree = \"<group>\"; }" % (
-                      "\n".join(f"\t\t\t\t{c}," for c in children), q(group), q(group)))
+                      "\n".join(f"\t\t\t\t{c}," for c in children), q(group)))
 
     resources_gid = oid("group:Resources")
     emit(resources_gid, "{isa = PBXGroup; children = (\n%s\n\t\t\t); name = Resources; "
-                        "path = Resources; sourceTree = \"<group>\"; }" % (
+                        "sourceTree = \"<group>\"; }" % (
                             "\n".join(f"\t\t\t\t{file_refs[p]}," for p in resources)))
 
     app_gid = oid("group:app")
     app_children = [group_ids[g] for g in GROUPS if g in group_ids]
     app_children.append(resources_gid)
     app_children += [extra_refs[k] for k in sorted(extra_refs)]
-    emit(app_gid, "{isa = PBXGroup; children = (\n%s\n\t\t\t); path = %s; "
+    emit(app_gid, "{isa = PBXGroup; children = (\n%s\n\t\t\t); name = %s; "
                   "sourceTree = \"<group>\"; }" % (
                       "\n".join(f"\t\t\t\t{c}," for c in app_children), q(APP_NAME)))
 
