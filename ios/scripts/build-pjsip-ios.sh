@@ -401,7 +401,32 @@ all_platforms="${all_platforms} arm64-iphonesimulator-gcc"|' configure
       build.mak pjmedia/build/os-auto.mak 2>/dev/null | sed 's/^/    /' || true
 
     make dep
-    make -j"$jobs" )
+
+    # `lib`, not `all`.
+    #
+    # `all` iterates $(DIRS), which is $(LIB_DIRS) plus pjsip-apps/build, and each
+    # module's `all` also links its own test executable. Those fail for iOS, and not
+    # because anything is wrong with the libraries:
+    #
+    #     "_OBJC_CLASS_$_NSNotificationCenter", referenced from:
+    #          in libpjmedia-videodev-aarch64-apple-darwin_ios.a(darwin_dev.o)
+    #     ld: symbol(s) not found for architecture arm64
+    #
+    # darwin_dev.m, metal_dev.m and coreaudio_dev.m are Objective-C and need Foundation,
+    # AVFoundation and Metal on the link line. pjproject's own test binaries do not ask
+    # for them; our app does, in the Xcode project's Frameworks phase. So the test
+    # executables could not link even though every library they were linking is correct
+    # — which is exactly what happened on CI run 38868156677, after all three
+    # dependencies had been found and enabled.
+    #
+    # `lib` builds $(LIB_DIRS) only — pjlib, pjlib-util, pjnath, third_party, pjmedia
+    # and pjsip (which carries pjsua-lib) — and links no executables at all. It is also
+    # the faster target, since nothing here consumes the sample apps.
+    #
+    # The directories are created first because `all` does that and `lib` does not; the
+    # archiver otherwise warns about a missing search path on every module.
+    mkdir -p pjlib/lib pjlib-util/lib pjnath/lib pjmedia/lib pjsip/lib third_party/lib
+    make -j"$jobs" lib )
 
   # Collect this slice's archives. pjproject names them with the host triple
   # (libpjsua-arm-apple-darwin_ios.a), which is why nothing downstream can hardcode a
