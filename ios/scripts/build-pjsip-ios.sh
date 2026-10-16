@@ -145,6 +145,24 @@ mark_done()  { current_hash "$1" > "$(stamp "$1")"; }
 sync_tree()  { rm -rf "${work:?}/$1"; cp -R "$VENDOR_ROOT/$1" "$work/$1"; }
 
 # Builds every dependency and pjproject for one (platform, arch) pair into its own prefix.
+# `host_triple` is `aarch64-apple-darwin_ios` for the arm64 slices and NOT
+# `arm-apple-darwin_ios`, which is what upstream's configure-iphone defaults to.
+#
+# The difference is not cosmetic. Opus's configure branches on `$host_cpu`, and `arm*`
+# selects its 32-bit ARMv7 assembly — GNU-syntax `.S` files that Apple's integrated
+# assembler rejects outright:
+#
+#     celt/arm/celt_pitch_xcorr_arm-gnu.S:17:1: error: unexpected token at start of statement
+#     celt/arm/armopts-gnu.S:1:5: error: unknown directive
+#
+# (CI run 38866416894, after OpenSSL had built cleanly.) `aarch64*` does not match that
+# branch, so the arm64 path is taken. pjproject's aconfigure handles `aarch64*`
+# explicitly alongside `arm64*`, and both trees' config.sub accept the triple.
+#
+# The `_ios` suffix is load-bearing in the other direction: pjproject keys its iOS
+# support off `*-apple-darwin_ios*`, and it also keeps the host triple different from
+# the build triple on an Apple-silicon runner, which is what puts autoconf into
+# cross-compilation mode instead of trying to RUN its iOS test binaries.
 build_slice() {
   local platform="$1" arch="$2" host_triple="$3" openssl_target="$4" vpx_target="$5"
   local slice="$platform-$arch"
@@ -414,7 +432,7 @@ if [ "$want_device" -eq 1 ]; then
   # `arm64-darwin-gcc` is libvpx's iOS DEVICE target, not a macOS one: configure.sh:926
   # matches `arm*-darwin-*` and selects the iPhoneOS SDK. The macOS arm64 targets are the
   # numbered ones (arm64-darwin20-gcc and up), which is an easy and silent mistake to make.
-  build_slice iphoneos arm64 arm-apple-darwin_ios ios64-xcrun arm64-darwin-gcc
+  build_slice iphoneos arm64 aarch64-apple-darwin_ios ios64-xcrun arm64-darwin-gcc
   merge_platform iphoneos arm64
 fi
 
@@ -422,7 +440,7 @@ if [ "$want_simulator" -eq 1 ]; then
   # arm64 for Apple silicon, x86_64 for an Intel Mac. Both, because which one is needed is
   # a property of the machine running the simulator and not of this build - and a
   # BrowserStack or CI runner is not necessarily the architecture the developer has.
-  build_slice iphonesimulator arm64  arm-apple-darwin_ios    iossimulator-arm64-xcrun  arm64-iphonesimulator-gcc
+  build_slice iphonesimulator arm64  aarch64-apple-darwin_ios iossimulator-arm64-xcrun  arm64-iphonesimulator-gcc
   build_slice iphonesimulator x86_64 x86_64-apple-darwin_ios iossimulator-x86_64-xcrun x86_64-iphonesimulator-gcc
   merge_platform iphonesimulator arm64 x86_64
 fi
