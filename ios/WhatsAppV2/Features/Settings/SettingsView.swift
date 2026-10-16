@@ -87,20 +87,51 @@ struct SettingsView: View {
             }
 
             Section("About") {
-                LabeledContent("Stack", value: engine.stackVersion)
-                LabeledContent("App", value: Self.appVersion)
-                LabeledContent("Push token", value: push.voipToken.map { String($0.prefix(12)) + "…" }
-                                                    ?? "not registered")
-                    .font(.caption.monospaced())
+                InfoRow("Stack", engine.stackVersion)
+                InfoRow("App", Self.appVersion)
+                // Only a prefix of the token. It is an addressable push identifier and
+                // the whole of it does not belong on a screen that gets screenshotted
+                // into a bug report; the first characters are enough to tell "registered"
+                // from "registered as something else".
+                InfoRow("Push token",
+                        push.voipToken.map { String($0.prefix(12)) + "…" } ?? "not registered",
+                        monospaced: true)
                 if let error = engine.lastError {
-                    LabeledContent("Last error", value: error)
-                        .foregroundStyle(.red)
+                    InfoRow("Last error", error, tint: .red)
                 }
             }
         }
         .navigationTitle("Settings")
         .sheet(isPresented: $showingTrace) { TraceView() }
         .sheet(isPresented: $showingCodecs) { CodecReportView() }
+    }
+
+    /// A label-and-value row.
+    ///
+    /// `LabeledContent` does exactly this and is iOS 16; this app deploys to 15.
+    private struct InfoRow: View {
+        let label: String
+        let value: String
+        var monospaced = false
+        var tint: Color?
+
+        init(_ label: String, _ value: String, monospaced: Bool = false, tint: Color? = nil) {
+            self.label = label
+            self.value = value
+            self.monospaced = monospaced
+            self.tint = tint
+        }
+
+        var body: some View {
+            HStack(alignment: .firstTextBaseline) {
+                Text(label)
+                Spacer(minLength: 12)
+                Text(value)
+                    .font(monospaced ? .caption.monospaced() : .callout)
+                    .foregroundStyle(tint ?? .secondary)
+                    .multilineTextAlignment(.trailing)
+            }
+        }
     }
 
     private static var appVersion: String {

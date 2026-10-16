@@ -69,10 +69,28 @@ MIN_IOS="${MIN_IOS:-15.0}"
 want_device=1
 want_simulator=1
 do_clean=0
+
+# Which simulator architecture to build.
+#
+# The host's, by default. A simulator slice is only ever run on the machine that built
+# it, so an Apple-silicon Mac needs arm64 and an Intel one needs x86_64 — building both
+# doubles the slowest part of this script to produce a slice that will not be used.
+#
+# It also avoids a real failure: libvpx's x86 build assembles `vpx_ports/emms_mmx.asm`
+# with yasm, and this script sets AS=clang for the ARM slices, so an x86_64 slice got
+# clang invoked with yasm's flags —
+#     clang: error: unknown argument: '-f'
+#     clang: error: no such file or directory: 'macho64'
+# (CI run 38868928491.) `--sim-arch x86_64` is still available and now checks for yasm
+# in the preflight rather than failing twenty minutes in.
+sim_arch="$(uname -m)"
+case "$sim_arch" in arm64|x86_64) ;; *) sim_arch="arm64" ;; esac
+
 for arg in "$@"; do
   case "$arg" in
     --device)     want_simulator=0 ;;
     --simulator)  want_device=0 ;;
+    --sim-arch=*) sim_arch="${arg#--sim-arch=}" ;;
     --clean)      do_clean=1 ;;
     -h|--help)    sed -n '2,50p' "${BASH_SOURCE[0]}" | sed 's|^# \{0,1\}||'; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
@@ -106,6 +124,15 @@ if [ ! -x "$VENDOR_ROOT/opus/configure" ]; then
     echo "  It would have to be generated: brew install autoconf automake libtool" >&2
     fail=1; }
 fi
+# libvpx's x86 paths assemble .asm with yasm (or nasm); its ARM paths do not need one.
+if [ "$want_simulator" -eq 1 ] && [ "$sim_arch" = "x86_64" ]; then
+  command -v yasm >/dev/null 2>&1 || command -v nasm >/dev/null 2>&1 || {
+    echo "::error::an x86_64 simulator slice needs yasm or nasm for libvpx's x86 assembly." >&2
+    echo "  brew install yasm   — or build the arm64 simulator slice instead:" >&2
+    echo "  $(basename "$0") --sim-arch=arm64" >&2
+    fail=1; }
+fi
+
 for tree in pjproject openssl opus libvpx; do
   [ -d "$VENDOR_ROOT/$tree" ] || { echo "::error::$VENDOR_ROOT/$tree is missing." >&2; fail=1; }
 done
@@ -276,6 +303,8 @@ build_slice() {
       # a device: the device slice is `arm64-darwin-gcc`, which configure.sh:926 maps to
       # the iPhoneOS SDK with the full NEON assembly path.
       vpx_extra=""
+      vpx_as=""
+      case "$arch" in arm64) vpx_as="$cc" ;; esac
       if [ "$vpx_target" = "arm64-iphonesimulator-gcc" ]; then
         grep -q 'arm64-iphonesimulator-gcc' configure || \
           sed -i.bak 's|^all_platforms="${all_platforms} x86_64-iphonesimulator-gcc"|&\
@@ -292,7 +321,11 @@ all_platforms="${all_platforms} arm64-iphonesimulator-gcc"|' configure
       # tidiness: both link executables, and an iOS executable cannot be linked without a
       # signing identity.
       # shellcheck disable=SC2086  # vpx_extra is a deliberate word list
-      CC="$cc" CXX="$cxx" LD="$cc" AS="$cc" \
+      # AS is clang only for the ARM slices, where libvpx's .asm files go through the
+      # ads2gas conversion and then clang's integrated assembler. On x86 the .asm files
+      # are yasm syntax and libvpx must find yasm itself — forcing clang there is what
+      # produced "unknown argument: '-f'" on the x86_64 slice.
+      CC="$cc" CXX="$cxx" LD="$cc" ${vpx_as:+AS="$vpx_as"} \
       AR="$(xcrun --sdk "$platform" --find ar)" \
       STRIP="$(xcrun --sdk "$platform" --find strip)" \
       NM="$(xcrun --sdk "$platform" --find nm)" \
@@ -489,12 +522,14 @@ if [ "$want_device" -eq 1 ]; then
 fi
 
 if [ "$want_simulator" -eq 1 ]; then
-  # arm64 for Apple silicon, x86_64 for an Intel Mac. Both, because which one is needed is
-  # a property of the machine running the simulator and not of this build - and a
-  # BrowserStack or CI runner is not necessarily the architecture the developer has.
-  build_slice iphonesimulator arm64  aarch64-apple-darwin_ios iossimulator-arm64-xcrun  arm64-iphonesimulator-gcc
-  build_slice iphonesimulator x86_64 x86_64-apple-darwin_ios iossimulator-x86_64-xcrun x86_64-iphonesimulator-gcc
-  merge_platform iphonesimulator arm64 x86_64
+  if [ "$sim_arch" = "x86_64" ]; then
+    build_slice iphonesimulator x86_64 x86_64-apple-darwin_ios \
+                iossimulator-x86_64-xcrun x86_64-iphonesimulator-gcc
+  else
+    build_slice iphonesimulator arm64 aarch64-apple-darwin_ios \
+                iossimulator-arm64-xcrun arm64-iphonesimulator-gcc
+  fi
+  merge_platform iphonesimulator "$sim_arch"
 fi
 
 # ---------------------------------------------------------------- headers
@@ -503,8 +538,11 @@ fi
 # content except `pj/compat/*_auto.h`, which aconfigure generates - and those differ
 # between device and simulator only in fields nothing in this app reads. Taking them from
 # one slice and saying so is better than merging two trees and pretending they were equal.
-header_src="$STAGE/${want_device:+iphoneos-arm64}"
-[ "$want_device" -eq 1 ] || header_src="$STAGE/iphonesimulator-arm64"
+if [ "$want_device" -eq 1 ]; then
+  header_src="$STAGE/iphoneos-arm64"
+else
+  header_src="$STAGE/iphonesimulator-$sim_arch"
+fi
 rm -rf "$OUT_DIR/include"; mkdir -p "$OUT_DIR/include"
 for m in pjlib pjlib-util pjnath pjmedia pjsip; do
   [ -d "$header_src/pjproject/$m/include" ] && cp -R "$header_src/pjproject/$m/include/." "$OUT_DIR/include/"

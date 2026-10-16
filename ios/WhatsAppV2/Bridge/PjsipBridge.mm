@@ -92,7 +92,11 @@ static WAVRegistrationFailure FailureForStatus(int code, pj_status_t lastErr) {
     // PJSIP_TLS / PJ_ERRNO socket ranges rather than as a SIP code, and "the Wi-Fi is
     // off" must not read as "the server rejected you".
     if (lastErr != PJ_SUCCESS) {
-        if (lastErr >= PJSIP_TLS_ERRNO_START && lastErr <= PJSIP_TLS_ERRNO_END) {
+        // The TLS errors are a contiguous block pjproject numbers from
+        // PJSIP_TLS_EUNKNOWN (PJSIP_ERRNO_START_PJSIP + 160) upwards; sip_errno.h
+        // defines each member and no START/END pair for the range, so the bounds are
+        // named from the first and last members rather than invented.
+        if (lastErr >= PJSIP_TLS_EUNKNOWN && lastErr <= PJSIP_TLS_ECERTVERIF) {
             return WAVRegistrationFailureTransportFailure;
         }
         return WAVRegistrationFailureNetworkUnavailable;

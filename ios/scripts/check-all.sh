@@ -106,6 +106,9 @@ fi
 step "Kotlin common portability (JVM-only APIs in commonMain)"
 check python3 "$here/check-common-portability.py"
 
+step "PJSIP symbols the bridge uses exist in the vendored headers"
+check python3 "$here/check-pjsip-symbols.py"
+
 step "Bridge contract (header / .mm / Swift)"
 check python3 "$here/check-bridge-contract.py"
 

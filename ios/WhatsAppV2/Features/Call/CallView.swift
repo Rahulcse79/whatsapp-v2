@@ -272,7 +272,11 @@ struct CallView: View {
             .padding(.horizontal, 24)
             Button("Done") { showingKeypad = false }.padding(.bottom, 20)
         }
-        .presentationDetents([.medium])
+        // A half-height sheet, so the call's status stays visible above the keypad.
+        // `presentationDetents` is iOS 16 and this app deploys to 15, where the sheet
+        // is simply full height — a worse layout, not a broken one, which is the right
+        // shape for a progressive enhancement.
+        .modifier(MediumDetentIfAvailable())
     }
 
     private var transferSheet: some View {
@@ -308,6 +312,18 @@ struct CallView: View {
             }
             .navigationTitle("Transfer")
             .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
+
+/// `.presentationDetents([.medium])` on iOS 16 and later, and nothing before it.
+private struct MediumDetentIfAvailable: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content.presentationDetents([.medium])
+        } else {
+            content
         }
     }
 }

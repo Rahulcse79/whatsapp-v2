@@ -15,176 +15,176 @@ import Foundation
 import UIKit
 import Shared
 
+// The methods below are ordinary `@MainActor` members, inherited from the class.
+//
+// `PjsipBridgeDelegate` is an Objective-C protocol with no isolation and `SipEngine` is
+// `@MainActor`, so something has to reconcile the two. Three ways were considered:
+//
+//   * `MainActor.assumeIsolated` in each method — the precise tool, and iOS 17. This
+//     app deploys to iOS 15.
+//   * `extension SipEngine: @preconcurrency PjsipBridgeDelegate` — also precise, and
+//     Swift 5.10. It compiles on the CI toolchain and not on the Swift 5.7 that the
+//     development machine's Command Line Tools carry, which would cost the only
+//     compiler check available there (`swiftc -parse`).
+//   * Plain isolated members under Swift 5 language mode with minimal concurrency
+//     checking, which is what this is. The compiler warns and accepts.
+//
+// What makes it SOUND rather than merely accepted is the guarantee on the other side:
+// `PjsipBridge` dispatches every delegate call to the main queue. That is stated at
+// the top of PjsipBridge.h and implemented in every callback in PjsipBridge.mm, so
+// these methods genuinely do run on the main actor.
 extension SipEngine: PjsipBridgeDelegate {
 
     // MARK: - Registration
 
-    nonisolated func pjsipRegistrationDidChange(_ accountId: String,
+    func pjsipRegistrationDidChange(_ accountId: String,
                                                 state: WAVRegistrationState,
                                                 failure: WAVRegistrationFailure,
                                                 grantedExpirySeconds: Int,
                                                 statusCode: Int) {
-        MainActor.assumeIsolated {
-            let status: RegistrationStatus
-            switch state {
-            case .unregistered:
-                status = .unregistered
-            case .registering:
-                status = .registering
-            case .registered:
-                // The expiry the SERVER granted. Everything timed off registration is
-                // timed off this and never off what was asked for: a client that
-                // refreshes on its own requested value against a registrar that halved
-                // it spends half of every binding unregistered.
-                status = .registered(grantedExpirySeconds: grantedExpirySeconds)
-                resetRetry(for: accountId)
-            case .failed:
-                let reason = failure.appValue
-                // A failure the user must fix is not retried. Hammering a registrar with
-                // a password it has already rejected is how an account gets locked out,
-                // and no number of retries will make 401 into 200.
-                let willRetry = !reason.requiresUserAction
-                status = .failed(reason: reason, retryScheduled: willRetry)
-                if willRetry {
-                    scheduleRetryPublic(accountId: accountId,
-                                        retryAfterSeconds: statusCode == 503 ? 0 : 0)
-                }
-            @unknown default:
-                status = .unregistered
+        let status: RegistrationStatus
+        switch state {
+        case .unregistered:
+            status = .unregistered
+        case .registering:
+            status = .registering
+        case .registered:
+            // The expiry the SERVER granted. Everything timed off registration is
+            // timed off this and never off what was asked for: a client that
+            // refreshes on its own requested value against a registrar that halved
+            // it spends half of every binding unregistered.
+            status = .registered(grantedExpirySeconds: grantedExpirySeconds)
+            resetRetry(for: accountId)
+        case .failed:
+            let reason = failure.appValue
+            // A failure the user must fix is not retried. Hammering a registrar with
+            // a password it has already rejected is how an account gets locked out,
+            // and no number of retries will make 401 into 200.
+            let willRetry = !reason.requiresUserAction
+            status = .failed(reason: reason, retryScheduled: willRetry)
+            if willRetry {
+                scheduleRetryPublic(accountId: accountId,
+                                    retryAfterSeconds: statusCode == 503 ? 0 : 0)
             }
-            registrations[accountId] = status
+        @unknown default:
+            status = .unregistered
         }
+        registrations[accountId] = status
     }
 
     // MARK: - Calls
 
-    nonisolated func pjsipDidReceiveIncomingCall(_ call: WAVCallInfo) {
-        MainActor.assumeIsolated {
-            let uuid = UUID()
-            registerMapping(callId: call.callId, uuid: uuid)
+    func pjsipDidReceiveIncomingCall(_ call: WAVCallInfo) {
+        let uuid = UUID()
+        registerMapping(callId: call.callId, uuid: uuid)
 
-            let active = makeActiveCall(from: call, uuid: uuid)
-            upsert(active)
+        let active = makeActiveCall(from: call, uuid: uuid)
+        upsert(active)
 
-            // CallKit, immediately. iOS terminates an app that takes a PushKit VoIP wake
-            // and does not report a call almost at once, and even without a wake this is
-            // what puts the call on the lock screen and stops it being talked over by a
-            // cellular call.
-            callKit?.reportIncomingCall(uuid: uuid,
-                                        handle: active.remoteLabel,
-                                        hasVideo: call.hasVideo)
+        // CallKit, immediately. iOS terminates an app that takes a PushKit VoIP wake
+        // and does not report a call almost at once, and even without a wake this is
+        // what puts the call on the lock screen and stops it being talked over by a
+        // cellular call.
+        callKit?.reportIncomingCall(uuid: uuid,
+                                    handle: active.remoteLabel,
+                                    hasVideo: call.hasVideo)
+    }
+
+    func pjsipCallDidChange(_ call: WAVCallInfo) {
+        let uuid = uuid(forCallId: call.callId) ?? {
+            let fresh = UUID()
+            registerMapping(callId: call.callId, uuid: fresh)
+            return fresh
+        }()
+        let active = makeActiveCall(from: call, uuid: uuid)
+        upsert(active)
+
+        if case .connected = active.phase {
+            callKit?.reportOutgoingCallConnected(uuid: uuid)
+        } else if case .ringing = active.phase {
+            callKit?.reportOutgoingCallRinging(uuid: uuid)
         }
     }
 
-    nonisolated func pjsipCallDidChange(_ call: WAVCallInfo) {
-        MainActor.assumeIsolated {
-            let uuid = uuid(forCallId: call.callId) ?? {
-                let fresh = UUID()
-                registerMapping(callId: call.callId, uuid: fresh)
-                return fresh
-            }()
-            let active = makeActiveCall(from: call, uuid: uuid)
-            upsert(active)
+    func pjsipCallDidEnd(_ call: WAVCallInfo) {
+        let uuid = uuid(forCallId: call.callId)
+        let existing = calls.first { $0.id == call.callId }
 
-            if case .connected = active.phase {
-                callKit?.reportOutgoingCallConnected(uuid: uuid)
-            } else if case .ringing = active.phase {
-                callKit?.reportOutgoingCallRinging(uuid: uuid)
-            }
+        // The log is written from the FINAL info the bridge handed over, not from a
+        // lookup: pjsua reuses call ids, and a lookup racing the next INVITE writes
+        // the wrong row.
+        let startedAt = existing?.connectedAt ?? Date()
+        let duration = existing?.connectedAt.map { Int(Date().timeIntervalSince($0)) } ?? 0
+        let entry = CallLogEntry(
+            id: UUID(),
+            accountId: call.accountId,
+            remoteUri: call.remoteUri,
+            remoteLabel: SharedFacade.shared.labelForUri(uri: call.remoteUri),
+            direction: call.isIncoming ? .incoming : .outgoing,
+            startedAt: startedAt,
+            durationSeconds: duration,
+            hadVideo: existing?.hasVideo ?? call.hasVideo,
+            reason: call.hangupReason.appValue
+        )
+        onCallEnded?(entry)
+
+        calls.removeAll { $0.id == call.callId }
+        mixedCalls.remove(call.callId)
+        clearMapping(callId: call.callId)
+
+        if let uuid {
+            callKit?.reportCallEnded(uuid: uuid, reason: entry.reason)
         }
     }
 
-    nonisolated func pjsipCallDidEnd(_ call: WAVCallInfo) {
-        MainActor.assumeIsolated {
-            let uuid = uuid(forCallId: call.callId)
-            let existing = calls.first { $0.id == call.callId }
-
-            // The log is written from the FINAL info the bridge handed over, not from a
-            // lookup: pjsua reuses call ids, and a lookup racing the next INVITE writes
-            // the wrong row.
-            let startedAt = existing?.connectedAt ?? Date()
-            let duration = existing?.connectedAt.map { Int(Date().timeIntervalSince($0)) } ?? 0
-            let entry = CallLogEntry(
-                id: UUID(),
-                accountId: call.accountId,
-                remoteUri: call.remoteUri,
-                remoteLabel: SharedFacade.shared.labelForUri(uri: call.remoteUri),
-                direction: call.isIncoming ? .incoming : .outgoing,
-                startedAt: startedAt,
-                durationSeconds: duration,
-                hadVideo: existing?.hasVideo ?? call.hasVideo,
-                reason: call.hangupReason.appValue
-            )
-            onCallEnded?(entry)
-
-            calls.removeAll { $0.id == call.callId }
-            mixedCalls.remove(call.callId)
-            clearMapping(callId: call.callId)
-
-            if let uuid {
-                callKit?.reportCallEnded(uuid: uuid, reason: entry.reason)
-            }
-        }
-    }
-
-    nonisolated func pjsipCallMediaDidChange(_ call: WAVCallInfo,
+    func pjsipCallMediaDidChange(_ call: WAVCallInfo,
                                              audioLive: Bool,
                                              videoLive: Bool) {
-        MainActor.assumeIsolated {
-            guard let index = calls.firstIndex(where: { $0.id == call.callId }) else { return }
-            calls[index].audioLive = audioLive
-            calls[index].videoLive = videoLive
-            calls[index].hasVideo = call.hasVideo
-            calls[index].isMuted = call.isMuted
-            calls[index].phase = phase(from: call)
-        }
+        guard let index = calls.firstIndex(where: { $0.id == call.callId }) else { return }
+        calls[index].audioLive = audioLive
+        calls[index].videoLive = videoLive
+        calls[index].hasVideo = call.hasVideo
+        calls[index].isMuted = call.isMuted
+        calls[index].phase = phase(from: call)
     }
 
-    nonisolated func pjsipCallDidReceiveVideoRequest(_ callId: Int, wantsVideo: Bool) {
-        MainActor.assumeIsolated {
-            pendingVideoRequests[callId] = wantsVideo
-        }
+    func pjsipCallDidReceiveVideoRequest(_ callId: Int, wantsVideo: Bool) {
+        pendingVideoRequests[callId] = wantsVideo
     }
 
-    nonisolated func pjsipVideoWindowDidChange(_ callId: Int,
+    func pjsipVideoWindowDidChange(_ callId: Int,
                                                windowId: Int,
                                                view: UIView?,
                                                size: CGSize) {
-        MainActor.assumeIsolated {
-            if let view, windowId >= 0 {
-                remoteVideoViews[callId] = view
-                remoteVideoSizes[callId] = size
-            } else {
-                remoteVideoViews[callId] = nil
-                remoteVideoSizes[callId] = nil
-            }
-            // A published change the video tile observes. Assigning the dictionary
-            // wholesale rather than mutating is what makes SwiftUI see it.
-            videoRevision &+= 1
+        if let view, windowId >= 0 {
+            remoteVideoViews[callId] = view
+            remoteVideoSizes[callId] = size
+        } else {
+            remoteVideoViews[callId] = nil
+            remoteVideoSizes[callId] = nil
+        }
+        // A published change the video tile observes. Assigning the dictionary
+        // wholesale rather than mutating is what makes SwiftUI see it.
+        videoRevision &+= 1
+    }
+
+    func pjsipDidReceiveDtmf(_ callId: Int, digit: String) {
+        lastInboundDtmf = (callId, digit)
+    }
+
+    func pjsipTransferDidProgress(_ callId: Int, statusCode: Int, final isFinal: Bool) {
+        transferStatus = (callId: callId, statusCode: statusCode, isFinal: isFinal)
+        // A transfer that failed must return the call rather than strand it. PJSIP
+        // keeps the dialog up on a failure, so there is nothing to re-establish —
+        // but the UI has to stop saying "Transferring".
+        if isFinal, statusCode >= 300, let index = calls.firstIndex(where: { $0.id == callId }) {
+            calls[index].phase = .connected
         }
     }
 
-    nonisolated func pjsipDidReceiveDtmf(_ callId: Int, digit: String) {
-        MainActor.assumeIsolated { lastInboundDtmf = (callId, digit) }
-    }
-
-    nonisolated func pjsipTransferDidProgress(_ callId: Int, statusCode: Int, final isFinal: Bool) {
-        MainActor.assumeIsolated {
-            transferStatus = (callId: callId, statusCode: statusCode, isFinal: isFinal)
-            // A transfer that failed must return the call rather than strand it. PJSIP
-            // keeps the dialog up on a failure, so there is nothing to re-establish —
-            // but the UI has to stop saying "Transferring".
-            if isFinal, statusCode >= 300, let index = calls.firstIndex(where: { $0.id == callId }) {
-                calls[index].phase = .connected
-            }
-        }
-    }
-
-    nonisolated func pjsipDidLog(_ message: String, level: Int) {
-        MainActor.assumeIsolated {
-            guard traceIsEnabled else { return }
-            appendTrace(message.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
+    func pjsipDidLog(_ message: String, level: Int) {
+        guard traceIsEnabled else { return }
+        appendTrace(message.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     // MARK: - Shaping
@@ -216,12 +216,12 @@ extension SipEngine: PjsipBridgeDelegate {
     /// held call look connected, which is the same conflation `CallState.Held` exists to
     /// prevent on Android.
     private func phase(from call: WAVCallInfo) -> CallPhase {
-        if call.heldBy != .none, call.state == .connected {
+        if call.heldBy != WAVHoldParty.none, call.state == .connected {
             switch call.heldBy {
             case .local:  return .held(by: .local)
             case .remote: return .held(by: .remote)
             case .both:   return .held(by: .both)
-            case .none:   break
+            case WAVHoldParty.none: break
             @unknown default: break
             }
         }

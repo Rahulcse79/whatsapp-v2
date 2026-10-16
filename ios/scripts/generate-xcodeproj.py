@@ -323,6 +323,13 @@ echo "note: linking libpjproject.a for $PLATFORM_NAME"
         "SDKROOT": "iphoneos",
         "TARGETED_DEVICE_FAMILY": '"1,2"',
         "SWIFT_VERSION": "5.0",
+        # Stated, not inherited. SipEngine is @MainActor and conforms to
+        # PjsipBridgeDelegate, an Objective-C protocol with no isolation; under
+        # `complete` that is an error, under `minimal` a warning the code earns by
+        # having PjsipBridge dispatch every callback to the main queue. Leaving it to
+        # the toolchain's default means a future Xcode can turn a warning into a
+        # build failure without anything in this project changing.
+        "SWIFT_STRICT_CONCURRENCY": "minimal",
         "ENABLE_BITCODE": "NO",   # removed in Xcode 16; an archive built with it will not link
         "CLANG_WARN_DOCUMENTATION_COMMENTS": "YES",
         "GCC_WARN_UNDECLARED_SELECTOR": "YES",

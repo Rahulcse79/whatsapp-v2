@@ -249,8 +249,12 @@ jobs:
           autoconf --version | head -1
           automake --version | head -1
 
-      - name: Build PJSIP for iOS (device + simulator)
-        run: ios/scripts/build-pjsip-ios.sh
+      # DEVICE ONLY. The deliverable of this job is an .ipa, which is the device
+      # slice; a simulator slice would add most of the job's runtime to produce
+      # something only the machine running the simulator can use. `./build.sh ios`
+      # builds the host's simulator architecture locally, where it is useful.
+      - name: Build PJSIP for iOS (device)
+        run: ios/scripts/build-pjsip-ios.sh --device
 
       - name: Build the shared Kotlin framework
         run: ios/scripts/build-shared-framework.sh Release
@@ -266,19 +270,6 @@ jobs:
             git diff --stat -- ios/WhatsAppV2.xcodeproj
             exit 1
           fi
-
-      - name: Build for the simulator
-        run: |
-          set -o pipefail
-          xcodebuild \
-            -project ios/WhatsAppV2.xcodeproj \
-            -scheme WhatsAppV2 \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build/ios \
-            CODE_SIGNING_ALLOWED=NO \
-            build | tail -60
 
       # The unsigned device IPA. This is the artefact that can be uploaded to
       # BrowserStack, which re-signs with its own certificate before installing. It is
@@ -305,14 +296,6 @@ jobs:
           name: ios-ipa-unsigned
           path: build/ios-ipa/*.ipa
           if-no-files-found: error
-
-      - name: Upload the simulator .app
-        if: success()
-        uses: actions/upload-artifact@v7
-        with:
-          name: ios-app-simulator
-          path: build/ios/Build/Products/Debug-iphonesimulator/*.app
-          if-no-files-found: warn
 
       # A signed IPA, when and only when the repository has been given a certificate and
       # a profile. A fork, or a repository nobody has configured, gets the unsigned build
