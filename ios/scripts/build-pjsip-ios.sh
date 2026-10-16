@@ -303,8 +303,6 @@ build_slice() {
       # a device: the device slice is `arm64-darwin-gcc`, which configure.sh:926 maps to
       # the iPhoneOS SDK with the full NEON assembly path.
       vpx_extra=""
-      vpx_as=""
-      case "$arch" in arm64) vpx_as="$cc" ;; esac
       if [ "$vpx_target" = "arm64-iphonesimulator-gcc" ]; then
         grep -q 'arm64-iphonesimulator-gcc' configure || \
           sed -i.bak 's|^all_platforms="${all_platforms} x86_64-iphonesimulator-gcc"|&\
@@ -315,23 +313,38 @@ all_platforms="${all_platforms} arm64-iphonesimulator-gcc"|' configure
         vpx_extra="--disable-neon --disable-neon-asm --disable-runtime-cpu-detect"
       fi
 
-      # libvpx's configure defaults are CC=${CROSS}gcc and AR=${CROSS}ar
-      # (build/make/configure.sh), and an Apple toolchain has neither, so every tool is
-      # named. `--disable-unit-tests` and `--disable-examples` are load-bearing rather than
-      # tidiness: both link executables, and an iOS executable cannot be linked without a
-      # signing identity.
+      # The toolchain, exported rather than written as an assignment prefix.
+      #
+      # It was `${vpx_as:+AS="$vpx_as"}` in the prefix list, which does not work and
+      # fails in a way worth remembering: the shell decides whether a token is an
+      # assignment BEFORE expanding it, and a token starting with `${` is a command
+      # word. So the expansion produced `AS=/…/clang` and the shell tried to execute a
+      # program by that name —
+      #     line 328: AS=/Applications/Xcode_26.6.app/…/clang: No such file or directory
+      # (CI run 38871035997.) An `export` has no such subtlety.
+      #
+      # libvpx's configure defaults are CC=${CROSS}gcc and AR=${CROSS}ar, neither of
+      # which exists in an Apple toolchain, so every tool is named.
+      export CC="$cc" CXX="$cxx" LD="$cc"
+      export AR="$(xcrun --sdk "$platform" --find ar)"
+      export STRIP="$(xcrun --sdk "$platform" --find strip)"
+      export NM="$(xcrun --sdk "$platform" --find nm)"
+      export RANLIB="$(xcrun --sdk "$platform" --find ranlib)"
+      export CFLAGS="$common_cflags" CXXFLAGS="$common_cflags"
+      export LDFLAGS="-arch $arch -isysroot $sdk_path $min_flag"
+
+      # AS is clang ONLY for the ARM slices, where libvpx's .asm goes through the
+      # ads2gas conversion and then clang's integrated assembler. On x86 the .asm is
+      # yasm syntax and libvpx must find yasm itself — forcing clang there gave
+      #     clang: error: unknown argument: '-f'
+      #     clang: error: no such file or directory: 'macho64'
+      # on vpx_ports/emms_mmx.asm (CI run 38868928491).
+      case "$arch" in arm64) export AS="$cc" ;; esac
+
+      # `--disable-unit-tests` and `--disable-examples` are load-bearing rather than
+      # tidiness: both link executables, and an iOS executable cannot be linked without
+      # a signing identity.
       # shellcheck disable=SC2086  # vpx_extra is a deliberate word list
-      # AS is clang only for the ARM slices, where libvpx's .asm files go through the
-      # ads2gas conversion and then clang's integrated assembler. On x86 the .asm files
-      # are yasm syntax and libvpx must find yasm itself — forcing clang there is what
-      # produced "unknown argument: '-f'" on the x86_64 slice.
-      CC="$cc" CXX="$cxx" LD="$cc" ${vpx_as:+AS="$vpx_as"} \
-      AR="$(xcrun --sdk "$platform" --find ar)" \
-      STRIP="$(xcrun --sdk "$platform" --find strip)" \
-      NM="$(xcrun --sdk "$platform" --find nm)" \
-      RANLIB="$(xcrun --sdk "$platform" --find ranlib)" \
-      CFLAGS="$common_cflags" CXXFLAGS="$common_cflags" \
-      LDFLAGS="-arch $arch -isysroot $sdk_path $min_flag" \
       ./configure --target="$vpx_target" --prefix="$prefix" \
         --disable-examples --disable-tools --disable-docs --disable-unit-tests \
         --enable-pic --enable-static --disable-shared --enable-vp8 --enable-vp9 \

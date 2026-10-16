@@ -37,6 +37,25 @@ done
 [ "$ok" -eq 1 ] && echo "  $(ls "$here"/*.sh "$repo_root/build.sh" | wc -l | tr -d ' ') scripts OK" \
                 || failures=$((failures + 1))
 
+step "ShellCheck"
+# Optional locally, required in CI.
+#
+# `bash -n` above is a parse check and nothing more. It accepted
+# `${vpx_as:+AS="$vpx_as"}` written as a command prefix, which is a parse-valid way of
+# asking the shell to execute a program named `AS=/path/to/clang` — the shell decides
+# assignment-versus-command before it expands, so the expansion never becomes an
+# assignment. That cost a CI round trip (run 38871035997). ShellCheck knows the rule.
+if command -v shellcheck >/dev/null 2>&1; then
+  if shellcheck --severity=warning "$here"/*.sh "$repo_root/build.sh"; then
+    echo "  OK ($(shellcheck --version | awk '/version:/{print $2}'))"
+  else
+    failures=$((failures + 1))
+  fi
+else
+  echo "  not installed, skipped — brew install shellcheck"
+  echo "  (CI installs it, so this is checked on every push regardless)"
+fi
+
 step "Python (py_compile)"
 check python3 -m py_compile "$here/generate-xcodeproj.py" "$here/check-bridge-contract.py"
 echo "  OK"

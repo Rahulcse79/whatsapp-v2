@@ -105,6 +105,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      # ShellCheck is not on the runner image and check-all.sh skips it when absent, so
+      # installing it here is what makes the shell linting actually run in CI.
+      - name: Install ShellCheck
+        run: brew list --formula shellcheck >/dev/null 2>&1 || brew install shellcheck
       - name: Run every check that does not need Xcode
         run: ios/scripts/check-all.sh
 
