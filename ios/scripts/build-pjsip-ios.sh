@@ -344,31 +344,58 @@ all_platforms="${all_platforms} arm64-iphonesimulator-gcc"|' configure
     export CPP="$cc -arch $arch -E -isysroot $sdk_path"
     export LD="$cc"
 
+    # The transcript is kept, because every assertion below is about a decision
+    # configure made and "what did it decide" is otherwise 4,000 lines of config.log.
     ./aconfigure --host="$host_triple" --disable-sdl --disable-ffmpeg \
       --disable-v4l2 --disable-openh264 \
-      --with-ssl="$prefix" --with-opus="$prefix" --with-vpx="$prefix"
+      --with-ssl="$prefix" --with-opus="$prefix" --with-vpx="$prefix" \
+      2>&1 | tee configure-output.log
 
     # aconfigure does NOT fail when it cannot find OpenSSL, Opus or libvpx - it quietly
     # builds a stack without them, and config_site.h above says they are there. A client
     # that declares a codec it does not have offers it in SDP and then cannot encode,
-    # which is worse than not offering it. Read what configure WROTE, not what it printed.
+    # which is worse than not offering it.
+    #
+    # Each check reads what configure WROTE rather than guessing a variable name. The
+    # first version of this block invented `AC_NO_VPX_CODEC` and `AC_NO_OPUS_CODEC`,
+    # neither of which pjproject defines, and failed a configure that had actually
+    # succeeded (CI run 38867121440). The strings below are from aconfigure itself.
+    echo "--- what configure decided ---"
+    grep -E "OPUS (library|support)|VPX (is disabled|usability|prefix)|SSL|Using (OPUS|VPX|SSL) prefix" \
+      configure-output.log | sed 's/^/    /' || true
+
     cfail=0
+
+    # TLS: the generated config header is the authority, not the transcript.
     grep -qE '^#define[[:space:]]+PJ_HAS_SSL_SOCK[[:space:]]+1' pjlib/include/pj/compat/os_auto.h || {
       echo "::error::TLS is NOT enabled - aconfigure did not find OpenSSL at $prefix." >&2
       echo "  config_site.h sets PJSIP_HAS_TLS_TRANSPORT 1, so TLS accounts would fail on a device." >&2
       cfail=1; }
-    grep -qE '^AC_NO_VPX_CODEC=$' pjmedia/build/os-auto.mak || {
-      echo "::error::VPX is NOT enabled - aconfigure did not find libvpx at $prefix." >&2
-      echo "  config_site.h sets PJMEDIA_HAS_VPX_CODEC 1 and the deployed server offers only VP8/VP9," >&2
-      echo "  so every video call would negotiate nothing." >&2
-      cfail=1; }
-    grep -qE '^AC_NO_OPUS_CODEC=$' pjmedia/build/os-auto.mak || {
+
+    # Opus: a DIFFERENT generated header. pjproject has five AC_CONFIG_HEADERS, and
+    # autoconf routes each #define to whichever template carries the matching #undef —
+    # PJ_HAS_SSL_SOCK to pjlib's os_auto.h, PJMEDIA_HAS_OPUS_CODEC to pjmedia-codec's
+    # config_auto.h, which does not mention SSL and whose sibling does not mention Opus.
+    grep -qE '^#define[[:space:]]+PJMEDIA_HAS_OPUS_CODEC[[:space:]]+1' \
+      pjmedia/include/pjmedia-codec/config_auto.h || {
       echo "::error::Opus is NOT enabled - aconfigure did not find it at $prefix." >&2
+      grep -E "OPUS" configure-output.log | tail -5 >&2 || true
       cfail=1; }
+
+    # VPX: no such define. configure sets VPX_CFLAGS to the include path when it finds
+    # it and to the empty string when it does not, and that variable is what the codec
+    # Makefile compiles with.
+    grep -qE '^VPX_CFLAGS = .*-I' pjmedia/build/os-auto.mak || {
+      echo "::error::VPX is NOT enabled - aconfigure did not find libvpx at $prefix." >&2
+      echo "  config_site.h sets PJMEDIA_HAS_VPX_CODEC 1 and the deployed server offers only" >&2
+      echo "  VP8/VP9, so every video call would negotiate no video at all." >&2
+      grep -E "VPX" configure-output.log | tail -5 >&2 || true
+      cfail=1; }
+
     [ "$cfail" -eq 0 ] || exit 1
 
     # Stated for the log, because "which backends did this build actually get" is the
-    # first question every media bug asks and config.log is 4000 lines.
+    # first question every media bug asks.
     echo "--- backends aconfigure selected ---"
     grep -E 'ac_pjmedia_(snd|video)=|PJMEDIA_VIDEO_DEV_HAS_(DARWIN|METAL)|VID_TOOLBOX' \
       build.mak pjmedia/build/os-auto.mak 2>/dev/null | sed 's/^/    /' || true
