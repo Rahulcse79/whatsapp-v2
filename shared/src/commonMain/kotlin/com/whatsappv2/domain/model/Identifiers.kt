@@ -1,5 +1,7 @@
 package com.whatsappv2.domain.model
 
+import kotlin.jvm.JvmInline
+
 /**
  * Identifies a configured SIP account (§5.1).
  *

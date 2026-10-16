@@ -1,5 +1,7 @@
 package com.whatsappv2.core.common.secret
 
+import kotlin.jvm.JvmInline
+
 /**
  * A value that must never appear in a log, a crash report, or a `toString()`.
  *

@@ -1,6 +1,7 @@
 package com.whatsappv2.domain.model
 
 import com.whatsappv2.domain.engine.CallDirection
+import kotlin.jvm.JvmInline
 
 /**
  * One finished call, as the history screen and the redial button need it (Task 47, §5.2).

@@ -3,6 +3,7 @@ package com.whatsappv2.domain.engine
 import com.whatsappv2.domain.model.AccountId
 import com.whatsappv2.domain.model.CallId
 import com.whatsappv2.domain.model.SipUri
+import kotlin.jvm.JvmInline
 
 /** Identifies one participant within a conference. Opaque; do not parse it. */
 @JvmInline

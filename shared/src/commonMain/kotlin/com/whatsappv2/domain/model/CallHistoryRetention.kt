@@ -1,5 +1,7 @@
 package com.whatsappv2.domain.model
 
+import kotlin.jvm.JvmInline
+
 /**
  * How long the call log is kept before it prunes itself.
  *

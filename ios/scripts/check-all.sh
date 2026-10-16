@@ -103,6 +103,9 @@ else
   failures=$((failures + 1))
 fi
 
+step "Kotlin common portability (JVM-only APIs in commonMain)"
+check python3 "$here/check-common-portability.py"
+
 step "Bridge contract (header / .mm / Swift)"
 check python3 "$here/check-bridge-contract.py"
 
