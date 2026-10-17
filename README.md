@@ -1,7 +1,138 @@
 # whatsapp-v2 — Native Android SIP Client
 
-**Callisto** — a production-grade native Android SIP softphone. Audio and video calling,
-multi-account SIP registration, Telecom integration, and conferencing against FreeSWITCH.
+**Coral SIP Client** — a production-grade native Android SIP softphone. Audio and video
+calling, multi-account SIP registration, Telecom integration, conferencing against
+FreeSWITCH, and a chat tab on the Coral chat SDK.
+
+| | |
+|---|---|
+| Version | **1.0.9** (`versionCode` 9), set in [`app/build.gradle.kts`](app/build.gradle.kts) |
+| Application ID | `com.whatsappv2` |
+| minSdk / targetSdk | 26 / 37 |
+
+The name is the one the product ships under. It was briefly *Callisto*, then *CoralX*; the
+application ID, the module names and the `com.whatsappv2` package keep their historical
+spelling, because those are identifiers rather than names — changing the application ID
+would orphan every installed copy. The reasoning is kept beside the string it governs, in
+[`app/src/main/res/values/strings.xml`](app/src/main/res/values/strings.xml).
+
+## Screenshots
+
+Captured from the shipping **1.0.9** debug build on a **Samsung Galaxy M23 (SM-E236B),
+Android 14**, driven over USB — real frames off a real handset, not mock-ups and not an
+emulator. The account on screen is registered against a live FreeSWITCH, and the call
+screens are one real call that rang, connected and carried audio.
+
+**Server addresses are replaced with `sip.example.net` and `chat.example.com`.** The rule
+that no hostname of ours reaches git (Task 32, §7) does not stop being true because the
+host arrived as pixels instead of text — the CI guard only scans `*.properties` and
+certificate extensions, so this one is kept by hand.
+
+### Calls and the dialler
+
+| Chats | Call history | Dialler | Dialler, number entered |
+|---|---|---|---|
+| <img src="docs/screenshots/01-chats.png" width="200"> | <img src="docs/screenshots/02-calls.png" width="200"> | <img src="docs/screenshots/03-dialler.png" width="200"> | <img src="docs/screenshots/04-dialler-number.png" width="200"> |
+
+* **Chats** — one of the two bottom tabs. Signed out of chat here, and saying so rather
+  than showing an empty list: *"Chat needs its own account. Calls work as they always have,
+  signed in or not."* The app bar carries the registration state of the default SIP account
+  (`2003`, **Registered**) right here on the chat tab — the thing most likely to be wrong
+  about a softphone is not buried behind a menu.
+* **Call history** — grouped by day, with direction, time and the connected duration
+  (`14:15 · 0:10`). **All** and **Missed** filter it; the bar holds search, a filter sheet
+  and an overflow with *Call recordings* and *Clear call history*. The dial-pad FAB is the
+  only way in to the dialler — it stopped being a tab (see [`AppDestination`](app/src/main/kotlin/com/whatsappv2/ui/navigation/AppDestination.kt)).
+* **Dialler** — the account selector sits above the keypad with its live registration
+  state, because which account a call leaves on is a decision, not a setting. The field
+  takes a **number or a full SIP address**. **Call** and **Video** are disabled until
+  there is something to dial.
+* **Dialler, number entered** — typing matches against history and offers `2004` as a
+  chip. Both call buttons are now live.
+
+### A call in progress
+
+| Connecting | Connected | In-call keypad (DTMF) |
+|---|---|---|
+| <img src="docs/screenshots/05-call-connecting.png" width="200"> | <img src="docs/screenshots/06-call-active.png" width="200"> | <img src="docs/screenshots/07-call-keypad.png" width="200"> |
+
+* **Connecting** — the state is spelled out (`Connecting`), and every control is greyed:
+  nothing on this screen pretends to work before the call is up.
+* **Connected** — the timer replaces the state, and the controls light up: **Mute**,
+  **Speaker**, **Hold**, **Keypad**, **Video**, **Flip**, **Add**, **Transfer**,
+  **Record**, and **End**. *Flip* stays disabled on an audio call — there is no camera to
+  flip. **Add** builds a conference as a full mesh (everyone dials everyone); **Transfer**
+  sends a REFER.
+* **In-call keypad** — RFC 4733 digits in the media stream by default, with SIP INFO as a
+  fallback for gateways that cannot (the choice is in Settings). `A`–`D` are there for the
+  gateways that still want them, and the control row collapses to what still applies.
+
+### Accounts
+
+| SIP accounts | Account status |
+|---|---|
+| <img src="docs/screenshots/08-accounts.png" width="200"> | <img src="docs/screenshots/09-account-status.png" width="200"> |
+
+* **SIP accounts** — the app registers more than one at a time and shows each one's real
+  state: `2003` **Registered** (green tick), `55008` **Offline** (warning). The filled star
+  marks the default — the account a call leaves on unless the dialler says otherwise. Per
+  row: register/unregister and delete. The FAB adds one.
+* **Account status** — what the registrar actually granted, not what was asked for:
+  **Registration granted for 3180s**, **Transport TCP**, **Default account Yes**. A wrong
+  password reads *"Authentication failed"* and no network reads *"Offline"* — never a
+  generic error, and never an optimistic "Registered" over a transport that is down (§6).
+
+> **The one screen with no screenshot is the account editor**, and that is the feature
+> working. [`AccountEditorScreen`](feature/accounts/src/main/kotlin/com/whatsappv2/feature/accounts/editor/AccountEditorScreen.kt)
+> calls `SecureScreen()` (Tasks 21, 63) because it is the one place a SIP password is
+> typed; `FLAG_SECURE` is scoped to it rather than set on the Activity, so the dialler and
+> the call log stay capturable — *a user who cannot screenshot a call log cannot send a
+> support request.* `adb screencap` returns an empty frame there.
+
+### Settings
+
+| Accounts, appearance, DTMF | Video, voice, transfer | Privacy, retention, version |
+|---|---|---|
+| <img src="docs/screenshots/10-settings.png" width="200"> | <img src="docs/screenshots/11-settings-media.png" width="200"> | <img src="docs/screenshots/12-settings-privacy.png" width="200"> |
+
+* **Top** — *SIP accounts*, and *Run in the background* reporting the battery-optimisation
+  grant in plain words rather than a toggle whose state means nothing. Then **Appearance**
+  (System / Light / Dark), **DTMF** (RFC 4733 or SIP INFO) and **Default media encryption**,
+  each with the reason under it.
+* **Middle** — **Frame rate** (`15 fps (default)`), which reaches the encoder and not just
+  the policy, and takes effect at the next stream boundary because pjmedia cannot
+  reconfigure a running video stream. **Update caller ID on transfer** is off by default:
+  it needs the endpoint to advertise `X-FS-Support` first. **Your voice** trains a personal
+  speaker gate — the signature stays on the phone and the recording is discarded.
+* **Bottom** — **Live call filtering** ships **off** (it is the voice gate, and it is
+  honest about what off means: *"Everything the microphone picks up is sent"*).
+  **Verify TLS certificates** is off by default and says exactly what that costs.
+  **Call history** retention is set to 7 days here. **SIP trace** writes signalling to logcat with
+  passwords and authentication headers removed, debug builds only — and the build's
+  identity sits at the very bottom: **Version 1.0.9 (9)**.
+
+### Chat and recordings
+
+| Chat sign-in | Call recordings |
+|---|---|
+| <img src="docs/screenshots/14-chat-signin.png" width="200"> | <img src="docs/screenshots/13-recordings.png" width="200"> |
+
+* **Chat sign-in** — reached from the Chats tab rather than from Settings, because the
+  server URL belongs beside the credentials it is for. **Sign in** stays disabled while
+  the credentials are empty.
+* **Call recordings** — the empty state, and it states the guarantee it is making:
+  *"Recordings you make during a call are kept here, encrypted on this phone."*
+
+### Reproducing these
+
+```bash
+./launch.sh                    # build, install on the phone on USB, open the app
+adb exec-out screencap -p > shot.png
+```
+
+`adb shell uiautomator dump /sdcard/ui.xml` gives the on-screen bounds to tap, which is
+more reliable than reading coordinates off a screenshot. The account editor will return an
+empty file — see above.
 
 ## Documents
 
@@ -23,6 +154,10 @@ multi-account SIP registration, Telecom integration, and conferencing against Fr
 | [`docs/calling-completeness-prompt.md`](docs/calling-completeness-prompt.md) | The prompt for finishing the calling stack: two bugs traced to root cause, the codec gaps against what the server accepts, video's real blocker, and Lyra |
 | [`docs/reconciliation.md`](docs/reconciliation.md) | Where the documents and the code disagree, with a citation and an owning phase for each |
 | [`docs/lyra-recording-setup.md`](docs/lyra-recording-setup.md) | Server-side Lyra call recording: build, install, configure and verify, step by step (macOS + Linux) |
+| [`docs/push-wake-architecture.md`](docs/push-wake-architecture.md) | How a call wakes a sleeping handset over FCM, and why it did not on the Coral deployment |
+| [`docs/network-recovery.md`](docs/network-recovery.md) | What the client does when the network moves underneath it (Task 30, §6), with the log lines that prove it |
+| [`docs/chat-sdk-integration.md`](docs/chat-sdk-integration.md) | Bringing `com.chatserver.sdk` in behind the Chats tab without changing a line of the SDK's Java |
+| [`docs/ios-port.md`](docs/ios-port.md) | One repository, two platforms — the plan and the honest status of the iOS half |
 
 ## Server-side Lyra call recording
 
@@ -87,7 +222,7 @@ defeats the offline mandate outright and passed silently on CI because every run
 A release is one command from a clean checkout:
 
 ```bash
-./release.sh              # 1.0.3 -> 1.0.4: bump, commit, push, CI, arm64-v8a APK, publish
+./release.sh              # 1.0.9 -> 1.0.10: bump, commit, push, CI, arm64-v8a APK, publish
 ./release.sh --help       # --minor, --major, --version, --all-abis, --reuse-native, --dry-run
 ```
 
