@@ -420,14 +420,16 @@ internal class RegistrationRecoveryCoordinator(
      * implementation of [WakeTimer]), and an inexact alarm can land up to three quarters
      * of its delay late. Half the lease plus three quarters of half is still inside the
      * lease. Floored at [KEEPALIVE_FLOOR] so a registrar that grants a very short expiry
-     * does not turn the handset into a REGISTER generator.
+     * does not turn the handset into a REGISTER generator, and capped at
+     * [KEEPALIVE_CEILING] so a registrar that grants a very long one does not let the
+     * path to the handset rot between refreshes — see the ceiling's own note.
      *
      * Idempotent: an account already armed is left alone, because the timer re-arms
      * itself and a second arm here would only move it.
      */
     private fun armKeepalive(id: AccountId, expirySeconds: Int) {
         if (id in keepalives) return
-        val interval = maxOf((expirySeconds / 2).seconds, KEEPALIVE_FLOOR)
+        val interval = (expirySeconds / 2).seconds.coerceIn(KEEPALIVE_FLOOR, KEEPALIVE_CEILING)
         keepalives += id
         logger.debug(TAG, "Keepalive for $id every ${interval.inWholeSeconds}s")
         timer.schedule(keepaliveKey(id), interval) {
@@ -629,6 +631,35 @@ internal class RegistrationRecoveryCoordinator(
 
         /** The shortest keepalive interval, whatever the registrar grants. */
         val KEEPALIVE_FLOOR: Duration = 30.seconds
+
+        /**
+         * The longest keepalive interval, whatever the registrar grants.
+         *
+         * The lease is not the only thing this timer keeps alive. A handset reaches the
+         * registrar through a NAT, and the mapping behind its contact is dropped after an
+         * idle period that nothing tells us and that is routinely far shorter than the
+         * lease. When it goes, the registration row survives — the registrar still has a
+         * contact, the server's own socket still reads ESTABLISHED — and an INVITE sent to
+         * it is written into a path that no longer arrives anywhere. The handset does not
+         * ring, and nothing reports an error, because from SIP's point of view nothing
+         * failed.
+         *
+         * PJSIP's transport keepalive does not cover this: `PJSIP_TCP_KEEP_ALIVE_INTERVAL`
+         * is 90 s on its own timer heap, which is `CLOCK_MONOTONIC` and therefore stopped
+         * for as long as the device is suspended — the same reason the lease refresh moved
+         * onto a [WakeTimer] in the first place. `udpKaIntervalSec` has the same problem
+         * and, on a TCP account, is not consulted at all.
+         *
+         * So the alarm that keeps the lease keeps the mapping too, and must fire often
+         * enough for the shorter of the two. Measured on this deployment: an account whose
+         * registrar granted 5180 s armed its keepalive at 2590 s, and calls to it stopped
+         * arriving within ten minutes of the last REGISTER — the handset rang again the
+         * moment anything forced a fresh one. Two minutes is RFC 5626 §4.4.1's
+         * recommendation for a connection-oriented flow and sits under every NAT idle
+         * timeout seen here, at a cost of one REGISTER pair per account per two minutes
+         * while the account is up.
+         */
+        val KEEPALIVE_CEILING: Duration = 120.seconds
 
         /**
          * How long a REGISTER may go unanswered before it is treated as a timeout.

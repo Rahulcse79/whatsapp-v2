@@ -418,10 +418,10 @@ class RegistrationRecoveryCoordinatorTest {
     // ---------------------------------------------------------------- keepalive
 
     @Test
-    fun `a registered account is refreshed at half its lease, and keeps being`() = runTest {
-        // The lease is 3600s. PJSIP's own refresh at expiry - 5s runs on a clock that
-        // stops in deep sleep; this one runs on the WakeTimer, which does not, and it is
-        // early enough that an inexact alarm cannot land past the lease.
+    fun `a registered account is refreshed on the keepalive cadence, and keeps being`() = runTest {
+        // The lease is 3600s, so half of it is 1800s and the ceiling decides instead.
+        // PJSIP's own refresh at expiry - 5s runs on a clock that stops in deep sleep;
+        // this one runs on the WakeTimer, which does not.
         arrangeRegisteredOnWifi()
         engine.clearInvocations()
 
@@ -436,6 +436,24 @@ class RegistrationRecoveryCoordinatorTest {
         // would fire exactly once. It re-arms from its own firing instead.
         settle(KEEPALIVE)
         assertEquals(2, refreshes.size, "and again a half-lease later")
+    }
+
+    @Test
+    fun `a long lease is capped so the path to the handset cannot go idle`() = runTest {
+        // Half of this account's 3600s lease is 1800s. The NAT mapping behind its contact
+        // is dropped long before that, and when it goes nothing reports an error: the
+        // registrar still holds a contact, the server's socket still reads ESTABLISHED,
+        // and an INVITE written to it simply never arrives. Measured on the deployment -
+        // a 5180s lease armed at 2590s and calls stopped landing within ten minutes.
+        arrangeRegisteredOnWifi()
+        engine.clearInvocations()
+
+        settle(KEEPALIVE + SETTLE)
+        assertEquals(1, refreshes.size, "the ceiling decides, not the 1800s half-lease")
+
+        // Nine more ceilings is still only half way to the old half-lease interval.
+        settle(KEEPALIVE * 9)
+        assertEquals(10, refreshes.size, "and holds that cadence for the whole lease")
     }
 
     @Test
@@ -708,8 +726,14 @@ class RegistrationRecoveryCoordinatorTest {
         /** Comfortably past the coordinator's one-second debounce window. */
         val SETTLE: Duration = 3.seconds
 
-        /** Half the test account's 3600s lease: when its keepalive is due. */
-        val KEEPALIVE: Duration = 1_800.seconds
+        /**
+         * When the test account's keepalive is due.
+         *
+         * Half of its 3600 s lease is 1800 s, which the ceiling caps: the timer also keeps
+         * the NAT mapping behind the contact alive, and that expires long before any lease
+         * does. See `RegistrationRecoveryCoordinator.KEEPALIVE_CEILING`.
+         */
+        val KEEPALIVE: Duration = 120.seconds
 
         /**
          * A base delay large enough that a retry cannot fire during a [SETTLE].
