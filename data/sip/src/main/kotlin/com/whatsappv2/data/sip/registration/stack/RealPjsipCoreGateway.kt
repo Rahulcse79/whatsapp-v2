@@ -4035,15 +4035,18 @@ internal class RealPjsipCoreGateway @Inject constructor(
          *
          *  - [CORALX_AGENT_TOKEN] is matched against a *peer's* `User-Agent` to decide
          *    whether that peer is one of us and can therefore mesh rather than be relayed.
-         *    Both ends must carry the same token, so a build with this value talking to a
-         *    build with the old one will relay where it used to mesh - correct, just more
-         *    expensive. Keep the two constants in step.
+         *    The match is a substring test, so the rule is narrower than "keep the two
+         *    equal": this value must CONTAIN the token. A version suffix is therefore
+         *    free - `coraluc-v2` still contains `coraluc`, so a v2 build and an older one
+         *    still recognise each other and still mesh. Renaming the product token itself
+         *    would not be free, and would have to change both constants together and
+         *    strand every build already in the field.
          *  - [UPDATE_DISPLAY_UA_TOKEN] is appended when caller-ID-on-transfer is on,
          *    because FreeSWITCH decides whether to send `message/update_display` by
          *    matching this header against a vendor list. That suffix is separate and is
          *    still appended to whatever this says.
          */
-        const val USER_AGENT = "coraluc"
+        const val USER_AGENT = "coraluc-v2"
 
         /**
          * Appended to [USER_AGENT] when connected-party updates are wanted.
@@ -4470,10 +4473,15 @@ internal fun isCoralxAgent(agent: String?): Boolean =
 /**
  * The product token in [USER_AGENT], which is what survives a version bump.
  *
- * Equal to the whole of [USER_AGENT] now that the agent is a bare product token with no
- * version or comment, and kept as its own constant because the two mean different things:
- * one is what this endpoint announces, the other is what it recognises in a peer. A
- * version suffix added to the first must not silently narrow the second.
+ * A proper prefix of [USER_AGENT] since the agent became `coraluc-v2`: the two are
+ * separate constants because they mean different things - one is what this endpoint
+ * announces, the other is what it recognises in a peer - and [isCoralxAgent] matches by
+ * substring precisely so a version suffix on the announcement cannot narrow recognition.
+ * A v2 build and a build from before the suffix still mesh with each other.
+ *
+ * This is the constant that must NOT follow a version bump. Moving it to `coraluc-v2`
+ * would stop every handset already in the field being recognised as one of us, and those
+ * calls would silently relay through the host instead of meshing.
  */
 internal const val CORALX_AGENT_TOKEN = "coraluc"
 
