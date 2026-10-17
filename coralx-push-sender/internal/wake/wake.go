@@ -59,6 +59,9 @@ type Manager struct {
 
 	mu    sync.Mutex
 	calls map[string]*call
+	// legs notes the channels a wake has already gone out for, so the several
+	// events one leg fires cannot become several pushes. See outbound.go.
+	legs map[string]time.Time
 }
 
 type call struct {
@@ -87,7 +90,10 @@ func New(reg *registry.Registry, pusher Pusher, sw Switch, cfg Config) *Manager 
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	return &Manager{registry: reg, pusher: pusher, sw: sw, cfg: cfg, calls: map[string]*call{}}
+	return &Manager{
+		registry: reg, pusher: pusher, sw: sw, cfg: cfg,
+		calls: map[string]*call{}, legs: map[string]time.Time{},
+	}
 }
 
 // Payload is the FCM data map for one call — exactly the four ADR-004 keys.
@@ -218,6 +224,7 @@ func (m *Manager) Sweep(ctx context.Context) {
 	now := m.cfg.Now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.sweepLegs(now)
 	for uuid, c := range m.calls {
 		switch {
 		case !c.done && c.parked && now.After(c.deadline):

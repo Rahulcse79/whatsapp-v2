@@ -22,12 +22,17 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/coraltelecom/coralx-push-sender.env
+# -fcm-sender-id uses the '=' form on purpose: FCM_SENDER_ID may be empty, systemd
+# then drops the argument entirely, and Go's flag package takes the NEXT flag as
+# this flag's value — the sender id would become "-log-level" and every token
+# would be rejected. `-flag=` passes an empty value safely.
 ExecStart=/opt/coralx-push-sender/push-sender \
   -esl-addr ${ESL_ADDR} \
   -esl-password ${ESL_PASSWORD} \
   -http-addr ${HTTP_ADDR} \
   -data-dir ${STATE_DIRECTORY} \
   -service-account ${CREDENTIALS_DIRECTORY}/fcm-key \
+  -fcm-sender-id=${FCM_SENDER_ID} \
   -log-level ${LOG_LEVEL}
 Restart=on-failure
 RestartSec=3
