@@ -53,7 +53,8 @@ class SipConnectionServiceRegistryTest {
 
         assertFalse(waiter.isCompleted, "an unbind settled a placement that was still in flight")
         assertEquals(
-            baseline + 1, SipConnectionService.unanswered(),
+            baseline + 1,
+            SipConnectionService.unanswered(),
             "the placement stopped being tracked",
         )
     }
