@@ -4,8 +4,11 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<!-- Tracks `app_name` in app/src/main/res/values/strings.xml, which main renamed
+	     from CoralX in 3e8deff8. Two platforms of the same product showing different
+	     names on the home screen is a support call waiting to happen. -->
 	<key>CFBundleDisplayName</key>
-	<string>Coral</string>
+	<string>Coral SIP Client</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>

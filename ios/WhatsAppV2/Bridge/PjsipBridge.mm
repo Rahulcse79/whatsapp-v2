@@ -696,10 +696,18 @@ static void cb_on_log(int level, const char *data, int len) {
         ua_cfg.cb.on_call_transfer_status = &cb_on_call_transfer_status;
         ua_cfg.cb.on_call_media_event     = &cb_on_call_media_event;
 
-        // The same User-Agent the Android client announces. Not cosmetic: the deployed
-        // dialplan matches on it, and FreeSWITCH rewrites the peer's User-Agent when it
-        // B2BUAs a leg, which is how the mesh-ack check learned not to trust it.
-        ua_cfg.user_agent = pj_str((char *)"coraluc");
+        // The same User-Agent the Android client announces, and it must STAY the same:
+        // the deployed dialplan matches on it, and FreeSWITCH rewrites the peer's
+        // User-Agent when it B2BUAs a leg, which is how the mesh-ack check learned not
+        // to trust it.
+        //
+        // `coraluc-v2` tracks `RealPjsipCoreGateway.USER_AGENT`, which main moved from
+        // `coraluc` in 5a3aedc8. The rename is safe because the dialplan matches a
+        // PREFIX — `coraluc-v2` still contains `coraluc`, so a v2 build and an older one
+        // are both recognised and no handset in the field is stranded. The two platforms
+        // must not drift: an iPhone announcing `coraluc` while the dialplan has moved on
+        // is a device the server stops treating as ours.
+        ua_cfg.user_agent = pj_str((char *)"coraluc-v2");
 
         log_cfg.level        = (unsigned)logLevel;
         log_cfg.console_level = 0;              // nothing to stdout; the delegate routes it
@@ -845,10 +853,27 @@ static void cb_on_log(int level, const char *data, int len) {
     }
 
     acc->reg_timeout = (unsigned)config.registrationExpirySeconds;
-    // Refresh at half the granted lifetime. The binding the registrar holds is the thing
-    // that matters, and a NAT's UDP mapping is routinely shorter than the expiry the
-    // server grants — a refresh at 90% is a binding that is dead for the last 10%.
-    acc->reg_delay_before_refresh = (unsigned)MAX(1, config.registrationExpirySeconds / 2);
+
+    // Refresh at half the expiry, FLOORED at 30 s and CAPPED at 120 s.
+    //
+    // Half the lifetime alone is not enough, and this is measured rather than
+    // theoretical: on this deployment an account whose registrar granted 5180 s armed
+    // its keepalive at 2590 s, and calls to it stopped arriving within ten minutes of
+    // the last REGISTER — the handset rang again the moment anything forced a fresh
+    // one. The NAT mapping dies long before the lease does, and PJSIP's transport
+    // keepalive does not cover it.
+    //
+    // 120 s is RFC 5626 §4.4.1's recommendation for a connection-oriented flow and
+    // sits under every NAT idle timeout seen on this network. The floor stops a
+    // registrar that grants a very short expiry from turning this into a REGISTER
+    // storm. Both constants track `RegistrationRecoveryCoordinator.KEEPALIVE_FLOOR`
+    // and `KEEPALIVE_CEILING` on the Android side (main, 0d4c562e) — a cap that holds
+    // on one platform and not the other is a bug report nobody can reproduce.
+    const int kKeepaliveFloorSeconds = 30;
+    const int kKeepaliveCeilingSeconds = 120;
+    int refresh = (int)config.registrationExpirySeconds / 2;
+    refresh = MAX(kKeepaliveFloorSeconds, MIN(kKeepaliveCeilingSeconds, refresh));
+    acc->reg_delay_before_refresh = (unsigned)refresh;
     acc->reg_retry_interval = 0;   // retries are the shared RegistrationBackoff's job
 
     switch (config.srtpPolicy) {
@@ -879,7 +904,10 @@ static void cb_on_log(int level, const char *data, int len) {
     acc->ice_cfg_use = PJSUA_ICE_CONFIG_USE_CUSTOM;
     acc->ice_cfg.enable_ice = config.iceEnabled ? PJ_TRUE : PJ_FALSE;
 
-    acc->ka_interval = (unsigned)config.keepaliveIntervalSeconds;
+    // The same ceiling on the transport keepalive, for the same reason: a configured
+    // value longer than the NAT's idle timeout is a value that does nothing.
+    acc->ka_interval = (unsigned)MIN(kKeepaliveCeilingSeconds,
+                                     MAX(0, (int)config.keepaliveIntervalSeconds));
 
     // Video is offered per call, not per account: a dialler that offered video on every
     // INVITE would light the camera for an audio call.
