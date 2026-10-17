@@ -6,12 +6,15 @@
   the activity, and the calling account Android shows in its own settings. A name spelled
   separately in three files is a name that is eventually wrong in one of them.
 
-  CoralX, and deliberately not WhatsApp: that mark is Meta's, and a SIP softphone shipping
-  under it could not be distributed. (It was briefly Callisto, a placeholder; CoralX is the
-  name the product actually ships under.) The application ID, the module names and the
-  `com.whatsappv2` package keep their historical spelling, because those are identifiers
-  rather than names - changing the application ID would orphan every installed copy.
+  "Coral SIP Client", and deliberately not WhatsApp: that mark is Meta's, and a SIP
+  softphone shipping under it could not be distributed. (It was briefly Callisto, a
+  placeholder, then CoralX; "Coral SIP Client" is the name the product actually ships
+  under.) The application ID, the module names and the `com.whatsappv2` package keep their
+  historical spelling, because those are identifiers rather than names - changing the
+  application ID would orphan every installed copy. The same goes for the server-side
+  `coralx-push-sender` service and its `coralx::push_wake` event: those are wire and
+  deployment names, not anything a user reads.
 -->
 <resources>
-    <string name="app_name">CoralX</string>
+    <string name="app_name">Coral SIP Client</string>
 </resources>

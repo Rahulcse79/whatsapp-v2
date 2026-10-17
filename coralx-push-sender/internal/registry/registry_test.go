@@ -1,7 +1,9 @@
 package registry
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -101,5 +103,117 @@ func TestRedactedNeverShowsTheWholeToken(t *testing.T) {
 	token := Token{PRID: fcmToken}
 	if got := token.Redacted(); got != "…3K5l7M9n" {
 		t.Fatalf("redaction leaks or is wrong: %q", got)
+	}
+}
+
+// contactFor builds a stored contact for one user under one FCM sender id. The
+// token is fake: a registration token names a device and real ones never appear
+// in tests (ADR-004 §7).
+func contactFor(user, senderID, prid string) string {
+	return `"" <sip:` + user + `@192.168.20.56:5060;ob;pn-provider=fcm;pn-param=` + senderID +
+		`;pn-prid=` + prid + `;pn-type=firebase;pn-silent=1>`
+}
+
+const (
+	ourSender     = "273934559014" // whatsapp-39dcb
+	foreignSender = "58415781151"  // another product on the same SIP domain
+)
+
+// The isolation that matters on a shared SIP domain: FCM HTTP v1 is
+// project-scoped, so a token minted under another sender id is one this service
+// cannot address and must not store. Extension 4038 on the live deployment is
+// exactly this case.
+func TestObserveRejectsATokenFromAnotherFCMProject(t *testing.T) {
+	r, err := New("", WithSenderID(ourSender))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.Observe("4038", "192.168.20.56", contactFor("4038", foreignSender, "FAKE-FOREIGN"), time.Now()); ok {
+		t.Fatal("a token from another FCM project must not be stored")
+	}
+	if _, ok := r.Lookup("4038"); ok {
+		t.Fatal("the foreign account must not be reachable through this registry")
+	}
+	if _, ok := r.Observe("4006", "192.168.20.56", contactFor("4006", ourSender, "FAKE-OURS"), time.Now()); !ok {
+		t.Fatal("our own project's token must still be accepted")
+	}
+}
+
+// Unset means unchanged: a deployment that has not configured a sender id keeps
+// the behaviour it had before the restriction existed.
+func TestObserveAcceptsEveryProjectWhenNoSenderIDIsSet(t *testing.T) {
+	r, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sender := range []string{ourSender, foreignSender} {
+		if _, ok := r.Observe("4006", "192.168.20.56", contactFor("4006", sender, "FAKE"), time.Now()); !ok {
+			t.Fatalf("sender %s should be accepted when none is configured", sender)
+		}
+	}
+}
+
+// A store written before the restriction must not keep another project's device
+// reachable once the restriction is turned on.
+func TestForeignTokensArePrunedOnLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	open, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open.Observe("4006", "192.168.20.56", contactFor("4006", ourSender, "FAKE-OURS"), time.Now())
+	open.Observe("4038", "192.168.20.56", contactFor("4038", foreignSender, "FAKE-FOREIGN"), time.Now())
+
+	restricted, err := New(path, WithSenderID(ourSender))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := restricted.Lookup("4038"); ok {
+		t.Fatal("a persisted foreign token must be dropped on load")
+	}
+	if _, ok := restricted.Lookup("4006"); !ok {
+		t.Fatal("our own persisted token must survive the load")
+	}
+	// The prune is written back: the foreign device's token must not stay on disk.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "FAKE-FOREIGN") {
+		t.Fatal("the pruned token is still in the persisted file")
+	}
+	if !strings.Contains(string(raw), "FAKE-OURS") {
+		t.Fatal("the surviving token was lost from the persisted file")
+	}
+}
+
+// The start-up seed goes through Observe, so it inherits the same filter.
+func TestSeedingFromShowRegistrationsAppliesTheSenderFilter(t *testing.T) {
+	r, err := New("", WithSenderID(ourSender))
+	if err != nil {
+		t.Fatal(err)
+	}
+	csv := "reg_user,realm,token,url\n" +
+		"4006,192.168.20.56,tok,sofia/internal/sip:4006@h:5060;pn-provider=fcm;pn-param=" + ourSender + ";pn-prid=FAKE-OURS\n" +
+		"4038,192.168.20.56,tok,sofia/internal/sip:4038@h:5060;pn-provider=fcm;pn-param=" + foreignSender + ";pn-prid=FAKE-FOREIGN\n"
+	if n := r.ParseShowRegistrations(csv, time.Now()); n != 1 {
+		t.Fatalf("expected exactly one eligible registration, got %d", n)
+	}
+	if _, ok := r.Lookup("4038"); ok {
+		t.Fatal("seeding must not import another project's token")
+	}
+}
+
+func TestSenderAllowed(t *testing.T) {
+	unrestricted, _ := New("")
+	if !unrestricted.SenderAllowed(foreignSender) {
+		t.Fatal("with no sender id configured every project is allowed")
+	}
+	restricted, _ := New("", WithSenderID(ourSender))
+	if restricted.SenderAllowed(foreignSender) {
+		t.Fatal("a foreign sender id must not be allowed")
+	}
+	if !restricted.SenderAllowed(ourSender) {
+		t.Fatal("our own sender id must be allowed")
 	}
 }

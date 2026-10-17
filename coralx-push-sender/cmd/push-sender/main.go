@@ -31,10 +31,36 @@ import (
 	"github.com/Rahulcse79/coralx-push-sender/internal/wake"
 )
 
-// The events the sender lives on. CHANNEL_PARK and CHANNEL_HANGUP_COMPLETE
-// carry the caller's state; the two CUSTOM subclasses are the REGISTER and the
-// dialplan's announcement.
-var subscriptions = []string{"CHANNEL_PARK", "CHANNEL_HANGUP_COMPLETE", "CUSTOM", "sofia::register", "coralx::push_wake"}
+// The events the sender lives on, split because their ORDER on the wire is
+// load-bearing.
+//
+// Subscribe joins these into one `event json ...` line, and FreeSWITCH's parser
+// treats every token after CUSTOM as a custom SUBCLASS. So a standard event
+// appended after the subclasses is silently subscribed as a subclass that does
+// not exist: the subscription still returns +OK and the event never arrives.
+// That is exactly how CHANNEL_OUTGOING was first added here, and the only
+// symptom was a push that never fired. Standard events must come first.
+var (
+	// standardEvents carry the caller's state.
+	standardEvents = []string{"CHANNEL_PARK", "CHANNEL_HANGUP_COMPLETE"}
+	// customEvents is CUSTOM and the subclasses it scopes: the REGISTER and the
+	// dialplan's announcement.
+	customEvents = []string{"CUSTOM", "sofia::register", "coralx::push_wake"}
+)
+
+// eventsFor is the subscription list for one configuration, standard events
+// before CUSTOM.
+//
+// CHANNEL_OUTGOING is only asked for when -wake-on-outbound-leg is set: on a
+// busy switch it fires for every outbound leg of every call, and a deployment
+// whose dialplan announces its own push_wake has no use for it.
+func eventsFor(cfg config) []string {
+	events := append([]string{}, standardEvents...)
+	if cfg.wakeOnOutboundLeg {
+		events = append(events, "CHANNEL_OUTGOING")
+	}
+	return append(events, customEvents...)
+}
 
 type config struct {
 	eslAddr        string
@@ -46,7 +72,12 @@ type config struct {
 	pushTTL        time.Duration
 	resumeContext  string
 	timeoutContext string
+	fcmSenderID    string
 	logLevel       string
+
+	// wakeOnOutboundLeg pushes when FreeSWITCH builds the leg to the device,
+	// instead of waiting for a dialplan that announces the call itself.
+	wakeOnOutboundLeg bool
 }
 
 func envOr(flagName, fallback string) string {
@@ -68,6 +99,10 @@ func parseFlags() config {
 	flag.DurationVar(&c.pushTTL, "push-ttl", mustDuration(envOr("push-ttl", "30s")), "FCM time-to-live for the wake message")
 	flag.StringVar(&c.resumeContext, "resume-context", envOr("resume-context", "coralx-resume"), "dialplan context that bridges a woken call")
 	flag.StringVar(&c.timeoutContext, "timeout-context", envOr("timeout-context", "coralx-timeout"), "dialplan context for a device that did not wake")
+	flag.StringVar(&c.fcmSenderID, "fcm-sender-id", envOr("fcm-sender-id", ""), "only accept push tokens whose pn-param is this FCM sender id; empty accepts any project")
+	flag.BoolVar(&c.wakeOnOutboundLeg, "wake-on-outbound-leg", envOr("wake-on-outbound-leg", "") == "true",
+		"send the wake when FreeSWITCH creates the leg to the device (CHANNEL_OUTGOING), for a deployment "+
+			"whose dialplan cannot fire coralx::push_wake - e.g. one serving the dialplan over mod_xml_curl")
 	flag.StringVar(&c.logLevel, "log-level", envOr("log-level", "info"), "debug, info, warn or error")
 	flag.Parse()
 	return c
@@ -145,7 +180,7 @@ func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(log)
 
-	reg, err := registry.New(filepath.Join(cfg.dataDir, "tokens.json"))
+	reg, err := registry.New(filepath.Join(cfg.dataDir, "tokens.json"), registry.WithSenderID(cfg.fcmSenderID))
 	if err != nil {
 		log.Error("cannot load the token registry", "err", err)
 		os.Exit(1)
@@ -156,7 +191,17 @@ func main() {
 		os.Exit(1)
 	}
 	if sender.Configured() {
-		log.Info("FCM configured", "project", sender.ProjectID())
+		// The sender id is logged beside the project because the two are set from
+		// different places and nothing can cross-check them: a service-account key
+		// carries project_id, never the project number that is the pn-param. An
+		// operator who pairs them wrongly accepts every token and delivers none,
+		// and without this line that misconfiguration is invisible at boot.
+		senderID := cfg.fcmSenderID
+		if senderID == "" {
+			senderID = "(any - no -fcm-sender-id set)"
+		}
+		log.Info("FCM configured", "project", sender.ProjectID(), "sender_id", senderID,
+			"wake_on_outbound_leg", cfg.wakeOnOutboundLeg)
 	} else {
 		log.Warn("FCM is NOT configured: running dry - pushes are logged, not sent (pass -service-account)")
 	}
@@ -225,7 +270,7 @@ func runConnection(ctx context.Context, cfg config, log *slog.Logger, reg *regis
 	}
 	defer client.Close()
 
-	if err := client.Subscribe(ctx, subscriptions...); err != nil {
+	if err := client.Subscribe(ctx, eventsFor(cfg)...); err != nil {
 		return err
 	}
 	sw.client.Store(client)
@@ -249,16 +294,24 @@ func runConnection(ctx context.Context, cfg config, log *slog.Logger, reg *regis
 			if !ok {
 				return client.Err()
 			}
-			dispatch(ctx, log, reg, manager, ev)
+			dispatch(ctx, cfg, log, reg, manager, ev)
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
 }
 
-func dispatch(ctx context.Context, log *slog.Logger, reg *registry.Registry, manager *wake.Manager, ev esl.Event) {
+func dispatch(ctx context.Context, cfg config, log *slog.Logger, reg *registry.Registry, manager *wake.Manager, ev esl.Event) {
 	log.Debug("event", "name", ev.Name(), "subclass", ev.Subclass(), "uuid", ev.UUID())
 	switch ev.Name() {
+	case "CHANNEL_OUTGOING":
+		// Only the leg FreeSWITCH builds toward a device, never the caller's own
+		// inbound channel: an inbound CHANNEL_OUTGOING does not exist, but the
+		// direction is asserted rather than assumed because this is the one case
+		// that can send a push, and a push to the caller would wake the wrong phone.
+		if cfg.wakeOnOutboundLeg && ev["Call-Direction"] == "outbound" {
+			manager.OnOutboundLeg(ctx, ev.UUID(), ev["Caller-Destination-Number"])
+		}
 	case "CHANNEL_PARK":
 		manager.OnPark(ctx, ev.UUID())
 	case "CHANNEL_HANGUP_COMPLETE":
@@ -276,6 +329,12 @@ func dispatch(ctx context.Context, log *slog.Logger, reg *registry.Registry, man
 			if token, ok := reg.Observe(user, host, ev["contact"], time.Now()); ok {
 				log.Info("REGISTER with push token", "user", user, "host", host, "provider", token.Provider,
 					"token", token.Redacted(), "agent", ev["user-agent"])
+			} else if _, param, _, parsed := registry.ParseContact(ev["contact"]); parsed && !reg.SenderAllowed(param) {
+				// Another product's handset on this SIP domain. Named, not silent: an
+				// operator who sets -fcm-sender-id wrongly would otherwise watch every
+				// REGISTER be ignored with no reason given.
+				log.Info("REGISTER carries a push token from another FCM project; ignoring",
+					"user", user, "sender_id", param, "agent", ev["user-agent"])
 			} else {
 				log.Debug("REGISTER without push token", "user", user, "agent", ev["user-agent"])
 			}

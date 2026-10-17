@@ -1,10 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The round launcher icon, which is the same three layers.
+  The round launcher icon: the same three layers as ic_launcher.xml.
 
-  A separate file because `android:roundIcon` is a separate manifest attribute and some
-  launchers ask for it by name. The masking is the launcher's either way — see
-  ic_launcher.xml for why the foreground is a bitmap and the plate is not.
+  Separate because `android:roundIcon` is a separate manifest attribute and some
+  launchers ask for it by name, not because the artwork differs – an adaptive icon is
+  already masked to whatever shape the launcher wants, so pointing both at the same
+  layers is correct and keeps them from drifting.
+
+  Three layers, not a bitmap for the whole icon: the launcher masks background and
+  foreground to its own shape and parallaxes them, and <monochrome> is what lets Android
+  13+ tint the icon to the user's wallpaper instead of dropping a coloured square into a
+  themed home screen.
+
+  ## Why the foreground is a bitmap
+
+  Same reason it was one for the CoralX mark it replaces: the artwork is supplied, not
+  ours to draw. The Coral Telecom lockup is type plus a four-colour swoosh with soft
+  shading, and tracing that would ship something that is nearly the brand, which is worse
+  than shipping the brand. So it ships as PNGs at all five densities, generated from the
+  supplied file with its white ground keyed to transparency, and the plate behind it is
+  white so the dark type reads and the keyed edges cannot seam.
+
+  ## The one thing to know before reusing this
+
+  The source, docs/brand/coral-telecom-logo.jpeg, is 187x148. The mark inside it trims to 175x135, and the largest
+  layer this icon needs is 288x222 – so xxhdpi and xxxhdpi are UPSCALED, by about 1.2x
+  and 1.6x. It is sharp enough on a launcher and it is not sharp enough for a 512px Play
+  Store listing or a 1024px iOS icon. Replacing the source with a square, transparent
+  PNG of at least 1024px, or the original vector, is the fix; regenerating from a bigger
+  file is the only step, since nothing here is hand-tuned to these pixels.
+
+  Every layer is 108dp with the mark inside the 66% the launcher is guaranteed to keep,
+  which is what stops a circular mask from cutting the ends off the lockup.
 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@drawable/ic_launcher_background" />

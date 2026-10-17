@@ -1,0 +1,339 @@
+# Builds both platforms for the iOS port, on runners that have the toolchains the
+# development machine does not.
+#
+# ## Why this workflow exists
+#
+# The Mac this port is being written on runs macOS 12.7.6 with the Command Line Tools and
+# no Xcode, so there is no iPhoneOS SDK, no simulator and no `xcodebuild` — nothing iOS
+# can be compiled or run there at all. A GitHub macOS runner has all three, so CI is the
+# only place the iOS half of this repository can be verified today. That makes this
+# workflow the verification loop for the port rather than a formality on top of one.
+#
+# ## What it actually checks, and what it deliberately does not
+#
+# `shared-ios` is the real iOS work available right now: it compiles the `:shared` Kotlin
+# Multiplatform module for an iOS target and runs its tests **on a simulator**. Those 73
+# assertions about the adaptive video ladder have only ever run on a JVM; this is the
+# first time the same code executes on iOS.
+#
+# `ios-app` is **skipped, not passed**, while no Xcode project of ours exists. A job that
+# printed "nothing to build" and went green would read as "iOS builds fine" on the run
+# page, which is the one impression this workflow must never give. A skipped job is
+# unambiguous. The condition is computed from the filesystem, so the job starts running
+# by itself on the commit that adds the project — no edit here required.
+#
+# `android` is on ubuntu rather than macOS deliberately: it needs no Apple toolchain, and
+# macOS runner minutes bill at ten times the rate. It runs `./build.sh android`, which is
+# a full native build — PJSIP, OpenSSL, libvpx and the Lyra/TensorFlow Lite closure from
+# vendored source — so it is slow by construction, not by accident.
+name: iOS port
+
+on:
+  push:
+    branches: [feature/ios-port]
+  pull_request:
+    branches: [feature/ios-port]
+  workflow_dispatch:
+
+# A second push supersedes the first: these jobs are long and there is no value in two
+# native builds of the same branch racing each other.
+concurrency:
+  group: ios-port-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------- inspection
+  #
+  # One cheap job whose only output is what the repository actually contains, so the jobs
+  # below branch on evidence rather than on an assumption baked into this file.
+  inspect:
+    name: What is in the repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      has-xcode-project: ${{ steps.look.outputs.has-xcode-project }}
+      xcode-project: ${{ steps.look.outputs.xcode-project }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Look for an iOS application target of our own
+        id: look
+        run: |
+          # third_party/ is full of vendored sample apps -- TensorFlow Lite's examples and
+          # pjproject's own ios-swift-pjsua2 among them -- and matching one of those would
+          # send xcodebuild off to build somebody else's demo. Only our tree counts.
+          project="$(find . -name '*.xcodeproj' -maxdepth 3 \
+                       -not -path './third_party/*' \
+                       -not -path './.claude/*' 2>/dev/null | head -1 || true)"
+          if [ -n "$project" ]; then
+            echo "has-xcode-project=true" >> "$GITHUB_OUTPUT"
+            echo "xcode-project=$project" >> "$GITHUB_OUTPUT"
+            echo "Found $project"
+          else
+            echo "has-xcode-project=false" >> "$GITHUB_OUTPUT"
+            echo "xcode-project=" >> "$GITHUB_OUTPUT"
+            {
+              echo "### No iOS application target yet"
+              echo
+              echo 'There is no `.xcodeproj` of ours in this repository, so the `ios-app`'
+              echo 'job is **skipped rather than passed** — nothing was built for iOS as'
+              echo 'an application. The shared Kotlin module is still compiled and tested'
+              echo 'on an iOS simulator by the `shared-ios` job.'
+              echo
+              echo 'See `docs/ios-port.md` for the phase this sits in.'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ------------------------------------------------------------- shared on iOS
+  shared-ios:
+    name: Shared KMP module, compiled and tested on iOS
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      # Stated rather than assumed. Which Xcode and which SDKs a runner image carries
+      # changes without notice, and when a Kotlin/Native link fails the first question is
+      # always which toolchain it was using.
+      - name: Report the Apple toolchain this runner has
+        run: |
+          sw_vers
+          xcode-select -p
+          xcodebuild -version
+          echo "iphonesimulator SDK: $(xcrun --sdk iphonesimulator --show-sdk-path)"
+          echo "architecture: $(uname -m)"
+          xcrun simctl list runtimes | head -20
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      # Kotlin/Native downloads a toolchain of its own, outside the Gradle caches, and it
+      # is around a gigabyte. Without this every run pays for it again.
+      - name: Cache the Kotlin/Native toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-${{ runner.os }}-
+
+      # The targets in shared/build.gradle.kts are declared only when an iOS SDK is
+      # present, so this also proves the detection works on a machine that has one: if
+      # these tasks do not exist, the guard is wrong and the build says so here.
+      - name: List the iOS tasks Gradle actually created
+        run: ./gradlew :shared:tasks --all | grep -iE "ios|link|framework" || true
+
+      - name: Compile the shared module for iOS, device and simulator
+        run: ./gradlew :shared:compileKotlinIosArm64 :shared:compileKotlinIosSimulatorArm64
+
+      # The point of the whole job: the shared logic running on iOS rather than on a JVM.
+      - name: Run the shared tests on an iOS simulator
+        run: ./gradlew :shared:iosSimulatorArm64Test
+
+      - name: Assemble the XCFramework the app will link against
+        run: ./gradlew :shared:assembleSharedDebugXCFramework
+
+      - name: Upload the shared test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shared-ios-test-reports
+          path: |
+            shared/build/reports/tests/
+            shared/build/test-results/
+          if-no-files-found: warn
+
+      - name: Upload the shared framework
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shared-ios-framework
+          path: |
+            shared/build/XCFrameworks/
+            shared/build/bin/iosSimulatorArm64/
+          if-no-files-found: warn
+
+  # -------------------------------------------------------------------- iOS app
+  #
+  # Runs only once an Xcode project of ours exists. Until then GitHub shows this as
+  # skipped, which is the honest state: not built, not broken, not yet written.
+  ios-app:
+    name: iOS app
+    needs: [inspect, shared-ios]
+    if: needs.inspect.outputs.has-xcode-project == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    # Computed here and not in the step below, because the two contexts are asymmetric:
+    # a job's `env` may read `secrets`, and a step's `if` may read `env` -- but a step's
+    # `if` may NOT read `secrets`, and a step's own `env` is not visible to its own `if`.
+    # Getting that backwards is what made the first run of this workflow invalid.
+    env:
+      HAS_SIGNING: ${{ secrets.IOS_CERTIFICATE_P12 != '' && secrets.IOS_PROVISIONING_PROFILE != '' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Cache the Kotlin/Native toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-${{ runner.os }}-
+
+      # Named from the project rather than guessed: a scheme that does not exist fails
+      # inside xcodebuild with a list of the ones that do, which is a worse way to find out.
+      - name: Find the scheme to build
+        id: scheme
+        run: |
+          project="${{ needs.inspect.outputs.xcode-project }}"
+          echo "Project: $project"
+          xcodebuild -list -project "$project"
+          scheme="$(xcodebuild -list -project "$project" \
+                      | awk '/Schemes:/{flag=1; next} flag && NF {print $1; exit}')"
+          [ -n "$scheme" ] || { echo "::error::no scheme in $project"; exit 1; }
+          echo "scheme=$scheme" >> "$GITHUB_OUTPUT"
+          echo "Building scheme: $scheme"
+
+      # Simulator, and unsigned. A simulator build needs no certificate, so this is the
+      # build that can run on every pull request from anyone; the device build below is
+      # the one that needs secrets and is skipped without them.
+      - name: Build for the simulator
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "${{ needs.inspect.outputs.xcode-project }}" \
+            -scheme "${{ steps.scheme.outputs.scheme }}" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/ios \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tail -60
+
+      - name: Upload the simulator .app
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-app-simulator
+          path: build/ios/Build/Products/Debug-iphonesimulator/*.app
+          if-no-files-found: error
+
+      # Device builds need a certificate and a profile, and this repository has neither
+      # committed -- correctly, since a signing identity in a git history is a credential
+      # leak. The step runs only when the secrets exist, so a fork or an unconfigured
+      # repository gets the simulator build and no confusing signing failure.
+      - name: Build for a device (only with signing material)
+        if: env.HAS_SIGNING == 'true'
+        run: |
+          # Deliberately a warning and not a build. Importing a p12 into a temporary
+          # keychain and installing a profile is well-trodden, but it cannot be written
+          # honestly against secrets nobody has yet supplied and nobody can test here.
+          # The hook exists so that adding the secrets is the only remaining step.
+          echo "::warning::IOS_CERTIFICATE_P12 and IOS_PROVISIONING_PROFILE are set, but the \
+          device build is not implemented. The simulator build above is unsigned and ran. \
+          See docs/ios-port.md."
+
+
+  # -------------------------------------------------------------------- Android
+  #
+  # The existing Android build, unchanged, so this workflow proves the port has not cost
+  # the platform that already works.
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      # r27c, the version gradle.properties pins and the one 16 KB page alignment needs.
+      - name: Set up the NDK
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+          # No local-cache. A restored cache is what produced the dangling `clang`
+          # symlink below: the entry restores, the link does not resolve, and every
+          # check short of running the compiler believes it is there.
+          local-cache: false
+
+      # Debian packages the Java typemaps with swig itself, which build.sh's own error
+      # message says; on MacPorts they are a separate port, which is why it checks.
+      - name: Install SWIG
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y swig
+          swig -version
+
+      # Lifted from build-pjsip.yml, which already learned this: nttld/setup-ndk promises
+      # no particular layout, and passing its reported path straight through gave CMake
+      # a clang that is not there --
+      #   CMAKE_C_COMPILER .../prebuilt/linux-x86_64/bin/clang is not a full path to an
+      #   existing compiler tool
+      # Find a root that actually carries a compiler instead of assuming one does.
+      - name: Locate the NDK toolchain
+        run: |
+          set -euo pipefail
+          clang=""
+          for root in "${{ steps.ndk.outputs.ndk-path }}" \
+                      "${ANDROID_NDK_LATEST_HOME:-}" \
+                      "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/ndk/*; do
+            [ -n "$root" ] && [ -d "$root" ] || continue
+            # No -type f: clang is a symlink in some layouts, and a symlink to a working
+            # compiler is a working compiler.
+            found="$(find "$root" -path '*/toolchains/llvm/prebuilt/*/bin/clang' 2>/dev/null | head -1)"
+            # Ask the compiler to identify itself rather than trusting that the path
+            # exists. `find` without -type f matches a DANGLING symlink too, and that is
+            # exactly what the first attempt accepted: the step reported
+            # "using NDK at /home/runner/.setup-ndk/r27c" and CMake then said that very
+            # path "is not a full path to an existing compiler tool". A compiler that
+            # cannot print its version is not a compiler.
+            if [ -n "$found" ] && "$found" --version >/dev/null 2>&1; then
+              echo "using NDK at $root"; clang="$found"; break
+            fi
+            if [ -n "$found" ]; then
+              echo "skipping $root - clang at $found does not run (dangling symlink?)"
+            else
+              echo "skipping $root - no clang under toolchains/llvm/prebuilt"
+            fi
+          done
+          if [ -z "$clang" ]; then
+            echo "::error::no NDK with a usable clang on this runner"
+            exit 1
+          fi
+          bin="$(dirname "$clang")"
+          # bin -> <host> -> prebuilt -> llvm -> toolchains -> the NDK root itself
+          ndk="$(cd "$bin/../../../../.." && pwd)"
+          echo "NDK root      : $ndk"
+          echo "ANDROID_NDK_ROOT=$ndk" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Build the APK
+        run: ./build.sh android
+
+      - name: Upload the APK
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

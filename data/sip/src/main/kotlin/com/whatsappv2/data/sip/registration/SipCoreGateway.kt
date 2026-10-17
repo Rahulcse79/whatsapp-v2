@@ -158,6 +158,15 @@ internal data class StackPushParameters(
 
     /** `pn-prid` — the device registration token. */
     val prid: String,
+
+    /**
+     * `pn-type` — the push service, as the CoralUC IMS names it.
+     *
+     * Not an RFC 8599 parameter; `fcm` there is spelled `firebase` here. Carried next to
+     * [provider] rather than derived from it because the two are different vocabularies
+     * and a server reading one does not accept the other's spelling.
+     */
+    val type: String = "firebase",
 )
 
 internal data class StackAccount(

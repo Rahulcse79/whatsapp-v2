@@ -1,0 +1,61 @@
+# WhatsApp V2's own push gateway, on the Linux server that runs FreeSWITCH.
+#
+# This is NOT Sanchar. It is a separate process, a separate port, a separate Firebase
+# project and a separate service-account key, deployed alongside the existing Java IMS
+# without touching it. See `docs/retarget-whatsapp-39dcb.md` in this folder.
+#
+#   install:  sudo cp deploy/systemd/coralx-push-sender.service /etc/systemd/system/
+#             sudo cp deploy/systemd/coralx-push-sender.env.example /etc/coraltelecom/coralx-push-sender.env
+#             # edit the env file, then:
+#             sudo systemctl daemon-reload && sudo systemctl enable --now coralx-push-sender
+#   logs:     journalctl -u coralx-push-sender -f
+#
+# Nothing here is applied automatically: deploying it is an administrator action on the
+# server, which this repository task does not perform.
+[Unit]
+Description=WhatsApp V2 push gateway (FCM wake for sleeping handsets)
+Documentation=https://github.com/Rahulcse79/whatsapp-v2 coralx-push-sender/README.md
+# FreeSWITCH provides the event socket this binds to; start after it when co-located.
+After=network-online.target freeswitch.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/coraltelecom/coralx-push-sender.env
+# -fcm-sender-id uses the '=' form on purpose: FCM_SENDER_ID may be empty, systemd
+# then drops the argument entirely, and Go's flag package takes the NEXT flag as
+# this flag's value — the sender id would become "-log-level" and every token
+# would be rejected. `-flag=` passes an empty value safely.
+ExecStart=/opt/coralx-push-sender/push-sender \
+  -esl-addr ${ESL_ADDR} \
+  -esl-password ${ESL_PASSWORD} \
+  -http-addr ${HTTP_ADDR} \
+  -data-dir ${STATE_DIRECTORY} \
+  -service-account ${CREDENTIALS_DIRECTORY}/fcm-key \
+  -fcm-sender-id=${FCM_SENDER_ID} \
+  -log-level ${LOG_LEVEL}
+Restart=on-failure
+RestartSec=3
+
+# --- hardening: this process needs a socket to FreeSWITCH, its data dir, and read of one
+#     key file, nothing else. A push gateway is internet-adjacent, so lock the rest down.
+DynamicUser=yes
+# The FCM key and the token store are the only paths it may read/write.
+StateDirectory=coralx-push-sender
+# The service-account key lives outside the repo, root-owned, readable only by this unit.
+# Grant exactly that file; do NOT grant the directory, so Sanchar's key beside it is unseen.
+LoadCredential=fcm-key:/etc/coraltelecom/whatsapp-39dcb-fcm.json
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

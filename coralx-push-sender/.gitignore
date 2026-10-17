@@ -8,3 +8,17 @@
 /data/
 tokens.json
 *service-account*.json
+
+# Build output of the Linux deployment build.
+/dist/
+
+# A stray SSH keypair once landed here from an ssh-keygen prompt that took "yes"
+# as the filename. Private keys never belong in the tree; these rules stop a
+# `git add -A` from committing one. Move any such key to ~/.ssh/ instead.
+/yes
+/yes.pub
+*.pem
+*_rsa
+*_ed25519
+id_rsa*
+id_ed25519*

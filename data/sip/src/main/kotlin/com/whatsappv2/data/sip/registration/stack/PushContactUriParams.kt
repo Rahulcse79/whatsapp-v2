@@ -21,6 +21,33 @@ import com.whatsappv2.data.sip.registration.StackPushParameters
  * `show registrations`) and drops header parameters on the floor. The first version of
  * this used `contactParams`, which is why the gateway had nothing to look up.
  *
+ * ## Why more than the three RFC parameters
+ *
+ * The registrar at 192.168.20.56 is FreeSWITCH, which stores the Contact URI and its
+ * parameters verbatim; the component that acts on them is the CoralUC IMS feature server
+ * alongside it, which reads the registration and drives an FCM wakeup through its own
+ * HTTP service. So these parameters have to survive into FreeSWITCH's registration table
+ * for the IMS to find anything -- which is the same reason they are URI parameters and
+ * not header parameters, above. A working client registered against that same server was
+ * captured on 2026-10-14 sending:
+ *
+ * ```
+ * Contact: <sip:4038@…;app-id=58415781151;app-imei=…;pn-type=firebase;pn-prid=…
+ *           ;pn-provider=fcm;pn-param=58415781151;pn-silent=1;pn-timeout;transport=tcp>
+ * ```
+ *
+ * `pn-type` and `pn-silent` are not in RFC 8599 and are emitted anyway, because the three
+ * standard ones alone are a guess about what that server's lookup reads and these two are
+ * free: FreeSWITCH stores whatever the URI carries, so an IMS that keys on `pn-type`
+ * finds what it needs and one that does not is unaffected. `app-id` carries the same sender the working client puts there, which is
+ * the value already in `pn-param`.
+ *
+ * **`app-imei` is deliberately NOT sent.** It is the one parameter in that capture whose
+ * value this app cannot know: it reads as a provisioned device identifier, Android will
+ * not hand out an IMEI without a privileged permission, and inventing one risks turning a
+ * lookup that would have matched on `pn-prid` into one that matches nothing. If the server
+ * team confirms it is required, it needs a real value from them, not a plausible one.
+ *
  * ## Escaping
  *
  * pjsua2 inserts the string verbatim, so this is where RFC 3261 §25.1 is enforced: a value
@@ -32,7 +59,10 @@ import com.whatsappv2.data.sip.registration.StackPushParameters
 internal fun StackPushParameters.toContactUriParams(): String =
     ";pn-provider=${escapeUriParamValue(provider)}" +
         ";pn-param=${escapeUriParamValue(param)}" +
-        ";pn-prid=${escapeUriParamValue(prid)}"
+        ";pn-prid=${escapeUriParamValue(prid)}" +
+        ";pn-type=${escapeUriParamValue(type)}" +
+        ";app-id=${escapeUriParamValue(param)}" +
+        ";pn-silent=1"
 
 /**
  * Percent-encodes everything RFC 3261 §25.1 does not allow in a URI parameter value.

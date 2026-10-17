@@ -87,6 +87,16 @@ go build -o bin/push-sender ./cmd/push-sender
 ./bin/push-sender -service-account data/firebase-service-account.json
 ```
 
+**`-fcm-sender-id` (recommended on a shared SIP domain).** FCM HTTP v1 is
+project-scoped: a token minted under another project's sender id cannot be delivered
+to with this unit's key. Other products' handsets do register on the same domain
+carrying their own RFC 8599 parameters — on the Coral deployment extension 4038
+registers with `pn-param=58415781151` while ours mint under `273934559014` — and
+without this flag their tokens are stored here and pushed to. Set it to your sender id
+and only your own devices are ever stored, seeded, or woken; tokens already persisted
+from another project are dropped on load. Empty (the default) keeps the previous
+accept-everything behaviour.
+
 Every flag has a `PUSH_SENDER_<FLAG>` environment variable; `-h` lists them. Without
 `-service-account` it runs **dry**: everything except the FCM send works, which is how the
 park/resume path is tested with a scripted SIP UA. `deploy/launchd/` has a user agent for

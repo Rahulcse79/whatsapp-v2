@@ -48,12 +48,44 @@ type Registry struct {
 	persistMu sync.Mutex // one writer of the file at a time
 	tokens    map[string]Token
 	path      string // "" means in-memory only
+	senderID  string // "" means accept any FCM project (see WithSenderID)
+}
+
+// Option configures a Registry at construction.
+type Option func(*Registry)
+
+// WithSenderID restricts the registry to devices of one FCM project.
+//
+// A token is only meaningful to the project that minted it: FCM HTTP v1 is
+// project-scoped, so a message signed by this sender's service account cannot
+// be delivered to a token issued under a different sender id. Handsets of
+// another product can and do register on the same SIP domain carrying their own
+// RFC 8599 parameters — on this deployment extension 4038 registers with
+// pn-param 58415781151 while ours mint under 273934559014 — and without this
+// filter their tokens are stored here and pushed to, which is an attempt to
+// reach another product's device with our credentials.
+//
+// Empty (the default) keeps the previous behaviour of accepting every token, so
+// a deployment that has not set it is unaffected.
+func WithSenderID(senderID string) Option {
+	return func(r *Registry) { r.senderID = senderID }
+}
+
+// SenderAllowed reports whether a pn-param belongs to the project this registry
+// serves. Always true when no sender id is configured.
+func (r *Registry) SenderAllowed(param string) bool {
+	return r.senderID == "" || param == r.senderID
 }
 
 // New returns a registry persisted at path (may be empty for no persistence).
-// An existing file is loaded; a missing one is not an error.
-func New(path string) (*Registry, error) {
+// An existing file is loaded; a missing one is not an error. Tokens in the file
+// that fail the configured sender check are dropped on load, so a store written
+// before the restriction does not keep a foreign project's device reachable.
+func New(path string, opts ...Option) (*Registry, error) {
 	r := &Registry{tokens: map[string]Token{}, path: path}
+	for _, opt := range opts {
+		opt(r)
+	}
 	if path == "" {
 		return r, nil
 	}
@@ -67,6 +99,19 @@ func New(path string) (*Registry, error) {
 	if err := json.Unmarshal(data, &r.tokens); err != nil {
 		return nil, err
 	}
+	pruned := false
+	for user, token := range r.tokens {
+		if !r.SenderAllowed(token.Param) {
+			delete(r.tokens, user)
+			pruned = true
+		}
+	}
+	// Rewrite the file too: another product's registration token identifies one of
+	// its devices, and there is no reason for it to sit in this service's state
+	// directory once it has been ruled out.
+	if pruned {
+		r.persist()
+	}
 	return r, nil
 }
 
@@ -77,6 +122,11 @@ func New(path string) (*Registry, error) {
 func (r *Registry) Observe(user, host, contact string, seenAt time.Time) (Token, bool) {
 	provider, param, prid, ok := ParseContact(contact)
 	if !ok {
+		return Token{}, false
+	}
+	// Another product's handset on the same SIP domain. Storing its token would
+	// let this sender try to wake a device its credentials cannot address.
+	if !r.SenderAllowed(param) {
 		return Token{}, false
 	}
 	token := Token{Provider: provider, Param: param, PRID: prid, Host: host, Contact: contact, SeenAt: seenAt}

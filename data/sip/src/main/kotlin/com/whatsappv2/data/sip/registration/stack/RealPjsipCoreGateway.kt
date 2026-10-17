@@ -4022,10 +4022,31 @@ internal class RealPjsipCoreGateway @Inject constructor(
         const val HEX = 16
 
         /**
-         * Media tuning (§5.2). Starting points chosen from PJSIP's own guidance, not
-         * measurements - P-7 is where they meet a handset.
+         * The `User-Agent` on every SIP request this endpoint sends.
+         *
+         * Set on `uaConfig` before `libInit`, which is what makes it every request rather
+         * than some: pjsua stamps the header on the messages it generates, so REGISTER,
+         * INVITE, ACK, BYE, REFER, INFO, OPTIONS, SUBSCRIBE, NOTIFY and MESSAGE all carry
+         * it without a per-request opt-in to forget. pjsua2 fixes it at `libInit` and
+         * offers no setter afterwards, which is why [userAgent] is read once at start.
+         *
+         * **It is not only a label, and that is the thing to know before editing it.** Two
+         * behaviours key off this string:
+         *
+         *  - [CORALX_AGENT_TOKEN] is matched against a *peer's* `User-Agent` to decide
+         *    whether that peer is one of us and can therefore mesh rather than be relayed.
+         *    The match is a substring test, so the rule is narrower than "keep the two
+         *    equal": this value must CONTAIN the token. A version suffix is therefore
+         *    free - `coraluc-v2` still contains `coraluc`, so a v2 build and an older one
+         *    still recognise each other and still mesh. Renaming the product token itself
+         *    would not be free, and would have to change both constants together and
+         *    strand every build already in the field.
+         *  - [UPDATE_DISPLAY_UA_TOKEN] is appended when caller-ID-on-transfer is on,
+         *    because FreeSWITCH decides whether to send `message/update_display` by
+         *    matching this header against a vendor list. That suffix is separate and is
+         *    still appended to whatever this says.
          */
-        const val USER_AGENT = "whatsapp-v2 (PJSIP)"
+        const val USER_AGENT = "coraluc-v2"
 
         /**
          * Appended to [USER_AGENT] when connected-party updates are wanted.
@@ -4449,8 +4470,20 @@ internal fun peerAgentOf(rawMessage: String): String? = rawMessage
 internal fun isCoralxAgent(agent: String?): Boolean =
     agent?.contains(CORALX_AGENT_TOKEN, ignoreCase = true) == true
 
-/** The product token in [USER_AGENT], which is what survives a version bump. */
-internal const val CORALX_AGENT_TOKEN = "whatsapp-v2"
+/**
+ * The product token in [USER_AGENT], which is what survives a version bump.
+ *
+ * A proper prefix of [USER_AGENT] since the agent became `coraluc-v2`: the two are
+ * separate constants because they mean different things - one is what this endpoint
+ * announces, the other is what it recognises in a peer - and [isCoralxAgent] matches by
+ * substring precisely so a version suffix on the announcement cannot narrow recognition.
+ * A v2 build and a build from before the suffix still mesh with each other.
+ *
+ * This is the constant that must NOT follow a version bump. Moving it to `coraluc-v2`
+ * would stop every handset already in the field being recognised as one of us, and those
+ * calls would silently relay through the host instead of meshing.
+ */
+internal const val CORALX_AGENT_TOKEN = "coraluc"
 
 internal fun conferenceHeaderOf(rawMessage: String): String? = rawMessage
     .lineSequence()

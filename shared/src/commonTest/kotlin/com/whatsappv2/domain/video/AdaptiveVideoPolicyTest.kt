@@ -1,6 +1,6 @@
 package com.whatsappv2.domain.video
 
-import org.junit.Test
+import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -188,7 +188,7 @@ class AdaptiveVideoPolicyTest {
     }
 
     @Test
-    fun `encode latency alone is enough, even at a plausible frame rate`() {
+    fun `encode latency alone is enough - even at a plausible frame rate`() {
         val policy = policy()
         // 0.80 of the configured rate is above the fps threshold -- but 102 ms a frame cannot
         // produce 20 whatever the counters say, and that contradiction is the finding. The
@@ -435,7 +435,7 @@ class AdaptiveVideoPolicyTest {
     }
 
     @Test
-    fun `sustained recovery eventually upgrades, one rung at a time`() {
+    fun `sustained recovery eventually upgrades - one rung at a time`() {
         val policy = policy()
         val c = clock()
         assertNotNull(
@@ -535,7 +535,7 @@ class AdaptiveVideoPolicyTest {
     // --------------------------------------------------- shape, budget, tiles
 
     @Test
-    fun `the ladders get quieter as the call gets busier, and none of them offers 720p`() {
+    fun `the ladders get quieter as the call gets busier - and none of them offers 720p`() {
         assertEquals(640, VideoQualityProfiles.oneToOne.top.width)
         assertEquals(15, VideoQualityProfiles.oneToOne.top.fps)
 
@@ -590,7 +590,7 @@ class AdaptiveVideoPolicyTest {
     }
 
     @Test
-    fun `a participant leaving lets quality recover, but only through the upgrade window`() {
+    fun `a participant leaving lets quality recover - but only through the upgrade window`() {
         val policy = policy(shape = CallShape.FOUR_PARTY, legs = 3)
         val c = clock()
         policy.drive(healthy(shape = CallShape.FOUR_PARTY, legs = 3), millis = 40_000, clock = c)
@@ -701,7 +701,7 @@ class AdaptiveVideoPolicyTest {
     }
 
     @Test
-    fun `a rate change keeps the rung, and the rung is what the evidence earned`() {
+    fun `a rate change keeps the rung - and the rung is what the evidence earned`() {
         val c = clock()
         val policy = policy()
         val collapse = healthy().copy(
@@ -734,7 +734,7 @@ class AdaptiveVideoPolicyTest {
     }
 
     @Test
-    fun `a rate change is not a transition, so it never enters the quality log`() {
+    fun `a rate change is not a transition - so it never enters the quality log`() {
         val c = clock()
         val policy = policy()
         policy.drive(healthy(), 20_000, c)

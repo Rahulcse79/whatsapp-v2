@@ -13,7 +13,7 @@ internal val TourPages: List<TourPage> = listOf(
     TourPage(
         icon = Icons.AutoMirrored.Filled.Chat,
         title = "Add your extension first",
-        body = "CoralX calls through your own SIP account. Add it once and the app keeps " +
+        body = "Coral SIP Client calls through your own SIP account. Add it once and the app keeps " +
             "it registered, so you can be reached without opening anything.",
         where = "Chats → the gear, top right → SIP accounts",
     ),

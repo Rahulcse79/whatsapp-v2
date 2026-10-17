@@ -92,6 +92,19 @@ fun firebaseResValues(file: File, applicationId: String): Map<String, String> {
 android {
     namespace = "com.whatsappv2"
 
+    // Firebase's values reach the app as string resources (google_app_id,
+    // gcm_defaultSenderId, project_id, google_api_key), which FirebaseInitProvider reads
+    // at startup. gradle.properties sets android.defaults.buildfeatures.resvalues=false
+    // for every module, so this one has to opt back in -- without it AGP rejects the
+    // resValue calls below with "defaultConfig contains custom resource values, but the
+    // feature is disabled", which is a configuration-time failure the moment
+    // google-services.json is actually present. It was invisible while the file was
+    // absent, because firebaseResValues then emits nothing and there is no resValue to
+    // reject: the push path had never been exercised in a build that had the config.
+    buildFeatures {
+        resValues = true
+    }
+
     defaultConfig {
         applicationId = "com.whatsappv2"
         firebaseResValues(file("google-services.json"), checkNotNull(applicationId)).forEach { (name, value) ->

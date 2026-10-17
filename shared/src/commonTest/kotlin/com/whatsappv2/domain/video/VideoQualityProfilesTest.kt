@@ -1,6 +1,7 @@
 package com.whatsappv2.domain.video
 
-import org.junit.Test
+import kotlin.math.roundToInt
+import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -40,7 +41,7 @@ class VideoQualityProfilesTest {
     }
 
     @Test
-    fun `every ladder offers the same three rungs, so a step always has somewhere to go`() {
+    fun `every ladder offers the same three rungs - so a step always has somewhere to go`() {
         // The ladders differ in what a rung *means*, never in which rungs exist. A ladder
         // missing a rung made `stepDown` skip a step on one shape and not another, and the
         // shape-crossing code then had to special-case which rungs were real.
@@ -133,7 +134,7 @@ class VideoQualityProfilesTest {
     }
 
     @Test
-    fun `the ladders overlap, so a shape change always has a rung to land on`() {
+    fun `the ladders overlap - so a shape change always has a rung to land on`() {
         // `bestAffordableNotExceeding` caps a shape change at the picture already being sent.
         // If a busier ladder's top were below a quieter ladder's floor, that cap could not be
         // honoured -- the only rung available would be an upgrade granted for a hangup. So
@@ -191,7 +192,7 @@ class VideoQualityProfilesTest {
     }
 
     @Test
-    fun `bitrate follows the picture, so a smaller rung is proportionally cheaper`() {
+    fun `bitrate follows the picture - so a smaller rung is proportionally cheaper`() {
         // Not an exact ratio -- coding efficiency is not linear -- but a rung half the pixel
         // rate of another must not ask for anything like the same bitrate, or "reduce the
         // resolution" would buy nothing on a constrained link.
@@ -199,7 +200,10 @@ class VideoQualityProfilesTest {
             val bitsPerPixel = profile.targetBps.toDouble() / profile.pixelRate
             assertTrue(
                 bitsPerPixel in 0.05..0.20,
-                "$profile asks ${"%.3f".format(bitsPerPixel)} bits per pixel, which is off the curve",
+                // `String.format` is a JVM extension and has no common equivalent; rounding to
+                // the same three places keeps the message without the platform dependency.
+                "$profile asks ${(bitsPerPixel * 1000).roundToInt() / 1000.0} bits per pixel, " +
+                    "which is off the curve",
             )
         }
     }
@@ -207,7 +211,7 @@ class VideoQualityProfilesTest {
     // ------------------------------------------------------------------- budget
 
     @Test
-    fun `one leg gets the hard ceiling, three legs get a third of the aggregate`() {
+    fun `one leg gets the hard ceiling - three legs get a third of the aggregate`() {
         assertEquals(
             VideoBudget.HARD_CEILING_BPS,
             VideoBudget(outgoingVideoLegs = 1).allowanceBpsPerLeg,
@@ -327,12 +331,12 @@ class VideoQualityProfilesTest {
     }
 
     @Test
-    fun `an unconstrained ceiling admits everything, including the top rung`() {
+    fun `an unconstrained ceiling admits everything - including the top rung`() {
         assertTrue(DisplayCeiling.UNCONSTRAINED.admits(VideoQualityProfiles.oneToOne.top))
     }
 
     @Test
-    fun `a grid divides the viewport by rows, and nonsense input constrains nothing`() {
+    fun `a grid divides the viewport by rows - and nonsense input constrains nothing`() {
         // Three remotes are two rows on this layout, so each tile is half the viewport.
         assertEquals(DisplayCeiling(960), DisplayCeiling.forGrid(viewportHeight = 1920, rows = 2))
         assertEquals(DisplayCeiling(640), DisplayCeiling.forGrid(viewportHeight = 1920, rows = 3))
@@ -365,7 +369,7 @@ class VideoQualityProfilesTest {
     }
 
     @Test
-    fun `a single spike is damped, and a sustained change is eventually expressed`() {
+    fun `a single spike is damped - and a sustained change is eventually expressed`() {
         val smoother = VideoConditionsSmoother()
         smoother.accept(sample(loss = 0.0))
 
@@ -379,7 +383,7 @@ class VideoQualityProfilesTest {
     }
 
     @Test
-    fun `thermal status is not smoothed, because it is a verdict and not a measurement`() {
+    fun `thermal status is not smoothed - because it is a verdict and not a measurement`() {
         val smoother = VideoConditionsSmoother()
         smoother.accept(sample(loss = 0.0))
         val hot = sample(loss = 0.0).copy(
@@ -393,7 +397,7 @@ class VideoQualityProfilesTest {
     }
 
     @Test
-    fun `a reset forgets everything, so a restarted stream is not judged on the old one`() {
+    fun `a reset forgets everything - so a restarted stream is not judged on the old one`() {
         val smoother = VideoConditionsSmoother()
         repeat(5) { smoother.accept(sample(loss = 0.5)) }
         smoother.reset()
@@ -404,7 +408,7 @@ class VideoQualityProfilesTest {
     }
 
     @Test
-    fun `call facts are taken from the newest sample, never averaged`() {
+    fun `call facts are taken from the newest sample - never averaged`() {
         val smoother = VideoConditionsSmoother()
         smoother.accept(sample(loss = 0.0))
         val conference = sample(loss = 0.0).copy(
@@ -441,7 +445,7 @@ class VideoQualityProfilesTest {
     }
 
     @Test
-    fun `a rate change moves the bitrate band with it, proportionally`() {
+    fun `a rate change moves the bitrate band with it - proportionally`() {
         val base = VideoQualityProfiles.oneToOne.top
         assertEquals(15, base.fps, "the rungs are written at the default rate")
 
@@ -485,7 +489,7 @@ class VideoQualityProfilesTest {
     }
 
     @Test
-    fun `a stored rate reads back, and an unknown one does not invent a rate`() {
+    fun `a stored rate reads back - and an unknown one does not invent a rate`() {
         for (rate in VideoFrameRate.entries) {
             assertEquals(rate, VideoFrameRate.ofFps(rate.fps))
         }
