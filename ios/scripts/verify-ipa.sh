@@ -39,17 +39,48 @@ echo
 echo "--- architecture ---"
 lipo -info "$binary" 2>/dev/null | sed 's/^/  /' || file "$binary" | sed 's/^/  /'
 
+# The platform, read ONCE into a file and then parsed.
+#
+# This was three separate `otool -l "$binary" | grep …` pipelines, and it reported
+# `platform: unknown` for an IPA that was demonstrably an iOS device build — twice,
+# both times on the first run after downloading a fresh artifact, and never on a
+# re-run. The root cause was never pinned down; the candidates were all properties of
+# the construct rather than of the IPA (`set -o pipefail` turning a short-circuiting
+# `grep -q` into a failed pipeline when otool is still writing, and running otool
+# three times on a 14 MB binary for one answer).
+#
+# A verifier that intermittently says "not ready" about a good artifact is worse than
+# no verifier, because the next person re-runs it until it agrees. So: one invocation,
+# one file, no pipeline, no second opinion needed.
+load_commands="$work/load-commands.txt"
+otool -l "$binary" > "$load_commands" 2>/dev/null || true
+
 platform="unknown"
-if otool -l "$binary" 2>/dev/null | grep -q "LC_BUILD_VERSION"; then
-  platform="$(otool -l "$binary" | awk '/LC_BUILD_VERSION/{f=1} f&&/platform/{print $2; exit}')"
-elif otool -l "$binary" 2>/dev/null | grep -q "LC_VERSION_MIN_IPHONEOS"; then
-  platform="2"
+if command -v vtool >/dev/null 2>&1 && vtool -show-build "$binary" >/dev/null 2>&1; then
+    # vtool prints the platform symbolically (IOS / IOSSIMULATOR / MACOS), which is
+    # both clearer in the output and immune to the numbering changing.
+    case "$(vtool -show-build "$binary" 2>/dev/null | awk '/platform/{print $2; exit}')" in
+        IOS)           platform="2" ;;
+        IOSSIMULATOR)  platform="7" ;;
+        MACOS)         platform="1" ;;
+    esac
 fi
+if [ "$platform" = "unknown" ] && [ -s "$load_commands" ]; then
+    platform="$(awk '/LC_BUILD_VERSION/{f=1} f && /platform/ {print $2; exit}' "$load_commands")"
+    # Pre-LC_BUILD_VERSION binaries carry LC_VERSION_MIN_IPHONEOS instead, which exists
+    # only on iOS and therefore answers the question by its presence.
+    if [ -z "$platform" ] && grep -q "LC_VERSION_MIN_IPHONEOS" "$load_commands"; then
+        platform="2"
+    fi
+    [ -n "$platform" ] || platform="unknown"
+fi
+
 case "$platform" in
   1)  echo "  platform: macOS                 -> WRONG" ;;
   2)  echo "  platform: iOS device            -> OK" ;;
   7)  echo "  platform: iOS Simulator         -> WILL NOT INSTALL ON A DEVICE" ;;
-  *)  echo "  platform: $platform (see 'otool -l | grep -A4 LC_BUILD_VERSION')" ;;
+  *)  echo "  platform: could not be determined"
+      echo "            (no LC_BUILD_VERSION and no LC_VERSION_MIN_IPHONEOS — see $load_commands)" ;;
 esac
 if lipo -info "$binary" 2>/dev/null | grep -q arm64; then
   echo "  arm64 present: yes"
@@ -141,15 +172,22 @@ nm -U "$binary" 2>/dev/null \
   | sed -E 's/_pjmedia_codec_(.*)_init/\1/' | sort -u | tr '\n' ' ' | sed 's/^/     /'
 echo
 
+# One capture, read twice — by the listing and by the per-framework check. Having the
+# two read different sources is how the previous version printed CallKit in its own
+# list and then reported CallKit as not linked, in adjacent lines.
+linked="$work/linked.txt"
+otool -L "$binary" > "$linked" 2>/dev/null || true
+
 echo "  frameworks:"
-otool -L "$binary" 2>/dev/null \
-  | grep -oE "/System/Library/Frameworks/[A-Za-z]+\.framework" \
+grep -oE "/System/Library/Frameworks/[A-Za-z]+\.framework" "$linked" 2>/dev/null \
   | sed 's|.*/||;s|\.framework||' | sort -u | tr '\n' ' ' | sed 's/^/     /'
 echo
 for required_framework in CallKit PushKit AVFoundation; do
-  otool -L "$binary" 2>/dev/null | grep -q "/$required_framework.framework" || {
-    echo "  $required_framework is NOT linked - a VoIP app needs it"
-    contents_fail=$((contents_fail + 1)); }
+  if grep -q "/$required_framework\.framework" "$linked" 2>/dev/null; then
+    continue
+  fi
+  echo "  $required_framework is NOT linked - a VoIP app needs it"
+  contents_fail=$((contents_fail + 1))
 done
 
 # ---------------------------------------------------------------- 4. Info.plist
